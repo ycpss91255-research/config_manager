@@ -1,4 +1,4 @@
-# Rollback produces a new commit; history is never rewritten
+# 退版產生新的 commit，歷史永不改寫
 
 > 服務：不變式 2 ＋ 設計原則 N-6（可逆性優先）
 

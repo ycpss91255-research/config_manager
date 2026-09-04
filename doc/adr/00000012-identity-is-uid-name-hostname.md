@@ -1,4 +1,4 @@
-# Identity is split into an immutable uid, a mutable name, and a hostname
+# 身分拆成永不變的 uid、可改的 name 與 hostname
 
 > 服務：不變式 8（身分與命名一次解析，來自檔案）
 

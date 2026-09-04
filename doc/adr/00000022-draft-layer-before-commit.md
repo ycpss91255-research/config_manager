@@ -1,4 +1,4 @@
-# Saving a draft is separate from committing and applying
+# 儲存草稿與進版是分開的兩件事
 
 > 服務：不變式 2（絕不靜默失敗）
 

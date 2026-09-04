@@ -1,4 +1,4 @@
-# The interface edits parameters as typed fields, never as file text
+# 介面以帶型別的參數欄位編輯，絕不編輯檔案文字
 
 > 服務：不變式 2 ＋ 產品目標
 

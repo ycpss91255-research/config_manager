@@ -1,4 +1,4 @@
-# Recording a change and writing it out are a single atomic operation
+# 記錄變更與寫出是單一的原子操作
 
 > 服務：不變式 2
 

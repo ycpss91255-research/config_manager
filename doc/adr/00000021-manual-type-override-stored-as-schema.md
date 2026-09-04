@@ -1,4 +1,4 @@
-# Manual type overrides are stored as schema, and clearable per field
+# 人工指定的型別存為 schema，並可逐欄位清除
 
 > 服務：不變式 2（絕不靜默失敗）
 

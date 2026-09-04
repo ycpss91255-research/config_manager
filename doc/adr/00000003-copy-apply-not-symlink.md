@@ -1,4 +1,4 @@
-# Deploy config by copy and apply rather than by symlink
+# config 以複製並寫出的方式部署，而非符號連結
 
 > 服務：不變式 2
 

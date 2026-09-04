@@ -1,4 +1,4 @@
-# Placehold the template's extension points, and wire them to the self-built wrappers
+# 模板的擴充點佔位，並接到自建的 wrapper 上
 
 > 服務：不變式 2（絕不靜默失效）
 

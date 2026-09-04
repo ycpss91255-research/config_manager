@@ -1,4 +1,4 @@
-# Align the repo layout to the container template main branch, pinned to a commit
+# repo 結構對齊容器模板的 main 分支，並釘住 commit
 
 > 服務：不變式 6（單一真實來源）＋ 不變式 8（依據來自檔案而非推論）
 

@@ -1,4 +1,4 @@
-# Keep compose.yaml as the only service definition; .setup.conf is a placeholder with no values
+# compose.yaml 是唯一的服務定義，.setup.conf 只佔位不放值
 
 > 服務：不變式 6（一個真實來源，向外傳播，而非平行維護 N 份副本）
 
