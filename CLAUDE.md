@@ -16,14 +16,15 @@ interfaces).
 ## Layers
 
 `api → core → io`, one direction (ADR-00000011). Import by top-level module name
-(`from core.config_list import load`, `python -m api.cli`).
+(`from config_manager.core.config_list import load`, `python -m config_manager.api.cli`).
 
-- `src/core/` — pure logic, **no I/O**: need file content? take it as a parameter.
+- `src/config_manager/core/` — pure logic, **no I/O**: need file content? take it as a parameter.
   Every core test runs with no filesystem, git, or network.
-- `src/io/` — filesystem/git adapters. *(Currently unimportable as `io`: the name
-  clashes with Python's stdlib `io`; see issue #56.)*
-- `src/api/` — HTTP endpoints + CLI (the CLI is an HTTP client, ADR-00000009).
-- `src/web/` — single HTML entry point.
+- `src/config_manager/io/` — filesystem/git adapters. Everything lives under one
+  top-level package because a top-level `io/` shadows the stdlib module and can stop
+  the interpreter from starting (ADR-00000026).
+- `src/config_manager/api/` — HTTP endpoints + CLI (the CLI is an HTTP client, ADR-00000009).
+- `src/config_manager/web/` — single HTML entry point.
 
 ## Workflow
 
@@ -56,8 +57,8 @@ Claude Code line.
 `./script/test.sh` (or `just test`) runs the whole set, and a missing tool fails
 loudly rather than skipping silently. Push only when green.
 
-- `ruff check src test` · `mypy --strict src/core` · `pylint src` (10.00/10) ·
-  `pytest test/pytest --cov=src/core` (fail_under 85)
+- `ruff check src test` · `mypy --strict src/config_manager/core` · `pylint src` (10.00/10) ·
+  `pytest test/pytest --cov=src/config_manager/core` (fail_under 85)
 - The shell scripts need **bash 4+** (`brew install bash` on macOS; the stock 3.2
   can't run them).
 

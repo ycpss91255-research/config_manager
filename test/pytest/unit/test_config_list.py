@@ -5,8 +5,8 @@
 
 import pytest
 
-from core.config_list import dump, load
-from core.errors import (
+from config_manager.core.config_list import dump, load
+from config_manager.core.errors import (
     DumpMismatch,
     DuplicateTarget,
     DuplicateUid,

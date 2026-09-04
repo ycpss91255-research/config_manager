@@ -7,7 +7,7 @@
 import datetime
 import string
 
-from core.identity import derive_name, new_uid
+from config_manager.core.identity import derive_name, new_uid
 
 _UID_LEN = 8
 

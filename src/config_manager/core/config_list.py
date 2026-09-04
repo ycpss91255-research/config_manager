@@ -9,7 +9,7 @@ from collections.abc import Iterable
 
 import tomlkit
 
-from core.errors import (
+from config_manager.core.errors import (
     DumpMismatch,
     DuplicateTarget,
     DuplicateUid,
@@ -17,7 +17,7 @@ from core.errors import (
     TargetEscape,
     UnknownField,
 )
-from core.models import ConfigList, FileEntry
+from config_manager.core.models import ConfigList, FileEntry
 
 # 被管理 config 的允許格式（T6 亦處理這些）。raw = 不解析、只做版控。
 ALLOWED_FORMATS = ("yaml", "json", "toml", "ini", "raw")

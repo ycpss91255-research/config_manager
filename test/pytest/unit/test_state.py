@@ -4,7 +4,7 @@
 都由呼叫者算好傳入。「未納管」不由此判定——它由清單成員在呼叫前決定。
 """
 
-from core.state import State, decide
+from config_manager.core.state import State, decide
 
 
 def test_missing_when_target_does_not_exist():
