@@ -369,3 +369,20 @@ bogus_field = "x"
     )
     assert "bogus_field" in message
     assert str(expected_line) in message
+
+
+def test_config_list_file_cannot_inject_warnings():
+    # 清單檔嘗試設定內部 warnings 欄位，應被當作未知欄位拒絕（防注入、回歸測試）。
+    text = """\
+list_version = 1
+warnings = ["INJECTED FROM FILE"]
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+"""
+
+    with pytest.raises(UnknownField) as exc:
+        load(text)
+    assert "warnings" in str(exc.value)
