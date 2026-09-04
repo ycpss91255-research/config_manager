@@ -20,3 +20,8 @@ def test_derive_name_strips_any_extension_not_only_yaml():
 def test_derive_name_converts_underscores_to_hyphens():
     # 底線轉連字號：/opt/app/max_speed.yaml → app-max-speed。
     assert derive_name("/opt/app/max_speed.yaml") == "app-max-speed"
+
+
+def test_derive_name_dedupes_overlapping_levels():
+    # 去重疊層級：/etc/docker/docker.json → docker（不是 docker-docker）。
+    assert derive_name("/etc/docker/docker.json") == "docker"
