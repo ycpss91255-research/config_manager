@@ -589,8 +589,9 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 
 ### T19 — 守門腳本的規則
 
-**介面**：每支 lint 的命令列。餵一個目錄或 base ref 進去，觀察**結束碼與訊息**，
-不碰腳本內部。規格以 bats 撰寫，放在 `test/bats/unit/<腳本名>.bats`。
+**介面**：每支守門腳本的命令列。餵一個目錄、一個 base ref，或一組受控的
+`PATH` 與環境變數進去，觀察**結束碼與訊息**，不碰腳本內部。規格以 bats 撰寫，
+放在 `test/bats/unit/<腳本名>.bats`。
 
 | 腳本 | 規格 |
 |---|---|
@@ -598,6 +599,21 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `script/lint_commit.sh` | `test/bats/unit/lint_commit.bats` |
 | `script/lint_paths.sh` | `test/bats/unit/lint_paths.bats` |
 | `script/lint_portability.sh` | `test/bats/unit/lint_portability.bats` |
+| `script/test.sh` | `test/bats/unit/test.bats` |
+
+**`script/test.sh` 被觀察的不是 lint 規則，而是「缺工具不得靜默通過」**（#72）。
+它與四支 lint 同屬一個測試介面，因為觀察位置相同：命令列進去，結束碼與訊息出來。
+差別只在輸入多了一項——它以 `command -v` 判定工具在不在，所以「拿掉一支工具」
+只能靠**重建 `PATH`**，覆寫不掉。被觀察的行為：
+
+| 行為 | 通過條件 |
+|---|---|
+| 缺一支檢查工具 | 非零結束，訊息指名該工具與安裝方式 |
+| 缺多支 | **一次列出全部**，且只列缺的那些 |
+| `CM_LINT_ALLOW_MISSING=1` | **結束碼 0**，且訊息指名哪幾項沒跑 |
+| 缺席的工具 | 不被呼叫（不是「呼叫了才發現不在」的 127） |
+| `CM_IN_TEST_IMAGE=1` ／ `CM_TEST_LOCAL=1` | 就地執行，不轉進容器 |
+| 兩者皆無 | 轉進容器；docker 缺席時訊息指出逃生口 |
 
 **每條規則都要有一個會觸發它的案例。** 一支所有 FAIL 路徑都沒被執行過的 lint，
 它擋得住什麼是沒有證據的——規則看起來在運作，而那正是回歸風險最高的形狀。
@@ -610,8 +626,8 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 不會因規則消失而轉紅的規格，測的不是那條規則。這一項不自動化，
 在 PR 描述裡記下做過哪些突變與結果。
 
-**已知未涵蓋**：`script/test.sh` 的「缺工具不得靜默通過」保證（#72）。
-這**不是**刻意留空，是還沒做——`test.sh` 有真正的分支邏輯，而那條保證已經失效過一次。
+**T19 底下已無未涵蓋者。** `script/test.sh` 的「缺工具不得靜默通過」保證（#72）
+——這份文件先前記為「還沒做」的那一項——已由 `test/bats/unit/test.bats` 覆蓋。
 
 其餘 21 支 shell 腳本（五支容器 wrapper、`hooks/dispatch.sh`、14 支 hook、`local/cfg/cfg.sh`）
 在 #74 逐支盤點後**轉為刻意的空格**，理由記在「覆蓋率審計」的該節，不再列為待辦。
@@ -661,7 +677,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `script/lint_commit.sh` | T19 | 已落地 |
 | `script/lint_paths.sh` | T19 | 已落地 |
 | `script/lint_portability.sh` | T19 | 已落地 |
-| `script/test.sh` | T19——**已知未涵蓋（#72），不是刻意留空** | 已落地 |
+| `script/test.sh` | T19（缺工具不得靜默通過，#72） | 已落地 |
 | `script/{build,run,exec,stop,prune}.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/dispatch.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/{pre,post}/*.sh`（14 支） | 無——見「刻意的空格」 | 已落地 |
