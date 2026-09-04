@@ -66,3 +66,9 @@ def test_unindex_removes_all_entries_of_a_uid():
     idx = index("u1", {"a": 1, "b": 2}) + index("u2", {"c": 3})
     idx = unindex(idx, "u1")
     assert set(idx) == {("u2", "c", 3)}
+
+
+def test_search_with_no_match_returns_empty_list_not_exception():
+    # 查無結果回空清單，不是例外。
+    idx = index("u1", {"max_vel": 0.8})
+    assert search(idx, "nonexistent", SCOPE_ALL) == []
