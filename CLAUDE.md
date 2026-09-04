@@ -25,10 +25,13 @@
 - **已交付行為的 bug** → `fix` 加 patch 版號；一個 milestone 的功能是 minor。
 - **一張 issue 對應一個 PR。** issue 的驗收條件**全部勾完**才開 PR——做不完就把 issue 拆小，
   一張需要三個 PR 才做得完的 issue，本來就是三件事。
-- **issue 是帳本，PR 是描述。** 每完成一條驗收條件就 commit 一次，並把該 commit 的 SHA
-  記在那條勾選行後面：`- [x] 條件文字 — <sha>`。PR 描述寫的是「做了什麼、為什麼、
-  被否決的選項、突變檢查、驗證數字」，不是進度。
-  由 `script/lint_checkpoints.sh` 在 CI 檢查（未勾、沒記 SHA、SHA 不在本 PR 範圍內，三者皆擋）。
+- **issue 是帳本，PR 是描述。** 每完成一條驗收條件就 commit 一次，並把該 commit 的
+  **主旨**記在那條勾選行後面：`- [x] 條件文字 — <commit 主旨>`。PR 描述寫的是
+  「做了什麼、為什麼、被否決的選項、突變檢查、驗證數字」，不是進度。
+  由 `script/lint_checkpoints.sh` 在 CI 檢查（未勾、沒記 commit、主旨在 git 歷史裡
+  找不到，三者皆擋）。
+  **記主旨不記 SHA**：rebase 會改寫 SHA、squash 會讓它消失，而這個 repo 三者都規定了
+  ——綁在 SHA 上等於每次合併前手動重填一輪帳本（#129 實測過兩次）。
 - **決策要寫回它被提出的地方。** 討論定案後，把決策、佐證、以及被否決的選項與理由寫回該 issue 或 PR，不要只留在對話裡。關閉帶驗收條件的 issue 時，**證據附在 issue 上，勾選框實際勾起來**。
 
 ## Commit 訊息

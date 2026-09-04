@@ -26,7 +26,8 @@ setup() {
   git config user.email spec@example.invalid
   git commit -q --allow-empty -m "chore(base): 起點"
   BASE="$(git rev-parse HEAD)"
-  git commit -q --allow-empty -m "feat(x): 一則變更"
+  SUBJECT="feat(x): 一則變更"
+  git commit -q --allow-empty -m "${SUBJECT}"
   SHA="$(git rev-parse HEAD)"
 }
 
@@ -50,14 +51,14 @@ STUB
 }
 
 @test "驗收條件全部勾完且各自帶著本 PR 範圍內的 SHA 時通過" {
-  stub_gh "closes #42" "- [x] 第一條 — ${SHA}"
+  stub_gh "closes #42" "- [x] 第一條 — ${SUBJECT}"
 
   run "${LINT}" 1 "${BASE}"
   [ "${status}" -eq 0 ]
 }
 
 @test "還有未勾的驗收條件時擋下，並指名是哪一張 issue" {
-  stub_gh "closes #42" "- [x] 第一條 — ${SHA}
+  stub_gh "closes #42" "- [x] 第一條 — ${SUBJECT}
 - [ ] 第二條"
 
   run "${LINT}" 1 "${BASE}"
@@ -65,7 +66,7 @@ STUB
   [[ "${output}" == *"#42"* ]]
 }
 
-@test "勾起來但沒有記 SHA 的項目被擋下" {
+@test "勾起來但沒有記 commit 的項目被擋下" {
   # 「完成」與「有東西證明它完成」是兩件事。只勾不記，帳本就只是一個聲明。
   stub_gh "closes #42" "- [x] 第一條"
 
@@ -74,13 +75,40 @@ STUB
   [[ "${output}" == *"第一條"* ]]
 }
 
-@test "記的 SHA 不在這個 PR 的範圍內時被擋下" {
-  # 隨手貼一個別處的 SHA 就能過關的話，這個檢查只是在確認「有貼東西」。
-  stub_gh "closes #42" "- [x] 第一條 — deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+@test "記的主旨在 git 歷史裡找不到時被擋下" {
+  # 隨手編一句話就能過關的話，這個檢查只是在確認「有寫東西」。
+  stub_gh "closes #42" "- [x] 第一條 — feat(x): 這筆 commit 不存在"
 
   run "${LINT}" 1 "${BASE}"
   [ "${status}" -ne 0 ]
-  [[ "${output}" == *"deadbeef"* ]]
+  [[ "${output}" == *"這筆 commit 不存在"* ]]
+}
+
+@test "rebase 改寫 SHA 之後帳本仍然成立" {
+  # 這個 repo 規定推送前 rebase、分支保護要求與 base 同步、合併一律 squash——
+  # 三條加起來，每個 PR 都必然經歷至少一次 SHA 改寫（#129）。主旨不會變。
+  stub_gh "closes #42" "- [x] 第一條 — ${SUBJECT}"
+  git commit -q --amend --no-edit --allow-empty   # SHA 變了，主旨沒變
+
+  run "${LINT}" 1 "${BASE}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "主旨在 main 的歷史裡而不在本 PR 範圍內時通過" {
+  # 跨 PR 的 issue：前幾條驗收條件由更早的 PR 完成，那些 commit 已經在 main 上。
+  stub_gh "closes #42" "- [x] 第一條 — chore(base): 起點"
+
+  run "${LINT}" 1 "${BASE}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "順帶提及的 issue 編號不算本 PR 要交付的" {
+  # PR 描述裡寫「見 #117」是引用，不是承諾。只認 GitHub 的關閉關鍵字。
+  stub_gh "修正一個問題，背景見 #117" "- [ ] 還沒做"
+
+  run "${LINT}" 1 "${BASE}"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"沒有引用"* ]]
 }
 
 @test "PR 沒有引用任何 issue 時通過，但說出來" {
