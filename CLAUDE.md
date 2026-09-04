@@ -54,8 +54,26 @@ Claude Code line.
 
 ## Quality gates (local == CI)
 
-`./script/test.sh` (or `just test`) runs the whole set, and a missing tool fails
-loudly rather than skipping silently. Push only when green.
+**Run every check inside the container. Never against this host.**
+
+`./script/test.sh` (or `just test`) builds `dockerfile/Dockerfile.test-tools` and
+re-execs itself inside it; CI calls the same script and installs nothing. One
+image, two callers (ADR-00000027). Push only when green.
+
+Do not reach for the host interpreter to "just check something quickly". The
+host is not evidence about this project, and saying so is not a style
+preference -- it has produced four wrong answers here:
+
+| what the host said | what was true |
+|---|---|
+| pytest could not collect the suite | host pytest 6.2.5 silently ignores `pythonpath`; the project needs 8+ |
+| lint clean | host had no hadolint, so CI went red six pushes in a row |
+| the interpreter cannot start | on 3.11 the same `io` collision (#56) is a `ModuleNotFoundError` |
+| nothing to check in workflows | actionlint existed only in CI, and it reads what no YAML parser sees |
+
+`CM_TEST_LOCAL=1` runs on the host anyway. It names every tool it had to skip,
+because **a loud skip is still a check that did not run** -- do not report such a
+run as a passing one. `CM_APT_MIRROR` overrides the image's Debian mirror.
 
 - `ruff check src test` · `mypy --strict src/config_manager/core` · `pylint src` (10.00/10) ·
   `pytest test/pytest --cov=src/config_manager/core` (fail_under 85)
