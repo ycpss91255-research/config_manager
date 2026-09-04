@@ -3,7 +3,7 @@
 用語依 CONTEXT.md。純邏輯，不做 I/O（ADR-00000011）：index 收已解析的資料。
 """
 
-from core.index import index
+from core.index import SCOPE_NAME, index, search
 
 
 def test_index_flattens_nested_dict_to_dotted_paths():
@@ -26,3 +26,9 @@ def test_index_includes_array_indices_in_path():
         ("u1", "speeds[1]", 1.0),
         ("u1", "servers[0].host", "a"),
     }
+
+
+def test_search_by_name_returns_hits_with_uid_and_path():
+    # 依參數名稱搜尋：命中含 uid 與路徑。
+    idx = index("u1", {"nav": {"max_vel": 0.8, "min_vel": 0.1}})
+    assert search(idx, "max_vel", SCOPE_NAME) == [("u1", "nav.max_vel", 0.8)]

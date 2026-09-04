@@ -26,3 +26,16 @@ def _flatten_value(value: Any, path: str) -> list[tuple[str, Any]]:
             items.extend(_flatten_value(elem, f"{path}[{i}]"))
         return items
     return [(path, value)]
+
+
+# 搜尋範圍（用語依 CONTEXT / UI-ELEMENTS）。
+SCOPE_NAME = "參數名稱"
+SCOPE_VALUE = "參數值"
+SCOPE_ALL = "全部"
+
+
+def search(index_entries: list[Entry], query: str, scope: str) -> list[Entry]:
+    """在索引中依範圍搜尋，回傳命中的 (uid, 參數路徑, 值)。查無結果回空清單。"""
+    if scope == SCOPE_NAME:
+        return [entry for entry in index_entries if query in entry[1]]
+    return []
