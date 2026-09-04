@@ -46,3 +46,12 @@ def test_new_uid_increments_within_the_same_millisecond():
     second = new_uid(now, previous=first)
     # 同一毫秒內的兩次呼叫不會相同：後者遞增 1。int(x, 36) 為獨立的 base36 解碼。
     assert int(second, 36) == int(first, 36) + 1
+
+
+def test_new_uid_is_string_sortable_in_time_order():
+    import datetime
+
+    earlier = datetime.datetime(2026, 9, 4, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    later = datetime.datetime(2026, 9, 4, 12, 0, 1, tzinfo=datetime.timezone.utc)
+    # 可排序 = 保留納管順序：字串比較的順序需與時間一致（固定 8 碼寬度是關鍵）。
+    assert new_uid(earlier) < new_uid(later)
