@@ -22,4 +22,6 @@ def decide(target_exists: bool, target_hash: str | None, source_hash: str) -> St
     """比較目標與來源，判定狀態。先看存在性，再看內容。"""
     if not target_exists:
         return State.MISSING
-    return State.DRIFT  # 佔位：一致／偏離的內容判定於後續切片加入
+    if target_hash == source_hash:
+        return State.IN_SYNC
+    return State.DRIFT

@@ -10,3 +10,8 @@ from core.state import State, decide
 def test_missing_when_target_does_not_exist():
     # 目標不存在 → 未部署。
     assert decide(target_exists=False, target_hash=None, source_hash="abc") is State.MISSING
+
+
+def test_in_sync_when_hashes_match():
+    # 目標內容 == 來源內容（雜湊相同）→ 一致。
+    assert decide(target_exists=True, target_hash="abc", source_hash="abc") is State.IN_SYNC
