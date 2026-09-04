@@ -1,5 +1,9 @@
 # Development and test tooling. Kept apart from requirements.txt so the
 # runtime stage cannot accidentally ship a linter.
+#
+# requirements.txt is what `devel-base` installs, and `runtime` is FROM
+# devel-base -- so anything added there ships in the deployable image.
+# Test tooling belongs here and in the `FROM runtime` test stages only (#97).
 -r requirements.txt
 
 pytest>=8
@@ -7,3 +11,11 @@ pytest-cov>=5
 ruff>=0.5
 mypy>=1.10
 pylint>=3.2
+
+# web/index.html 的行內 JS：pytest 量不到它，瀏覽器自己會算（T11、#97）。
+# 1.49 起才有 chromium-headless-shell 這個 channel，而那是這裡要的那一份
+# ——完整的 chromium 帶著一整套桌面相依，量同一個數字卻讓映像多 1 GB。
+#
+# 這是 pip 套件；瀏覽器二進位由 docker/Dockerfile.test-tools 另外裝，因為它
+# 不是 pip 的東西，而且只有跑檢查的那份映像需要它。
+playwright>=1.49

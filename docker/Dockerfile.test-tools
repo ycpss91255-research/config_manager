@@ -61,6 +61,52 @@ COPY config/pip/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt \
     && rm -f /tmp/requirements-dev.txt /tmp/requirements.txt
 
+# 瀏覽器。`web/index.html` 的行內 JS 由 pytest 量不到，所以 T11 的規格用一個真的
+# Chromium 打開真的頁面，覆蓋率由 V8 自己算（#97）。
+#
+# 裝在這裡而不是應用映像的一個 `FROM runtime` 階段——那是原本傾向的做法——理由是
+# 本機與 CI 必須跑同一組檢查。這個 repo 最貴的一次教訓正是一項只在 CI 跑得到的
+# 檢查（hadolint，連續六次全紅而本機每次都報乾淨）；把 web/ 的門檻放進一個
+# `just test` 到不了的階段，等於把那個形狀再做一次。而 index.html 是靜態檔、沒有
+# 打包步驟（§3.3），量它根本用不到應用映像。
+#
+# 實測的三個選項（arm64，本機建置）：
+#
+#   playwright install --with-deps chromium   444 MB -> 1.94 GB
+#   apt-get install chromium                  444 MB -> 1.26 GB
+#   headless shell + 手選的 20 個 lib         444 MB -> 980 MB   ← 採用
+#
+# headless shell 是同一個 V8 與同一套 CDP，少的是桌面那一半（GTK、字型、音訊）
+# ——而那一半在一個沒有螢幕的檢查映像裡本來就用不到。
+ARG PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH}
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libasound2 \
+        libatk-bridge2.0-0 \
+        libatk1.0-0 \
+        libatspi2.0-0 \
+        libcairo2 \
+        libcups2 \
+        libdbus-1-3 \
+        libdrm2 \
+        libgbm1 \
+        libnspr4 \
+        libnss3 \
+        libpango-1.0-0 \
+        libx11-6 \
+        libxcb1 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxkbcommon0 \
+        libxrandr2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && dpkg-query -W > /usr/local/share/config_manager-test-tools-packages.txt \
+    && playwright install chromium-headless-shell \
+    && chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"
+
 # 這條 safe.directory 是給 root 那種情況用的。script/test.sh 是以**呼叫端的使用者**
 # 而不是 root 來跑這份映像——root 程序寫進 bind mount 會在主機上留下 root 所有的檔案
 # ——而那個使用者在這裡沒有家目錄，所以它是用 GIT_CONFIG_* 把 safe.directory 傳進去，

@@ -831,7 +831,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `api/cli` | T10 | 已落地（`serve` 與 `list`） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 未落地（#33） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |
-| `web/` | T11 | 已落地，但 **T11 沒有執行通路——網頁行為零覆蓋（#99）** |
+| `web/` | T11 | 已落地。執行通路於 #97 補上：`test/pytest/system/test_web.py`，Playwright 驅動 Chromium，行覆蓋率由 V8 自己算 |
 | 四支 `__init__.py` | 無——見「刻意的空格」 | 已落地 |
 | `script/entrypoint.sh` | T15 | 已落地 |
 | `script/lint_adr.sh` | T19 | 已落地 |
@@ -913,9 +913,10 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 `--strict` 現在涵蓋整個 `src/config_manager/`，逐檔清乾淨後零錯誤，並以突變檢查確認過
 它真的在看那兩層（`io/scan.py` 一個未標註的函式、`api/routes.py` 一個回傳型別不符，各自被擋下）。
 
-**`web/` 更徹底：連規格都沒有。** T11 沒有執行通路，頁面裡的 `data-testid` 是給未來的測試
-準備的，沒有測試在用它們。這與上面兩層是不同的缺口——那兩層是「有規格、沒數字」，這一層是
-「兩者皆無」。追蹤於 #99，理由同樣是「還沒做」而不是「不用做」。
+**`web/` 曾經更徹底：連規格都沒有。** T11 那時沒有執行通路，頁面裡的 `data-testid` 是給未來
+的測試準備的，沒有測試在用它們。#97 補上了那條通路：一個真的 Chromium 打開真的 `index.html`，
+對真的 FastAPI 服務發真的 fetch，覆蓋率由 V8 的 precise coverage 給出（不引入 npm 工具鏈
+——PDF §3.3 說前端不需框架也不需打包流程）。18 則規格，行覆蓋率 98.82%。
 
 **為什麼這裡只記錄、不順手修。** 把 `io/` 與 `api/` 加進 coverage 的 `source`，85 的下限會
 立刻落在一組覆蓋率遠低於 `core/` 的模組上，門檻在一個與本次審計無關的地方爆掉；為了讓它過而
