@@ -32,11 +32,11 @@ die() {
 # 它被提交進版控，不是留在工作區未追蹤。io/git.record 開頭是 `git add -A`，
 # 未追蹤的種子會被掃進「剛好第一個被記錄的使用者變更」裡——那筆紀錄於是宣稱了
 # 它其實沒有包含的改動。
-seed_config_list() {
-  local repo="$1"
-  local list="${repo}/config-list.toml"
-
-  cat >"${list}" <<'TOML' || die "could not write ${list}"
+# 種子內容單獨一支，讓寫出那一步可以把失敗原因捕捉起來。heredoc 與錯誤捕捉寫在
+# 同一個指令上時，捕不捕得到由重導向的先後順序決定——那不是應該靠讀者自己看出來
+# 的東西。
+seed_toml() {
+  cat <<'TOML'
 list_version = 1
 
 # 未個別指定時套用的預設權限
@@ -45,21 +45,43 @@ owner = "root"
 group = "root"
 mode = "0644"
 TOML
+}
+
+seed_config_list() {
+  local repo="$1"
+  local list="${repo}/config-list.toml"
+  local output
+
+  # 底層工具說了什麼要一起帶出來。「could not write」只說了做不到——權限不足、
+  # 磁碟滿、路徑被別的東西佔住，三者的下一步完全不同，而操作者從那句話裡分辨
+  # 不出來（設計 §0.4 三要素）。
+  if ! output="$({ seed_toml >"${list}"; } 2>&1)"; then
+    die "could not write the initial config list at ${list}:" \
+      "${output:-no error output from the shell};" \
+      "next: check that the config-repo mount is writable by the user running this" \
+      "container and that its volume is not full or mounted read-only"
+  fi
 
   # 用 -c 而不用 `git config`：這個身分只屬於這一筆 commit，不屬於操作者之後
   # 會用到的那個 repo。
-  git -C "${repo}" add config-list.toml \
+  if ! output="$({ git -C "${repo}" add config-list.toml \
     && git -C "${repo}" \
       -c user.name="config_manager" \
       -c user.email="config_manager@localhost" \
-      commit --quiet -m "chore(repo): 初始化空的 config 清單檔" \
-    || die "could not commit the initial ${list}"
+      commit --quiet -m "chore(repo): 初始化空的 config 清單檔"; } 2>&1)"; then
+    die "could not commit the initial config list at ${list}:" \
+      "${output:-no error output from git};" \
+      "next: check that ${repo}/.git is writable and not locked by another process," \
+      "then either commit ${list} by hand or delete it before restarting --" \
+      "left untracked, the first 'git add -A' sweeps it into an unrelated change record"
+  fi
 
   printf 'entrypoint: seeded an empty config list at %s\n' "${list}"
 }
 
 check_backend_preconditions() {
   local repo="${CM_CONFIG_REPO:-}"
+  local output
 
   [[ -n "${repo}" ]] || die "CM_CONFIG_REPO is unset; the backend has no source repo to serve"
   [[ -d "${repo}" ]] || die "config-repo mount ${repo} does not exist (is the volume mounted?)"
@@ -81,7 +103,15 @@ check_backend_preconditions() {
     # 空目錄的錯誤設定，在這裡分辨不出來——所以印出解析後的絕對路徑，讓讀到的人
     # 自己認出這是不是他要的位置，而不是假裝這個差別在這裡就知道得了。
     printf 'entrypoint: initialising empty config-repo at %s\n' "$(cd "${repo}" && pwd)"
-    git init --quiet --initial-branch=main "${repo}" || die "git init failed at ${repo}"
+    # git 自己的失敗原因要帶出來：權限、磁碟滿、路徑被佔住，看起來都一樣是
+    # 「git init failed」，但下一步不同（設計 §0.4 三要素）。
+    if ! output="$(git init --quiet --initial-branch=main "${repo}" 2>&1)"; then
+      die "could not initialise a git repo at ${repo}:" \
+        "${output:-no error output from git};" \
+        "next: check that the mount is writable by the user running this container" \
+        "and is not mounted read-only, or run 'git init --initial-branch=main' on it" \
+        "yourself before starting the container"
+    fi
     seed_config_list "${repo}"
     # 刻意往下掉到 check_config_list。種子複製了 core/models 宣告的形狀，而這裡
     # 正是讓那份複製不會靜默出錯的機制：一份已經不再合法的種子會在這裡被擋下，
