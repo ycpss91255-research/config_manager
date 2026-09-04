@@ -1,0 +1,79 @@
+# syntax=docker/dockerfile:1
+#
+# The one image every check runs in -- locally and in CI.
+#
+# It exists because the host is not evidence about the project. On the
+# machine this repo was scaffolded on, Python was 3.10 and pytest 6.2.5, so
+# pyproject.toml's `pythonpath` was silently ignored by a pytest too old to
+# know the option; the #56 `io` collision showed a different symptom than it
+# does on 3.11; and hadolint existed only in CI, where the pipeline went red
+# six times in a row while every local run reported clean.
+#
+# Making a missing tool abort instead of pass (fix(ci) 458b221) turned a
+# silent skip into a loud one. A loud skip is still a check that did not
+# run. This is the actual fix: one environment, two callers.
+#
+# Kept as its own Dockerfile rather than a stage in the application image
+# because the two have opposite goals -- that one ships as little as
+# possible, this one carries every linter -- and a `-test` stage of the app
+# image would drag the toolchain into the app's build graph.
+
+FROM python:3.11-slim-bookworm
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG HADOLINT_VERSION=2.12.0
+ARG ACTIONLINT_VERSION=1.7.7
+# Mirrored for the same reason base carries APT_MIRROR_UBUNTU: deb.debian.org
+# is a Fastly anycast address unreachable from the networks this repo is
+# developed on, and an image that only builds on a GitHub runner cannot be
+# the image everyone runs their checks in -- which is this file's entire
+# job. `--build-arg APT_MIRROR=deb.debian.org` restores upstream.
+#
+# This mirror specifically, because it carries BOTH /debian and
+# /debian-security. The nearer ftp.tw.debian.org and free.nchc.org.tw carry
+# only the former, and rewriting just the main archive leaves the security
+# suite pointing at the host that was unreachable to begin with -- an apt
+# update that still fails, one line further down.
+ARG APT_MIRROR="mirror.twds.com.tw"
+
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+# bats: the smoke specs. shellcheck: 23 shell scripts. git: lint_commit
+# reads history, and the pytest suite drives real repositories.
+RUN sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bats \
+        ca-certificates \
+        curl \
+        git \
+        shellcheck \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pinned, not "latest": a linter that changes under you turns an unrelated
+# commit red, and the first thing anyone does with an inexplicable red is
+# stop trusting the gate.
+RUN curl -fsSL -o /usr/local/bin/hadolint \
+        "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-Linux-x86_64" \
+    && chmod +x /usr/local/bin/hadolint \
+    && curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+        | tar -xz -C /usr/local/bin actionlint \
+    && chmod +x /usr/local/bin/actionlint
+
+COPY config/pip/requirements-dev.txt /tmp/requirements-dev.txt
+COPY config/pip/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt \
+    && rm -f /tmp/requirements-dev.txt /tmp/requirements.txt
+
+# The repo is bind-mounted from a host whose uid differs from root's, and
+# git refuses to read a tree it thinks belongs to someone else. This
+# container is a throwaway that exists to read exactly one repository, so
+# the ownership check protects nothing here while breaking lint_commit.
+RUN git config --global --add safe.directory '*'
+
+# How script/test.sh knows it has already arrived and must not recurse.
+ENV CM_IN_TEST_IMAGE=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /repo
+CMD ["./script/test.sh"]

@@ -2,14 +2,16 @@
 # (design appendix A.1: adopting the worker fan-out means adopting the
 # template's release machinery with it, and this repo publishes no image).
 #
-# LOCAL == CI. The lint job runs `./script/test.sh --lint`, the same entry
-# `just test lint` runs, rather than restating each tool as its own YAML
-# step. base learned this the hard way and wrote it down in
-# script/test/drivers/hadolint.sh: its CI had a hadolint step that `just
-# test` did not run, so a Dockerfile change passed locally and failed in CI.
-# This repo reproduced that exact failure within a day -- six pushes in a
-# row went red on a hadolint finding no local run could see. One source of
-# truth, two callers.
+# LOCAL == CI, and now literally so: the checks job runs ./script/test.sh,
+# which builds dockerfile/Dockerfile.test-tools and runs every check inside
+# it -- the same image, by the same path, that `just test` uses on a
+# developer's machine. Nothing here installs a tool, so nothing here can
+# drift from what a developer has.
+#
+# The history: CI restated each linter as its own YAML step, `just test
+# lint` skipped a tool the host lacked, and the pipeline went red six times
+# in a row while every local run reported clean. base wrote the same lesson
+# down in script/test/drivers/hadolint.sh. One environment, two callers.
 
 name: CI
 
@@ -24,8 +26,9 @@ permissions:
 
 jobs:
   commit-message:
-    # Only the commits this PR adds. Existing history predates the rule and
-    # rewriting it would mean force-pushing branches other people hold.
+    # Only the commits this pull request adds; history predates the rule.
+    # Runs outside the image: it needs git and nothing else, and building an
+    # image to run one git command would be the slowest possible way to do it.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -34,36 +37,17 @@ jobs:
           fetch-depth: 0
       - run: ./script/lint_commit.sh "origin/${{ github.base_ref }}"
 
-  lint:
+  checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
         with:
-          python-version: '3.11'
-      - run: pip install -r config/pip/requirements-dev.txt
-      - name: Install shellcheck, hadolint and actionlint
-        run: |
-          sudo apt-get update && sudo apt-get install -y shellcheck
-          sudo curl -fsSL -o /usr/local/bin/hadolint \
-            https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
-          curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
-            | sudo tar -xz -C /usr/local/bin actionlint
-          sudo chmod +x /usr/local/bin/hadolint /usr/local/bin/actionlint
-      # Not CM_LINT_ALLOW_MISSING: in CI a missing tool must fail, never warn.
-      - run: ./script/test.sh --lint
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.11'
-      - run: pip install -r config/pip/requirements-dev.txt
-      # The 85% floor on src/config_manager/core lives in pyproject.toml, so this fails on
-      # coverage without the threshold being restated here.
-      - run: pytest test/pytest --cov=src/config_manager/core --cov-report=term-missing
+          # lint_commit reads history; a shallow clone has none.
+          fetch-depth: 0
+      # Every linter, every test level, and the coverage floor -- all inside
+      # the test image. The 85% floor on src/config_manager/core lives in
+      # pyproject.toml, so it is not restated here either.
+      - run: ./script/test.sh
 
   build:
     runs-on: ubuntu-latest
@@ -71,28 +55,26 @@ jobs:
       - uses: actions/checkout@v7
       # runtime-test is FROM runtime and runs the bats smoke specs during
       # its own build, so a green build means the deployable artifact came
-      # up -- not merely that it compiled.
+      # up -- not merely that it compiled. Separate from `checks` because it
+      # builds the application image, not the tooling one.
       - run: docker build --target runtime-test -t config_manager:runtime-test .
 
   ci-rollup:
     # The single required status check, mirroring base. Branch protection
     # names this one job, so adding a job above never means editing the
-    # protection rule -- and a job that is added but left out of `needs`
-    # here is the one thing this cannot catch, which is why the list is
-    # short enough to read.
+    # protection rule.
     #
-    # `always()` plus an explicit result test: without it, a skipped or
-    # cancelled dependency reads as success and the gate opens on a run
-    # that never checked anything.
+    # `always()` plus an explicit result test: without it a skipped or
+    # cancelled dependency reads as success and the gate opens on a run that
+    # never checked anything.
     if: always()
-    needs: [commit-message, lint, test, build]
+    needs: [commit-message, checks, build]
     runs-on: ubuntu-latest
     steps:
       - name: Check that every job passed
         # Through env, not interpolated into the script: an expression
-        # spliced straight into `run` is a shell-injection seam, and
-        # Actions expressions take single quotes only -- which is what
-        # broke this file the first time it was written.
+        # spliced straight into `run` is a shell-injection seam, and Actions
+        # expressions take single quotes only.
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |

@@ -13,6 +13,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly REPO_ROOT
+readonly TEST_IMAGE="config_manager-test-tools:local"
+readonly TEST_DOCKERFILE="dockerfile/Dockerfile.test-tools"
 
 usage() {
   cat <<'USAGE'
@@ -24,7 +26,43 @@ Usage: script/test.sh [--level <name>] [--lint [<tool>]] [--file <path>] [--filt
                       ruff | mypy | pylint | shellcheck | hadolint | actionlint | commit | adr
   --file <path>       a single spec file
   --filter <regex>    specs matching a pattern
+
+Runs inside dockerfile/Dockerfile.test-tools, which carries every checker.
+The host is not evidence about the project: its Python, its pytest and its
+absent linters have each produced a wrong answer here before.
+
+  CM_TEST_LOCAL=1     run on this host instead. Whatever is missing is
+                      named and skipped -- a loud skip, still not a check.
 USAGE
+}
+
+# Re-run this script inside the image that has the tools, unless we are
+# already in it. One environment, two callers: `just test` and CI take the
+# same path, so a check cannot pass in one and fail in the other.
+dispatch_to_container() {
+  if ! command -v docker >/dev/null 2>&1; then
+    printf 'test.sh: docker is not installed, so the checks cannot run in their image.\n' >&2
+    printf 'test.sh: install docker, or set CM_TEST_LOCAL=1 to run on this host with whatever it has.\n' >&2
+    exit 1
+  fi
+
+  # Cheap when cached; the layers only rebuild when the Dockerfile or the
+  # pinned requirements actually change.
+  printf 'test.sh: building %s\n' "${TEST_IMAGE}" >&2
+  local -a _build=(docker build --quiet -f "${REPO_ROOT}/${TEST_DOCKERFILE}" -t "${TEST_IMAGE}")
+  # The image defaults to a Taiwan Debian mirror because deb.debian.org is
+  # unreachable from the networks this repo is developed on. Somewhere with
+  # a different answer sets CM_APT_MIRROR rather than editing the file.
+  [[ -n "${CM_APT_MIRROR:-}" ]] && _build+=(--build-arg "APT_MIRROR=${CM_APT_MIRROR}")
+  "${_build[@]}" "${REPO_ROOT}" >/dev/null
+
+  # The repo is mounted rather than copied so a failing check names a path
+  # that exists on the host and an edit does not need a rebuild.
+  exec docker run --rm \
+    --volume "${REPO_ROOT}:/repo" \
+    --workdir /repo \
+    "${TEST_IMAGE}" \
+    ./script/test.sh "$@"
 }
 
 # A linter whose tool is absent must NOT pass quietly. "lint passed" has to
@@ -82,6 +120,12 @@ run_lint() {
 main() {
   cd "${REPO_ROOT}"
 
+  case "${1:-}" in -h|--help) usage; return 0 ;; esac
+
+  if [[ "${CM_IN_TEST_IMAGE:-}" != "1" && "${CM_TEST_LOCAL:-}" != "1" ]]; then
+    dispatch_to_container "$@"
+  fi
+
   if (( $# == 0 )); then
     run_lint all
     exec pytest test/pytest --cov=src/config_manager/core --cov-report=term-missing
@@ -92,7 +136,6 @@ main() {
     --level) shift; [[ $# -gt 0 ]] || { usage >&2; exit 2; }; exec pytest "test/pytest/$1" ;;
     --file) shift; [[ $# -gt 0 ]] || { usage >&2; exit 2; }; exec pytest "$1" ;;
     --filter) shift; [[ $# -gt 0 ]] || { usage >&2; exit 2; }; exec pytest test/pytest -k "$1" ;;
-    -h|--help) usage ;;
     *) printf 'test.sh: unknown argument %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 }
