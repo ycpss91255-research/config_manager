@@ -23,7 +23,8 @@
 **測不了全部**，所以事先議定測試介面，是讓測試力氣落在關鍵路徑與複雜邏輯上、
 而不是散在每個邊界案例上的方法。
 
-編號 `T1`–`T18` 為單元／整合／系統層，`A1`–`A6` 為驗收層。
+編號 `T1`–`T21` 為單元／整合／系統層（`T19` 是工具層，觀察 repo 自身的守門腳本），
+`A1`–`A6` 為驗收層。
 
 ---
 
@@ -609,8 +610,11 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 不會因規則消失而轉紅的規格，測的不是那條規則。這一項不自動化，
 在 PR 描述裡記下做過哪些突變與結果。
 
-**已知未涵蓋**：`script/test.sh` 的「缺工具不得靜默通過」保證（#72），
-以及其餘 shell 腳本（#74）。兩者都不是刻意留空，是還沒做。
+**已知未涵蓋**：`script/test.sh` 的「缺工具不得靜默通過」保證（#72）。
+這**不是**刻意留空，是還沒做——`test.sh` 有真正的分支邏輯，而那條保證已經失效過一次。
+
+其餘 21 支 shell 腳本（五支容器 wrapper、`hooks/dispatch.sh`、14 支 hook、`local/cfg/cfg.sh`）
+在 #74 逐支盤點後**轉為刻意的空格**，理由記在「覆蓋率審計」的該節，不再列為待辦。
 
 ---
 
@@ -620,34 +624,55 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 
 ### 模組 → 測試介面
 
-| 模組 | 測試介面 |
-|---|---|
-| `core/config_list` | T1（結構）＋ T15（來源存在性） |
-| `core/state` | T2 |
-| `core/validate` | T3 |
-| `core/whitelist` | T4（正規化比對）＋ T8（符號連結逃逸） |
-| `core/identity` | T5 |
-| `core/inference` | T12 |
-| `core/index` | T14 |
-| `core/attributes` | T16 |
-| `core/roles` | T17 |
-| `core/drafts` | T18 |
-| `core/models` | 無獨立測試介面——資料模型本身無行為，經 T1 驗證 |
-| `io/parsers` | T6 |
-| `io/git` | T7 |
-| `io/writer` | T8 |
-| `io/preflight` | T15 |
-| `io/digest` | T20 |
-| `io/scan` | T21 |
-| `api/routes` | T9 |
-| `api/session` | T13（生命週期）＋ T9（HTTP 層行為） |
-| `api/cli` | T10 |
-| `script/entrypoint.sh` | T15 |
-| `script/lint_adr.sh` | T19 |
-| `script/lint_commit.sh` | T19 |
-| `script/lint_paths.sh` | T19 |
-| `script/lint_portability.sh` | T19 |
-| `src/web` | T11 |
+模組路徑以 `src/config_manager/` 為根——全部在單一頂層套件底下（ADR-00000026、#62），
+`script/` 則以 repo 根為準。
+
+**「狀態」欄是為了讓這張表不會被讀成「全部都已覆蓋」。** 未落地的模組，其測試介面是
+**預定的落點**，不是既有的證據；把兩者混在同一欄，表就會在最需要它誠實的時候說謊。
+
+| 模組 | 測試介面 | 狀態 |
+|---|---|---|
+| `core/config_list` | T1（結構）＋ T15（來源存在性） | 已落地 |
+| `core/errors` | T1——六個具名例外於載入／寫回時逐一被斷言 | 已落地 |
+| `core/state` | T2 | 已落地 |
+| `core/identity` | T5 | 已落地 |
+| `core/index` | T14 | 已落地 |
+| `core/models` | 無獨立測試介面——見「刻意的空格」 | 已落地 |
+| `core/validate` | T3 | 未落地（#16） |
+| `core/whitelist` | T4（正規化比對）＋ T8（符號連結逃逸） | 未落地（#11） |
+| `core/inference` | T12 | 未落地（#9） |
+| `core/attributes` | T16 | 未落地 |
+| `core/roles` | T17 | 未落地 |
+| `core/drafts` | T18 | 未落地（#18） |
+| `io/writer` | T8 | 已落地 |
+| `io/git` | T7 | 已落地 |
+| `io/preflight` | T15 | 已落地 |
+| `io/digest` | T20 | 已落地 |
+| `io/scan` | T21 | 已落地 |
+| `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言 | 已落地 |
+| `io/parsers` | T6 | 未落地（#17） |
+| `api/routes` | T9 | 已落地（`GET /api/configs` 與 CORS 中介層） |
+| `api/cli` | T10 | 已落地（`serve` 與 `list`） |
+| `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 未落地（#33） |
+| `web/` | T11 | 已落地，但 **T11 沒有執行通路——網頁行為零覆蓋（#99）** |
+| 四支 `__init__.py` | 無——見「刻意的空格」 | 已落地 |
+| `script/entrypoint.sh` | T15 | 已落地 |
+| `script/lint_adr.sh` | T19 | 已落地 |
+| `script/lint_commit.sh` | T19 | 已落地 |
+| `script/lint_paths.sh` | T19 | 已落地 |
+| `script/lint_portability.sh` | T19 | 已落地 |
+| `script/test.sh` | T19——**已知未涵蓋（#72），不是刻意留空** | 已落地 |
+| `script/{build,run,exec,stop,prune}.sh` | 無——見「刻意的空格」 | 已落地 |
+| `script/hooks/dispatch.sh` | 無——見「刻意的空格」 | 已落地 |
+| `script/hooks/{pre,post}/*.sh`（14 支） | 無——見「刻意的空格」 | 已落地 |
+| `script/local/cfg/cfg.sh` | 無——見「刻意的空格」 | 已落地 |
+
+這張表涵蓋 `find src -name '*.py'` 的 17 個檔案與 `find script -name '*.sh'` 的 27 支腳本，
+逐一比對過（#74）。**新增一個模組或一支腳本時，這裡要一起加一列**——沒有一列的檔案，
+既不算被覆蓋，也不算刻意留空。
+
+盤點於 #74 完成時的 repo 狀態；其後合併的 `io/scan`（T21）、`web/index.html`、
+`api/cli` 的 `list` 已補入。
 
 ### 流程 → 測試介面
 
@@ -670,7 +695,11 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 會寫出的流程（修改與進版、退版、偏離偵測、偏離處置）整合層已有的 T8。納管／白名單維護
 不寫出目標，故不經 T8 的寫時守門，其路徑安全由 T4 正規化比對與 T1 的 `..` 拒絕負責。
 
-### 四個刻意的空格
+### 刻意的空格
+
+**刻意留空與漏掉的差別在於有沒有寫下理由。** 沒有理由的空格就是漏掉。
+因此本節不寫「無需測試」這種結論，每一列都寫出**行為在哪裡被觀察**，
+或**為什麼那裡沒有行為可觀察**；有代價的，代價也寫出來。
 
 | 沒有測試介面的東西 | 為何可以沒有 |
 |---|---|
@@ -678,8 +707,43 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | 模式判定（開發／部署） | 讀設定回傳一個列舉值，無邏輯可測。其**效果**在 T13 與 T11 被驗證 |
 | 三層驗證的「層」本身 | 層是組織方式不是行為。各層的實際檢查在 T3 逐項驗證 |
 | 「未納管」的判定 | 定義即「不在清單檔中」，由清單成員查詢直接得出、無分支邏輯可測。其**效果**在 T14（解除納管後移除）與 T11 被觀察 |
+| 四支 `__init__.py` | 套件標記。三支只有 docstring，`core/` 那支是空檔案——沒有任何可執行的行為。它們該不該存在由 ADR-00000026 決定，而那條決定的證據是「直譯器起得來」，每一次執行都在驗它 |
+| `script/{build,run,exec,stop,prune}.sh` | 薄 wrapper：行為即把參數轉給 `docker compose`。它們是**開發者的操作工具，不是交付物**，且不在任何 CI 路徑上——CI 直接 `docker build --target runtime-test`，不經過 `build.sh`。失效在下一次手動使用時立刻可見，且動不到來源 repo 或目標檔案。**代價**：`--stage`／`--all`／未知參數這幾條解析路徑因此沒有證據 |
+| `script/hooks/dispatch.sh` | 七行、一個函式，且 ADR-00000023 已決定模板導入時整支被取代——為一個即將被丟掉的實作寫規格，測到的是實作而不是行為。**代價寫明**：「pre-hook 失敗必須中止操作」這條屬於不變式 2 的保證目前沒有證據，**導入模板時必須重新確認**，因為那正是它靜默失效不會被發現的時刻 |
+| `script/hooks/pre/run.sh` | 它檢查的是**主機**上的掛載點在不在，而本專案所有檢查都在容器內跑（ADR-00000027）。容器裡沒有那個主機目錄可以觀察——要測它就得替「主機不是這個專案的證據」開一個例外，那個代價比這支七行守衛的風險大 |
+| `script/hooks/post/build.sh` | 行為即觸發 `runtime-test` 階段的建置。**那個階段本身就是被觀察的位置**：smoke（`test/bats/smoke/`）與 T9（`test/bats/runtime/`）都在它建置時執行，CI 的 build job 也直接建同一個階段 |
+| 其餘 12 支 `script/hooks/{pre,post}/*.sh` | 刻意的空殼（ADR-00000023）：檔案裡只有說明契約的註解，沒有可執行的行為。**空檔案沒有行為可觀察**；它們該不該存在、以及哪幾支永遠不會被呼叫，由 ADR-00000023 記錄並寫在各自的檔案裡，不由測試決定 |
+| `script/local/cfg/cfg.sh` | 行為即把 `just cfg <verb>` 轉給 `python -m config_manager.api.cli`。被轉呼叫的那一端落在 T10 |
 
-**刻意留空與漏掉的差別在於有沒有寫下理由。** 沒有理由的空格就是漏掉。
+### 已知的量測缺口：覆蓋率與型別檢查都只看 core
+
+上面兩張表講的是「行為有沒有被觀察」。這一節講的是另一件事：**自動化的量測本身涵蓋到哪裡。**
+兩者不同，而把它們混為一談會讓「有整合測試」被誤讀成「有數字在守」。
+
+現況（`pyproject.toml`，不是這份文件；閾值寫在能被檢查的地方）：
+
+| 量測 | 設定 | 範圍 |
+|---|---|---|
+| 覆蓋率 | `[tool.coverage.run] source = ["src/config_manager/core"]`，`fail_under = 85` | 只有 `core/` |
+| 型別 | `[tool.mypy] files = ["src/config_manager/core"]`，`strict = true` | 只有 `core/` |
+
+**影響：`io/` 與 `api/` 兩者皆無。** `io/writer`、`io/git`、`io/preflight`、`io/digest`、
+`io/scan` 確實各有整合層規格（T8／T7／T15／T20／T21），`api/routes` 有 T9、`api/cli` 有 T10
+——但**沒有任何數字會在它們新增的分支沒被執行時轉紅**，也沒有 `--strict` 擋住那兩層的型別錯誤。
+
+**`web/` 更徹底：連規格都沒有。** T11 沒有執行通路，頁面裡的 `data-testid` 是給未來的測試
+準備的，沒有測試在用它們。這與上面兩層是不同的缺口——那兩層是「有規格、沒數字」，這一層是
+「兩者皆無」。追蹤於 #99，理由同樣是「還沒做」而不是「不用做」。
+
+**為什麼這裡只記錄、不順手修。** 把 `io/` 與 `api/` 加進 coverage 的 `source`，85 的下限會
+立刻落在一組覆蓋率遠低於 `core/` 的模組上，門檻在一個與本次審計無關的地方爆掉；為了讓它過而
+把下限調低，等於連 `core/` 的保證一起調弱——**一個門檻同時守兩個標準不同的區域，結果是守住
+比較鬆的那個。** mypy 同理：加進 `files` 是一行設定，但後面跟著一批要逐檔處理的 `--strict`
+錯誤，那是實作工作，不是文件工作。
+
+**要修的話怎麼修**：兩件事分開，各自一個 issue，各自把數字釘在它守得住的地方——覆蓋率用
+per-module 的下限（讓 `core/` 維持 85，`io/`／`api/` 各自訂一個現況擋得住、之後只能往上調的值），
+mypy 先把 `io/` 與 `api/` 納入 `files` 再逐檔清乾淨。追蹤於 #97。
 
 ---
 
