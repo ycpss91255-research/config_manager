@@ -38,7 +38,7 @@ just test filter <regex>     # 符合樣式的 spec
 | 工具 | 擋什麼 | 範圍 |
 |---|---|---|
 | `ruff` | 巢狀深度、循環複雜度、函式長度、參數個數、禁止吞錯誤 | `src` 與 `test` |
-| `mypy --strict` | 型別錯誤成本最高、且無 I/O 可躲的一層 | **只有 `src/config_manager/core/`** |
+| `mypy --strict` | 型別錯誤成本最高、且無 I/O 可躲的一層 | `src/config_manager/`——PDF §0.4 只要求 `core/`，#97 加嚴到 `core`／`io`／`api` |
 | `pylint` | `ruff` 未涵蓋的設計層面檢查 | `src` |
 | `hadolint` | Dockerfile | — |
 

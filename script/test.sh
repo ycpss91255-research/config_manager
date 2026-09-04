@@ -143,7 +143,7 @@ run_lint() {
 
   case "${tool}" in
     ruff|all) require_tool ruff && ruff check src test ;;&
-    mypy|all) require_tool mypy && mypy --strict src/config_manager/core ;;&
+    mypy|all) require_tool mypy && mypy --strict src/config_manager ;;&
     pylint|all) require_tool pylint && pylint src ;;&
     shellcheck|all)
       if require_tool shellcheck; then

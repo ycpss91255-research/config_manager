@@ -28,8 +28,11 @@ max-statements = 50
 max-args = 5
 
 [tool.mypy]
-# 只對 core/ 做完整覆蓋：那是型別錯誤代價最高的一層，而且沒有 I/O 可以躲在後面。
-files = ["src/config_manager/core"]
+# PDF §0.4 只要求 core/：型別錯誤代價最高、而且沒有 I/O 可以躲在後面的那一層。
+# 這裡加嚴到整個套件（core／io／api），與覆蓋率同一個理由——那幾層也是主要架構
+# （#97）。寫成套件根而不是逐層列舉，是為了讓下一個新增的層不必記得回來加一行：
+# 漏掉一層的失敗方式是安靜的。
+files = ["src/config_manager"]
 strict = true
 
 [tool.pylint.format]

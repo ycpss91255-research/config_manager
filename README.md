@@ -115,7 +115,7 @@ CI 呼叫的是同一支 `./script/test.sh`，不安裝任何工具。**一份�
 | 檢查 | 擋什麼 |
 |---|---|
 | `ruff` | 巢狀深度、循環複雜度、函式長度、參數個數、禁止吞錯誤 |
-| `mypy --strict` | `src/config_manager/core/` 全覆蓋 |
+| `mypy --strict` | `src/config_manager/` 全覆蓋（`core`／`io`／`api`） |
 | `pylint` | ruff 未涵蓋的設計層面 |
 | `shellcheck` | 全部 shell 腳本 |
 | `hadolint` | Dockerfile |
