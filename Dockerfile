@@ -25,6 +25,11 @@
 # a machine whose operator has a different one.
 
 ARG BASE_IMAGE="python:3.11-slim-bookworm"
+# Empty unless the caller pins a digest. Recorded as-is rather than derived,
+# because the expression that strips a digest from a reference returns the
+# whole reference when there is none to strip -- which would put a tag in the
+# field OCI reserves for a digest. Empty is a truthful "not recorded".
+ARG BASE_IMAGE_DIGEST=""
 
 # ── sys ─────────────────────────────────────────────────────────────────────
 FROM ${BASE_IMAGE} AS sys
@@ -35,6 +40,8 @@ ARG USER_GROUP="user"
 ARG USER_GID=1000
 ARG TZ="Asia/Taipei"
 ARG DEBIAN_FRONTEND=noninteractive
+ARG BASE_IMAGE
+ARG BASE_IMAGE_DIGEST
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
@@ -48,6 +55,29 @@ RUN apt-get update \
     && ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
     && echo "${TZ}" > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
+
+# Provenance, and the reason .hadolint.yaml can ignore DL3008 without the
+# ignore naming nothing. Package versions are NOT pinned -- an image that
+# cannot take a security update without a repo release is worse for its
+# audience than one that drifts -- so the drift is recorded instead of
+# prevented: base-image.env says what this was built FROM, packages.txt says
+# exactly which versions landed, rewritten after every apt layer. Two images
+# that behave differently can then be diffed down to the version that changed.
+#
+# This is what the tag alone cannot give: python:3.11-slim-bookworm is a
+# moving tag, so "the base is pinned" is not a control at all.
+RUN mkdir -p /usr/local/share/config_manager \
+    && { \
+      echo "base_image_ref=${BASE_IMAGE}"; \
+      echo "base_image_pin=$([[ -n "${BASE_IMAGE_DIGEST}" ]] && echo digest || echo none)"; \
+      echo "base_image_digest=${BASE_IMAGE_DIGEST}"; \
+      sed -n 's/^PRETTY_NAME=/base_os=/p' /etc/os-release; \
+    } > /usr/local/share/config_manager/base-image.env \
+    && dpkg-query -W > /usr/local/share/config_manager/packages.txt
+
+# Readable with `docker inspect`, without unpacking the image.
+LABEL org.opencontainers.image.base.name="${BASE_IMAGE}" \
+      org.opencontainers.image.base.digest="${BASE_IMAGE_DIGEST}"
 
 # A non-root service account. The backend writes to the config-repo checkout
 # and to target paths; it must never do so as root (PRD invariant 4 -- when
@@ -74,7 +104,8 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         git \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && dpkg-query -W > /usr/local/share/config_manager/packages.txt
 
 ENV APP_ROOT="/opt/config_manager" \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -97,11 +128,18 @@ RUN apt-get update \
         curl \
         less \
         vim-tiny \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && dpkg-query -W > /usr/local/share/config_manager/packages.txt
 
-COPY config/pip/requirements-dev.txt /tmp/requirements-dev.txt
+# Both files: requirements-dev.txt opens with `-r requirements.txt`, so pip
+# resolves that path relative to it and needs the sibling present. Copying only
+# the dev file failed with "Could not open requirements file" -- and did so
+# unnoticed, because CI builds runtime-test, whose chain runs devel-base ->
+# runtime and never enters this stage. The stage developers use every day was
+# the one stage nothing built.
+COPY config/pip/requirements.txt config/pip/requirements-dev.txt /tmp/
 RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt \
-    && rm -f /tmp/requirements-dev.txt
+    && rm -f /tmp/requirements-dev.txt /tmp/requirements.txt
 
 COPY config/shell/bashrc "/home/${USER_NAME}/.bashrc"
 COPY script/entrypoint.sh /entrypoint.sh

@@ -5,9 +5,19 @@ ignored:
   # Pin versions in apt-get install. Not pinned here for the same reason the
   # template does not pin: an image that cannot take a security update
   # without a repo release is worse for its audience than one that drifts.
-  # The compensating control is that BASE_IMAGE is pinned to a specific
-  # Debian-derived tag above, so the package set moves with a base bump
-  # rather than on an arbitrary rebuild.
+  #
+  # The compensating control, without which this ignore would be the kind
+  # that names nothing: the drift is RECORDED. Every image writes
+  # /usr/local/share/config_manager/packages.txt (every package and its exact
+  # version, rewritten after each apt layer) and base-image.env (the base
+  # reference, its digest where one was given, and the base OS), plus the OCI
+  # base.name / base.digest labels. Two images that behave differently can be
+  # diffed down to the version that changed.
+  #
+  # An earlier revision of this file claimed the control was that BASE_IMAGE
+  # carries a tag. That was not a control: python:3.11-slim-bookworm is a
+  # MOVING tag, so the package set does move on an arbitrary rebuild -- which
+  # is exactly what the claim denied.
   - DL3008
   # Pin versions in pip install. The pins live in config/pip/*.txt, which is
   # where a reader looks for them; restating them in the Dockerfile would
@@ -22,6 +32,9 @@ ignored:
   # explicitly tagged (python:3.11-slim-bookworm). Overriding BASE_IMAGE is
   # a deliberate act by whoever passes --build-arg, and an untagged value
   # passed there is their choice, not a drift this repo introduced.
-  # test/lint/hadolint/ holds the fixture proving the rule still fires on a
-  # genuinely untagged literal FROM.
+  #
+  # An earlier revision said a fixture in test/lint/hadolint/ proved the rule
+  # still fires on a genuinely untagged literal FROM. No such fixture exists;
+  # that directory holds a .gitkeep. Tracked in #74 -- until it exists, this
+  # ignore rests on reading the Dockerfile, not on a check.
   - DL3006
