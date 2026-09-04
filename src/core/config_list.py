@@ -5,7 +5,7 @@
 
 import re
 from pathlib import PurePosixPath
-from typing import Iterable
+from collections.abc import Iterable
 
 import tomlkit
 
