@@ -3,7 +3,7 @@
 # template's release machinery with it, and this repo publishes no image).
 #
 # LOCAL == CI, and now literally so: the checks job runs ./script/test.sh,
-# which builds dockerfile/Dockerfile.test-tools and runs every check inside
+# which builds docker/Dockerfile.test-tools and runs every check inside
 # it -- the same image, by the same path, that `just test` uses on a
 # developer's machine. Nothing here installs a tool, so nothing here can
 # drift from what a developer has.

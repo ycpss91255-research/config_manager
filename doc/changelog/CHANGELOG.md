@@ -90,7 +90,7 @@ Versions follow the milestone ladder in the design document §8.
   an invalid expression, so GitHub rejects the file, runs zero jobs, and
   reports a run failure with no job to open. That is exactly how the
   `ci-rollup` job failed on its first push.
-- `dockerfile/Dockerfile.test-tools`: one image carrying every checker
+- `docker/Dockerfile.test-tools`: one image carrying every checker
   (Python 3.11, ruff, mypy, pylint, pytest, shellcheck, hadolint, actionlint,
   bats, git). `script/test.sh` dispatches into it unless already inside, and
   CI calls the same script rather than installing anything, so a check

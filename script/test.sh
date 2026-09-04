@@ -14,7 +14,7 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly REPO_ROOT
 readonly TEST_IMAGE="config_manager-test-tools:local"
-readonly TEST_DOCKERFILE="dockerfile/Dockerfile.test-tools"
+readonly TEST_DOCKERFILE="docker/Dockerfile.test-tools"
 
 usage() {
   cat <<'USAGE'
@@ -23,11 +23,11 @@ Usage: script/test.sh [--level <name>] [--lint [<tool>]] [--file <path>] [--filt
   (no arguments)      lint + all levels + coverage
   --level <name>      unit | integration | system | acceptance
   --lint [<tool>]     all linters, or one of:
-                      ruff | mypy | pylint | shellcheck | hadolint | actionlint | commit | adr
+                      ruff | mypy | pylint | shellcheck | hadolint | actionlint | commit | adr | paths
   --file <path>       a single spec file
   --filter <regex>    specs matching a pattern
 
-Runs inside dockerfile/Dockerfile.test-tools, which carries every checker.
+Runs inside docker/Dockerfile.test-tools, which carries every checker.
 The host is not evidence about the project: its Python, its pytest and its
 absent linters have each produced a wrong answer here before.
 
@@ -87,7 +87,7 @@ _tool_install_hint() {
     shellcheck) printf 'apt-get install shellcheck' ;;
     hadolint) printf 'https://github.com/hadolint/hadolint/releases' ;;
     actionlint) printf 'https://github.com/rhysd/actionlint/releases' ;;
-    *) printf 'see dockerfile/Dockerfile.test-tools' ;;
+    *) printf 'see docker/Dockerfile.test-tools' ;;
   esac
 }
 
@@ -166,7 +166,8 @@ run_lint() {
       ;;&
     commit|all) ./script/lint_commit.sh ;;&
     adr|all) ./script/lint_adr.sh ;;&
-    ruff|mypy|pylint|shellcheck|hadolint|actionlint|commit|adr|all) return 0 ;;
+    paths|all) ./script/lint_paths.sh ;;&
+    ruff|mypy|pylint|shellcheck|hadolint|actionlint|commit|adr|paths|all) return 0 ;;
     *) printf 'test.sh: unknown linter %s\n' "${tool}" >&2; return 2 ;;
   esac
 }

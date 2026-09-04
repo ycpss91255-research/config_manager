@@ -41,7 +41,7 @@ commit 內文結尾加 `Co-Authored-By:` trailer；PR 描述結尾加 Claude Cod
 
 **所有檢查一律在容器內執行，絕不對這台主機跑。**
 
-`./script/test.sh`（或 `just test`）會建置 `dockerfile/Dockerfile.test-tools` 並把自己轉進容器重跑；CI 呼叫同一支腳本，不安裝任何工具。一份映像，兩個呼叫者（ADR-00000027）。綠了才推。
+`./script/test.sh`（或 `just test`）會建置 `docker/Dockerfile.test-tools` 並把自己轉進容器重跑；CI 呼叫同一支腳本，不安裝任何工具。一份映像，兩個呼叫者（ADR-00000027）。綠了才推。
 
 不要為了「快速確認一下」就去呼叫主機的直譯器。**主機不是這個專案的證據**，而這句話不是風格偏好——它已經在這裡給過四個錯誤答案：
 
