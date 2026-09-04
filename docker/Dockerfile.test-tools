@@ -1,45 +1,42 @@
 # syntax=docker/dockerfile:1
 #
-# The one image every check runs in -- locally and in CI.
+# 每一項檢查都在這份映像裡跑——本機與 CI 皆然。
 #
-# It exists because the host is not evidence about the project. On the
-# machine this repo was scaffolded on, Python was 3.10 and pytest 6.2.5, so
-# pyproject.toml's `pythonpath` was silently ignored by a pytest too old to
-# know the option; the #56 `io` collision showed a different symptom than it
-# does on 3.11; and hadolint existed only in CI, where the pipeline went red
-# six times in a row while every local run reported clean.
+# 它之所以存在，是因為主機不是這個專案的證據。在這個 repo 被搭起來的那台機器上，
+# Python 是 3.10、pytest 是 6.2.5，於是 pyproject.toml 的 `pythonpath` 被一個老到
+# 不認得這個選項的 pytest 靜默忽略；#56 的 `io` 撞名在那裡顯示的症狀與 3.11 上不同；
+# 而 hadolint 只存在於 CI，於是 pipeline 連續六次全紅，本機每次執行卻都報乾淨。
 #
-# Making a missing tool abort instead of pass (fix(ci) 458b221) turned a
-# silent skip into a loud one. A loud skip is still a check that did not
-# run. This is the actual fix: one environment, two callers.
+# 把「工具不在就中止」改成不再直接通過（fix(ci) 458b221），只是把靜默跳過變成大聲
+# 跳過。大聲跳過仍然是一項沒有跑到的檢查。這份檔案才是真正的解法：一個環境，
+# 兩個呼叫者。
 #
-# Kept as its own Dockerfile rather than a stage in the application image
-# because the two have opposite goals -- that one ships as little as
-# possible, this one carries every linter -- and a `-test` stage of the app
-# image would drag the toolchain into the app's build graph.
+# 獨立成一份 Dockerfile 而不是應用映像裡的一個階段，因為兩者的目標相反——那一份
+# 要出貨得越少越好，這一份要帶齊每一支 linter——而應用映像裡的 `-test` 階段會把整條
+# 工具鏈拖進應用自己的建置圖裡。
 
 FROM python:3.11-slim-bookworm
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG HADOLINT_VERSION=2.12.0
 ARG ACTIONLINT_VERSION=1.7.7
-# Mirrored for the same reason base carries APT_MIRROR_UBUNTU: deb.debian.org
-# is a Fastly anycast address unreachable from the networks this repo is
-# developed on, and an image that only builds on a GitHub runner cannot be
-# the image everyone runs their checks in -- which is this file's entire
-# job. `--build-arg APT_MIRROR=deb.debian.org` restores upstream.
+# 換鏡像的理由與 base 帶 APT_MIRROR_UBUNTU 相同：deb.debian.org 是一個 Fastly 的
+# anycast 位址，從開發這個 repo 的網路連不到；而一份只有在 GitHub runner 上建得起來
+# 的映像，當不了「所有人都在裡面跑檢查」的那份映像——那正是這個檔案唯一的工作。
+# `--build-arg APT_MIRROR=deb.debian.org` 可以換回上游。
 #
-# This mirror specifically, because it carries BOTH /debian and
-# /debian-security. The nearer ftp.tw.debian.org and free.nchc.org.tw carry
-# only the former, and rewriting just the main archive leaves the security
-# suite pointing at the host that was unreachable to begin with -- an apt
-# update that still fails, one line further down.
+# 指定這個鏡像，是因為它**同時**有 /debian 與 /debian-security。更近的
+# ftp.tw.debian.org 與 free.nchc.org.tw 只有前者，而只改寫主 archive 會讓 security
+# 那組仍然指向那台本來就連不到的主機——一次仍然會失敗的 apt update，只是往下挪了一行。
 ARG APT_MIRROR="mirror.twds.com.tw"
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
-# bats: the smoke specs. shellcheck: 23 shell scripts. git: lint_commit
-# reads history, and the pytest suite drives real repositories.
+# bats：smoke 規格。shellcheck：script/ 底下的每一支 shell 腳本。git：lint_commit
+# 要讀歷史，而 pytest 那組測試會操作真實的 repo。
+#
+# 腳本數量不寫在這裡：能從樹推導出來的數字不另外抄一份（不變式 9）。這一行原本寫
+# 「23 shell scripts」，實際上已經是 27 支。
 RUN sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -50,9 +47,8 @@ RUN sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sou
         shellcheck \
     && rm -rf /var/lib/apt/lists/*
 
-# Pinned, not "latest": a linter that changes under you turns an unrelated
-# commit red, and the first thing anyone does with an inexplicable red is
-# stop trusting the gate.
+# 釘住版本，不用 "latest"：會在你腳下自己變動的 linter 會讓一筆無關的 commit 變紅，
+# 而遇到無法解釋的紅燈，人的第一個反應就是不再信任這個閘門。
 RUN curl -fsSL -o /usr/local/bin/hadolint \
         "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-Linux-x86_64" \
     && chmod +x /usr/local/bin/hadolint \
@@ -65,14 +61,13 @@ COPY config/pip/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt \
     && rm -f /tmp/requirements-dev.txt /tmp/requirements.txt
 
-# safe.directory for the root case. script/test.sh runs this image as the
-# INVOKING user rather than root -- a root process writing into a bind mount
-# leaves root-owned files on the host -- and that user has no home here, so it
-# passes safe.directory through GIT_CONFIG_* instead of reading this. Kept for
-# anyone who runs the image directly as root.
+# 這條 safe.directory 是給 root 那種情況用的。script/test.sh 是以**呼叫端的使用者**
+# 而不是 root 來跑這份映像——root 程序寫進 bind mount 會在主機上留下 root 所有的檔案
+# ——而那個使用者在這裡沒有家目錄，所以它是用 GIT_CONFIG_* 把 safe.directory 傳進去，
+# 並不會讀到這一行。留著是給直接以 root 執行這份映像的人用的。
 RUN git config --global --add safe.directory '*'
 
-# How script/test.sh knows it has already arrived and must not recurse.
+# script/test.sh 靠這個知道自己已經到了，不可以再往下遞迴一層。
 ENV CM_IN_TEST_IMAGE=1 \
     PYTHONDONTWRITEBYTECODE=1
 

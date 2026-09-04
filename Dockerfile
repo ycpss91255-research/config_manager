@@ -1,34 +1,30 @@
 # syntax=docker/dockerfile:1
 #
-# config_manager -- one image, two services (§3.2 "每個容器一個服務").
-# backend runs the API server, frontend serves the static page; both are the
-# same artifact started with a different command, so there is exactly one
-# thing to build, scan and version.
+# config_manager —— 一份映像，兩個服務（§3.2「每個容器一個服務」）。
+# backend 跑 API 伺服器，frontend 供靜態頁面；兩者是同一個產物、以不同指令啟動，
+# 所以要建置、掃描、標版本的東西剛好只有一個。
 #
-# Stage names are the ycpss91255-docker/base baseline (ADR-00000016). They are
-# adopted NOW, while nothing depends on them, because renaming stages later
-# means rewriting every CI reference and every deploy script that names one:
+# 階段名稱取自 ycpss91255-docker/base 的基準（ADR-00000016）。**現在**就採用，趁還
+# 沒有東西依賴它們，因為之後才改階段名，等於要改寫每一處 CI 參照與每一支指名階段
+# 的部署腳本：
 #
-#   sys           user, group, locale, timezone        build intermediate
-#   devel-base    interpreter + build tooling          build intermediate
-#   devel         interactive shell, source bind-mounted   session
-#   runtime       field artifact, source baked in      deployable
-#   runtime-test  build-time smoke, discarded          session
+#   sys           使用者、群組、locale、時區          建置中間層
+#   devel-base    直譯器 + 建置工具                   建置中間層
+#   devel         互動 shell，原始碼以 bind mount 掛入    工作階段
+#   runtime       現場產物，原始碼烤進去              可部署
+#   runtime-test  建置期 smoke，用完即丟              工作階段
 #
-# "Deployable" is a single predicate, decided here and nowhere else: `runtime`
-# is, the other four are not. Two places deciding it separately disagree
-# sooner or later, and the direction of the disagreement is "something got
-# deployed that should not have been".
+# 「可部署」是單一的判定，只在這裡決定、不在別處：`runtime` 是，其餘四個都不是。
+# 兩個地方各自決定這件事，遲早會不一致，而不一致的方向會是「有個不該被部署的東西
+# 被部署了」。
 #
-# Artifacts bake under /opt, never $HOME. $HOME resolves at build time, so
-# anything placed under it is welded to the build-time user name and breaks on
-# a machine whose operator has a different one.
+# 產物烤在 /opt 底下，絕不放 $HOME。$HOME 在建置期就解析掉，所以放在它底下的東西
+# 會被焊死在建置期的使用者名稱上，換一台操作者名稱不同的機器就壞掉。
 
 ARG BASE_IMAGE="python:3.11-slim-bookworm"
-# Empty unless the caller pins a digest. Recorded as-is rather than derived,
-# because the expression that strips a digest from a reference returns the
-# whole reference when there is none to strip -- which would put a tag in the
-# field OCI reserves for a digest. Empty is a truthful "not recorded".
+# 除非呼叫端釘住 digest，否則為空。原樣記錄而不是推導出來，因為「從參照裡去掉
+# digest」的那個運算式在沒有 digest 可去的時候會回傳整個參照——那會把一個 tag 塞進
+# OCI 保留給 digest 的欄位。空值是誠實的「沒有記錄」。
 ARG BASE_IMAGE_DIGEST=""
 
 # ── sys ─────────────────────────────────────────────────────────────────────
@@ -56,16 +52,14 @@ RUN apt-get update \
     && echo "${TZ}" > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
-# Provenance, and the reason .hadolint.yaml can ignore DL3008 without the
-# ignore naming nothing. Package versions are NOT pinned -- an image that
-# cannot take a security update without a repo release is worse for its
-# audience than one that drifts -- so the drift is recorded instead of
-# prevented: base-image.env says what this was built FROM, packages.txt says
-# exactly which versions landed, rewritten after every apt layer. Two images
-# that behave differently can then be diffed down to the version that changed.
+# 來源證跡，也是 .hadolint.yaml 能夠 ignore DL3008、而那個 ignore 不是在指涉空氣的
+# 理由。套件版本**不釘**——一份映像若沒有 repo 發版就吃不到安全更新，對它的使用者
+# 而言比會漂移更糟——所以漂移是被記錄下來而不是被阻止：base-image.env 說這是 FROM
+# 什麼建的，packages.txt 說實際落地的是哪些版本，每一層 apt 之後重寫一次。兩份行為
+# 不同的映像，於是可以一路 diff 到那個變掉的版本。
 #
-# This is what the tag alone cannot give: python:3.11-slim-bookworm is a
-# moving tag, so "the base is pinned" is not a control at all.
+# 這是光靠 tag 給不了的：python:3.11-slim-bookworm 是會移動的 tag，所以「base 已經
+# 釘住了」根本不構成一個控制措施。
 RUN mkdir -p /usr/local/share/config_manager \
     && { \
       echo "base_image_ref=${BASE_IMAGE}"; \
@@ -75,15 +69,14 @@ RUN mkdir -p /usr/local/share/config_manager \
     } > /usr/local/share/config_manager/base-image.env \
     && dpkg-query -W > /usr/local/share/config_manager/packages.txt
 
-# Readable with `docker inspect`, without unpacking the image.
+# 用 `docker inspect` 就讀得到，不必把映像解開。
 LABEL org.opencontainers.image.base.name="${BASE_IMAGE}" \
       org.opencontainers.image.base.digest="${BASE_IMAGE_DIGEST}"
 
-# A non-root service account. The backend writes to the config-repo checkout
-# and to target paths; it must never do so as root (PRD invariant 4 -- when
-# safety and convenience pull apart, the default lands on safety). Privileged
-# targets go through an explicit sudoers allowlist, which is out of v0.10.0
-# scope (appendix B.3) and deliberately absent here rather than approximated.
+# 一個非 root 的服務帳號。backend 會寫入 config-repo 的簽出內容與目標位置；它絕不
+# 可以用 root 做這件事（PRD 不變式 4——安全與方便拉扯時，預設落向安全）。需要特權的
+# 目標走一份明確的 sudoers 白名單，那不在 v0.10.0 範圍內（附錄 B.3），所以這裡刻意
+# 讓它缺席，而不是隨便做一個近似品。
 RUN groupadd --gid "${USER_GID}" "${USER_GROUP}" \
     && useradd --uid "${USER_UID}" --gid "${USER_GID}" \
         --create-home --shell /bin/bash "${USER_NAME}"
@@ -98,9 +91,8 @@ FROM sys AS devel-base
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-# git is a runtime dependency, not a build one: io/git.py wraps the git CLI by
-# subprocess (§3.2). It is installed here so devel and runtime share one
-# version, rather than each stage picking its own.
+# git 是執行期相依，不是建置期相依：io/git.py 以 subprocess 包裝 git CLI（§3.2）。
+# 裝在這裡，是為了讓 devel 與 runtime 共用同一個版本，而不是各階段各挑各的。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         git \
@@ -131,12 +123,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && dpkg-query -W > /usr/local/share/config_manager/packages.txt
 
-# Both files: requirements-dev.txt opens with `-r requirements.txt`, so pip
-# resolves that path relative to it and needs the sibling present. Copying only
-# the dev file failed with "Could not open requirements file" -- and did so
-# unnoticed, because CI builds runtime-test, whose chain runs devel-base ->
-# runtime and never enters this stage. The stage developers use every day was
-# the one stage nothing built.
+# 兩個檔案都要：requirements-dev.txt 開頭是 `-r requirements.txt`，pip 會相對於它
+# 解析那個路徑，所以同層的那份必須在。只複製 dev 那一份會以 "Could not open
+# requirements file" 失敗——而且是沒有人察覺地失敗，因為 CI 建的是 runtime-test，
+# 它的鏈是 devel-base -> runtime，從來不會進到這個階段。開發者每天在用的階段，
+# 正好是唯一沒有東西會去建的階段。
 COPY config/pip/requirements.txt config/pip/requirements-dev.txt /tmp/
 RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt \
     && rm -f /tmp/requirements-dev.txt /tmp/requirements.txt
@@ -146,8 +137,8 @@ COPY script/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \
     && chown "${USER_NAME}:${USER_NAME}" "/home/${USER_NAME}/.bashrc"
 
-# devel takes the source by bind mount, not COPY: the edit-run loop is the
-# whole point of the stage, and a baked copy would go stale on the first edit.
+# devel 以 bind mount 取得原始碼，不用 COPY：改一行跑一次的循環正是這個階段存在的
+# 理由，而烤進去的副本在第一次修改時就過期了。
 RUN mkdir -p "${APP_ROOT}" \
     && chown "${USER_NAME}:${USER_NAME}" "${APP_ROOT}"
 WORKDIR ${APP_ROOT}
@@ -164,8 +155,8 @@ ARG USER_NAME="user"
 COPY script/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# The deployable stage bakes the source; nothing is bind-mounted in the field
-# except the config-repo volume, which is data rather than code.
+# 可部署的階段把原始碼烤進去；現場除了 config-repo volume 之外不掛任何東西，
+# 而那個 volume 裝的是資料，不是程式碼。
 COPY --chown=${USER_NAME}:${USER_NAME} src/ ${APP_ROOT}/src/
 COPY --chown=${USER_NAME}:${USER_NAME} pyproject.toml ${APP_ROOT}/pyproject.toml
 
@@ -174,16 +165,14 @@ WORKDIR ${APP_ROOT}
 
 USER ${USER_NAME}
 ENTRYPOINT ["/entrypoint.sh"]
-# config_manager.api.cli, not api.cli: everything lives under the single
-# top-level package because a top-level io/ shadows the stdlib module of the
-# same name (ADR-00000026, #56). This line kept the pre-rename path long after
-# the rename, and nothing executed it -- api/cli did not exist yet (#90).
+# 是 config_manager.api.cli，不是 api.cli：所有東西都住在單一頂層套件底下，因為
+# 頂層的 io/ 會遮蔽標準函式庫的同名模組（ADR-00000026、#56）。這一行在改名之後很久
+# 都還留著改名前的路徑，而且沒有東西會執行到它——當時 api/cli 還不存在（#90）。
 CMD ["python", "-m", "config_manager.api.cli", "serve"]
 
 # ── runtime-test ────────────────────────────────────────────────────────────
-# FROM the stage under test, then layer the tools on top -- never the inverse.
-# A test stage built FROM a tools image tests the tools image's environment,
-# which is exactly the environment that is not going to be deployed.
+# FROM 被測的那個階段，再把工具疊上去——絕不反過來。以工具映像為 FROM 建出來的
+# 測試階段，測的是工具映像的環境，而那正好是不會被部署的那個環境。
 FROM runtime AS runtime-test
 
 USER root
@@ -197,11 +186,9 @@ RUN apt-get update \
 COPY test/bats/smoke/ /opt/smoke/
 RUN bats /opt/smoke
 
-# The system level (T9): the service is started on loopback inside this image
-# and answered over real HTTP. script/test.sh cannot host these -- it runs
-# itself inside the tools image, which has neither a docker socket nor a docker
-# CLI, so it cannot start the container under test. Here it already is that
-# container.
+# 系統層級（T9）：服務在這份映像裡起在 loopback 上，並以真實 HTTP 回話。
+# script/test.sh 裝不下這些——它把自己跑在工具映像裡，那裡既沒有 docker socket 也
+# 沒有 docker CLI，起不了被測的那個容器。而在這裡，它本身就已經是那個容器。
 COPY test/bats/runtime/ /opt/runtime/
 RUN bats /opt/runtime
 

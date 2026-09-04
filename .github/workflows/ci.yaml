@@ -1,17 +1,14 @@
-# CI, written directly rather than calling the shared reusable workers
-# (design appendix A.1: adopting the worker fan-out means adopting the
-# template's release machinery with it, and this repo publishes no image).
+# CI 直接寫出來，不呼叫共用的 reusable worker（設計附錄 A.1：採用那套 worker 展開
+# 就等於連模板的發版機制一起採用，而這個 repo 不發布映像）。
 #
-# LOCAL == CI, and now literally so: the checks job runs ./script/test.sh,
-# which builds docker/Dockerfile.test-tools and runs every check inside
-# it -- the same image, by the same path, that `just test` uses on a
-# developer's machine. Nothing here installs a tool, so nothing here can
-# drift from what a developer has.
+# 本機 == CI，而且現在是字面上的相同：checks job 跑 ./script/test.sh，那支會建置
+# docker/Dockerfile.test-tools 並在裡面跑每一項檢查——與開發者機器上 `just test` 用的
+# 是同一份映像、走同一條路徑。這裡不安裝任何工具，所以這裡也漂移不出開發者手上的
+# 那一套。
 #
-# The history: CI restated each linter as its own YAML step, `just test
-# lint` skipped a tool the host lacked, and the pipeline went red six times
-# in a row while every local run reported clean. base wrote the same lesson
-# down in script/test/drivers/hadolint.sh. One environment, two callers.
+# 來由：CI 曾經把每一支 linter 各自複述成一個 YAML step，而 `just test lint` 會跳過
+# 主機沒有的工具，於是 pipeline 連續六次全紅，本機每次執行卻都報乾淨。base 把同一個
+# 教訓寫在它的 script/test/drivers/hadolint.sh 裡。一個環境，兩個呼叫者。
 
 name: CI
 
@@ -26,9 +23,9 @@ permissions:
 
 jobs:
   commit-message:
-    # Only the commits this pull request adds; history predates the rule.
-    # Runs outside the image: it needs git and nothing else, and building an
-    # image to run one git command would be the slowest possible way to do it.
+    # 只看這個 pull request 新增的 commit；歷史早於這條規則。
+    # 跑在映像之外：它只需要 git，不需要別的，而為了跑一道 git 指令去建一份映像，
+    # 會是所有做法裡最慢的那一個。
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -42,44 +39,38 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # lint_commit reads history; a shallow clone has none.
+          # lint_commit 要讀歷史；淺層 clone 沒有歷史。
           fetch-depth: 0
-      # Every linter, every test level, and the coverage floor -- all inside
-      # the test image. The 85% floor on src/config_manager/core lives in
-      # pyproject.toml, so it is not restated here either.
+      # 每一支 linter、每一個測試層級，以及覆蓋率下限——全部在測試映像裡。
+      # src/config_manager/core 的 85% 下限寫在 pyproject.toml，所以這裡同樣不複述。
       - run: ./script/test.sh
 
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # runtime-test is FROM runtime and runs the bats smoke specs during
-      # its own build, so a green build means the deployable artifact came
-      # up -- not merely that it compiled. Separate from `checks` because it
-      # builds the application image, not the tooling one.
+      # runtime-test 是 FROM runtime，並在它自己的建置過程中跑 bats 的 smoke 規格，
+      # 所以建置是綠的就代表可部署的產物真的起得來——不只是編得過。與 `checks` 分開，
+      # 因為它建的是應用映像，不是工具映像。
       - run: docker build --target runtime-test -t config_manager:runtime-test .
-      # devel too, and not for symmetry: runtime-test's chain is
-      # devel-base -> runtime, so it never enters devel. The stage every
-      # developer builds daily was therefore the one stage CI never built,
-      # and it was broken for as long as it existed.
+      # devel 也要建，而且不是為了對稱：runtime-test 的鏈是 devel-base -> runtime，
+      # 永遠不會進到 devel。於是每個開發者每天都在建的那個階段，正好是 CI 從來不建的
+      # 那一個，而它從存在的第一天起就是壞的。
       - run: docker build --target devel -t config_manager:devel .
 
   ci-rollup:
-    # The single required status check, mirroring base. Branch protection
-    # names this one job, so adding a job above never means editing the
-    # protection rule.
+    # 唯一的必要狀態檢查，比照 base。分支保護只指名這一個 job，所以在上面新增一個
+    # job 永遠不必去改保護規則。
     #
-    # `always()` plus an explicit result test: without it a skipped or
-    # cancelled dependency reads as success and the gate opens on a run that
-    # never checked anything.
+    # `always()` 加上明確的結果判定：少了它，被跳過或被取消的相依會被讀成成功，
+    # 於是閘門會在一次什麼都沒檢查的執行上打開。
     if: always()
     needs: [commit-message, checks, build]
     runs-on: ubuntu-latest
     steps:
       - name: Check that every job passed
-        # Through env, not interpolated into the script: an expression
-        # spliced straight into `run` is a shell-injection seam, and Actions
-        # expressions take single quotes only.
+        # 走 env，不要直接內插進腳本：把運算式直接拼進 `run` 會開出一個
+        # shell injection 的缺口，而且 Actions 的運算式只吃單引號。
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
