@@ -6,6 +6,7 @@
 import pytest
 
 from config_manager.core.config_list import dump, load
+from config_manager.core.models import Permissions
 from config_manager.core.errors import (
     DumpMismatch,
     DuplicateTarget,
@@ -509,3 +510,50 @@ groups   = []
     del config_list.files[1]  # 移除既有條目
     with pytest.raises(DumpMismatch):
         dump(config_list, original)
+
+
+def test_appending_an_entry_keeps_its_optional_fields():
+    # 附加的新條目若帶選填欄位（schema／requires_privilege／permissions），
+    # 寫回後不得被丟棄——靜默丟欄位即靜默失敗（不變式 2、PDF §4.3）。
+    original = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/a.yaml"
+target   = "/opt/a.yaml"
+format   = "yaml"
+groups   = []
+"""
+
+    config_list = load(original)
+    config_list.files.append(
+        config_list.files[0].model_copy(
+            update={
+                "uid": "mfz3k9z9",
+                "name": "docker-daemon",
+                "source": "files/b.json",
+                "target": "/etc/b.json",
+                "format": "json",
+                "schema_path": ".schemas/daemon.json",
+                "requires_privilege": True,
+                "permissions": Permissions(owner="root", group="docker", mode="0600"),
+            }
+        )
+    )
+
+    result = dump(config_list, original)
+
+    dropped = [
+        token
+        for token in (".schemas/daemon.json", "requires_privilege", "0600")
+        if token not in result
+    ]
+    assert dropped == []
