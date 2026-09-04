@@ -15,3 +15,8 @@ htmlcov/
 # Operator-owned overrides. The `.local` suffix marks the whole family --
 # never committed, never overwritten by any tooling.
 *.local
+
+# Agent worktrees. These are checkouts of this repo living inside it, so a
+# `git add -A` from the repo root sweeps a whole second copy of the tree into
+# the commit -- and the diff is large enough that nobody reads it closely.
+.claude/worktrees/
