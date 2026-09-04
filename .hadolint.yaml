@@ -13,3 +13,15 @@ ignored:
   # where a reader looks for them; restating them in the Dockerfile would
   # create a second place to update.
   - DL3013
+  # Always tag the version of an image explicitly. Fires on
+  # `FROM ${BASE_IMAGE} AS sys`, which hadolint cannot resolve statically --
+  # it sees a variable and assumes the worst.
+  #
+  # The compensating control, without which this ignore would be the kind
+  # that names nothing: the ARG default two lines above the FROM *is*
+  # explicitly tagged (python:3.11-slim-bookworm). Overriding BASE_IMAGE is
+  # a deliberate act by whoever passes --build-arg, and an untagged value
+  # passed there is their choice, not a drift this repo introduced.
+  # test/lint/hadolint/ holds the fixture proving the rule still fires on a
+  # genuinely untagged literal FROM.
+  - DL3006

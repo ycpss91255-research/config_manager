@@ -61,3 +61,26 @@ Versions follow the milestone ladder in the design document §8.
   -- the conventional 50-character cap would reject most of the repo it is
   meant to align with. Scoped to `origin/main..HEAD`, so existing history is
   untouched (ADR-00000025).
+
+### Fixed
+
+- CI was red on every one of its six runs and nothing said so: the lint job
+  restated each tool as its own YAML step, so `just test lint` and CI were
+  two different check sets, and `just test lint` additionally treated a
+  missing hadolint as a silent pass. The lint job now calls
+  `./script/test.sh --lint` -- the same entry `just test lint` uses -- and a
+  missing tool aborts instead of passing quietly (`CM_LINT_ALLOW_MISSING=1`
+  downgrades it to a loud warning for local work). base documents this exact
+  blind spot in `script/test/drivers/hadolint.sh`; this repo reproduced it
+  within a day.
+- `DL3006` on `FROM ${BASE_IMAGE}`: hadolint cannot resolve a build-ARG
+  image reference, so it assumed untagged. Ignored with the compensating
+  control stated -- the ARG default two lines above is explicitly tagged.
+
+### Added
+
+- shellcheck over all 23 shell scripts, in `just test lint shellcheck` and
+  in CI. It found a real word-splitting bug in the driver that introduced it.
+- A `ci-rollup` job that fails unless every other job passed, so branch
+  protection can name one check and adding a job never means editing the
+  protection rule.

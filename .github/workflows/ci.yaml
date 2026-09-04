@@ -1,7 +1,15 @@
 # CI, written directly rather than calling the shared reusable workers
-# (design appendix A.1: "現在不要做" -- adopting the worker fan-out means
-# adopting the template's release/version machinery with it, and this repo
-# does not publish an image yet).
+# (design appendix A.1: adopting the worker fan-out means adopting the
+# template's release machinery with it, and this repo publishes no image).
+#
+# LOCAL == CI. The lint job runs `./script/test.sh --lint`, the same entry
+# `just test lint` runs, rather than restating each tool as its own YAML
+# step. base learned this the hard way and wrote it down in
+# script/test/drivers/hadolint.sh: its CI had a hadolint step that `just
+# test` did not run, so a Dockerfile change passed locally and failed in CI.
+# This repo reproduced that exact failure within a day -- six pushes in a
+# row went red on a hadolint finding no local run could see. One source of
+# truth, two callers.
 
 name: CI
 
@@ -34,12 +42,14 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r config/pip/requirements-dev.txt
-      - run: ruff check src test
-      - run: mypy --strict src/core
-      - run: pylint src
-      - uses: hadolint/hadolint-action@v3.1.0
-        with:
-          dockerfile: Dockerfile
+      - name: Install shellcheck and hadolint
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          sudo curl -fsSL -o /usr/local/bin/hadolint \
+            https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+          sudo chmod +x /usr/local/bin/hadolint
+      # Not CM_LINT_ALLOW_MISSING: in CI a missing tool must fail, never warn.
+      - run: ./script/test.sh --lint
 
   test:
     runs-on: ubuntu-latest
@@ -49,13 +59,40 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r config/pip/requirements-dev.txt
+      # The 85% floor on src/core lives in pyproject.toml, so this fails on
+      # coverage without the threshold being restated here.
       - run: pytest test/pytest --cov=src/core --cov-report=term-missing
 
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # runtime-test is FROM runtime and runs the bats smoke specs as part of
-      # the build, so a green build here means the deployable artifact came
+      # runtime-test is FROM runtime and runs the bats smoke specs during
+      # its own build, so a green build means the deployable artifact came
       # up -- not merely that it compiled.
       - run: docker build --target runtime-test -t config_manager:runtime-test .
+
+  ci-rollup:
+    # The single required status check, mirroring base. Branch protection
+    # names this one job, so adding a job above never means editing the
+    # protection rule -- and a job that is added but left out of `needs`
+    # here is the one thing this cannot catch, which is why the list is
+    # short enough to read.
+    #
+    # `always()` plus an explicit result test: without it, a skipped or
+    # cancelled dependency reads as success and the gate opens on a run
+    # that never checked anything.
+    if: always()
+    needs: [commit-message, lint, test, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check that every job passed
+        run: |
+          results='${{ join(needs.*.result, " ") }}'
+          echo "job results: ${results}"
+          for r in ${results}; do
+            case "${r}" in
+              success|skipped) ;;
+              *) echo "::error::a required job did not pass: ${r}"; exit 1 ;;
+            esac
+          done
