@@ -84,3 +84,9 @@ Versions follow the milestone ladder in the design document §8.
 - A `ci-rollup` job that fails unless every other job passed, so branch
   protection can name one check and adding a job never means editing the
   protection rule.
+- actionlint over `.github/workflows/`, in `just test lint actionlint` and
+  in CI. Workflow expressions are not YAML and no YAML parser checks them: a
+  double-quoted string literal inside `${{ }}` parses as valid YAML and is
+  an invalid expression, so GitHub rejects the file, runs zero jobs, and
+  reports a run failure with no job to open. That is exactly how the
+  `ci-rollup` job failed on its first push.

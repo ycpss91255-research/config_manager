@@ -5,7 +5,7 @@ default *ARGS:
     @{{justfile_directory()}}/script/test.sh {{ARGS}}
 
 # Static analysis only; optionally one tool
-# (ruff|mypy|pylint|shellcheck|hadolint|commit)
+# (ruff|mypy|pylint|shellcheck|hadolint|actionlint|commit)
 lint *TOOL:
     @{{justfile_directory()}}/script/test.sh --lint {{TOOL}}
 

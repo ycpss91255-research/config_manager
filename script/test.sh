@@ -21,7 +21,7 @@ Usage: script/test.sh [--level <name>] [--lint [<tool>]] [--file <path>] [--filt
   (no arguments)      lint + all levels + coverage
   --level <name>      unit | integration | system | acceptance
   --lint [<tool>]     all linters, or one of:
-                      ruff | mypy | pylint | shellcheck | hadolint | commit
+                      ruff | mypy | pylint | shellcheck | hadolint | actionlint | commit
   --file <path>       a single spec file
   --filter <regex>    specs matching a pattern
 USAGE
@@ -63,8 +63,17 @@ run_lint() {
       require_tool hadolint 'https://github.com/hadolint/hadolint/releases' \
         && hadolint --config .hadolint.yaml Dockerfile
       ;;&
+    actionlint|all)
+      # Workflow expressions are not YAML and no YAML parser checks them.
+      # A double-quoted string literal inside ${{ }} is valid YAML and an
+      # invalid expression -- GitHub rejects the whole file, runs zero jobs,
+      # and reports it as a run failure with no job to open. Caught here now
+      # rather than by pushing and reading the aftermath.
+      require_tool actionlint 'https://github.com/rhysd/actionlint/releases' \
+        && actionlint .github/workflows/*.yaml
+      ;;&
     commit|all) ./script/lint_commit.sh ;;&
-    ruff|mypy|pylint|shellcheck|hadolint|commit|all) return 0 ;;
+    ruff|mypy|pylint|shellcheck|hadolint|actionlint|commit|all) return 0 ;;
     *) printf 'test.sh: unknown linter %s\n' "${tool}" >&2; return 2 ;;
   esac
 }

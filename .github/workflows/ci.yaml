@@ -42,12 +42,14 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r config/pip/requirements-dev.txt
-      - name: Install shellcheck and hadolint
+      - name: Install shellcheck, hadolint and actionlint
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
           sudo curl -fsSL -o /usr/local/bin/hadolint \
             https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
-          sudo chmod +x /usr/local/bin/hadolint
+          curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin actionlint
+          sudo chmod +x /usr/local/bin/hadolint /usr/local/bin/actionlint
       # Not CM_LINT_ALLOW_MISSING: in CI a missing tool must fail, never warn.
       - run: ./script/test.sh --lint
 
@@ -87,10 +89,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check that every job passed
+        # Through env, not interpolated into the script: an expression
+        # spliced straight into `run` is a shell-injection seam, and
+        # Actions expressions take single quotes only -- which is what
+        # broke this file the first time it was written.
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          results='${{ join(needs.*.result, " ") }}'
-          echo "job results: ${results}"
-          for r in ${results}; do
+          echo "job results: ${RESULTS}"
+          for r in ${RESULTS}; do
             case "${r}" in
               success|skipped) ;;
               *) echo "::error::a required job did not pass: ${r}"; exit 1 ;;
