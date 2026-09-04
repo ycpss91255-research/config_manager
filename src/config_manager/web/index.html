@@ -38,6 +38,10 @@
     }
   }
   * { box-sizing: border-box; }
+  /* 瀏覽器預設的 [hidden]{display:none} 會被下面任何一條 display 宣告蓋過
+     ——header 的 display:flex 就蓋掉了它，於是「隱藏」的頁首照樣顯示。
+     這是 hidden 屬性最常見的失效方式，用 !important 釘住。 */
+  [hidden] { display: none !important; }
   body {
     margin: 0;
     background: var(--bg);
@@ -123,18 +127,84 @@
     overflow-wrap: anywhere;
     font-size: 13px;
   }
+
+  /* W1 身分輸入。刻意不叫「登入」——沒有認證機制，說登入會誤導（CONTEXT.md）。 */
+  #identity {
+    max-width: 420px;
+    margin: 60px auto;
+    padding: 26px 28px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+  }
+  #identity h2 { margin: 0 0 6px; font-size: 17px; }
+  #identity .why { margin: 0 0 20px; color: var(--muted); font-size: 13px; }
+  #identity label { display: block; margin-bottom: 14px; font-size: 13px; }
+  #identity label span { display: block; margin-bottom: 4px; color: var(--muted); }
+  #identity input[type="text"], #identity input[type="email"] {
+    font: inherit;
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  /* 角色是兩個並排的選項按鈕，明顯可見，不藏在選單裡（ADR-00000020、W1）。 */
+  .roles { display: flex; gap: 8px; margin: 4px 0 20px; }
+  .roles button { flex: 1; }
+  .roles button[aria-pressed="true"] {
+    border-color: var(--fg);
+    background: var(--bg);
+    font-weight: 600;
+  }
+  #identity .enter { width: 100%; padding: 9px; font-weight: 600; }
+  #identity .error {
+    margin: 0 0 16px;
+    color: var(--drift);
+    font-size: 13px;
+  }
+  .who { color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
 
-<header>
+<form id="identity" data-testid="identity-form" hidden>
+  <h2>請輸入身分資訊</h2>
+  <p class="why">
+    這不是登入。沒有密碼，也不會驗證——你填的姓名與 email 會成為變更紀錄的作者，
+    讓每一次改動追溯得到人。
+  </p>
+
+  <p class="error" data-testid="identity-error" hidden></p>
+
+  <label>
+    <span>姓名</span>
+    <input type="text" name="name" data-testid="identity-name" autocomplete="name" required>
+  </label>
+  <label>
+    <span>Email</span>
+    <input type="email" name="email" data-testid="identity-email" autocomplete="email" required>
+  </label>
+
+  <span id="role-label">角色</span>
+  <div class="roles" data-testid="role-toggle" role="group" aria-labelledby="role-label">
+    <button type="button" data-role="user" aria-pressed="true">一般使用者</button>
+    <button type="button" data-role="developer" aria-pressed="false">🔧 開發者</button>
+  </div>
+
+  <button type="submit" class="enter">進入</button>
+</form>
+
+<header hidden>
   <h1>config_manager</h1>
   <input type="search" data-testid="search-input" placeholder="搜尋" aria-label="搜尋">
   <span class="grow"></span>
+  <span class="who" data-testid="current-role"></span>
   <button type="button" data-testid="rescan">檢查差異</button>
 </header>
 
-<main>
+<main hidden>
   <div id="tree" data-testid="config-tree"></div>
 </main>
 
@@ -266,7 +336,93 @@ async function load() {
 
 search.addEventListener("input", render);
 document.querySelector("[data-testid='rescan']").addEventListener("click", load);
-load();
+
+// ── W1 身分輸入 ──────────────────────────────────────────────────────────────
+// 不是登入：沒有密碼、不驗證、角色是自我宣告（ADR-00000020）。唯一的用途是成為
+// 變更紀錄的作者。文案一律用「身分輸入」，因為說「登入」會讓人以為有存取控制
+// （CONTEXT.md「避免使用的說法」）。
+const ROLE_TEXT = { user: "一般使用者", developer: "開發者" };
+
+const identityForm = document.querySelector("[data-testid='identity-form']");
+const identityError = document.querySelector("[data-testid='identity-error']");
+const roleToggle = document.querySelector("[data-testid='role-toggle']");
+const currentRole = document.querySelector("[data-testid='current-role']");
+const header = document.querySelector("header");
+const listView = document.querySelector("main");
+
+function selectedRole() {
+  const pressed = roleToggle.querySelector("[aria-pressed='true']");
+  return pressed ? pressed.dataset.role : "user";
+}
+
+roleToggle.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-role]");
+  if (!button) return;
+  for (const option of roleToggle.querySelectorAll("button[data-role]")) {
+    option.setAttribute("aria-pressed", String(option === button));
+  }
+});
+
+function showIdentityForm() {
+  identityForm.hidden = false;
+  header.hidden = true;
+  listView.hidden = true;
+}
+
+function showList(identity) {
+  identityForm.hidden = true;
+  header.hidden = false;
+  listView.hidden = false;
+  currentRole.textContent = `${identity.name}・${ROLE_TEXT[identity.role] || identity.role}`;
+  load();
+}
+
+identityForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  identityError.hidden = true;
+
+  const body = {
+    name: identityForm.elements.name.value,
+    email: identityForm.elements.email.value,
+    role: selectedRole(),
+  };
+
+  try {
+    const response = await fetch(`${API_BASE}/api/session`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      // 端點的訊息已經寫成可行動的樣子（欄位＋原因＋下一步），原樣顯示，
+      // 不在這裡改寫成一句籠統的「輸入無效」（不變式 2）。
+      identityError.textContent = payload.detail || `${response.status} ${response.statusText}`;
+      identityError.hidden = false;
+      return;
+    }
+    showList(payload);
+  } catch (error) {
+    identityError.textContent = `送不出去：${error && error.message ? error.message : error}`;
+    identityError.hidden = false;
+  }
+});
+
+// 已經輸入過身分就直接進清單（重新整理不必再填一次）。
+(async function start() {
+  try {
+    const response = await fetch(`${API_BASE}/api/session`);
+    const identity = response.ok ? await response.json() : null;
+    if (identity) {
+      showList(identity);
+      return;
+    }
+  } catch (error) {
+    // backend 連不上時仍顯示身分輸入頁：那是使用者唯一能操作的東西，
+    // 而送出時的錯誤會說明真正的問題。
+  }
+  showIdentityForm();
+})();
 </script>
 
 </body>

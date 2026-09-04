@@ -10,12 +10,23 @@ app 由 create_app(repo) 產生而非模組層的全域物件：config-repo 的�
 
 from collections.abc import Iterable
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
+from config_manager.api.errors import InvalidAuthor
+from config_manager.api.session import USER, Identity, author
 from config_manager.core.models import FileEntry
 from config_manager.core.state import State
 from config_manager.io.scan import scan
+
+
+class SessionInput(BaseModel):
+    """身分輸入的請求主體。角色預設為一般使用者（預設值落向安全，不變式 4）。"""
+
+    name: str
+    email: str
+    role: str = USER
 
 # 前端是另一個容器、另一個 port（設計文件 §3.1：瀏覽器分別連 frontend 與
 # backend），所以頁面對 API 的請求是跨來源的。
@@ -37,6 +48,32 @@ def create_app(repo: str, allowed_origins: Iterable[str] = _DEFAULT_ORIGINS) -> 
         allow_headers=["content-type"],
     )
 
+    # 目前的身分。一次只有一個編輯階段（ADR-00000014），所以放在 app 上而不是
+    # 一個模組層的全域——後者會讓同一個行程裡起兩個 app 互相看見對方的身分。
+    held: dict[str, Identity] = {}
+
+    @app.post("/api/session")
+    def set_session(payload: SessionInput) -> dict[str, str]:
+        """設定使用者身分（設計文件 §3.5.3）。
+
+        **這不是登入。** 沒有密碼、不驗證、角色是自我宣告（ADR-00000020）。
+        """
+        try:
+            identity = author(payload.name, payload.email, payload.role)
+        except InvalidAuthor as error:
+            # 422 而非 400：輸入的形狀對，值不合法。訊息原樣傳給使用者，因為它
+            # 已經寫成可行動的樣子（欄位＋原因＋下一步）。
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+        held["identity"] = identity
+        return _as_session(identity)
+
+    @app.get("/api/session")
+    def get_session() -> dict[str, str] | None:
+        """目前的身分，尚未輸入則回 null。"""
+        identity = held.get("identity")
+        return _as_session(identity) if identity else None
+
     @app.get("/api/configs")
     def list_configs() -> list[dict[str, object]]:
         """列出所有納管項目，含狀態（設計文件 §3.5.3）。
@@ -49,6 +86,16 @@ def create_app(repo: str, allowed_origins: Iterable[str] = _DEFAULT_ORIGINS) -> 
         return [_as_row(entry, state) for entry, state in scan(repo)]
 
     return app
+
+
+def _as_session(identity: Identity) -> dict[str, str]:
+    """身分在畫面上需要的欄位。git_author 一併回傳，讓「紀錄上會是誰」看得見。"""
+    return {
+        "name": identity.name,
+        "email": identity.email,
+        "role": identity.role,
+        "git_author": identity.git_author,
+    }
 
 
 def _as_row(entry: FileEntry, state: State) -> dict[str, object]:

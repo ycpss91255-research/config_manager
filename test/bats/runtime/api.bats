@@ -65,6 +65,32 @@ except OSError as error:
 PY
 }
 
+# 送出 JSON；非 2xx 則把狀態碼印到 stdout 並以非零碼結束。
+post() {
+  python - "$1" "$2" <<'PY'
+import sys
+import urllib.error
+import urllib.request
+
+url = "http://127.0.0.1:8080" + sys.argv[1]
+request = urllib.request.Request(
+    url,
+    data=sys.argv[2].encode("utf-8"),
+    headers={"content-type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(request, timeout=2) as response:
+        sys.stdout.write(response.read().decode("utf-8"))
+except urllib.error.HTTPError as error:
+    sys.stdout.write(f"{error.code} {error.read().decode('utf-8')}")
+    sys.exit(1)
+except OSError as error:
+    sys.stdout.write(str(error))
+    sys.exit(1)
+PY
+}
+
 @test "GET /api/configs 在全新的 config-repo 上回空清單" {
   # 什麼都還沒納管是合法狀態。回空清單，不是回錯誤，也不是起不來——
   # entrypoint 在同一次啟動裡種下了那份空的清單檔（#66）。
@@ -129,6 +155,26 @@ TOML
   [[ "${output}" == *"偏離"* ]]
   [[ "${output}" == *"未部署"* ]]
   [[ "${output}" == *"a@amr01-mfz3k9q1"* ]]
+}
+
+@test "POST /api/session 記下身分，GET 回得出來" {
+  # 這不是登入：沒有密碼、不驗證、角色是自我宣告（ADR-00000020）。驗的是
+  # 「記錄的就是宣告的值」，而 git_author 是它存在的理由——變更紀錄的作者。
+  run post /api/session '{"name":"陳小明","email":"ming@example.com","role":"developer"}'
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *'"git_author":"陳小明 <ming@example.com>"'* ]]
+  [[ "${output}" == *'"role":"developer"'* ]]
+
+  run get /api/session
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *'"name":"陳小明"'* ]]
+}
+
+@test "身分含會破壞作者字串的字元時被端點拒絕，訊息說得出下一步" {
+  # 悄悄清洗會讓紀錄上的名字與輸入的不同，而紀錄的用途正是追溯到人。
+  run post /api/session '{"name":"陳小明 <admin@example.com>","email":"ming@example.com","role":"user"}'
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"422"* ]]
 }
 
 @test "backend 沒起來時 CLI 大聲失敗，不回一份空清單" {
