@@ -11,7 +11,8 @@ app 由 create_app(repo) 產生而非模組層的全域物件：config-repo 的�
 from fastapi import FastAPI
 
 from config_manager.core.models import FileEntry
-from config_manager.io.preflight import read_config_list
+from config_manager.core.state import State
+from config_manager.io.scan import scan
 
 
 def create_app(repo: str) -> FastAPI:
@@ -20,19 +21,20 @@ def create_app(repo: str) -> FastAPI:
 
     @app.get("/api/configs")
     def list_configs() -> list[dict[str, object]]:
-        """列出所有納管項目（設計文件 §3.5.3）。
+        """列出所有納管項目，含狀態（設計文件 §3.5.3）。
 
-        清單檔每次請求重讀：它是唯一真實來源（ADR-00000002），而快取一份會讓
-        「畫面上的清單」與「磁碟上的清單」有機會不一致——那正是這個系統存在的
-        理由所要避免的東西。
+        每次請求重新掃描：清單檔與目標檔案是唯一真實來源（ADR-00000002），
+        快取一份會讓「畫面上的狀態」與「磁碟上的狀態」有機會不一致——而這個
+        系統存在的理由就是要讓那兩者對得上。設計文件 §5.4 也是這樣定的：
+        開啟主畫面時掃一次，按下「檢查差異」時再掃一次。
         """
-        return [_as_row(entry) for entry in read_config_list(repo).files]
+        return [_as_row(entry, state) for entry, state in scan(repo)]
 
     return app
 
 
-def _as_row(entry: FileEntry) -> dict[str, object]:
-    """條目在清單畫面上需要的欄位。狀態尚未接上，隨 #7 加入。"""
+def _as_row(entry: FileEntry, state: State) -> dict[str, object]:
+    """條目在清單畫面上需要的欄位。"""
     return {
         "uid": entry.uid,
         "name": entry.name,
@@ -41,4 +43,5 @@ def _as_row(entry: FileEntry) -> dict[str, object]:
         "target": entry.target,
         "format": entry.format,
         "groups": entry.groups,
+        "state": state.value,
     }
