@@ -4,7 +4,7 @@
 時刻產生永不變的 uid（時鐘由外部注入，ADR-00000011）。
 """
 
-from core.identity import derive_name
+from core.identity import derive_name, new_uid
 
 
 def test_derive_name_from_nested_target_path():
@@ -25,3 +25,14 @@ def test_derive_name_converts_underscores_to_hyphens():
 def test_derive_name_dedupes_overlapping_levels():
     # 去重疊層級：/etc/docker/docker.json → docker（不是 docker-docker）。
     assert derive_name("/etc/docker/docker.json") == "docker"
+
+
+def test_new_uid_is_eight_char_base36():
+    import datetime
+    import string
+
+    now = datetime.datetime(2026, 9, 4, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    uid = new_uid(now)
+    base36 = string.digits + string.ascii_lowercase
+    # uid 由毫秒時間戳轉 base36，長度 8 碼。
+    assert len(uid) == 8 and all(c in base36 for c in uid)
