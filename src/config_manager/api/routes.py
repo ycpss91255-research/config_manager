@@ -8,16 +8,34 @@ app 由 create_app(repo) 產生而非模組層的全域物件：config-repo 的�
 不同的 repo（ADR-00000011 的同一個理由：輸入從參數進來）。
 """
 
+from collections.abc import Iterable
+
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from config_manager.core.models import FileEntry
 from config_manager.core.state import State
 from config_manager.io.scan import scan
 
+# 前端是另一個容器、另一個 port（設計文件 §3.1：瀏覽器分別連 frontend 與
+# backend），所以頁面對 API 的請求是跨來源的。
+#
+# 預設值不是 "*"。這個服務改得動機器上的 config，允許任意來源等於讓任何一個
+# 被瀏覽的網頁都能對它下指令。預設只放行 compose 起的那個前端；別的部署形態
+# 自己用 CM_ALLOWED_ORIGINS 指定（不變式 4：預設值落向安全）。
+_DEFAULT_ORIGINS = ("http://127.0.0.1:8081", "http://localhost:8081")
 
-def create_app(repo: str) -> FastAPI:
+
+def create_app(repo: str, allowed_origins: Iterable[str] = _DEFAULT_ORIGINS) -> FastAPI:
     """建立服務於 repo 這份 config-repo 的 app。"""
     app = FastAPI(title="config_manager", docs_url="/api/docs", openapi_url="/api/openapi.json")
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(allowed_origins),
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["content-type"],
+    )
 
     @app.get("/api/configs")
     def list_configs() -> list[dict[str, object]]:

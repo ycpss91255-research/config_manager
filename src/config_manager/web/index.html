@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>config_manager</title>
+<!--
+  單一 HTML ＋ 原生 JS（設計文件 §3.3）：v0.10.0 的畫面是清單、按鈕與差異顯示，
+  以 fetch 呼叫 §3.5.3 的端點即可，不需框架也不需打包步驟。
+
+  元素的 data-testid 與可見文字依 doc/UI-ELEMENTS.md 的 W2，不是隨手取的：
+  測試以語意屬性選取，不以 CSS class 或 DOM 路徑（ADR-00000019）。改動這裡就要
+  同步那份文件，否則「有測試」會變成假象。
+
+  這一版只有清單與狀態（#7）。身分輸入、參數表、歷史、差異檢視隨各自的 issue 加入。
+-->
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1b1b1b;
+    --muted: #6b6b6b;
+    --line: #e2e2e2;
+    --panel: #f7f7f7;
+    --in-sync: #2e7d32;
+    --drift: #c62828;
+    --missing: #9e9e9e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181a;
+      --fg: #e8e8e8;
+      --muted: #9aa0a6;
+      --line: #2c2f33;
+      --panel: #1d2023;
+      --in-sync: #66bb6a;
+      --drift: #ef5350;
+      --missing: #8a8f94;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.6 system-ui, "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--line);
+  }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .grow { flex: 1; }
+  button {
+    font: inherit;
+    padding: 6px 14px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  input[type="search"] {
+    font: inherit;
+    padding: 6px 10px;
+    min-width: 220px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  main { padding: 16px 20px 40px; }
+  .group { margin-bottom: 22px; }
+  .group > h2 {
+    font-size: 13px;
+    letter-spacing: .04em;
+    color: var(--muted);
+    margin: 0 0 6px;
+    font-weight: 600;
+  }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 7px 10px;
+    border-radius: 6px;
+  }
+  li + li { border-top: 1px solid var(--line); }
+  li:hover { background: var(--panel); }
+  .dot {
+    flex: none;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    align-self: center;
+  }
+  .dot-in_sync { background: var(--in-sync); }
+  .dot-drift   { background: var(--drift); }
+  .dot-missing { background: var(--missing); }
+  .name { font-weight: 500; }
+  .target {
+    color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+  .state { margin-left: auto; flex: none; font-size: 13px; color: var(--muted); }
+  .notice {
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--muted);
+  }
+  .notice.error { border-color: var(--drift); color: var(--drift); }
+  .notice.error pre {
+    margin: 8px 0 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>config_manager</h1>
+  <input type="search" data-testid="search-input" placeholder="搜尋" aria-label="搜尋">
+  <span class="grow"></span>
+  <button type="button" data-testid="rescan">檢查差異</button>
+</header>
+
+<main>
+  <div id="tree" data-testid="config-tree"></div>
+</main>
+
+<script>
+// 狀態的中文說法取自 CONTEXT.md，不在這裡另造。「未納管」不會出現在這份清單裡
+// ——它的定義是「不在清單檔中」，而這份清單就是清單檔。它屬於納管流程的畫面。
+const STATE_TEXT = {
+  in_sync: "一致",
+  drift: "偏離",
+  missing: "未部署",
+};
+
+// 前端與 backend 是兩個容器、兩個 port（設計文件 §3.1），所以這裡不能用相對路徑
+// ——相對路徑會打到供應這個檔案的靜態伺服器上，得到 404。
+//
+// 由 location 推導而不是寫死 127.0.0.1：用 IP 或主機名開這個頁面時（機器人在
+// 區網上的常態），寫死的位址會指到看頁面的那台電腦自己。backend 那邊要放行
+// 對應的來源，見 CM_ALLOWED_ORIGINS。
+const API_BASE = window.CM_API_BASE || `${location.protocol}//${location.hostname}:8080`;
+
+const UNGROUPED = "ungrouped";
+const tree = document.querySelector("[data-testid='config-tree']");
+const search = document.querySelector("[data-testid='search-input']");
+let rows = [];
+
+function groupsOf(row) {
+  return row.groups && row.groups.length ? row.groups : [UNGROUPED];
+}
+
+// 一份 config 屬多個群組時，在每個群組節點下都出現（T16）。
+function byGroup(items) {
+  const buckets = new Map();
+  for (const row of items) {
+    for (const group of groupsOf(row)) {
+      if (!buckets.has(group)) buckets.set(group, []);
+      buckets.get(group).push(row);
+    }
+  }
+  return [...buckets.entries()].sort(([a], [b]) => {
+    if (a === UNGROUPED) return 1;
+    if (b === UNGROUPED) return -1;
+    return a.localeCompare(b);
+  });
+}
+
+function matches(row, query) {
+  if (!query) return true;
+  const needle = query.toLowerCase();
+  return [row.name, row.hostname, row.target, row.ref]
+    .some((field) => String(field).toLowerCase().includes(needle));
+}
+
+function element(tag, attributes, children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attributes || {})) {
+    if (key === "text") node.textContent = value;
+    else node.setAttribute(key, value);
+  }
+  for (const child of children || []) node.appendChild(child);
+  return node;
+}
+
+function rowNode(row) {
+  // 狀態色點在左，與草稿標記（右側，隨 T18 加入）分開——UI-ELEMENTS W2 的左側樹。
+  return element("li", { "data-testid": `tree-item-${row.uid}` }, [
+    element("span", {
+      class: `dot dot-${row.state}`,
+      "data-testid": "status-dot",
+      "data-state": row.state,
+      title: STATE_TEXT[row.state] || row.state,
+    }),
+    element("span", { class: "name", text: row.name }),
+    element("span", { class: "target", text: row.target }),
+    element("span", { class: "state", text: STATE_TEXT[row.state] || row.state }),
+  ]);
+}
+
+function render() {
+  const visible = rows.filter((row) => matches(row, search.value.trim()));
+  tree.replaceChildren();
+
+  if (!rows.length) {
+    // 什麼都還沒納管是合法狀態，不是錯誤——說出來，而不是留一片空白讓人以為壞了。
+    tree.appendChild(element("p", {
+      class: "notice",
+      "data-testid": "empty-state",
+      text: "還沒有納管任何 config。",
+    }));
+    return;
+  }
+  if (!visible.length) {
+    tree.appendChild(element("p", {
+      class: "notice",
+      "data-testid": "no-matches",
+      text: "沒有符合的項目。",
+    }));
+    return;
+  }
+
+  for (const [group, items] of byGroup(visible)) {
+    tree.appendChild(element("section", {
+      class: "group",
+      "data-testid": `tree-group-${group}`,
+    }, [
+      element("h2", { text: group === UNGROUPED ? "未分群" : group }),
+      element("ul", {}, items.map(rowNode)),
+    ]));
+  }
+}
+
+async function load() {
+  try {
+    const response = await fetch(`${API_BASE}/api/configs`);
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    rows = await response.json();
+    render();
+  } catch (error) {
+    // 大聲失敗（不變式 2）：說出是什麼壞了，不是顯示一份空清單假裝沒事——
+    // 空清單與「讀不到清單」看起來一樣，而那兩件事該做的處置完全不同。
+    tree.replaceChildren(element("div", {
+      class: "notice error",
+      "data-testid": "load-error",
+    }, [
+      element("strong", { text: "讀不到 config 清單。" }),
+      element("pre", { text: String(error && error.message ? error.message : error) }),
+    ]));
+  }
+}
+
+search.addEventListener("input", render);
+document.querySelector("[data-testid='rescan']").addEventListener("click", load);
+load();
+</script>
+
+</body>
+</html>

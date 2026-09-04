@@ -116,3 +116,25 @@ TOML
   [[ "${output}" == *'"state":"missing"'* ]]
   [[ "${output}" == *'"ref":"a@amr01-mfz3k9q1"'* ]]
 }
+
+@test "CLI 的 list 走的是同一支端點，看到的東西與畫面相同" {
+  # ADR-00000009：不存在「CLI 能做但介面不能」或反之的情況，因為根本是同一組
+  # 端點。這一則排在上一則之後，用的是上一則寫進 config-repo 的那三筆。
+  #
+  # 若 CLI 改成自己讀清單檔，這一則仍會綠——所以它不是靠比對輸出來把關，而是
+  # 靠 --api 指向那個 HTTP 位址：讀檔的實作根本不會用到它。
+  run python -m config_manager.api.cli list --api "http://127.0.0.1:${CM_PORT}"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"一致"* ]]
+  [[ "${output}" == *"偏離"* ]]
+  [[ "${output}" == *"未部署"* ]]
+  [[ "${output}" == *"a@amr01-mfz3k9q1"* ]]
+}
+
+@test "backend 沒起來時 CLI 大聲失敗，不回一份空清單" {
+  # 「服務沒起來」與「什麼都還沒納管」看起來都是沒有東西——但該做的處置完全
+  # 不同（不變式 2）。指一個沒有人在聽的 port。
+  run python -m config_manager.api.cli list --api "http://127.0.0.1:9"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"讀不到"* ]]
+}
