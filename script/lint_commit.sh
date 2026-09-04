@@ -59,9 +59,19 @@ main() {
   case "${1:-}" in -h|--help) usage; return 0 ;; esac
   local base="${1:-origin/main}"
 
+  # 「檢查不了」與「沒有東西要檢查」是兩件事，而這裡曾經把前者當成後者：不在 git
+  # repo 裡的時候印一句 fatal 然後回 0，於是一次什麼都沒檢查的執行被讀成綠燈（#115）。
+  # 那正是 test.sh 檔頭記著的 hadolint 教訓——同一種形狀，這次出現在守門腳本身上。
+  if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    printf 'lint_commit: 這裡不是 git repo，commit 訊息無從檢查（%s）\n' "$(pwd)" >&2
+    printf '            下一步：在 repo 的簽出裡執行，或確認容器掛載到了正確的位置\n' >&2
+    return 1
+  fi
+
   if ! git rev-parse --verify --quiet "${base}" >/dev/null; then
-    printf 'lint_commit: base ref %s does not exist; nothing to check.\n' "${base}"
-    return 0
+    printf 'lint_commit: base ref %s 不存在，比不出要檢查哪些 commit\n' "${base}" >&2
+    printf '            下一步：git fetch origin，或以第一個參數指定存在的 ref\n' >&2
+    return 1
   fi
 
   # --no-merges：合併提交的訊息是產生的，不是人寫的。CI 在 pull request 上簽出

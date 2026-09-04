@@ -61,8 +61,10 @@ main() {
   local dir="${1:-script}"
 
   if [[ ! -d "${dir}" ]]; then
-    printf 'lint_portability: %s is not a directory; nothing to check.\n' "${dir}"
-    return 0
+    # 同 #115：目錄不見了而回報通過，等於一次什麼都沒檢查的執行被讀成綠燈。
+    printf 'lint_portability: %s 不是目錄，shell 腳本無從檢查\n' "${dir}" >&2
+    printf '                 下一步：確認 script/ 存在，或以第一個參數指定正確的目錄\n' >&2
+    return 1
   fi
 
   local -a files=()

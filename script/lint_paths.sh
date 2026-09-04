@@ -34,6 +34,14 @@ main() {
     ;;
   esac
 
+  # 不在 git repo 裡時，git ls-files 會以 128 停掉整支腳本——大聲，但訊息是 git 的
+  # 原文，不指出是哪一支 lint 也不說下一步。先自己判一次，給得出可行動的訊息（#115）。
+  if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    printf 'lint_paths: 這裡不是 git repo，追蹤路徑無從檢查（%s）\n' "$(pwd)" >&2
+    printf '           下一步：在 repo 的簽出裡執行，或確認容器掛載到了正確的位置\n' >&2
+    return 1
+  fi
+
   # 每個被追蹤的路徑，加上它的每一段目錄前綴，去重。
   local paths
   paths="$(git ls-files |
