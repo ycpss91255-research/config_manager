@@ -5,6 +5,10 @@
 
 ## 跑
 
+**一律在容器內。** `script/test.sh` 偵測到自己不在測試映像內時會自行建置
+`dockerfile/Dockerfile.test-tools` 並轉進去重跑；CI 走同一條路徑（ADR-00000027）。
+`CM_TEST_LOCAL=1` 可在本機跑，但它會指名哪幾項因缺工具而沒跑。
+
 ```bash
 just test                    # 全部：lint + 所有層級 + coverage
 just test lint               # 只跑靜態分析

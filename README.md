@@ -98,14 +98,19 @@ gh pr merge --squash
 不用動保護規則。它用 `always()` 加明確的結果判定——否則被 skip 的 job 會被當成成功，
 閘門會在什麼都沒檢查的 run 上打開。
 
-## 本機與 CI 跑的是同一組檢查
+## 檢查一律在容器內跑
 
-CI 的 lint job 呼叫的就是 `just test lint` 呼叫的 `./script/test.sh --lint`，不是另外一份
-YAML 清單。**兩份清單一定會漂移**：本 repo 的 CI 曾連續六次全紅，而每一次本機都報乾淨，
-因為 CI 有 hadolint 而本機的 lint 在工具不存在時靜默跳過。
+`just test` 會自行建置 `dockerfile/Dockerfile.test-tools` 並**轉進容器**執行；
+CI 呼叫的是同一支 `./script/test.sh`，不安裝任何工具。**一份映像，兩個呼叫者**
+（ADR-00000027）。
 
-因此**工具缺席一律中止**，不當作通過——「lint 通過」必須代表「lint 跑過」。
-在刻意缺工具的機器上用 `CM_LINT_ALLOW_MISSING=1`，它會明確列出哪幾項沒跑。
+因為**本機不是專案的證據**。這個 repo 已經為此付過四次代價：本機 pytest 6.2.5
+靜默忽略 `pythonpath`；本機沒有 hadolint 而 lint 靜默跳過，CI 連續六次全紅；
+`#56` 的 `io` 撞名在本機 3.10 與容器 3.11 呈現兩種不同症狀；workflow 表達式
+只有 actionlint 驗得到，而它先前只存在於 CI。
+
+逃生口是 `CM_TEST_LOCAL=1`（在本機跑），它會指名哪幾項因缺工具而沒跑——
+**明確跳過仍然不是檢查**。需要別的 apt 鏡像時用 `CM_APT_MIRROR`。
 
 | 檢查 | 擋什麼 |
 |---|---|
@@ -116,12 +121,13 @@ YAML 清單。**兩份清單一定會漂移**：本 repo 的 CI 曾連續六次�
 | `hadolint` | Dockerfile |
 | `actionlint` | workflow 的**表達式**——YAML parser 看不到的那一層 |
 | `commit` | commit 訊息，規則取樣自 base（ADR-00000025） |
+| `adr` | ADR 檔名、編號與結構 |
 
 `pytest` 的 coverage 下限 85%（`src/config_manager/core/`）寫在 `pyproject.toml`，CI 不重述。
 
 ## 給後續維護者 / agent
 
-- **不要重建設計文件。** 直接使用；有新決策就在 `doc/adr/` 加新號（目前 26 份，從 `00000027` 續接）。
+- **不要重建設計文件。** 直接使用；有新決策就在 `doc/adr/` 加新號（目前 27 份，從 `00000028` 續接）。
 - **ADR 的編號與結構 lint 要在 v0.1.0 就寫**：重號 fail、檔名格式不符 fail、
   缺 `> 服務：` 或必要段落 fail、跳號與缺 Alternatives 僅 warn。
   平行開發撞號是真實發生過的缺陷，人工檢查抓不到。
