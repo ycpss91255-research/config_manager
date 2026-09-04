@@ -8,8 +8,9 @@
 # entrypoint 的最後一行是 exec "$@"，所以規格餵它一個 true：前置檢查過了就結束碼 0，
 # 沒過就在 exec 之前 die。
 #
-# test/bats/smoke/entrypoint.bats 是不同的東西——那是建置期的煙霧測試，在 Dockerfile
-# 的 runtime-test 階段跑（Dockerfile:194），問的是「裝進去了嗎」。這裡問的是行為。
+# test/bats/system/entrypoint_smoke.bats 是不同的東西——那是建置期的煙霧測試，在
+# Dockerfile 的 runtime-test 階段對建好的映像跑，問的是「裝進去了嗎」。這裡問的是行為，
+# 而且問的對象是工作目錄裡的那份腳本，所以它屬於整合層、由 script/test.sh 執行。
 
 setup() {
   REPO_ROOT="$(cd "$(dirname "${BATS_TEST_FILENAME}")/../../.." && pwd)"

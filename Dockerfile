@@ -175,6 +175,12 @@ CMD ["python", "-m", "config_manager.api.cli", "serve"]
 # 測試階段，測的是工具映像的環境，而那正好是不會被部署的那個環境。
 FROM runtime AS runtime-test
 
+# 真正的 docker 會沿著 FROM 繼承 sys 設的 SHELL，所以這一行對建置行為是零影響；
+# hadolint 不繼承，它逐個 stage 看，於是底下那個帶 pipe 的 RUN 在它眼裡是跑在
+# 沒有 pipefail 的 sh 上（DL4006）。寫在這裡，讓「這個 stage 依賴 pipefail」
+# 這件事在這個 stage 裡就看得到——那正好也是它該被寫下來的地方。
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
 USER root
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -183,14 +189,34 @@ RUN apt-get update \
         bats \
     && rm -rf /var/lib/apt/lists/*
 
-COPY test/bats/smoke/ /opt/smoke/
-RUN bats /opt/smoke
+# 測試工具只裝在這一層。runtime 不得含它們，而 runtime 是 FROM devel-base，
+# 所以 pytest 絕不能進 config/pip/requirements.txt——那份是 devel-base 裝的。
+RUN pip install --no-cache-dir pytest
 
-# 系統層級（T9）：服務在這份映像裡起在 loopback 上，並以真實 HTTP 回話。
-# script/test.sh 裝不下這些——它把自己跑在工具映像裡，那裡既沒有 docker socket 也
-# 沒有 docker CLI，起不了被測的那個容器。而在這裡，它本身就已經是那個容器。
-COPY test/bats/runtime/ /opt/runtime/
-RUN bats /opt/runtime
+# 這裡是這組規格唯一該執行的地方，所以這裡也是唯一擋得住它們「永遠在跳過」的地方。
+# 它們在別的環境會自己跳過（那裡沒有被測的映像可看），而一組每次都跳過的規格與
+# 沒有規格的差別只有輸出多幾行字。旗標與守衛要一起看：旗標讓它們在這裡真的跑，
+# 守衛保證旗標被漏掉時建置紅掉，而不是安靜地全部跳過。
+COPY test/bats/system/ /opt/system-bats/
+RUN CM_SYSTEM_IMAGE=1 bats --formatter tap /opt/system-bats | tee /tmp/system-bats.tap \
+    && if grep -q '# skip' /tmp/system-bats.tap; then \
+         echo 'Dockerfile: 系統層的 bats 規格在它唯一該執行的地方跳過了' >&2; \
+         echo 'Dockerfile: 那不是通過。檢查 CM_SYSTEM_IMAGE 有沒有傳進去' >&2; \
+         exit 1; \
+       fi \
+    && rm -f /tmp/system-bats.tap
+
+# 系統層級（T9／T10）：服務在**這份映像**裡起在 loopback 上，以真實 HTTP 回話。
+# 同一份規格也由 script/test.sh 在工具映像裡就地執行一次——那一次的覆蓋率算得進
+# 報告，這一次量的是保真度。兩者跑同一份檔案，所以不會分歧（#116、#97）。
+COPY test/pytest/system/ /opt/system/
+RUN mkdir -p /tmp/config-repo \
+    && ( CM_CONFIG_REPO=/tmp/config-repo CM_ROLE=backend \
+         /entrypoint.sh python -m config_manager.api.cli serve \
+           --host 127.0.0.1 --port 8080 & ) \
+    && CM_SYSTEM_BASE_URL=http://127.0.0.1:8080 \
+       CM_SYSTEM_CONFIG_REPO=/tmp/config-repo \
+       pytest /opt/system -q
 
 ARG USER_NAME="user"
 USER ${USER_NAME}
