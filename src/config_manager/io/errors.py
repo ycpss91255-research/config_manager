@@ -43,3 +43,7 @@ class ConfigListUnparsable(PreflightError):
 
 class SourceMissing(PreflightError):
     """清單檔某條目引用的來源內容不在 repo 裡。只查來源側——目標未部署是合法狀態。"""
+
+
+class ContentUnreadable(Exception):
+    """路徑存在但內容讀不出來。與「不存在」分開：後者是未部署，是合法狀態。"""
