@@ -5,7 +5,7 @@
 選填欄位待後續切片加入。
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Permissions(BaseModel):
@@ -38,3 +38,5 @@ class ConfigList(BaseModel):
     list_version: int
     defaults: Defaults
     files: list[FileEntry] = []
+    # 載入時收集的警示（非清單檔資料，不參與寫回）。警示與錯誤的分界見 CONTEXT。
+    warnings: list[str] = Field(default_factory=list, exclude=True)

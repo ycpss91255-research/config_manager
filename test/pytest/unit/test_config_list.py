@@ -183,3 +183,39 @@ groups   = []
     message = str(exc.value)
     assert "navigation-params" in message
     assert "xml" in message
+
+
+def test_duplicate_name_hostname_is_a_warning_not_an_exception():
+    # (name, hostname) 重複只是警示，不是例外：uid 已保證唯一（警示與錯誤的分界）。
+    text = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/a.yaml"
+target   = "/opt/a.yaml"
+format   = "yaml"
+groups   = []
+
+[[files]]
+uid      = "mfz3k9r7"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/b.yaml"
+target   = "/opt/b.yaml"
+format   = "yaml"
+groups   = []
+"""
+
+    config_list = load(text)  # 不得丟例外
+
+    joined = " ".join(config_list.warnings)
+    # 警示須指出是哪兩筆（以各自的 uid 區分，name 與 hostname 相同）。
+    assert "mfz3k9q1" in joined and "mfz3k9r7" in joined

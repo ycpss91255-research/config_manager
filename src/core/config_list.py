@@ -28,9 +28,10 @@ def load(text: str) -> ConfigList:
 
 
 def _check_integrity(config_list: ConfigList) -> None:
-    """跨條目的完整性檢查。硬錯誤丟具名例外。"""
+    """跨條目的完整性檢查。硬錯誤丟具名例外，軟問題收進 warnings。"""
     seen_uid: dict[str, FileEntry] = {}
     seen_target: dict[str, FileEntry] = {}
+    seen_name_host: dict[tuple[str, str], FileEntry] = {}
     for entry in config_list.files:
         if ".." in PurePosixPath(entry.target).parts:
             raise TargetEscape(
@@ -58,3 +59,13 @@ def _check_integrity(config_list: ConfigList) -> None:
                 f"共用目標「{entry.target}」"
             )
         seen_target[entry.target] = entry
+
+        key = (entry.name, entry.hostname)
+        first_pair = seen_name_host.get(key)
+        if first_pair is not None:
+            config_list.warnings.append(
+                f"警示：{first_pair.ref} 與 {entry.ref} 共用相同的 name 與 "
+                f"hostname（uid 仍唯一，功能不受影響）"
+            )
+        else:
+            seen_name_host[key] = entry
