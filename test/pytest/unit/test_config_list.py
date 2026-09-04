@@ -93,10 +93,11 @@ groups   = []
         load(text)
 
     message = str(exc.value)
-    # 訊息必須指出是哪兩筆，且點名重複的 uid（不變式 2：大聲失敗）。
-    assert "navigation-params" in message
-    assert "docker-daemon" in message
-    assert "mfz3k9q1" in message
+    # 訊息必須以完整參照形式 <name>@<hostname>-<uid> 指出是哪兩筆（CONTEXT
+    # 身分欄位；不變式 2：大聲失敗）。斷言整串而非三個子字串——子字串各自
+    # 出現不代表它們被組合成操作者查得到的那個識別碼。
+    assert "navigation-params@amr01-mfz3k9q1" in message
+    assert "docker-daemon@amr01-mfz3k9q1" in message
 
 
 def test_duplicate_target_raises_named_exception_identifying_both_entries():
@@ -132,8 +133,8 @@ groups   = []
         load(text)
 
     message = str(exc.value)
-    assert "navigation-params" in message
-    assert "docker-daemon" in message
+    assert "navigation-params@amr01-mfz3k9q1" in message
+    assert "docker-daemon@amr01-mfz3k9r7" in message
     assert "/opt/shared.yaml" in message
 
 
