@@ -3,9 +3,11 @@
 純邏輯，不做 I/O（ADR-00000011）：load 收字串、不讀磁碟。
 """
 
+from pathlib import PurePosixPath
+
 import tomlkit
 
-from core.errors import DuplicateTarget, DuplicateUid
+from core.errors import DuplicateTarget, DuplicateUid, TargetEscape
 from core.models import ConfigList, FileEntry
 
 
@@ -22,6 +24,11 @@ def _check_integrity(config_list: ConfigList) -> None:
     seen_uid: dict[str, FileEntry] = {}
     seen_target: dict[str, FileEntry] = {}
     for entry in config_list.files:
+        if ".." in PurePosixPath(entry.target).parts:
+            raise TargetEscape(
+                f"目標路徑含 ..（逃逸風險）：{entry.ref} 的目標「{entry.target}」"
+            )
+
         first_uid = seen_uid.get(entry.uid)
         if first_uid is not None:
             raise DuplicateUid(

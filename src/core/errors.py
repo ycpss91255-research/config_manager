@@ -15,3 +15,7 @@ class DuplicateUid(ConfigListError):
 
 class DuplicateTarget(ConfigListError):
     """兩筆條目寫到同一個目標位置。寫出順序決定最終結果，是靜默 bug。"""
+
+
+class TargetEscape(ConfigListError):
+    """目標路徑含 .. 路徑段，可逃逸到預期目錄外。"""

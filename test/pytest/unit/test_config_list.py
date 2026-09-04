@@ -6,7 +6,7 @@
 import pytest
 
 from core.config_list import load
-from core.errors import DuplicateTarget, DuplicateUid
+from core.errors import DuplicateTarget, DuplicateUid, TargetEscape
 
 
 def test_valid_config_list_loads_with_correct_field_values():
@@ -127,3 +127,31 @@ groups   = []
     assert "navigation-params" in message
     assert "docker-daemon" in message
     assert "/opt/shared.yaml" in message
+
+
+def test_target_containing_dotdot_raises_named_exception():
+    # 目標路徑含 .. 可逃逸到預期目錄外，是寫出的逃逸風險（逃逸防護）。
+    text = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/a.yaml"
+target   = "/opt/robot/../../etc/evil.yaml"
+format   = "yaml"
+groups   = []
+"""
+
+    with pytest.raises(TargetEscape) as exc:
+        load(text)
+
+    message = str(exc.value)
+    assert "navigation-params" in message
+    assert "/opt/robot/../../etc/evil.yaml" in message
