@@ -34,8 +34,14 @@ SCOPE_VALUE = "參數值"
 SCOPE_ALL = "全部"
 
 
+def _as_text(value: Any) -> str:
+    return str(value)
+
+
 def search(index_entries: list[Entry], query: str, scope: str) -> list[Entry]:
     """在索引中依範圍搜尋，回傳命中的 (uid, 參數路徑, 值)。查無結果回空清單。"""
     if scope == SCOPE_NAME:
         return [entry for entry in index_entries if query in entry[1]]
+    if scope == SCOPE_VALUE:
+        return [entry for entry in index_entries if query in _as_text(entry[2])]
     return []
