@@ -23,6 +23,12 @@
 - **分支 → PR → squash。** 新工作開 feature branch，開 PR，由維護者 squash merge。**不得直推 `main`，不得 force push**——這個 org 是多人共推，推之前先 `git fetch` 加 `git rebase origin/main`。
 - **自己無法決定的事**（owner 層級／架構）→ 開 GitHub issue 並等待，但不要空轉：同時去做另一個沒被擋住的 issue。
 - **已交付行為的 bug** → `fix` 加 patch 版號；一個 milestone 的功能是 minor。
+- **一張 issue 對應一個 PR。** issue 的驗收條件**全部勾完**才開 PR——做不完就把 issue 拆小，
+  一張需要三個 PR 才做得完的 issue，本來就是三件事。
+- **issue 是帳本，PR 是描述。** 每完成一條驗收條件就 commit 一次，並把該 commit 的 SHA
+  記在那條勾選行後面：`- [x] 條件文字 — <sha>`。PR 描述寫的是「做了什麼、為什麼、
+  被否決的選項、突變檢查、驗證數字」，不是進度。
+  由 `script/lint_checkpoints.sh` 在 CI 檢查（未勾、沒記 SHA、SHA 不在本 PR 範圍內，三者皆擋）。
 - **決策要寫回它被提出的地方。** 討論定案後，把決策、佐證、以及被否決的選項與理由寫回該 issue 或 PR，不要只留在對話裡。關閉帶驗收條件的 issue 時，**證據附在 issue 上，勾選框實際勾起來**。
 
 ## Commit 訊息

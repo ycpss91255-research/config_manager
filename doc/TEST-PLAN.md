@@ -618,6 +618,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `script/lint_paths.sh` | `test/bats/unit/lint_paths.bats` |
 | `script/lint_portability.sh` | `test/bats/unit/lint_portability.bats` |
 | `script/test.sh` | `test/bats/unit/test.bats` |
+| `script/lint_checkpoints.sh` | `test/bats/unit/lint_checkpoints.bats` |
 
 **`script/test.sh` 被觀察的不是 lint 規則，而是「缺工具不得靜默通過」**（#72）。
 它與四支 lint 同屬一個測試介面，因為觀察位置相同：命令列進去，結束碼與訊息出來。
@@ -632,6 +633,14 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | 缺席的工具 | 不被呼叫（不是「呼叫了才發現不在」的 127） |
 | `CM_IN_TEST_IMAGE=1` ／ `CM_TEST_LOCAL=1` | 就地執行，不轉進容器 |
 | 兩者皆無 | 轉進容器；docker 缺席時訊息指出逃生口 |
+
+**`lint_checkpoints.sh` 不由 `script/test.sh` 執行，是 CI 的一個獨立 job。**
+它需要 GitHub API 讀被引用的 issue，而 `test.sh` 在容器裡跑、那裡沒有 token。規格以
+PATH 上的假 `gh` 替換，所以規格本身不需要網路，也不會因為某張真的 issue 被改動而轉紅。
+
+**它擋不住的那一件事**：工具只能確認「有一個屬於本 PR 的 SHA 被記在那一行」，
+**不能確認那個 commit 真的實作了那條驗收條件**。那需要人看。寫在這裡，免得日後
+以為它被驗過了。
 
 **每條規則都要有一個會觸發它的案例。** 一支所有 FAIL 路徑都沒被執行過的 lint，
 它擋得住什麼是沒有證據的——規則看起來在運作，而那正是回歸風險最高的形狀。
@@ -695,6 +704,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `script/lint_commit.sh` | T19 | 已落地 |
 | `script/lint_paths.sh` | T19 | 已落地 |
 | `script/lint_portability.sh` | T19 | 已落地 |
+| `script/lint_checkpoints.sh` | T19 | 已落地（CI job，不由 `test.sh` 執行） |
 | `script/test.sh` | T19（缺工具不得靜默通過，#72） | 已落地 |
 | `script/{build,run,exec,stop,prune}.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/dispatch.sh` | 無——見「刻意的空格」 | 已落地 |

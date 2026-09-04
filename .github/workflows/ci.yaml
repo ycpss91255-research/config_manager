@@ -20,6 +20,9 @@ on:
 
 permissions:
   contents: read
+  # checkpoints job 要讀被引用的 issue 內文。唯讀，且只在 pull request 上跑。
+  issues: read
+  pull-requests: read
 
 jobs:
   commit-message:
@@ -33,6 +36,24 @@ jobs:
         with:
           fetch-depth: 0
       - run: ./script/lint_commit.sh "origin/${{ github.base_ref }}"
+
+  checkpoints:
+    # 驗收條件的帳本：被引用的 issue 必須全部勾完，且每個勾起來的項目要記下一個
+    # 屬於本 PR 的 commit SHA。依 §0.4「無法自動檢查的規範等同不存在」——這個流程
+    # 若只寫在 CLAUDE.md，它就只是一段約定。
+    #
+    # 跟 commit-message 一樣跑在映像之外：它只需要 gh 與 git，而 script/test.sh
+    # 在容器裡跑，那裡沒有 token。
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # rev-list base..HEAD 需要完整歷史。
+          fetch-depth: 0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./script/lint_checkpoints.sh "${{ github.event.pull_request.number }}" "origin/${{ github.base_ref }}"
 
   checks:
     runs-on: ubuntu-latest
@@ -65,7 +86,7 @@ jobs:
     # `always()` 加上明確的結果判定：少了它，被跳過或被取消的相依會被讀成成功，
     # 於是閘門會在一次什麼都沒檢查的執行上打開。
     if: always()
-    needs: [commit-message, checks, build]
+    needs: [commit-message, checkpoints, checks, build]
     runs-on: ubuntu-latest
     steps:
       - name: Check that every job passed
