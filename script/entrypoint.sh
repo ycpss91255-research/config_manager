@@ -29,11 +29,26 @@ check_backend_preconditions() {
   [[ -n "${repo}" ]] || die "CM_CONFIG_REPO is unset; the backend has no source repo to serve"
   [[ -d "${repo}" ]] || die "config-repo mount ${repo} does not exist (is the volume mounted?)"
 
-  # An empty directory is the first-run case, not a fault: the volume exists
-  # but nothing has initialised it yet. Say so and initialise, rather than
-  # failing on a state the operator cannot distinguish from a real problem.
   if [[ ! -e "${repo}/.git" ]]; then
-    printf 'entrypoint: initialising empty config-repo at %s\n' "${repo}"
+    # EMPTY and NON-EMPTY are different situations and this used to conflate
+    # them: the comment said "empty directory" while the condition only asked
+    # whether .git was absent, so a directory full of files was initialised and
+    # announced as empty (#69).
+    #
+    # It matters because io/git.record starts with `git add -A`. Initialising
+    # over someone else's files sweeps every one of them into the first commit,
+    # and a mistyped mount path looks like a successful startup.
+    if [[ -n "$(ls -A "${repo}")" ]]; then
+      die "config-repo mount ${repo} is not empty but is not under version control;" \
+        "initialise it deliberately (git init) or check the mount path"
+    fi
+
+    # An empty directory IS the first-run case: the volume exists, nothing has
+    # initialised it yet. A mount pointed at the wrong empty directory cannot be
+    # told apart from that from in here -- so print the resolved absolute path
+    # and let whoever reads it recognise their own mistake, rather than pretend
+    # the difference is knowable.
+    printf 'entrypoint: initialising empty config-repo at %s\n' "$(cd "${repo}" && pwd)"
     git init --quiet --initial-branch=main "${repo}" || die "git init failed at ${repo}"
     return 0
   fi
