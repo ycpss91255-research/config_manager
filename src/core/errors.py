@@ -27,3 +27,7 @@ class InvalidFormat(ConfigListError):
 
 class UnknownField(ConfigListError):
     """清單檔含無法辨識的欄位。格式錯誤須大聲失敗、指名行號（PDF §329）。"""
+
+
+class DumpMismatch(ConfigListError):
+    """dump 的資料模型與原始清單檔不符（改動或移除既有條目）。目前只支援未改動與新增。"""

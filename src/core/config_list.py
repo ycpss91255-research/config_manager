@@ -10,6 +10,7 @@ from typing import Iterable
 import tomlkit
 
 from core.errors import (
+    DumpMismatch,
     DuplicateTarget,
     DuplicateUid,
     InvalidFormat,
@@ -52,11 +53,16 @@ def dump(config_list: ConfigList, original: str) -> str:
         files = tomlkit.aot()
         doc["files"] = files
 
-    existing_uids = {table.get("uid") for table in files}
+    doc_by_uid = {table.get("uid"): table for table in files}
     for entry in config_list.files:
-        if entry.uid in existing_uids:
-            continue
-        files.append(_entry_to_table(entry))
+        doc_table = doc_by_uid.get(entry.uid)
+        if doc_table is None:
+            files.append(_entry_to_table(entry))
+        elif FileEntry.model_validate(doc_table.unwrap()) != entry:
+            raise DumpMismatch(
+                f"dump 尚不支援改動既有條目：{entry.ref} 與原始清單檔內容不符"
+                "（目前只支援未改動與新增）"
+            )
 
     return tomlkit.dumps(doc)
 

@@ -7,6 +7,7 @@ import pytest
 
 from core.config_list import dump, load
 from core.errors import (
+    DumpMismatch,
     DuplicateTarget,
     DuplicateUid,
     InvalidFormat,
@@ -447,3 +448,29 @@ groups   = []
 """
 
     assert load(text).warnings == []
+
+
+def test_dump_refuses_a_diverged_existing_entry():
+    # dump 只支援未改動與新增；改了既有條目卻寫回會靜默丟失 → 應大聲失敗（不變式 2）。
+    original = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/a.yaml"
+target   = "/opt/a.yaml"
+format   = "yaml"
+groups   = []
+"""
+
+    config_list = load(original)
+    config_list.files[0].target = "/opt/CHANGED.yaml"  # 改動既有條目
+    with pytest.raises(DumpMismatch):
+        dump(config_list, original)
