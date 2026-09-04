@@ -298,3 +298,36 @@ def test_appending_an_entry_keeps_existing_entries_verbatim():
     # 既有內容（含註解、單引號、順序）逐字保留，且新條目出現。
     assert _APPEND_TEXT in result
     assert "mfz3k9z9" in result
+
+
+def test_entry_optional_fields_load_correctly():
+    # §4.3 的選填欄位：inline permissions 覆蓋、schema、requires_privilege。
+    text = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid         = "mfz3k9r7"
+name        = "docker-daemon"
+hostname    = "amr01"
+source      = "files/system/daemon.json"
+target      = "/etc/docker/daemon.json"
+format      = "json"
+groups      = ["system"]
+description = "Docker daemon 設定"
+schema      = ".schemas/daemon.json"
+requires_privilege = true
+permissions = { owner = "root", group = "docker", mode = "0600" }
+"""
+
+    entry = load(text).files[0]
+    assert (
+        entry.requires_privilege,
+        entry.schema_path,
+        entry.description,
+        entry.permissions.mode,
+    ) == (True, ".schemas/daemon.json", "Docker daemon 設定", "0600")

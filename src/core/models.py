@@ -1,11 +1,9 @@
 """core/models — config 清單檔的 pydantic 資料模型（PDF §4.3）。
 
 資料模型本身無行為（無獨立測試介面），其約束在 T1 載入時被驗證。
-只宣告目前切片需要的欄位；schema / 權限覆蓋 / requires_privilege 等
-選填欄位待後續切片加入。
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Permissions(BaseModel):
@@ -19,6 +17,8 @@ class Defaults(BaseModel):
 
 
 class FileEntry(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     uid: str
     name: str
     hostname: str
@@ -27,6 +27,10 @@ class FileEntry(BaseModel):
     format: str
     groups: list[str] = []
     description: str | None = None
+    # schema 是清單檔的鍵名；以別名避免與 pydantic 的保留名衝突。
+    schema_path: str | None = Field(default=None, alias="schema")
+    requires_privilege: bool = False
+    permissions: Permissions | None = None  # 未指定時套用 defaults.permissions
 
     @property
     def ref(self) -> str:
