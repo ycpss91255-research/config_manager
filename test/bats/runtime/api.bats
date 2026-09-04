@@ -77,3 +77,42 @@ PY
   # 種子檔存在即證明走的是 entrypoint 那條路徑，而不是繞過它直接叫 uvicorn。
   [ -f "/tmp/config-repo/config-list.toml" ]
 }
+
+@test "GET /api/configs 帶出每一筆的狀態" {
+  # 掃描的三種狀態各一筆，走真實 HTTP 看端點吐出來的形狀。判定本身由 T21 逐條
+  # 測過；這裡要證明的是「端點真的把它接上了」，而不是回一個寫死的欄位。
+  #
+  # 這一則刻意排在「回空清單」之後：它會改動 config-repo。
+  local repo="/tmp/config-repo"
+  mkdir -p "${repo}/files" "${repo}/deployed"
+  printf 'a: 1\n' >"${repo}/files/a.yaml"
+  printf 'b: 1\n' >"${repo}/files/b.yaml"
+  printf 'c: 1\n' >"${repo}/files/c.yaml"
+  printf 'a: 1\n' >"${repo}/deployed/a.yaml"   # 與來源相同 → 一致
+  printf 'b: 2\n' >"${repo}/deployed/b.yaml"   # 與來源不同 → 偏離
+                                               # c 沒有目標檔     → 未部署
+
+  local letters=(a b c)
+  local index letter
+  for index in 0 1 2; do
+    letter="${letters[${index}]}"
+    cat >>"${repo}/config-list.toml" <<TOML
+
+[[files]]
+uid      = "mfz3k9q$((index + 1))"
+name     = "${letter}"
+hostname = "amr01"
+source   = "files/${letter}.yaml"
+target   = "${repo}/deployed/${letter}.yaml"
+format   = "yaml"
+groups   = []
+TOML
+  done
+
+  run get /api/configs
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *'"state":"in_sync"'* ]]
+  [[ "${output}" == *'"state":"drift"'* ]]
+  [[ "${output}" == *'"state":"missing"'* ]]
+  [[ "${output}" == *'"ref":"a@amr01-mfz3k9q1"'* ]]
+}
