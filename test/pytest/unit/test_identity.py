@@ -10,3 +10,8 @@ from core.identity import derive_name
 def test_derive_name_from_nested_target_path():
     # /opt/robot/navigation/params.yaml → navigation-params（取最後二層、去副檔名）。
     assert derive_name("/opt/robot/navigation/params.yaml") == "navigation-params"
+
+
+def test_derive_name_strips_any_extension_not_only_yaml():
+    # /etc/docker/daemon.json → docker-daemon（副檔名不限 .yaml）。
+    assert derive_name("/etc/docker/daemon.json") == "docker-daemon"

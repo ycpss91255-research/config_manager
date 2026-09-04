@@ -3,9 +3,11 @@
 純邏輯，不做 I/O（ADR-00000011）：derive_name 收路徑字串，new_uid 收注入的時鐘。
 """
 
+from pathlib import PurePosixPath
+
 
 def derive_name(target_path: str) -> str:
     """由目標路徑推導人可讀名稱。"""
     parts = target_path.split("/")
-    filename = parts[-1].replace(".yaml", "")
+    filename = PurePosixPath(parts[-1]).stem
     return f"{parts[-2]}-{filename}"
