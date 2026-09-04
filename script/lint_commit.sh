@@ -106,7 +106,14 @@ main() {
 
     # The half a human reads is Chinese; type and scope stay as base defines
     # them because they are read by tools (ADR-00000028).
-    if ! printf '%s' "${body#*: }" | grep -qP '[\x{4e00}-\x{9fff}]'; then
+    # Byte-level non-ASCII, not a CJK range: grep -P is GNU-only (BSD grep on
+    # macOS rejects -P outright, so the check silently mis-fired there and told
+    # a correct Chinese subject it had none), and a UTF-8 literal range like
+    # [一-鿿] is rejected by GNU grep under the image's C.UTF-8 locale
+    # ("Invalid collation character"). LC_ALL=C makes it a byte test both greps
+    # agree on: an all-English subject carries no byte above 0x7E, a Chinese
+    # one does.
+    if ! printf '%s' "${body#*: }" | LC_ALL=C grep -q '[^ -~]'; then
       printf 'FAIL %s  %s\n' "${short}" "${subject}" >&2
       printf '     subject has no Chinese. This repo keeps its record in Chinese;\n' >&2
       printf '     only the type(scope) prefix stays as base defines it.\n' >&2
