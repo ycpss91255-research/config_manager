@@ -487,6 +487,36 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 
 ---
 
+## 工具層（repo 自身的守門腳本）
+
+### T19 — 守門腳本的規則
+
+**介面**：每支 lint 的命令列。餵一個目錄或 base ref 進去，觀察**結束碼與訊息**，
+不碰腳本內部。規格以 bats 撰寫，放在 `test/bats/unit/<腳本名>.bats`。
+
+| 腳本 | 規格 |
+|---|---|
+| `script/lint_adr.sh` | `test/bats/unit/lint_adr.bats` |
+| `script/lint_commit.sh` | `test/bats/unit/lint_commit.bats` |
+| `script/lint_paths.sh` | `test/bats/unit/lint_paths.bats` |
+| `script/lint_portability.sh` | `test/bats/unit/lint_portability.bats` |
+
+**每條規則都要有一個會觸發它的案例。** 一支所有 FAIL 路徑都沒被執行過的 lint，
+它擋得住什麼是沒有證據的——規則看起來在運作，而那正是回歸風險最高的形狀。
+`shellcheck` 不能充數：依 `doc/test/TEST.md` 那是軸 1 靜態分析，不是動態測試。
+
+**WARN 的案例要斷言結束碼為 0。** fail 與 warn 的差別就是擋不擋得住合併，
+只斷言「訊息裡有 WARN」不會發現一條被誤寫成 fail 的 warn。
+
+**規格必須通得過突變檢查。** 把它針對的規則從腳本裡拿掉，該規格要轉紅。
+不會因規則消失而轉紅的規格，測的不是那條規則。這一項不自動化，
+在 PR 描述裡記下做過哪些突變與結果。
+
+**已知未涵蓋**：`script/test.sh` 的「缺工具不得靜默通過」保證（#72），
+以及其餘 shell 腳本（#74）。兩者都不是刻意留空，是還沒做。
+
+---
+
 ## 覆蓋率審計
 
 每個模組與每條核心流程都必須落在至少一個測試介面上。**沒有空格。**
@@ -513,6 +543,10 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） |
 | `api/cli` | T10 |
 | `script/entrypoint.sh` | T15 |
+| `script/lint_adr.sh` | T19 |
+| `script/lint_commit.sh` | T19 |
+| `script/lint_paths.sh` | T19 |
+| `script/lint_portability.sh` | T19 |
 | `src/web` | T11 |
 
 ### 流程 → 測試介面

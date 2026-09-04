@@ -28,9 +28,16 @@ write_adr() {
     printf -- '- **Status:** Accepted\n\n'
     [[ "${omit}" == "Context" ]] || printf '## Context\n\n內容\n\n'
     [[ "${omit}" == "Decision" ]] || printf '## Decision\n\n內容\n\n'
-    printf '## Alternatives\n\n內容\n\n'
+    [[ "${omit}" == "Alternatives" ]] || printf '## Alternatives\n\n內容\n\n'
     [[ "${omit}" == "Consequences" ]] || printf '## Consequences\n\n內容\n'
   } >"${path}"
+}
+
+# 把某份 ADR 的 Status 換成別的值。
+set_status() {
+  local path="$1" value="$2"
+  sed -e "s/\*\*Status:\*\* Accepted/**Status:** ${value}/" "${path}" >"${ADRS}/tmp"
+  mv "${ADRS}/tmp" "${path}"
 }
 
 @test "結構完整的 ADR 目錄通過" {
@@ -52,7 +59,7 @@ write_adr() {
   [[ "${output}" == *"服務"* ]]
 }
 
-@test "缺少必要段落會失敗，並指名是哪一段" {
+@test "缺少 Decision 會失敗，並指名是哪一段" {
   write_adr "${ADRS}/00000001-first.md" "Decision"
 
   run "${LINT}" "${ADRS}"
@@ -60,14 +67,63 @@ write_adr() {
   [[ "${output}" == *"Decision"* ]]
 }
 
+@test "缺少 Context 會失敗，並指名是哪一段" {
+  write_adr "${ADRS}/00000001-first.md" "Context"
+
+  run "${LINT}" "${ADRS}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"Context"* ]]
+}
+
+@test "缺少 Consequences 會失敗，並指名是哪一段" {
+  write_adr "${ADRS}/00000001-first.md" "Consequences"
+
+  run "${LINT}" "${ADRS}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"Consequences"* ]]
+}
+
 @test "Status 值不在允許集合內會失敗" {
   write_adr "${ADRS}/00000001-first.md"
-  sed -e 's/\*\*Status:\*\* Accepted/**Status:** WIP/' "${ADRS}/00000001-first.md" >"${ADRS}/tmp"
-  mv "${ADRS}/tmp" "${ADRS}/00000001-first.md"
+  set_status "${ADRS}/00000001-first.md" "WIP"
 
   run "${LINT}" "${ADRS}"
   [ "${status}" -ne 0 ]
   [[ "${output}" == *"Status"* ]]
+}
+
+@test "Status 為 Superseded by ADR-NNNNNNNN 是合法值" {
+  # 取代一份 ADR 不是刪掉它——ADR-00000005 的同一條理由：紀錄只增不改。
+  # 這個值長得和 Accepted 完全不同，正則要真的容得下它。
+  write_adr "${ADRS}/00000001-first.md"
+  set_status "${ADRS}/00000001-first.md" "Superseded by ADR-00000002"
+  write_adr "${ADRS}/00000002-second.md"
+
+  run "${LINT}" "${ADRS}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "缺少 Alternatives 只警告，不擋" {
+  # 被否決的選項是 ADR 最有價值的一段，但少了它不足以擋下合併——
+  # 與 lint_commit 的缺 scope 同一種 fail/warn 切分。
+  write_adr "${ADRS}/00000001-first.md" "Alternatives"
+
+  run "${LINT}" "${ADRS}"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"WARN"* ]]
+  [[ "${output}" == *"Alternatives"* ]]
+}
+
+@test "編號跳號只警告，並指名缺的是哪一號" {
+  # 跳號可能是刻意的（草稿被丟棄），也可能是撞號後有人改錯邊，
+  # 分不出來所以不擋，但要說出來。
+  write_adr "${ADRS}/00000001-first.md"
+  write_adr "${ADRS}/00000003-third.md"
+
+  run "${LINT}" "${ADRS}"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"WARN"* ]]
+  [[ "${output}" == *"00000002"* ]]
 }
 
 @test "檔名不符 NNNNNNNN-slug.md 會失敗" {
