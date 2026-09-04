@@ -8,6 +8,7 @@
 
 import pytest
 
+from config_manager.io import preflight as preflight_module
 from config_manager.io.errors import (
     ConfigListMissing,
     ConfigListUnparsable,
@@ -91,6 +92,52 @@ def test_missing_source_content_raises_named_exception_with_the_ref_and_path(tmp
     message = str(exc.value)
     assert "navigation-params@amr01-mfz3k9q1" in message
     assert "files/amr01/nav2_params.yaml" in message
+
+
+def test_a_bug_inside_load_is_not_relabelled_as_an_unparsable_config_list(
+    tmp_path, monkeypatch
+):
+    # 清單檔完全合法，壞的是 load() 自己。把這種例外重貼成「清單檔無法解析」的話，
+    # 三要素每一項都是假的：清單檔沒有無法解析、指向的檔案沒壞、而「下一步」把人
+    # 送去改一個沒有問題的東西——那比沒有訊息更糟，因為系統告訴他問題在那裡。
+    #
+    # 設計 §0.4：捕捉即代表有處理策略，否則應向上拋出。重貼標籤不是處理策略。
+    _write_list(tmp_path, _MINIMAL_LIST)
+
+    def explode(_text):
+        raise TypeError("'NoneType' object has no attribute 'keys'")
+
+    monkeypatch.setattr(preflight_module, "load", explode)
+
+    with pytest.raises(TypeError):
+        preflight(str(tmp_path))
+
+
+def test_a_config_list_that_does_not_match_the_schema_is_still_named_unparsable(
+    tmp_path,
+):
+    # list_version 該是整數。這是「清單檔真的有問題」，所以仍然要被收成具名例外
+    # 並帶上路徑——縮小捕捉範圍不能把這一類一起放掉。
+    _write_list(tmp_path, _MINIMAL_LIST.replace("list_version = 1", 'list_version = "一"'))
+
+    with pytest.raises(ConfigListUnparsable) as exc:
+        preflight(str(tmp_path))
+
+    assert "config-list.toml" in str(exc.value)
+
+
+def test_a_config_list_that_fails_its_integrity_checks_is_still_named_unparsable(
+    tmp_path,
+):
+    # 未知欄位是 core/config_list 的具名例外（T1）。它同樣是「清單檔真的有問題」，
+    # 而 preflight.main 只接 PreflightError——所以這一類必須在這裡被收起來，
+    # 否則使用者的打字錯誤會以 traceback 的形式呈現。
+    _write_list(tmp_path, _MINIMAL_LIST + '\nlist_versionn = 2\n')
+
+    with pytest.raises(ConfigListUnparsable) as exc:
+        preflight(str(tmp_path))
+
+    assert "config-list.toml" in str(exc.value)
 
 
 def test_undeployed_target_is_not_a_preflight_failure(tmp_path):
