@@ -22,6 +22,7 @@ Usage: script/test.sh [--level <name>] [--lint [<tool>]] [--file <path>] [--filt
 
   (no arguments)      lint + all levels + coverage
   --level <name>      unit | integration | system | acceptance
+                      （同時跑該層級的 pytest 與 bats 規格）
   --lint [<tool>]     all linters, or one of:
                       ruff | mypy | pylint | shellcheck | hadolint | actionlint | commit | adr | paths
   --file <path>       a single spec file
@@ -85,6 +86,7 @@ _tool_install_hint() {
   case "$1" in
     ruff|mypy|pylint|pytest) printf 'pip install -r config/pip/requirements-dev.txt' ;;
     shellcheck) printf 'apt-get install shellcheck' ;;
+    bats) printf 'apt-get install bats' ;;
     hadolint) printf 'https://github.com/hadolint/hadolint/releases' ;;
     actionlint) printf 'https://github.com/rhysd/actionlint/releases' ;;
     *) printf 'see docker/Dockerfile.test-tools' ;;
@@ -172,6 +174,36 @@ run_lint() {
   esac
 }
 
+# 動態層級。smoke 是「類型」不是層級：那些規格在 runtime 映像建置時對映像本身
+# 跑，不從這裡跑。
+readonly LEVELS="unit integration system acceptance"
+
+# shell 用 bats 測，Python 用 pytest 測；一個層級有哪種規格就跑哪種。bats 不在時
+# 交給 survey_tools 大聲回報，不靜默跳過——「沒有東西會執行的規格」正是這段接線
+# 要消滅的缺口（不變式 2）。
+run_bats_level() {
+  # 兩行不是風格：local 的參數會在它執行前就全部展開，寫成一行的話 ${level}
+  # 在展開當下還沒被賦值，set -u 會直接判定 unbound。
+  local level="$1"
+  local dir="${REPO_ROOT}/test/bats/${level}"
+  [[ -d "${dir}" ]] || return 0
+
+  local -a specs=()
+  mapfile -t specs < <(find "${dir}" -name '*.bats' -type f | sort)
+  (( ${#specs[@]} == 0 )) && return 0
+
+  survey_tools bats
+  require_tool bats || return 0
+  bats "${specs[@]}"
+}
+
+run_bats_levels() {
+  local level
+  for level in ${LEVELS}; do
+    run_bats_level "${level}"
+  done
+}
+
 main() {
   cd "${REPO_ROOT}"
 
@@ -183,13 +215,25 @@ main() {
 
   if (( $# == 0 )); then
     run_lint all
-    exec pytest test/pytest --cov=src/config_manager/core --cov-report=term-missing
+    pytest test/pytest --cov=src/config_manager/core --cov-report=term-missing
+    run_bats_levels
+    return 0
   fi
 
   case "$1" in
     --lint) shift; run_lint "${1:-all}" ;;
-    --level) shift; [[ $# -gt 0 ]] || { usage >&2; exit 2; }; exec pytest "test/pytest/$1" ;;
-    --file) shift; [[ $# -gt 0 ]] || { usage >&2; exit 2; }; exec pytest "$1" ;;
+    --level)
+      shift; [[ $# -gt 0 ]] || { usage >&2; exit 2; }
+      pytest "test/pytest/$1"
+      run_bats_level "$1"
+      ;;
+    --file)
+      shift; [[ $# -gt 0 ]] || { usage >&2; exit 2; }
+      case "$1" in
+        *.bats) survey_tools bats; exec bats "$1" ;;
+        *) exec pytest "$1" ;;
+      esac
+      ;;
     --filter) shift; [[ $# -gt 0 ]] || { usage >&2; exit 2; }; exec pytest test/pytest -k "$1" ;;
     *) printf 'test.sh: unknown argument %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
