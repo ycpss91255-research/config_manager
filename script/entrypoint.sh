@@ -23,6 +23,46 @@ die() {
   exit 1
 }
 
+# The smallest config-list.toml core/models will accept: list_version plus a
+# defaults.permissions block. `files` defaults to an empty list, so it is left
+# out -- nothing is managed yet, which is the correct state on a first run.
+#
+# Values are the design's own example (§4.3), not invented here.
+#
+# THIS DUPLICATES THE SHAPE core/models DECLARES, and that is a real cost. It
+# does not go silently wrong, though: preflight runs later in this same startup
+# and load() rejects a seed that stopped being valid. Drift fails loudly, here,
+# rather than surfacing in some request later.
+#
+# It is committed, not left untracked. io/git.record starts with `git add -A`,
+# so an untracked seed would be swept into whichever user change happened to be
+# recorded first -- and that record would then claim changes it does not hold.
+seed_config_list() {
+  local repo="$1"
+  local list="${repo}/config-list.toml"
+
+  cat >"${list}" <<'TOML' || die "could not write ${list}"
+list_version = 1
+
+# 未個別指定時套用的預設權限
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+TOML
+
+  # -c over `git config`: the identity belongs to this one commit, not to the
+  # repo the operator will later use.
+  git -C "${repo}" add config-list.toml \
+    && git -C "${repo}" \
+      -c user.name="config_manager" \
+      -c user.email="config_manager@localhost" \
+      commit --quiet -m "chore(repo): 初始化空的 config 清單檔" \
+    || die "could not commit the initial ${list}"
+
+  printf 'entrypoint: seeded an empty config list at %s\n' "${list}"
+}
+
 check_backend_preconditions() {
   local repo="${CM_CONFIG_REPO:-}"
 
@@ -50,11 +90,33 @@ check_backend_preconditions() {
     # the difference is knowable.
     printf 'entrypoint: initialising empty config-repo at %s\n' "$(cd "${repo}" && pwd)"
     git init --quiet --initial-branch=main "${repo}" || die "git init failed at ${repo}"
-    return 0
+    seed_config_list "${repo}"
+    # Falls through to check_config_list on purpose. The seed duplicates the
+    # shape core/models declares, and this is what keeps that duplication from
+    # going quietly wrong: a seed that stopped being valid is rejected here, in
+    # the same startup that wrote it, rather than in some later request.
+  else
+    git -C "${repo}" rev-parse --git-dir >/dev/null 2>&1 \
+      || die "config-repo mount ${repo} exists but is not a git repository"
   fi
 
-  git -C "${repo}" rev-parse --git-dir >/dev/null 2>&1 \
-    || die "config-repo mount ${repo} exists but is not a git repository"
+  check_config_list "${repo}"
+}
+
+# The list file and the source content it references. Delegated to Python
+# because the judgement belongs to core/config_list -- reimplementing "is this
+# list file valid" in shell would be a second, quietly diverging answer to a
+# question that already has one.
+#
+# It runs BEFORE `exec "$@"`, which is the whole point: a broken list file must
+# stop the container here, not surface in some request once the service is up.
+check_config_list() {
+  local repo="$1"
+  local output
+
+  if ! output="$(python -m config_manager.io.preflight "${repo}" 2>&1)"; then
+    die "${output}"
+  fi
 }
 
 main() {

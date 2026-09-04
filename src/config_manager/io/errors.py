@@ -27,3 +27,19 @@ class ChangeError(Exception):
 
 class UnknownKind(ChangeError):
     """變更類型不在允許的集合內。"""
+
+
+class PreflightError(Exception):
+    """啟動前置檢查失敗的基底。"""
+
+
+class ConfigListMissing(PreflightError):
+    """config-repo 裡沒有清單檔。首次啟動時 entrypoint 已種下，故此處必為異常。"""
+
+
+class ConfigListUnparsable(PreflightError):
+    """清單檔存在但讀不出來：TOML 語法錯誤，或內容不符清單檔規格。"""
+
+
+class SourceMissing(PreflightError):
+    """清單檔某條目引用的來源內容不在 repo 裡。只查來源側——目標未部署是合法狀態。"""
