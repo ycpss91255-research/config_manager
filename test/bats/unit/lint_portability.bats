@@ -85,6 +85,13 @@ write_script() {
   [[ "${output}" == *"cp --parents"* ]]
 }
 
+@test "目錄不存在時大聲失敗，不回報通過" {
+  # 同 #115：script/ 不見了而回報通過，等於守門在自己缺席時說一切正常。
+  run "${LINT}" "${DIR}/nowhere"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"下一步"* ]]
+}
+
 @test "回報每一個違規，不是只報第一個" {
   write_script one.sh "grep -P x file"
   write_script two.sh "stat -c %s file"

@@ -96,6 +96,30 @@ commit_subject() {
   [[ "${output}" == *"second english subject"* ]]
 }
 
+@test "不在 git repo 裡時大聲失敗，不回報通過" {
+  # 一支跑不了的守門回報通過，是這個 repo 檔頭就記著的 hadolint 教訓（#115）。
+  # 而它實際發生過：agent 在 worktree 裡跑 lint_commit 拿到 EXIT=0，畫面上印著
+  # fatal: not a git repository——那次執行什麼都沒檢查，卻被讀成綠燈。
+  local outside
+  outside="$(mktemp -d)"
+  cd "${outside}" || return 1
+
+  run "${LINT}" origin/main
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"下一步"* ]]
+
+  cd / || true
+  rm -rf "${outside}"
+}
+
+@test "base ref 不存在時大聲失敗，並說出怎麼取得它" {
+  # 「檢查過了，沒有問題」與「檢查不了」是兩件事。少了 base ref 就比不出範圍，
+  # 那不是「沒有東西要檢查」。
+  run "${LINT}" refs/heads/nowhere
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"下一步"* ]]
+}
+
 @test "base 之後沒有 commit 時不報錯" {
   run "${LINT}" "${BASE}"
   [ "${status}" -eq 0 ]

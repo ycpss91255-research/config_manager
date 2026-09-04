@@ -70,6 +70,22 @@ teardown() {
   [[ "${output}" == *"a/config"* ]]
 }
 
+@test "不在 git repo 裡時大聲失敗，訊息指名是哪一支 lint" {
+  # 原本會以 git 的 128 中止——大聲，但訊息是 git 的原文，不說是哪一支 lint
+  # 在抱怨，也不說下一步（#115）。
+  local outside
+  outside="$(mktemp -d)"
+  cd "${outside}" || return 1
+
+  run "${LINT}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"lint_paths"* ]]
+  [[ "${output}" == *"下一步"* ]]
+
+  cd / || true
+  rm -rf "${outside}"
+}
+
 @test "沒有任何追蹤檔案時不報錯" {
   run "${LINT}"
   [ "${status}" -eq 0 ]

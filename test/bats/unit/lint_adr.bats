@@ -144,6 +144,14 @@ set_status() {
   [[ "${output}" == *"00000001-again.md"* ]]
 }
 
+@test "目錄不存在時大聲失敗，不回報通過" {
+  # 「檢查不了」不是「沒有東西要檢查」。目錄改名或掛載錯而回報通過，就是一次
+  # 什麼都沒檢查的執行被讀成綠燈（#115）。
+  run "${LINT}" "${ADRS}/nowhere"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"下一步"* ]]
+}
+
 @test "README.md 不被當成 ADR" {
   write_adr "${ADRS}/00000001-first.md"
   printf '# Architecture Decision Records\n' >"${ADRS}/README.md"

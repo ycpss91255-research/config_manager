@@ -42,8 +42,11 @@ main() {
   local dir="${1:-doc/adr}"
 
   if [[ ! -d "${dir}" ]]; then
-    printf 'lint_adr: %s is not a directory; nothing to check.\n' "${dir}"
-    return 0
+    # 「檢查不了」不是「沒有東西要檢查」。目錄不見了（改名、掛載錯、簽出不完整）
+    # 而回報通過，就是一次什麼都沒檢查的執行被讀成綠燈（#115）。
+    printf 'lint_adr: %s 不是目錄，ADR 無從檢查\n' "${dir}" >&2
+    printf '         下一步：確認 doc/adr/ 存在，或以第一個參數指定正確的目錄\n' >&2
+    return 1
   fi
 
   local failures=0 warnings=0 count=0
