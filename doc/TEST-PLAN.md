@@ -617,6 +617,8 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `script/lint_commit.sh` | `test/bats/unit/lint_commit.bats` |
 | `script/lint_paths.sh` | `test/bats/unit/lint_paths.bats` |
 | `script/lint_portability.sh` | `test/bats/unit/lint_portability.bats` |
+| `script/lint_messages.sh` | `test/bats/unit/lint_messages.bats` |
+| `script/check_file.sh` | `test/bats/unit/check_file.bats` |
 | `script/test.sh` | `test/bats/unit/test.bats` |
 | `script/lint_checkpoints.sh` | `test/bats/unit/lint_checkpoints.bats` |
 
@@ -653,11 +655,52 @@ PATH 上的假 `gh` 替換，所以規格本身不需要網路，也不會因為
 不會因規則消失而轉紅的規格，測的不是那條規則。這一項不自動化，
 在 PR 描述裡記下做過哪些突變與結果。
 
-**T19 底下已無未涵蓋者。** `script/test.sh` 的「缺工具不得靜默通過」保證（#72）
-——這份文件先前記為「還沒做」的那一項——已由 `test/bats/unit/test.bats` 覆蓋。
+**`script/check_file.sh` 是提前的回饋，不是閘門。** 它只跑「一個檔案就判定得了」的
+檢查（ruff、`lint_messages`、shellcheck），CI 才是權威。它仍然有規格，因為它的失敗
+形狀跟閘門一樣危險：一個接錯線的單檔檢查什麼都不跑，而它每次都回 0——看起來與
+「檢查過了、乾淨」完全一樣。
 
 其餘 21 支 shell 腳本（五支容器 wrapper、`hooks/dispatch.sh`、14 支 hook、`local/cfg/cfg.sh`）
 在 #74 逐支盤點後**轉為刻意的空格**，理由記在「覆蓋率審計」的該節，不再列為待辦。
+
+### 已知未涵蓋：§0.4「例外處理的具體要求」
+
+設計 §0.4：「所有規範必須可由工具檢查——**無法自動檢查的規範等同不存在**。」
+三條要求裡只有第 2 條有專屬工具，另外兩條的狀態逐條記在這裡。
+**寫下理由是「刻意留空」與「漏掉」的唯一差別。**
+
+| §0.4 要求 | 檢查工具 | 狀態 |
+|---|---|---|
+| 1. 不得捕捉後僅 `pass` 或僅 `log.debug` | `E722`／`BLE001`（＋ pylint 同名檢查） | **部分涵蓋**（#112） |
+| 2. 錯誤訊息須含三要素 | `script/lint_messages.sh` | 已涵蓋 |
+| 3. 不得將驗證失敗轉為警告後繼續 | 無 | **未涵蓋**，理由見下 |
+
+第 1 條的涵蓋邊界來自實測——在檢查映像裡逐個形狀跑過 ruff 與 pylint，不是憑印象：
+
+| 寫法 | 被誰擋下 |
+|---|---|
+| `except:`（不論 handler 內容） | `E722` ＋ pylint `bare-except` |
+| `except Exception:` ／ `BaseException:`（不論內容） | `BLE001` ＋ pylint `broad-exception-caught` |
+| `except ValueError: pass`（單一 handler） | 只有 `SIM105` |
+| `except ValueError: log.debug(...)` | **無** |
+| `contextlib.suppress(ValueError)` | **無** |
+| 兩個 handler，兩個都 `pass` | **無** |
+
+`SIM105` 不算這條規範的執行者：它的修法是改寫成 `contextlib.suppress(...)`——同一個
+吞錯誤，換一個拼法，而改寫之後就再也沒有工具看得到它。把它當成「第 1 條有在檢查」，
+正是這個 repo 抓過七次的那個形狀。
+
+所以 §0.4 第 1 條**指名的那個形狀**（捕捉具名例外之後只 `pass` 或只 `log.debug`）
+目前沒有任何工具擋得住。**這一條不是「難以自動化」**：語法形狀清楚，一次 AST 走訪
+就判得出來。它是**還沒做**，記在 #112。真正做不到的是同一條的後半句「捕捉即代表有
+處理策略」——handler 裡有東西不代表那是策略——那半句留給 code review，刻意如此。
+
+**第 3 條未涵蓋，理由是它判的不是語法而是層級意圖。** 同一段「記下警告然後繼續」的
+程式碼，在第 3 層是設計（不變式 4 明列「第 3 層可 override，需填理由」），在第 1、2 層
+是違規。工具讀不出某個 `warnings.append` 屬於哪一層——驗證層級是設計上的分層，不是
+程式碼裡的一個欄位。等 `core/validate`（T3、#16）落地、層級在資料模型上具名之後，
+這一條才可能變成「第 1、2 層的處置不得寫進 warnings」這種檢查得了的形式。在那之前
+它是刻意留空。
 
 ---
 
@@ -697,6 +740,7 @@ PATH 上的假 `gh` 替換，所以規格本身不需要網路，也不會因為
 | `api/routes` | T9 | 已落地（`GET /api/configs` 與 CORS 中介層） |
 | `api/cli` | T10 | 已落地（`serve` 與 `list`） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 未落地（#33） |
+| `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |
 | `web/` | T11 | 已落地，但 **T11 沒有執行通路——網頁行為零覆蓋（#99）** |
 | 四支 `__init__.py` | 無——見「刻意的空格」 | 已落地 |
 | `script/entrypoint.sh` | T15 | 已落地 |
@@ -705,14 +749,16 @@ PATH 上的假 `gh` 替換，所以規格本身不需要網路，也不會因為
 | `script/lint_paths.sh` | T19 | 已落地 |
 | `script/lint_portability.sh` | T19 | 已落地 |
 | `script/lint_checkpoints.sh` | T19 | 已落地（CI job，不由 `test.sh` 執行） |
+| `script/lint_messages.sh` | T19 | 已落地 |
+| `script/check_file.sh` | T19（單檔檢查的派工規則） | 已落地 |
 | `script/test.sh` | T19（缺工具不得靜默通過，#72） | 已落地 |
 | `script/{build,run,exec,stop,prune}.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/dispatch.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/{pre,post}/*.sh`（14 支） | 無——見「刻意的空格」 | 已落地 |
 | `script/local/cfg/cfg.sh` | 無——見「刻意的空格」 | 已落地 |
 
-這張表涵蓋 `find src -name '*.py'` 的 17 個檔案與 `find script -name '*.sh'` 的 27 支腳本，
-逐一比對過（#74）。**新增一個模組或一支腳本時，這裡要一起加一列**——沒有一列的檔案，
+這張表涵蓋 `find src -name '*.py'` 的 20 個檔案與 `find script -name '*.sh'` 的 30 支腳本，
+逐一比對過（#74；`lint_messages.sh` 與 `check_file.sh` 於 #113 補入）。**新增一個模組或一支腳本時，這裡要一起加一列**——沒有一列的檔案，
 既不算被覆蓋，也不算刻意留空。
 
 盤點於 #74 完成時的 repo 狀態；其後合併的 `io/scan`（T21）、`web/index.html`、
