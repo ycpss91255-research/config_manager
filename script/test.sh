@@ -65,40 +65,81 @@ dispatch_to_container() {
     ./script/test.sh "$@"
 }
 
+# What each linter needs on PATH, and how to get it. One table, so the
+# up-front survey below and the per-check guard cannot disagree about which
+# tools a run requires.
+_tool_install_hint() {
+  case "$1" in
+    ruff|mypy|pylint|pytest) printf 'pip install -r config/pip/requirements-dev.txt' ;;
+    shellcheck) printf 'apt-get install shellcheck' ;;
+    hadolint) printf 'https://github.com/hadolint/hadolint/releases' ;;
+    actionlint) printf 'https://github.com/rhysd/actionlint/releases' ;;
+    *) printf 'see dockerfile/Dockerfile.test-tools' ;;
+  esac
+}
+
+# Report EVERY tool the requested run is missing, then stop -- not the first
+# one. Aborting on the first turns a host survey into install-one, rerun,
+# hit-the-next; and it means the run never says what it did not check, which
+# is the thing this whole guard exists to make visible.
+#
+# Only reachable with CM_TEST_LOCAL=1: a normal run is inside an image that
+# has all of them by construction.
+survey_tools() {
+  local -a needed=("$@") missing=()
+  local t
+  for t in "${needed[@]}"; do
+    command -v "${t}" >/dev/null 2>&1 || missing+=("${t}")
+  done
+  (( ${#missing[@]} == 0 )) && return 0
+
+  printf 'test.sh: this host is missing %d of the %d checkers this run needs:\n' \
+    "${#missing[@]}" "${#needed[@]}" >&2
+  for t in "${missing[@]}"; do
+    printf '  %-11s %s\n' "${t}" "$(_tool_install_hint "${t}")" >&2
+  done
+  if [[ "${CM_LINT_ALLOW_MISSING:-}" == "1" ]]; then
+    printf 'test.sh: CM_LINT_ALLOW_MISSING=1 -- continuing, and the above did NOT run.\n' >&2
+    printf 'test.sh: a run with skips is not a passing run. Prefer dropping CM_TEST_LOCAL.\n' >&2
+    return 0
+  fi
+  printf 'test.sh: install them, drop CM_TEST_LOCAL to use the image that has them,\n' >&2
+  printf 'test.sh: or set CM_LINT_ALLOW_MISSING=1 to run the rest and be told what was skipped.\n' >&2
+  exit 1
+}
+
 # A linter whose tool is absent must NOT pass quietly. "lint passed" has to
 # mean "lint ran"; anything else is the silent-success invariant 2 forbids,
 # and it already cost us -- hadolint was skipped locally on every run while
 # CI failed on it, so a Dockerfile finding sat unnoticed across six pushes.
-# Set CM_LINT_ALLOW_MISSING=1 to downgrade the abort to a warning while
-# working on a host that lacks a tool on purpose.
+# survey_tools has already reported and decided by the time this runs; this
+# is the per-check gate that keeps a missing tool from being invoked.
 require_tool() {
-  local tool="$1" how="$2"
-  command -v "${tool}" >/dev/null 2>&1 && return 0
-  if [[ "${CM_LINT_ALLOW_MISSING:-}" == "1" ]]; then
-    printf 'test.sh: %s not installed -- SKIPPED, this run did not lint it\n' "${tool}" >&2
-    return 1
-  fi
-  printf 'test.sh: %s is not installed, so this check cannot run.\n' "${tool}" >&2
-  printf 'test.sh: install it (%s), or set CM_LINT_ALLOW_MISSING=1 to skip with a warning.\n' "${how}" >&2
-  exit 1
+  command -v "$1" >/dev/null 2>&1
 }
 
 run_lint() {
   local tool="${1:-all}"
   cd "${REPO_ROOT}"
+
   case "${tool}" in
-    ruff|all) require_tool ruff 'pip install -r config/pip/requirements-dev.txt' && ruff check src test ;;&
-    mypy|all) require_tool mypy 'pip install -r config/pip/requirements-dev.txt' && mypy --strict src/config_manager/core ;;&
-    pylint|all) require_tool pylint 'pip install -r config/pip/requirements-dev.txt' && pylint src ;;&
+    all) survey_tools ruff mypy pylint shellcheck hadolint actionlint ;;
+    ruff|mypy|pylint|shellcheck|hadolint|actionlint) survey_tools "${tool}" ;;
+  esac
+
+  case "${tool}" in
+    ruff|all) require_tool ruff && ruff check src test ;;&
+    mypy|all) require_tool mypy && mypy --strict src/config_manager/core ;;&
+    pylint|all) require_tool pylint && pylint src ;;&
     shellcheck|all)
-      if require_tool shellcheck 'apt-get install shellcheck'; then
+      if require_tool shellcheck; then
         local -a _sh=()
         mapfile -t _sh < <(find script -name '*.sh' -type f | sort)
         shellcheck --severity=warning "${_sh[@]}"
       fi
       ;;&
     hadolint|all)
-      require_tool hadolint 'https://github.com/hadolint/hadolint/releases' \
+      require_tool hadolint \
         && hadolint --config .hadolint.yaml Dockerfile
       ;;&
     actionlint|all)
@@ -107,7 +148,7 @@ run_lint() {
       # invalid expression -- GitHub rejects the whole file, runs zero jobs,
       # and reports it as a run failure with no job to open. Caught here now
       # rather than by pushing and reading the aftermath.
-      require_tool actionlint 'https://github.com/rhysd/actionlint/releases' \
+      require_tool actionlint \
         && actionlint .github/workflows/*.yaml
       ;;&
     commit|all) ./script/lint_commit.sh ;;&
