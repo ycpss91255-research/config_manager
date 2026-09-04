@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 #
-# The three test axes (§3.6.1), kept separate because they answer different
-# questions and conflating them into one "four categories" list is the
-# mistake this layout exists to avoid:
+# 三個測試軸（§3.6.1）分開放，因為它們回答的是不同的問題；把它們揉成一張「四種
+# 分類」的清單，正是這個結構要避免的錯誤：
 #
-#   lint   static analysis  -- not a dynamic test level at all
-#   level  unit / integration / system / acceptance -- scope
-#   type   smoke / e2e / regression -- purpose, applied at some level
+#   lint   靜態分析——根本不是動態測試層級
+#   level  unit / integration / system / acceptance——範圍
+#   type   smoke / e2e / regression——目的，套用在某個層級上
 #
-# Default runs lint + every level with coverage.
+# 預設跑 lint 加上全部層級與覆蓋率。
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -38,9 +37,8 @@ absent linters have each produced a wrong answer here before.
 USAGE
 }
 
-# Re-run this script inside the image that has the tools, unless we are
-# already in it. One environment, two callers: `just test` and CI take the
-# same path, so a check cannot pass in one and fail in the other.
+# 把這支腳本轉進裝了工具的映像裡重跑，除非已經在裡面了。一個環境、兩個呼叫者：
+# `just test` 與 CI 走同一條路徑，所以一項檢查不可能在一邊過、在另一邊掛。
 dispatch_to_container() {
   if ! command -v docker >/dev/null 2>&1; then
     printf 'test.sh: docker is not installed, so the checks cannot run in their image.\n' >&2
@@ -48,26 +46,23 @@ dispatch_to_container() {
     exit 1
   fi
 
-  # Cheap when cached; the layers only rebuild when the Dockerfile or the
-  # pinned requirements actually change.
+  # 有快取時很便宜；只有 Dockerfile 或釘住的 requirements 真的變了，層才會重建。
   printf 'test.sh: building %s\n' "${TEST_IMAGE}" >&2
   local -a _build=(docker build --quiet -f "${REPO_ROOT}/${TEST_DOCKERFILE}" -t "${TEST_IMAGE}")
-  # The image defaults to a Taiwan Debian mirror because deb.debian.org is
-  # unreachable from the networks this repo is developed on. Somewhere with
-  # a different answer sets CM_APT_MIRROR rather than editing the file.
+  # 映像預設用台灣的 Debian 鏡像，因為從開發這個 repo 的網路連不到
+  # deb.debian.org。在別的地方答案不同的話，設 CM_APT_MIRROR，不要改檔案。
   [[ -n "${CM_APT_MIRROR:-}" ]] && _build+=(--build-arg "APT_MIRROR=${CM_APT_MIRROR}")
   "${_build[@]}" "${REPO_ROOT}" >/dev/null
 
-  # The repo is mounted rather than copied so a failing check names a path
-  # that exists on the host and an edit does not need a rebuild. A mount is
-  # two-way, which is why --user matters: the image's own user is root, and a
-  # root process writing into a bind mount leaves root-owned files behind on
-  # the host. That is not hypothetical here -- it cost an uncommitted edit and
-  # left 47 root-owned paths, including a file inside .git.
+  # repo 用掛載而不是複製進去，這樣檢查失敗時指出的路徑在主機上真的存在，而且改
+  # 一行不必重建映像。掛載是雙向的，所以 --user 才重要：映像自己的使用者是 root，
+  # 而 root 程序寫進 bind mount 會在主機上留下一堆 root 所有的檔案。這在這裡不是
+  # 假設——它賠掉了一次還沒提交的修改，並留下 47 個 root 所有的路徑，其中包含
+  # .git 裡面的一個檔案。
   #
-  # HOME is redirected because the invoking uid has no home in this image, and
-  # git.safe.directory comes through GIT_CONFIG_* rather than a global config
-  # for the same reason: with no writable HOME there is nowhere to keep one.
+  # HOME 被導向他處，是因為呼叫端的 uid 在這個映像裡沒有家目錄；git.safe.directory
+  # 走 GIT_CONFIG_* 而不是全域設定，也是同一個原因：沒有可寫的 HOME，就沒有地方
+  # 放那份設定。
   exec docker run --rm \
     --user "$(id -u):$(id -g)" \
     --env HOME=/tmp \
@@ -80,9 +75,8 @@ dispatch_to_container() {
     ./script/test.sh "$@"
 }
 
-# What each linter needs on PATH, and how to get it. One table, so the
-# up-front survey below and the per-check guard cannot disagree about which
-# tools a run requires.
+# 每個 linter 需要 PATH 上有什麼，以及怎麼取得。只有一張表，這樣底下的事前盤點與
+# 每項檢查的守衛，就不可能對「這次執行需要哪些工具」有不同意見。
 _tool_install_hint() {
   case "$1" in
     ruff|mypy|pylint|pytest) printf 'pip install -r config/pip/requirements-dev.txt' ;;
@@ -94,13 +88,11 @@ _tool_install_hint() {
   esac
 }
 
-# Report EVERY tool the requested run is missing, then stop -- not the first
-# one. Aborting on the first turns a host survey into install-one, rerun,
-# hit-the-next; and it means the run never says what it did not check, which
-# is the thing this whole guard exists to make visible.
+# 把這次執行缺的**每一個**工具都回報出來，然後停下——不是只報第一個。碰到第一個
+# 就中止，會把「盤點主機」變成裝一個、重跑、再撞下一個；而且那樣的執行從來不會說出
+# 它沒有檢查什麼，而那正是整個守衛要讓人看見的東西。
 #
-# Only reachable with CM_TEST_LOCAL=1: a normal run is inside an image that
-# has all of them by construction.
+# 只有 CM_TEST_LOCAL=1 才走得到這裡：正常執行是在映像裡，那些工具依建置方式必然齊全。
 survey_tools() {
   local -a needed=("$@") missing=()
   local t
@@ -124,12 +116,11 @@ survey_tools() {
   exit 1
 }
 
-# A linter whose tool is absent must NOT pass quietly. "lint passed" has to
-# mean "lint ran"; anything else is the silent-success invariant 2 forbids,
-# and it already cost us -- hadolint was skipped locally on every run while
-# CI failed on it, so a Dockerfile finding sat unnoticed across six pushes.
-# survey_tools has already reported and decided by the time this runs; this
-# is the per-check gate that keeps a missing tool from being invoked.
+# 工具不在的 linter 絕不可以安靜地通過。「lint 過了」必須等於「lint 跑了」；其餘
+# 都是不變式 2 禁止的靜默成功，而且已經讓我們付過代價——hadolint 在本機每次執行都被
+# 跳過，CI 卻一直在它上面失敗，於是一個 Dockerfile 的問題連續六次推送都沒人注意到。
+# 走到這裡時 survey_tools 已經回報並決定過了；這裡是每項檢查的閘門，擋住對一個不存在
+# 的工具發出呼叫。
 require_tool() {
   command -v "$1" >/dev/null 2>&1
 }
@@ -159,11 +150,10 @@ run_lint() {
         && hadolint --config .hadolint.yaml Dockerfile
       ;;&
     actionlint|all)
-      # Workflow expressions are not YAML and no YAML parser checks them.
-      # A double-quoted string literal inside ${{ }} is valid YAML and an
-      # invalid expression -- GitHub rejects the whole file, runs zero jobs,
-      # and reports it as a run failure with no job to open. Caught here now
-      # rather than by pushing and reading the aftermath.
+      # workflow 的運算式不是 YAML，沒有任何 YAML parser 會檢查它們。${{ }} 裡面
+      # 一個雙引號字串字面值是合法的 YAML、卻是不合法的運算式——GitHub 會拒收整個
+      # 檔案，一個 job 都不跑，並回報成一次沒有 job 可以點開的執行失敗。現在在這裡
+      # 抓，而不是推上去再讀後果。
       require_tool actionlint \
         && actionlint .github/workflows/*.yaml
       ;;&

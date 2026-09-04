@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
 #
-# ADR lint. Checks doc/adr/ filenames, numbering, and structure.
+# ADR lint。檢查 doc/adr/ 的檔名、編號與結構。
 #
-# The rules are the ones ADR-00000017 records and doc/adr/README.md states.
-# The fail/warn split mirrors that document (design §0.5): fail on what is
-# unambiguous, warn on a signal that is sometimes legitimate.
+# 規則就是 ADR-00000017 記下、doc/adr/README.md 敘明的那些。fail／warn 的分界比照
+# 該文件（設計 §0.5）：明確的擋，是訊號但有時合理的只警告。
 #
-#   filename        must match NNNNNNNN-<slug>.md (8-digit zero-padded)  -> fail
-#   duplicate       two ADRs share a number                             -> fail
-#   > 服務：        the Serves backref must be present                  -> fail
-#   sections        ## Context / ## Decision / ## Consequences          -> fail per missing
-#   Status          Accepted | Rejected | Superseded by ADR-NNNNNNNN    -> fail otherwise
-#   gap             a missing number in the run                         -> warn
-#   ## Alternatives absent                                              -> warn
+#   檔名            須符合 NNNNNNNN-<slug>.md（8 位數補零）           -> fail
+#   重號            兩份 ADR 共用同一個編號                           -> fail
+#   > 服務：        必須有這條回指                                    -> fail
+#   段落            ## Context / ## Decision / ## Consequences        -> 每缺一段 fail
+#   Status          Accepted | Rejected | Superseded by ADR-NNNNNNNN  -> 其餘 fail
+#   跳號            連續編號中間缺一個                                -> warn
+#   ## Alternatives 缺少                                              -> warn
 #
-# README.md is the one exempt non-ADR file. Every message names the file and
-# the item. Written for bash 3.2 so a stock macOS shell runs it too.
+# README.md 是唯一豁免的非 ADR 檔。每則訊息都指名是哪個檔案、哪一項。以 bash 3.2
+# 可執行的寫法撰寫，好讓 macOS 內建的 shell 也跑得動。
 set -euo pipefail
 
 usage() {
@@ -48,7 +47,7 @@ main() {
   fi
 
   local failures=0 warnings=0 count=0
-  local -a entries=() # "NNNNNNNN basename" per well-named ADR, for dup/gap
+  local -a entries=() # 每份命名合規的 ADR 一筆 "NNNNNNNN basename"，供重號／跳號用
 
   local path base num section st
   for path in "${dir}"/*.md; do
@@ -96,7 +95,7 @@ main() {
   done
 
   if ((count > 0)); then
-    # Duplicate numbers -> fail; name every file that shares the number.
+    # 重號 -> fail；把共用該編號的每個檔案都指名出來。
     local dup files
     while IFS= read -r dup; do
       files="$(printf '%s\n' "${entries[@]}" | awk -v n="${dup}" '$1 == n { printf "%s ", $2 }')"
@@ -104,7 +103,7 @@ main() {
       failures=$((failures + 1))
     done < <(printf '%s\n' "${entries[@]}" | awk '{ print $1 }' | sort | uniq -d)
 
-    # Gap in the run -> warn.
+    # 連續編號中間跳號 -> warn。
     local first last n expect
     first="$(printf '%s\n' "${entries[@]}" | awk '{ print $1 }' | sort -u | head -1)"
     last="$(printf '%s\n' "${entries[@]}" | awk '{ print $1 }' | sort -u | tail -1)"

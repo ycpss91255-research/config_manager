@@ -1,22 +1,22 @@
-# Testing, along the three axes of §3.6.1.
+# 測試，沿 §3.6.1 的三個軸。
 
-# Everything: lint + all levels + coverage
+# 全部：lint + 全部層級 + 覆蓋率
 default *ARGS:
     @{{justfile_directory()}}/script/test.sh {{ARGS}}
 
-# Static analysis only; optionally one tool
+# 只跑靜態分析；可指定單一工具
 # (ruff|mypy|pylint|shellcheck|hadolint|actionlint|commit)
 lint *TOOL:
     @{{justfile_directory()}}/script/test.sh --lint {{TOOL}}
 
-# One level: unit | integration | system | acceptance
+# 單一層級：unit | integration | system | acceptance
 level LEVEL:
     @{{justfile_directory()}}/script/test.sh --level {{LEVEL}}
 
-# One spec file
+# 單一規格檔
 file PATH:
     @{{justfile_directory()}}/script/test.sh --file {{PATH}}
 
-# Specs matching a pattern
+# 符合樣式的規格
 filter REGEX:
     @{{justfile_directory()}}/script/test.sh --filter {{REGEX}}
