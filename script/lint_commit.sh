@@ -97,9 +97,13 @@ main() {
       continue
     fi
 
-    if [[ "${body}" == *. ]]; then
+    # Both periods: the rule predates ADR-00000028, when subjects were English
+    # and the only full stop was ASCII. Subjects are Chinese now, so the one a
+    # writer actually types is U+3002 -- checking only "." left the rule
+    # unenforced for the language this repo writes in.
+    if [[ "${body}" == *. || "${body}" == *"。" ]]; then
       printf 'FAIL %s  %s\n' "${short}" "${subject}" >&2
-      printf '     subject ends with a period; drop it\n' >&2
+      printf '     subject ends with a period (. or 。); drop it\n' >&2
       failures=$(( failures + 1 ))
       continue
     fi
