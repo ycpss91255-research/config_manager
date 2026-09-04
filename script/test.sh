@@ -21,7 +21,7 @@ Usage: script/test.sh [--level <name>] [--lint [<tool>]] [--file <path>] [--filt
   (no arguments)      lint + all levels + coverage
   --level <name>      unit | integration | system | acceptance
   --lint [<tool>]     all linters, or one of:
-                      ruff | mypy | pylint | shellcheck | hadolint | actionlint | commit
+                      ruff | mypy | pylint | shellcheck | hadolint | actionlint | commit | adr
   --file <path>       a single spec file
   --filter <regex>    specs matching a pattern
 USAGE
@@ -73,7 +73,8 @@ run_lint() {
         && actionlint .github/workflows/*.yaml
       ;;&
     commit|all) ./script/lint_commit.sh ;;&
-    ruff|mypy|pylint|shellcheck|hadolint|actionlint|commit|all) return 0 ;;
+    adr|all) ./script/lint_adr.sh ;;&
+    ruff|mypy|pylint|shellcheck|hadolint|actionlint|commit|adr|all) return 0 ;;
     *) printf 'test.sh: unknown linter %s\n' "${tool}" >&2; return 2 ;;
   esac
 }
