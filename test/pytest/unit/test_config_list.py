@@ -257,3 +257,44 @@ def test_dump_of_unchanged_config_list_is_byte_identical_to_input():
     config_list = load(_ROUNDTRIP_TEXT)
     # 清單檔本身也要原樣保留：未改動時逐位元組相同。
     assert dump(config_list, _ROUNDTRIP_TEXT) == _ROUNDTRIP_TEXT
+
+
+# 一份含註解與單引號值的清單檔，用來檢查新增條目後既有部分不被動到。
+_APPEND_TEXT = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+# 導航參數，勿手改
+[[files]]
+uid      = "mfz3k9q1"
+name     = 'navigation-params'
+hostname = "amr01"
+source   = "files/amr01/nav2_params.yaml"
+target   = "/opt/robot/config/nav2_params.yaml"
+format   = "yaml"
+groups   = ["navigation"]
+"""
+
+
+def test_appending_an_entry_keeps_existing_entries_verbatim():
+    config_list = load(_APPEND_TEXT)
+    # 由既有條目複製出一筆新條目（避免在測試中重列所有欄位）。
+    new_entry = config_list.files[0].model_copy(
+        update={
+            "uid": "mfz3k9z9",
+            "name": "camera-driver",
+            "source": "files/amr01/camera.yaml",
+            "target": "/opt/robot/config/camera.yaml",
+        }
+    )
+    config_list.files.append(new_entry)
+
+    result = dump(config_list, _APPEND_TEXT)
+
+    # 既有內容（含註解、單引號、順序）逐字保留，且新條目出現。
+    assert _APPEND_TEXT in result
+    assert "mfz3k9z9" in result

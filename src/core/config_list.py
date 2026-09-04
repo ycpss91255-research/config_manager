@@ -1,6 +1,6 @@
 """core/config_list — 清單檔載入 / 完整性檢查 / 寫回（PDF §3.3, §4.3）。
 
-純邏輯，不做 I/O（ADR-00000011）：load 收字串、不讀磁碟。
+純邏輯，不做 I/O（ADR-00000011）：load/dump 收字串、不讀磁碟。
 """
 
 from pathlib import PurePosixPath
@@ -25,6 +25,42 @@ def load(text: str) -> ConfigList:
     config_list = ConfigList.model_validate(data)
     _check_integrity(config_list)
     return config_list
+
+
+def dump(config_list: ConfigList, original: str) -> str:
+    """把清單檔寫回文字，保留原樣（註解、順序、引號樣式）。
+
+    原樣資訊為原始清單檔文字；以 tomlkit 重新解析後在其上套用變更，
+    未觸動的條目逐位元組保留。目前支援的變更：新增條目（附加於既有之後）。
+    """
+    doc = tomlkit.parse(original)
+    files = doc.get("files")
+    if files is None:
+        files = tomlkit.aot()
+        doc["files"] = files
+
+    existing_uids = {table.get("uid") for table in files}
+    for entry in config_list.files:
+        if entry.uid in existing_uids:
+            continue
+        files.append(_entry_to_table(entry))
+
+    return tomlkit.dumps(doc)
+
+
+def _entry_to_table(entry: FileEntry) -> "tomlkit.items.Table":
+    """把一筆新條目渲染為 tomlkit 表（既有條目不經此路徑，故不影響其原樣）。"""
+    table = tomlkit.table()
+    table["uid"] = entry.uid
+    table["name"] = entry.name
+    table["hostname"] = entry.hostname
+    table["source"] = entry.source
+    table["target"] = entry.target
+    table["format"] = entry.format
+    table["groups"] = entry.groups
+    if entry.description is not None:
+        table["description"] = entry.description
+    return table
 
 
 def _check_integrity(config_list: ConfigList) -> None:
@@ -69,13 +105,3 @@ def _check_integrity(config_list: ConfigList) -> None:
             )
         else:
             seen_name_host[key] = entry
-
-
-def dump(config_list: ConfigList, original: str) -> str:
-    """把清單檔寫回文字，保留原樣（註解、順序、引號樣式）。
-
-    原樣資訊為原始清單檔文字；以 tomlkit 重新解析後在其上套用變更，
-    未改動處逐位元組保留。
-    """
-    doc = tomlkit.parse(original)
-    return tomlkit.dumps(doc)
