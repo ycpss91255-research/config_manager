@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# post-setup hook. Runs after `just docker setup`.
+# post-setup hook：在 `just docker setup` 之後執行。
 #
-# Empty by design. This is the seam the shared container template defines;
-# it is placeheld and wired now so that adding a step later means editing
-# this file only, not the wrapper. A failing pre-hook aborts the operation.
+# 刻意留空。這是共用容器模板定義的擴充點；現在先佔位並接好線，之後要加一個
+# 步驟時只改這個檔案，不必動 wrapper。post-hook 失敗時工作已經做完了，但離開
+# 狀態仍會傳出去，wrapper 以非零碼結束。
 set -euo pipefail
 
-# NOTE: nothing calls this yet. `setup` and `setup_tui` are the template's
-# own wrappers (config parsing + host detection), which appendix A places in
-# the "do not build yet" column. The hook is here so the seam exists when
-# that wrapper arrives; until then it is inert by absence of a caller, not
-# by accident.
+# 注意：目前沒有任何東西呼叫這支。`setup` 與 `setup_tui` 是模板自己的 wrapper
+# （config 解析 + 主機偵測），附錄 A 把它們列在「現在不要做」那一欄。這支 hook
+# 先放著，是為了那個 wrapper 到來時擴充點已經存在；在那之前它是因為沒有呼叫者
+# 而不動，不是不小心漏掉。

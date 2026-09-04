@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Open a shell (or run a command) in a running service. Defaults to backend,
-# the container that holds every capability worth inspecting.
+# 在執行中的服務裡開一個 shell（或執行一個指令）。預設 backend，
+# 值得進去看的能力都在那個容器裡。
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -21,9 +21,8 @@ main() {
 
   cd "${REPO_ROOT}"
   run_hook pre exec "${service}"
-  # No post-exec hook: this hands the terminal over with exec and never
-  # returns. A hook registered to run "after" would silently never run,
-  # which is worse than not offering one.
+  # 沒有 post-exec hook：這裡以 exec 把終端機交出去，永不返回。註冊成「之後」
+  # 執行的 hook 只會靜默地永遠不跑，那比不提供這個 hook 更糟。
   if (( $# == 0 )); then
     exec docker compose exec "${service}" bash
   fi
