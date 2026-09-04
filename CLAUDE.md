@@ -20,7 +20,15 @@
 ## 工作流程
 
 - **依 milestone 與 issue 推進。** 照 GitHub milestone 的順序做（`gh issue list --milestone v0.1.0`），不要跳版。
-- **分支 → PR → squash。** 新工作開 feature branch，開 PR，由維護者 squash merge。**不得直推 `main`，不得 force push**——這個 org 是多人共推，推之前先 `git fetch` 加 `git rebase origin/main`。
+- **分支 → PR → squash。** 新工作開 feature branch，開 PR，由維護者 squash merge。
+  **不得直推 `main`。** 推之前先 `git fetch` 加 `git rebase origin/main`——這個 org 是多人共推。
+- **force push 的範圍只到「別人手上有的分支」。** 自己的 feature branch 在 rebase 之後
+  以 `--force-with-lease` 推回去是**正常且必要**的：分支保護要求 head 與 base 同步才准
+  合併，而 rebase 一定改寫 SHA。`--force-with-lease` 而非 `--force`，因為前者會在遠端
+  有你沒看過的東西時停下來。
+  **絕不對 `main` 或任何別人也在推的分支 force push。**
+  （這條先前寫成「不得 force push」，兩個獨立的工作流各自把它讀成「連自己的分支都不能
+  rebase 後推」，於是把該 rebase 的 PR 留在落後狀態。規則的範圍沒寫清楚，等於規則沒寫。）
 - **自己無法決定的事**（owner 層級／架構）→ 開 GitHub issue 並等待，但不要空轉：同時去做另一個沒被擋住的 issue。
 - **已交付行為的 bug** → `fix` 加 patch 版號；一個 milestone 的功能是 minor。
 - **一張 issue 對應一個 PR。** issue 的驗收條件**全部勾完**才開 PR——做不完就把 issue 拆小，
