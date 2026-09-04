@@ -60,3 +60,20 @@ commit 內文結尾加 `Co-Authored-By:` trailer；PR 描述結尾加 Claude Cod
 ## TDD
 
 紅 → 綠，一次一片。**測試只寫在 `doc/TEST-PLAN.md` 已確認的介面上**，絕不寫在未確認的介面上。期望值來自獨立來源；每個測試一個邏輯斷言；測試名稱說明程式碼做什麼，用 `CONTEXT.md` 的詞彙。
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues（`ycpss91255-research/config_manager`），以 `gh` CLI 操作。決策與驗收證據
+一律寫回 issue。見 `doc/agents/issue-tracker.md`。
+
+### Triage 標籤
+
+狀態標籤用 `backlog` ／ `ready-to-agent` ／ `wontfix`；`needs-info` 與 `ready-for-human`
+刻意無對應（沒有外部回報者）。見 `doc/agents/triage-labels.md`。
+
+### 領域文件
+
+單一 context：`CONTEXT.md` ＋ **`doc/adr/`**（不是 `docs/adr/`——skill 的預設路徑在這裡
+是錯的）。見 `doc/agents/domain.md`。
