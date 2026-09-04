@@ -12,11 +12,14 @@ source "${REPO_ROOT}/script/hooks/dispatch.sh"
 
 usage() {
   cat <<'USAGE'
-Usage: script/prune.sh [--all]
+用法：script/prune.sh [--all]
 
-  (no arguments)  Remove this project's stopped containers and dangling
-                  images. The config_repo volume is never touched.
-  --all           Also remove this project's built images.
+  （不帶參數）  移除本專案已停止的容器與懸空映像。config_repo volume 永遠不動。
+  --all         另外移除 config_manager:devel 與 config_manager:runtime。
+
+  --all 刻意不動 config_manager:runtime-test 與 config_manager-test-tools:local：
+  那兩個是檢查用的映像，重建一次要好幾分鐘，而「回收」不該讓下一次檢查變慢。
+  要刪它們就明確指名：docker image rm config_manager:runtime-test
 USAGE
 }
 
@@ -26,7 +29,7 @@ main() {
     --all) wide=1 ;;
     -h|--help) usage; return 0 ;;
     "") ;;
-    *) printf 'prune.sh: unknown argument %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    *) printf 'prune.sh: 不認得的參數 %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 
   cd "${REPO_ROOT}"
@@ -38,7 +41,11 @@ main() {
     # 只動映像。volume 裝的是唯一真實來源，只有 `docker compose down --volumes`
     # 刪得掉它，沒有別的路徑。
     docker image rm --force config_manager:devel config_manager:runtime 2>/dev/null || true
-    printf 'prune.sh: removed built images; the config_repo volume is untouched.\n'
+    # 訊息指名刪了哪兩個，而不是說「built images」。這裡建置出來的映像有四個
+    # （devel、runtime、runtime-test、test-tools），說「全部」而只刪一半，是訊息
+    # 宣稱的比實際做的多——不變式 2 的同一種形狀（#106）。
+    printf 'prune.sh: 已移除 config_manager:devel 與 config_manager:runtime；'
+    printf 'config_repo volume 與兩個檢查用映像未動\n'
   fi
   run_hook post prune
 }
