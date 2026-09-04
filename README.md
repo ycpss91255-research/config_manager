@@ -76,6 +76,46 @@ git 操作集中在 `io/`，測試時可替換為 fake——這是整個系統�
 - 垂直切片，不橫向切片——不先寫完一個版本的所有測試再實作。
 - 重構不在 red → green 迴圈裡，它屬於 review 階段。
 
+## 動手前：分支與 PR
+
+`main` 受保護，**直推會被拒絕**。設定與 `ycpss91255-docker/base` 逐項一致。
+
+```bash
+git switch -c <topic>
+git push -u origin <topic>
+gh pr create --fill
+# ci-rollup 綠了就可以自己 merge
+gh pr merge --squash
+```
+
+**不需要 review approval**（`required_approving_review_count = 0`）——閘門是 CI 不是人。
+`strict = true`，merge 前分支要與 `main` 同步。`enforce_admins = true`，對所有人一視同仁。
+
+`ci-rollup` 是唯一的 required check，它 `needs` 其餘全部 job。加新 job 只要改 `needs`，
+不用動保護規則。它用 `always()` 加明確的結果判定——否則被 skip 的 job 會被當成成功，
+閘門會在什麼都沒檢查的 run 上打開。
+
+## 本機與 CI 跑的是同一組檢查
+
+CI 的 lint job 呼叫的就是 `just test lint` 呼叫的 `./script/test.sh --lint`，不是另外一份
+YAML 清單。**兩份清單一定會漂移**：本 repo 的 CI 曾連續六次全紅，而每一次本機都報乾淨，
+因為 CI 有 hadolint 而本機的 lint 在工具不存在時靜默跳過。
+
+因此**工具缺席一律中止**，不當作通過——「lint 通過」必須代表「lint 跑過」。
+在刻意缺工具的機器上用 `CM_LINT_ALLOW_MISSING=1`，它會明確列出哪幾項沒跑。
+
+| 檢查 | 擋什麼 |
+|---|---|
+| `ruff` | 巢狀深度、循環複雜度、函式長度、參數個數、禁止吞錯誤 |
+| `mypy --strict` | `src/core/` 全覆蓋 |
+| `pylint` | ruff 未涵蓋的設計層面 |
+| `shellcheck` | 全部 shell 腳本 |
+| `hadolint` | Dockerfile |
+| `actionlint` | workflow 的**表達式**——YAML parser 看不到的那一層 |
+| `commit` | commit 訊息，規則取樣自 base（ADR-00000025） |
+
+`pytest` 的 coverage 下限 85%（`src/core/`）寫在 `pyproject.toml`，CI 不重述。
+
 ## 給後續維護者 / agent
 
 - **不要重建設計文件。** 直接使用；有新決策就在 `doc/adr/` 加新號（目前 25 份，從 `00000026` 續接）。
