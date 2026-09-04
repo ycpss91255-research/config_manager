@@ -12,11 +12,19 @@ which interface.
 
 ## Provenance
 
-These are third-party skills vendored as-is. Only `i-have-adhd` states a
-license upstream (MIT, Ayoub G., <https://github.com/ayghri/i-have-adhd>); the
-rest carried no license file or `license:` field at the version vendored here,
-so they are included unmodified and without a claim of ownership. Anyone
-wanting to reuse one outside this repo should find its upstream first.
+`skills-lock.json` at the repo root records where each skill came from: its
+upstream repo, the path within it, and a content hash. It is the authority
+here; this section only summarises it, and a summary that disagrees with the
+lockfile is wrong.
+
+All 37 skills under this directory come from
+[`mattpocock/skills`](https://github.com/mattpocock/skills) (**MIT**), vendored
+unmodified. `i-have-adhd` is separate:
+[`ayghri/i-have-adhd`](https://github.com/ayghri/i-have-adhd) (**MIT**, Ayoub
+G.), and it is the only one whose `SKILL.md` carries a `license:` field of its
+own — which is why an earlier version of this file said the rest were
+unlicensed. That was wrong: the individual files carry no license field, but
+their upstream repository is MIT.
 
 ## Adding one
 

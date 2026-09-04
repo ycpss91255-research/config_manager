@@ -65,10 +65,11 @@ COPY config/pip/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt \
     && rm -f /tmp/requirements-dev.txt /tmp/requirements.txt
 
-# The repo is bind-mounted from a host whose uid differs from root's, and
-# git refuses to read a tree it thinks belongs to someone else. This
-# container is a throwaway that exists to read exactly one repository, so
-# the ownership check protects nothing here while breaking lint_commit.
+# safe.directory for the root case. script/test.sh runs this image as the
+# INVOKING user rather than root -- a root process writing into a bind mount
+# leaves root-owned files on the host -- and that user has no home here, so it
+# passes safe.directory through GIT_CONFIG_* instead of reading this. Kept for
+# anyone who runs the image directly as root.
 RUN git config --global --add safe.directory '*'
 
 # How script/test.sh knows it has already arrived and must not recurse.

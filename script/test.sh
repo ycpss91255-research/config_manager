@@ -57,8 +57,21 @@ dispatch_to_container() {
   "${_build[@]}" "${REPO_ROOT}" >/dev/null
 
   # The repo is mounted rather than copied so a failing check names a path
-  # that exists on the host and an edit does not need a rebuild.
+  # that exists on the host and an edit does not need a rebuild. A mount is
+  # two-way, which is why --user matters: the image's own user is root, and a
+  # root process writing into a bind mount leaves root-owned files behind on
+  # the host. That is not hypothetical here -- it cost an uncommitted edit and
+  # left 47 root-owned paths, including a file inside .git.
+  #
+  # HOME is redirected because the invoking uid has no home in this image, and
+  # git.safe.directory comes through GIT_CONFIG_* rather than a global config
+  # for the same reason: with no writable HOME there is nowhere to keep one.
   exec docker run --rm \
+    --user "$(id -u):$(id -g)" \
+    --env HOME=/tmp \
+    --env GIT_CONFIG_COUNT=1 \
+    --env GIT_CONFIG_KEY_0=safe.directory \
+    --env GIT_CONFIG_VALUE_0='*' \
     --volume "${REPO_ROOT}:/repo" \
     --workdir /repo \
     "${TEST_IMAGE}" \
