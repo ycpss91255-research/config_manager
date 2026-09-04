@@ -474,3 +474,38 @@ groups   = []
     config_list.files[0].target = "/opt/CHANGED.yaml"  # 改動既有條目
     with pytest.raises(DumpMismatch):
         dump(config_list, original)
+
+
+def test_dump_refuses_a_removed_entry():
+    # 從 model 移除既有條目後寫回，若靜默保留原檔即丟失意圖 → 應大聲失敗。
+    original = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/a.yaml"
+target   = "/opt/a.yaml"
+format   = "yaml"
+groups   = []
+
+[[files]]
+uid      = "mfz3k9r7"
+name     = "docker-daemon"
+hostname = "amr01"
+source   = "files/b.json"
+target   = "/etc/b.json"
+format   = "json"
+groups   = []
+"""
+
+    config_list = load(original)
+    del config_list.files[1]  # 移除既有條目
+    with pytest.raises(DumpMismatch):
+        dump(config_list, original)

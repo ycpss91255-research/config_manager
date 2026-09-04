@@ -64,6 +64,14 @@ def dump(config_list: ConfigList, original: str) -> str:
                 "（目前只支援未改動與新增）"
             )
 
+    model_uids = {entry.uid for entry in config_list.files}
+    removed = [uid for uid in doc_by_uid if uid not in model_uids]
+    if removed:
+        raise DumpMismatch(
+            f"dump 尚不支援移除既有條目：uid {removed} 已從清單移除"
+            "（目前只支援未改動與新增）"
+        )
+
     return tomlkit.dumps(doc)
 
 
