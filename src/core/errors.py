@@ -11,3 +11,7 @@ class ConfigListError(Exception):
 
 class DuplicateUid(ConfigListError):
     """兩筆條目共用同一個 uid。uid 是唯一的真實識別碼，重號是靜默 bug 的來源。"""
+
+
+class DuplicateTarget(ConfigListError):
+    """兩筆條目寫到同一個目標位置。寫出順序決定最終結果，是靜默 bug。"""

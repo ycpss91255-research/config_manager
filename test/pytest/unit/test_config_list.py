@@ -6,7 +6,7 @@
 import pytest
 
 from core.config_list import load
-from core.errors import DuplicateUid
+from core.errors import DuplicateTarget, DuplicateUid
 
 
 def test_valid_config_list_loads_with_correct_field_values():
@@ -89,3 +89,41 @@ groups   = []
     assert "navigation-params" in message
     assert "docker-daemon" in message
     assert "mfz3k9q1" in message
+
+
+def test_duplicate_target_raises_named_exception_identifying_both_entries():
+    # 兩筆寫到同一個目標位置。寫出順序決定最終結果，是靜默 bug（不變式 2）。
+    text = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/a.yaml"
+target   = "/opt/shared.yaml"
+format   = "yaml"
+groups   = []
+
+[[files]]
+uid      = "mfz3k9r7"
+name     = "docker-daemon"
+hostname = "amr01"
+source   = "files/b.yaml"
+target   = "/opt/shared.yaml"
+format   = "yaml"
+groups   = []
+"""
+
+    with pytest.raises(DuplicateTarget) as exc:
+        load(text)
+
+    message = str(exc.value)
+    assert "navigation-params" in message
+    assert "docker-daemon" in message
+    assert "/opt/shared.yaml" in message
