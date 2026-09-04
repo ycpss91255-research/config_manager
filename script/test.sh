@@ -50,7 +50,7 @@ run_lint() {
   cd "${REPO_ROOT}"
   case "${tool}" in
     ruff|all) require_tool ruff 'pip install -r config/pip/requirements-dev.txt' && ruff check src test ;;&
-    mypy|all) require_tool mypy 'pip install -r config/pip/requirements-dev.txt' && mypy --strict src/core ;;&
+    mypy|all) require_tool mypy 'pip install -r config/pip/requirements-dev.txt' && mypy --strict src/config_manager/core ;;&
     pylint|all) require_tool pylint 'pip install -r config/pip/requirements-dev.txt' && pylint src ;;&
     shellcheck|all)
       if require_tool shellcheck 'apt-get install shellcheck'; then
@@ -84,7 +84,7 @@ main() {
 
   if (( $# == 0 )); then
     run_lint all
-    exec pytest test/pytest --cov=src/core --cov-report=term-missing
+    exec pytest test/pytest --cov=src/config_manager/core --cov-report=term-missing
   fi
 
   case "$1" in

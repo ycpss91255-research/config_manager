@@ -13,7 +13,7 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 readonly REPO_ROOT
 
-if [[ ! -f "${REPO_ROOT}/src/api/cli.py" ]]; then
+if [[ ! -f "${REPO_ROOT}/src/config_manager/api/cli.py" ]]; then
   printf 'cfg: the CLI does not exist yet.\n' >&2
   printf 'cfg: it is an API client, so it arrives with the API in v0.1.0.\n' >&2
   printf 'cfg: see https://github.com/ycpss91255-research/config_manager/milestone/1\n' >&2
@@ -21,4 +21,4 @@ if [[ ! -f "${REPO_ROOT}/src/api/cli.py" ]]; then
 fi
 
 cd "${REPO_ROOT}"
-exec python -m api.cli "$@"
+exec python -m config_manager.api.cli "$@"

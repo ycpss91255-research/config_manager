@@ -22,6 +22,6 @@
 }
 
 @test "the core layer imports without a filesystem or a git repo" {
-  run python -c "import core.models"
+  run python -c "import config_manager.core.models"
   [ "$status" -eq 0 ]
 }

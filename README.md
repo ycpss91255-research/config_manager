@@ -39,13 +39,16 @@ just                   # 列出所有命令
 | `script/hooks/` | 模板擴充點，已由自建 wrapper 接線（ADR-00000023） |
 | `script/local/` | repo 自有的 just 命令組；`cfg` namespace 是本專案的 CLI |
 | `config/` | 專案設定資產（pip、shell） |
-| `src/core/` | 純邏輯，不碰檔案系統與 git——因此可在無檔案系統下完整測試 |
-| `src/io/` | 一切對外互動：parsers、git wrapper、原子寫出 |
-| `src/api/` | HTTP 端點、身分與編輯階段、CLI（CLI 是 API client） |
-| `src/web/` | 單一 HTML 頁面與靜態資源 |
+| `src/config_manager/core/` | 純邏輯，不碰檔案系統與 git——因此可在無檔案系統下完整測試 |
+| `src/config_manager/io/` | 一切對外互動：parsers、git wrapper、原子寫出 |
+| `src/config_manager/api/` | HTTP 端點、身分與編輯階段、CLI（CLI 是 API client） |
+| `src/config_manager/web/` | 單一 HTML 頁面與靜態資源 |
 | `test/` | 三軸：靜態分析 `lint/`、層級 `pytest/`、型別 `bats/`、`reserved/` |
 | `doc/` | `adr/`、`changelog/`、`test/`、`TEST-PLAN.md`、`UI-ELEMENTS.md`、`PRD.md` |
 | `tools/` + `figures/` | 圖表產生腳本與輸出 |
+
+`src/` 底下只有一個頂層套件 `config_manager/`——頂層目錄名會與 stdlib 撞名，
+`io` 就撞了，且在目錄還空著時完全不可見（ADR-00000026）。
 
 依賴方向是 **api → core → io** 單向。`core/` 不 import `api/`；所有檔案系統與
 git 操作集中在 `io/`，測試時可替換為 fake——這是整個系統可測試性的地基。
@@ -107,18 +110,18 @@ YAML 清單。**兩份清單一定會漂移**：本 repo 的 CI 曾連續六次�
 | 檢查 | 擋什麼 |
 |---|---|
 | `ruff` | 巢狀深度、循環複雜度、函式長度、參數個數、禁止吞錯誤 |
-| `mypy --strict` | `src/core/` 全覆蓋 |
+| `mypy --strict` | `src/config_manager/core/` 全覆蓋 |
 | `pylint` | ruff 未涵蓋的設計層面 |
 | `shellcheck` | 全部 shell 腳本 |
 | `hadolint` | Dockerfile |
 | `actionlint` | workflow 的**表達式**——YAML parser 看不到的那一層 |
 | `commit` | commit 訊息，規則取樣自 base（ADR-00000025） |
 
-`pytest` 的 coverage 下限 85%（`src/core/`）寫在 `pyproject.toml`，CI 不重述。
+`pytest` 的 coverage 下限 85%（`src/config_manager/core/`）寫在 `pyproject.toml`，CI 不重述。
 
 ## 給後續維護者 / agent
 
-- **不要重建設計文件。** 直接使用；有新決策就在 `doc/adr/` 加新號（目前 25 份，從 `00000026` 續接）。
+- **不要重建設計文件。** 直接使用；有新決策就在 `doc/adr/` 加新號（目前 26 份，從 `00000027` 續接）。
 - **ADR 的編號與結構 lint 要在 v0.1.0 就寫**：重號 fail、檔名格式不符 fail、
   缺 `> 服務：` 或必要段落 fail、跳號與缺 Alternatives 僅 warn。
   平行開發撞號是真實發生過的缺陷，人工檢查抓不到。
@@ -146,5 +149,5 @@ v0.1.0 – v0.10.0 十個里程碑已建立於
 
 ## 目前狀態
 
-骨架已建立。`src/core/` 進行中：v0.1.0 的 T1（清單檔載入與寫回）與
+骨架已建立。`src/config_manager/core/` 進行中：v0.1.0 的 T1（清單檔載入與寫回）與
 T5（身分推導）已通過。`io/`、`api/`、`web/` 尚未開始。

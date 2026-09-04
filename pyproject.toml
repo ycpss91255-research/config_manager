@@ -26,7 +26,7 @@ max-args = 5
 [tool.mypy]
 # Full coverage on core/ only: it is the layer where a type error costs the
 # most and where there is no I/O to hide behind.
-files = ["src/core"]
+files = ["src/config_manager/core"]
 strict = true
 
 [tool.pylint.format]
@@ -41,7 +41,7 @@ disable = ["missing-docstring", "line-too-long"]
 max-nested-blocks = 3
 
 [tool.coverage.run]
-source = ["src/core"]
+source = ["src/config_manager/core"]
 
 [tool.coverage.report]
 # core/ only. io/ and api/ are covered at the integration and system levels,

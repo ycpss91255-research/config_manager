@@ -3,7 +3,15 @@
 用語依 CONTEXT.md。純邏輯，不做 I/O（ADR-00000011）：index 收已解析的資料。
 """
 
-from core.index import SCOPE_ALL, SCOPE_NAME, SCOPE_VALUE, index, reindex, search, unindex
+from config_manager.core.index import (
+    SCOPE_ALL,
+    SCOPE_NAME,
+    SCOPE_VALUE,
+    index,
+    reindex,
+    search,
+    unindex,
+)
 
 
 def test_index_flattens_nested_dict_to_dotted_paths():

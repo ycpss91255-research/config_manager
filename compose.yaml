@@ -50,7 +50,7 @@ services:
     # A static file server and nothing else. The frontend reaches neither the
     # filesystem nor git; every guarantee lives behind the API (design
     # principle N-3), so this container has no mounts to give it either.
-    command: ["python", "-m", "http.server", "8081", "--directory", "/opt/config_manager/src/web"]
+    command: ["python", "-m", "http.server", "8081", "--directory", "/opt/config_manager/src/config_manager/web"]
     depends_on:
       - backend
 

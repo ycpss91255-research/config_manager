@@ -61,9 +61,9 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r config/pip/requirements-dev.txt
-      # The 85% floor on src/core lives in pyproject.toml, so this fails on
+      # The 85% floor on src/config_manager/core lives in pyproject.toml, so this fails on
       # coverage without the threshold being restated here.
-      - run: pytest test/pytest --cov=src/core --cov-report=term-missing
+      - run: pytest test/pytest --cov=src/config_manager/core --cov-report=term-missing
 
   build:
     runs-on: ubuntu-latest

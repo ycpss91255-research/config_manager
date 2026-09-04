@@ -28,7 +28,7 @@ just test filter <regex>     # 符合樣式的 spec
 | 工具 | 擋什麼 |
 |---|---|
 | `ruff` | 巢狀深度、循環複雜度、函式長度、參數個數、禁止吞錯誤 |
-| `mypy --strict` | `src/core/` 全覆蓋——型別錯誤成本最高、且無 I/O 可躲的一層 |
+| `mypy --strict` | `src/config_manager/core/` 全覆蓋——型別錯誤成本最高、且無 I/O 可躲的一層 |
 | `pylint` | `ruff` 未涵蓋的設計層面檢查 |
 | `hadolint` | Dockerfile |
 
