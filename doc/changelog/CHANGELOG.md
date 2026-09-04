@@ -29,3 +29,7 @@ Versions follow the milestone ladder in the design document §8.
   carrying its own acceptance criteria. §0.7 places acceptance criteria on
   issues rather than in the document, so the document's §8 becomes a pointer
   to GitHub rather than a second copy that can go stale.
+- `script/prune.sh` and its `just docker prune` recipe, closing the gap
+  against the wrapper set §3.3.2 names.
+- `doc/test/TEST.md`: how to run the tests, and what each cell of the three
+  axes covers, including the deliberately-empty slots and their reasons.

@@ -41,7 +41,7 @@ just                   # 列出所有命令
 | `src/api/` | HTTP 端點、身分與編輯階段、CLI（CLI 是 API client） |
 | `src/web/` | 單一 HTML 頁面與靜態資源 |
 | `test/` | 三軸：靜態分析 `lint/`、層級 `pytest/`、型別 `bats/`、`reserved/` |
-| `doc/` | `adr/`、`changelog/`、`TEST-PLAN.md`、`UI-ELEMENTS.md`、`PRD.md` |
+| `doc/` | `adr/`、`changelog/`、`test/`、`TEST-PLAN.md`、`UI-ELEMENTS.md`、`PRD.md` |
 | `tools/` + `figures/` | 圖表產生腳本與輸出 |
 
 依賴方向是 **api → core → io** 單向。`core/` 不 import `api/`；所有檔案系統與

@@ -16,3 +16,7 @@ exec *ARGS:
 # Stop the services; the config_repo volume survives
 stop *ARGS:
     @./script/stop.sh {{ARGS}}
+
+# Reclaim this project's containers and dangling images
+prune *ARGS:
+    @./script/prune.sh {{ARGS}}

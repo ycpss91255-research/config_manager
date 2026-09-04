@@ -1,0 +1,2 @@
+# pylint 的設定與「證明某規則會觸發」的 fixture。
+# 目前設定集中在 pyproject.toml / .hadolint.yaml；此處保留給規則層級的 fixture。
