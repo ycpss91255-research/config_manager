@@ -45,3 +45,9 @@ def test_search_all_scope_is_union_of_name_and_value():
     idx = index("u1", {"speed_limit": 30, "mode": "speed"})
     hits = search(idx, "speed", SCOPE_ALL)
     assert set(hits) == {("u1", "speed_limit", 30), ("u1", "mode", "speed")}
+
+
+def test_specific_scope_excludes_other_dimension_matches():
+    # 名稱含 "speed"、值不含；以「參數值」範圍搜尋不命中（釘住範圍排除，回歸測試）。
+    idx = index("u1", {"speed_limit": 30})
+    assert search(idx, "speed", SCOPE_VALUE) == []
