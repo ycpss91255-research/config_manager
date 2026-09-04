@@ -100,7 +100,7 @@ gh pr merge --squash
 
 ## 檢查一律在容器內跑
 
-`just test` 會自行建置 `dockerfile/Dockerfile.test-tools` 並**轉進容器**執行；
+`just test` 會自行建置 `docker/Dockerfile.test-tools` 並**轉進容器**執行；
 CI 呼叫的是同一支 `./script/test.sh`，不安裝任何工具。**一份映像，兩個呼叫者**
 （ADR-00000027）。
 

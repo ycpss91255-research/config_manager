@@ -23,7 +23,7 @@
 
 ## Decision
 
-`dockerfile/Dockerfile.test-tools` 是唯一的檢查環境，含 Python 3.11、
+`docker/Dockerfile.test-tools` 是唯一的檢查環境，含 Python 3.11、
 `requirements-dev.txt`、shellcheck、hadolint、actionlint、bats、git。
 
 `script/test.sh` 在偵測到自己不在該映像內時（`CM_IN_TEST_IMAGE`），
