@@ -1,8 +1,7 @@
-"""config_manager -- centralized config management.
+"""config_manager —— 集中式 config 管理。
 
-Every module lives under this one package so that no top-level name can
-shadow a standard-library one. `io` did: it is loaded during interpreter
-startup to build sys.stdout, so an `io` package earlier on sys.path either
-made itself unimportable or stopped the interpreter from booting at all
-(ADR-00000026).
+每個模組都放在這一個套件底下，讓頂層名稱無法遮蔽標準函式庫的同名模組。
+`io` 就是實際撞過的那一個：它在直譯器啟動階段就被載入以建立 sys.stdout，
+所以只要 sys.path 上更前面站著一個 `io` 套件，不是它自己變得無法 import，
+就是直譯器根本起不來（ADR-00000026）。
 """

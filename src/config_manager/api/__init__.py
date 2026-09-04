@@ -1,4 +1,4 @@
-"""Layer api: HTTP endpoints, the identity/editing session, and the CLI.
+"""api 層：HTTP 端點、身分與編輯階段，以及 CLI。
 
-The CLI is an API client, not a second implementation (ADR-00000009).
+CLI 是 API 的 client，不是第二套實作（ADR-00000009）。
 """
