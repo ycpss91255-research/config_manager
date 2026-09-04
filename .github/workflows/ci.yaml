@@ -58,6 +58,11 @@ jobs:
       # up -- not merely that it compiled. Separate from `checks` because it
       # builds the application image, not the tooling one.
       - run: docker build --target runtime-test -t config_manager:runtime-test .
+      # devel too, and not for symmetry: runtime-test's chain is
+      # devel-base -> runtime, so it never enters devel. The stage every
+      # developer builds daily was therefore the one stage CI never built,
+      # and it was broken for as long as it existed.
+      - run: docker build --target devel -t config_manager:devel .
 
   ci-rollup:
     # The single required status check, mirroring base. Branch protection
