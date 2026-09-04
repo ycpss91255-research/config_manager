@@ -83,8 +83,20 @@ git 操作集中在 `io/`，測試時可替換為 fake——這是整個系統�
 - **Wireframe 是 HTML 的規格。** 實作介面時對照 `doc/UI-ELEMENTS.md`。
 - **新增術語前先查 `CONTEXT.md`**，不重新造詞。
 - **PDF 中標記為「推導內容」的章節**（目錄樹、端點表、欄位表、閾值表、里程碑）
-  在對應程式碼落地後應刪除，改為指向真實來源。見 PDF §0.7。
-  閾值表已落地於 `pyproject.toml`。
+  在對應程式碼落地後應刪除，改為指向真實來源。見 PDF §0.7。已落地的有：
+  §0.6 閾值表 → `pyproject.toml`；§8 版本里程碑與驗收檢查點 → GitHub Milestones + Issues。
+
+## 里程碑
+
+v0.1.0 – v0.10.0 十個里程碑已建立於
+[GitHub Milestones](https://github.com/ycpss91255-research/config_manager/milestones)，
+每個 milestone 的說明含該版本的能力矩陣與 §8.2 驗收檢查點；
+54 個 issue 依能力矩陣逐項拆分，各自帶驗收條件（§0.7：驗收條件屬 issue 的 acceptance criteria）。
+
+**動工前先關掉 [#1](https://github.com/ycpss91255-research/config_manager/issues/1)**——
+逐項確認 `doc/TEST-PLAN.md` 的 18 個測試介面與 6 個驗收旅程。沒有經過確認的測試介面，不寫測試。
+
+`v1.0.0` 不設在本規劃內，待實際運行一段時間後由維護者自行標記。
 
 ## 目前狀態
 

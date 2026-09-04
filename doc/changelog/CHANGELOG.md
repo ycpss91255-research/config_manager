@@ -23,3 +23,9 @@ Versions follow the milestone ladder in the design document §8.
   choices that are expensive to reverse: stage names, `/opt` for baked
   artifacts, `host` networking, the `.local` override suffix, the `just`
   command model, ADR format, and Conventional Commits.
+
+- Milestones v0.1.0–v0.10.0 with the design document's §8.2 acceptance
+  checkpoints, and 54 issues split along the §8.1 capability matrix, each
+  carrying its own acceptance criteria. §0.7 places acceptance criteria on
+  issues rather than in the document, so the document's §8 becomes a pointer
+  to GitHub rather than a second copy that can go stale.
