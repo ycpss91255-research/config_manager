@@ -9,12 +9,22 @@
 
 讀檔案系統，故在 io 層而非 core（ADR-00000011：核心層不碰檔案系統與 git）。
 解析與完整性判定仍然交給 core.config_list.load——這支只負責把位元組拿給它。
+
+**代價寫明**：因此這裡認得 load() 的失敗詞彙（tomlkit 的 ParseError、pydantic 的
+ValidationError、core 的 ConfigListError）。更乾淨的作法是讓 load() 自己把前兩者
+正規化成具名的 ConfigListError，這一支就只剩一個 except——但那會改到 core 的契約
+與 T1 的行為清單，屬於另一件事。在那之前，寧可讓耦合看得見，也不要用
+`except Exception` 把它藏起來（#120）。
 """
 
 import os
 import sys
 
+from pydantic import ValidationError
+from tomlkit.exceptions import ParseError
+
 from config_manager.core.config_list import load
+from config_manager.core.errors import ConfigListError
 from config_manager.core.models import ConfigList
 from config_manager.io.errors import (
     ConfigListMissing,
@@ -49,6 +59,13 @@ def read_config_list(repo: str) -> ConfigList:
             f"下一步：確認 CM_CONFIG_REPO 指向正確的掛載，或從備份還原該檔"
         )
 
+    # 只接「清單檔真的有問題」會產生的那三類：TOML 語法不成立、內容不符資料模型、
+    # 完整性檢查不過。其餘任何例外都是這支程式的 bug，讓它帶著 traceback 炸開——
+    # 判準與下面的 main() 相同（設計 §0.4：捕捉即代表有處理策略，否則應向上拋出）。
+    #
+    # 先前這裡是 `except Exception`，於是 load() 自身的 AttributeError 也會被說成
+    # 「你的清單檔無法解析」，把人送去反覆檢查一份沒有問題的 TOML。**重貼標籤不是
+    # 處理策略，是改寫事實**，而三要素每一項都因此變成假的（#120）。
     try:
         text = _read(list_path)
         return load(text)
@@ -56,7 +73,7 @@ def read_config_list(repo: str) -> ConfigList:
         raise ConfigListUnparsable(
             f"清單檔讀不出來：{list_path}（{error.strerror}）。下一步：檢查該檔的權限與編碼"
         ) from error
-    except Exception as error:
+    except (ParseError, ValidationError, ConfigListError) as error:
         raise ConfigListUnparsable(
             f"清單檔無法解析：{list_path}——{error}。下一步：依訊息指出的位置修正該檔"
         ) from error
