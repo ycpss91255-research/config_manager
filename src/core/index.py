@@ -44,4 +44,10 @@ def search(index_entries: list[Entry], query: str, scope: str) -> list[Entry]:
         return [entry for entry in index_entries if query in entry[1]]
     if scope == SCOPE_VALUE:
         return [entry for entry in index_entries if query in _as_text(entry[2])]
+    if scope == SCOPE_ALL:
+        return [
+            entry
+            for entry in index_entries
+            if query in entry[1] or query in _as_text(entry[2])
+        ]
     return []

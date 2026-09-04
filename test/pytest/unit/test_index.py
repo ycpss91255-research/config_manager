@@ -38,3 +38,10 @@ def test_search_by_value_returns_matching_parameters():
     # 依參數值搜尋：比對的是值，不是名稱。
     idx = index("u1", {"nav": {"max_vel": 0.8}, "mode": "fast"})
     assert search(idx, "fast", SCOPE_VALUE) == [("u1", "mode", "fast")]
+
+
+def test_search_all_scope_is_union_of_name_and_value():
+    # 一個參數路徑含關鍵字、另一個參數的值含關鍵字；「全部」兩者都命中（聯集）。
+    idx = index("u1", {"speed_limit": 30, "mode": "speed"})
+    hits = search(idx, "speed", SCOPE_ALL)
+    assert set(hits) == {("u1", "speed_limit", 30), ("u1", "mode", "speed")}
