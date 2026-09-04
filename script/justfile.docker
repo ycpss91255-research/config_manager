@@ -3,20 +3,20 @@
 
 # Build the image (default stage: devel)
 build *ARGS:
-    @./script/build.sh {{ARGS}}
+    @{{justfile_directory()}}/script/build.sh {{ARGS}}
 
 # Start backend + frontend
 run *ARGS:
-    @./script/run.sh {{ARGS}}
+    @{{justfile_directory()}}/script/run.sh {{ARGS}}
 
 # Shell into a running service (default: backend)
 exec *ARGS:
-    @./script/exec.sh {{ARGS}}
+    @{{justfile_directory()}}/script/exec.sh {{ARGS}}
 
 # Stop the services; the config_repo volume survives
 stop *ARGS:
-    @./script/stop.sh {{ARGS}}
+    @{{justfile_directory()}}/script/stop.sh {{ARGS}}
 
 # Reclaim this project's containers and dangling images
 prune *ARGS:
-    @./script/prune.sh {{ARGS}}
+    @{{justfile_directory()}}/script/prune.sh {{ARGS}}

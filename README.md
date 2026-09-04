@@ -33,8 +33,11 @@ just                   # 列出所有命令
 | 路徑 | 放什麼 |
 |---|---|
 | `Dockerfile` | 多階段：`sys` → `devel-base` → `devel` → `runtime` → `runtime-test` |
-| `compose.yaml` | 兩個服務：backend（API + git + 寫出）、frontend（純靜態） |
+| `compose.yaml` | 兩個服務：backend（API + git + 寫出）、frontend（純靜態）。**唯一的服務定義來源**（ADR-00000024） |
+| `.setup.conf` | 佔位，無值。導入模板後才成為權威，屆時刪除手寫的 `compose.yaml` |
 | `script/` | 任務進入點；`entrypoint.sh` 以 `exec "$@"` 交棒 |
+| `script/hooks/` | 模板擴充點，已由自建 wrapper 接線（ADR-00000023） |
+| `script/local/` | repo 自有的 just 命令組；`cfg` namespace 是本專案的 CLI |
 | `config/` | 專案設定資產（pip、shell） |
 | `src/core/` | 純邏輯，不碰檔案系統與 git——因此可在無檔案系統下完整測試 |
 | `src/io/` | 一切對外互動：parsers、git wrapper、原子寫出 |
@@ -75,7 +78,7 @@ git 操作集中在 `io/`，測試時可替換為 fake——這是整個系統�
 
 ## 給後續維護者 / agent
 
-- **不要重建設計文件。** 直接使用；有新決策就在 `doc/adr/` 加新號（從 `00000023` 續接）。
+- **不要重建設計文件。** 直接使用；有新決策就在 `doc/adr/` 加新號（目前 24 份，從 `00000025` 續接）。
 - **ADR 的編號與結構 lint 要在 v0.1.0 就寫**：重號 fail、檔名格式不符 fail、
   缺 `> 服務：` 或必要段落 fail、跳號與缺 Alternatives 僅 warn。
   平行開發撞號是真實發生過的缺陷，人工檢查抓不到。

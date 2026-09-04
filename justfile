@@ -12,8 +12,9 @@
 mod docker 'script/justfile.docker'
 mod test 'script/justfile.test'
 
-# A `cfg` namespace (just cfg import / scan / apply / revert) joins these once
-# the CLI exists; it is an API client, so it cannot precede the API.
+# Repo-local command groups, registered in script/local/justfile.local.
+# `import?` so an empty registry is not an error.
+import? 'script/local/justfile.local'
 
 default:
     @just --list

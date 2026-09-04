@@ -9,6 +9,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly REPO_ROOT
+# shellcheck source=hooks/dispatch.sh
+source "${REPO_ROOT}/script/hooks/dispatch.sh"
 
 usage() {
   cat <<'USAGE'
@@ -35,17 +37,10 @@ main() {
   done
 
   cd "${REPO_ROOT}"
+  run_hook pre build "${stage}"
   CM_STAGE="${stage}" CM_TAG="${stage}" \
     docker compose build "${extra[@]}"
-
-  # Post-build smoke, the check the template would run from
-  # script/hooks/post/build.sh once it is adopted. Kept inline because a
-  # hooks/ tree with no dispatcher to call it is a directory that looks
-  # wired and is not.
-  if [[ "${stage}" == "runtime" ]]; then
-    printf 'build.sh: running runtime smoke stage\n'
-    CM_STAGE="runtime-test" CM_TAG="runtime-test" docker compose build backend
-  fi
+  run_hook post build "${stage}"
 }
 
 main "$@"

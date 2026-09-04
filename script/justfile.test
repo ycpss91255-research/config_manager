@@ -2,20 +2,20 @@
 
 # Everything: lint + all levels + coverage
 default *ARGS:
-    @./script/test.sh {{ARGS}}
+    @{{justfile_directory()}}/script/test.sh {{ARGS}}
 
 # Static analysis only; optionally one tool (ruff|mypy|pylint|hadolint)
 lint *TOOL:
-    @./script/test.sh --lint {{TOOL}}
+    @{{justfile_directory()}}/script/test.sh --lint {{TOOL}}
 
 # One level: unit | integration | system | acceptance
 level LEVEL:
-    @./script/test.sh --level {{LEVEL}}
+    @{{justfile_directory()}}/script/test.sh --level {{LEVEL}}
 
 # One spec file
 file PATH:
-    @./script/test.sh --file {{PATH}}
+    @{{justfile_directory()}}/script/test.sh --file {{PATH}}
 
 # Specs matching a pattern
 filter REGEX:
-    @./script/test.sh --filter {{REGEX}}
+    @{{justfile_directory()}}/script/test.sh --filter {{REGEX}}

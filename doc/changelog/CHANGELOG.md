@@ -33,3 +33,23 @@ Versions follow the milestone ladder in the design document §8.
   against the wrapper set §3.3.2 names.
 - `doc/test/TEST.md`: how to run the tests, and what each cell of the three
   axes covers, including the deliberately-empty slots and their reasons.
+- `script/hooks/{pre,post}/` for all seven verbs, wired to the five
+  self-built wrappers through `script/hooks/dispatch.sh`, so a hook dropped
+  in actually runs. The two uses §3.3.4 names move out of the wrappers and
+  into `pre/run.sh` and `post/build.sh`. Seams with no caller say so in the
+  file (ADR-00000023).
+- `script/local/` with the `cfg` command group, registered through the root
+  justfile. The CLI it forwards to arrives with the API in v0.1.0; until
+  then it fails with a message that says exactly that.
+- `.setup.conf` as a placeholder carrying no service values, plus the
+  ordered steps for adopting the template without ever having two live
+  service definitions (ADR-00000024).
+- ADR-00000023 and ADR-00000024.
+
+### Fixed
+
+- `just docker *` and `just test *` were broken in every invocation: a
+  module recipe runs with the module's directory as cwd, so the
+  `./script/<name>.sh` paths never resolved. They now go through
+  `{{justfile_directory()}}`, which is the root justfile's directory
+  regardless of which module the recipe lives in.

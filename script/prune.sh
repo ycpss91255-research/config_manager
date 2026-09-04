@@ -8,6 +8,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly REPO_ROOT
+# shellcheck source=hooks/dispatch.sh
+source "${REPO_ROOT}/script/hooks/dispatch.sh"
 
 usage() {
   cat <<'USAGE'
@@ -29,6 +31,7 @@ main() {
   esac
 
   cd "${REPO_ROOT}"
+  run_hook pre prune
   docker compose rm --stop --force
   docker image prune --force --filter "label=com.docker.compose.project=config_manager"
 
@@ -38,6 +41,7 @@ main() {
     docker image rm --force config_manager:devel config_manager:runtime 2>/dev/null || true
     printf 'prune.sh: removed built images; the config_repo volume is untouched.\n'
   fi
+  run_hook post prune
 }
 
 main "$@"
