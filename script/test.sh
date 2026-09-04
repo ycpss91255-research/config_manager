@@ -24,7 +24,7 @@ Usage: script/test.sh [--level <name>] [--lint [<tool>]] [--file <path>] [--filt
                       （同時跑該層級的 pytest 與 bats 規格）
   --lint [<tool>]     all linters, or one of:
                       ruff | mypy | pylint | shellcheck | hadolint | actionlint | commit | adr | paths
-                      | portability
+                      | portability | messages
   --file <path>       a single spec file
   --filter <regex>    specs matching a pattern
 
@@ -80,6 +80,7 @@ dispatch_to_container() {
 _tool_install_hint() {
   case "$1" in
     ruff|mypy|pylint|pytest) printf 'pip install -r config/pip/requirements-dev.txt' ;;
+    python3) printf 'apt-get install python3' ;;
     shellcheck) printf 'apt-get install shellcheck' ;;
     bats) printf 'apt-get install bats' ;;
     hadolint) printf 'https://github.com/hadolint/hadolint/releases' ;;
@@ -130,8 +131,10 @@ run_lint() {
   cd "${REPO_ROOT}"
 
   case "${tool}" in
-    all) survey_tools ruff mypy pylint shellcheck hadolint actionlint ;;
+    all) survey_tools ruff mypy pylint shellcheck hadolint actionlint python3 ;;
     ruff|mypy|pylint|shellcheck|hadolint|actionlint) survey_tools "${tool}" ;;
+    # lint_messages 讀 Python 的 AST，所以它需要的工具是直譯器本身。
+    messages) survey_tools python3 ;;
   esac
 
   case "${tool}" in
@@ -161,7 +164,13 @@ run_lint() {
     adr|all) ./script/lint_adr.sh ;;&
     paths|all) ./script/lint_paths.sh ;;&
     portability|all) ./script/lint_portability.sh ;;&
-    ruff|mypy|pylint|shellcheck|hadolint|actionlint|commit|adr|paths|portability|all) return 0 ;;
+    messages|all)
+      require_tool python3 \
+        && ./script/lint_messages.sh
+      ;;&
+    ruff|mypy|pylint|shellcheck|hadolint|actionlint|commit|adr|paths|portability|messages|all)
+      return 0
+      ;;
     *) printf 'test.sh: unknown linter %s\n' "${tool}" >&2; return 2 ;;
   esac
 }
