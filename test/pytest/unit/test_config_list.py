@@ -386,3 +386,64 @@ mode = "0644"
     with pytest.raises(UnknownField) as exc:
         load(text)
     assert "warnings" in str(exc.value)
+
+
+def test_valid_config_list_loads_top_level_and_defaults():
+    # core/models 無獨立測試介面，T1 是 list_version 與 defaults 的唯一觀察點。
+    text = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/a.yaml"
+target   = "/opt/a.yaml"
+format   = "yaml"
+groups   = []
+"""
+
+    config_list = load(text)
+    assert (
+        config_list.list_version,
+        config_list.defaults.permissions.owner,
+        config_list.defaults.permissions.group,
+        config_list.defaults.permissions.mode,
+    ) == (1, "root", "root", "0644")
+
+
+def test_clean_config_list_has_no_warnings():
+    # 只有重複才警示：乾淨清單的 warnings 為空（釘住警示的觸發條件）。
+    text = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/a.yaml"
+target   = "/opt/a.yaml"
+format   = "yaml"
+groups   = []
+
+[[files]]
+uid      = "mfz3k9r7"
+name     = "docker-daemon"
+hostname = "amr02"
+source   = "files/b.json"
+target   = "/etc/b.json"
+format   = "json"
+groups   = []
+"""
+
+    assert load(text).warnings == []
