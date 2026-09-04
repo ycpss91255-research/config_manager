@@ -34,10 +34,12 @@ class SessionInput(BaseModel):
 # 預設值不是 "*"。這個服務改得動機器上的 config，允許任意來源等於讓任何一個
 # 被瀏覽的網頁都能對它下指令。預設只放行 compose 起的那個前端；別的部署形態
 # 自己用 CM_ALLOWED_ORIGINS 指定（不變式 4：預設值落向安全）。
-_DEFAULT_ORIGINS = ("http://127.0.0.1:8081", "http://localhost:8081")
+# api/cli 的 serve_plan 也要它：「沒指定就用預設」這個決定要在計畫上看得見，
+# 不能藏在一個只有 create_app 讀得到的私有預設參數裡（#97）。
+DEFAULT_ORIGINS = ("http://127.0.0.1:8081", "http://localhost:8081")
 
 
-def create_app(repo: str, allowed_origins: Iterable[str] = _DEFAULT_ORIGINS) -> FastAPI:
+def create_app(repo: str, allowed_origins: Iterable[str] = DEFAULT_ORIGINS) -> FastAPI:
     """建立服務於 repo 這份 config-repo 的 app。"""
     app = FastAPI(title="config_manager", docs_url="/api/docs", openapi_url="/api/openapi.json")
 

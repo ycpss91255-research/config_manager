@@ -12,3 +12,10 @@ class SessionError(Exception):
 
 class InvalidAuthor(SessionError):
     """身分輸入不合法：欄位為空，或含會破壞 git 作者字串的字元。"""
+
+
+class ConfigRepoMissing(Exception):
+    """起服務時沒有 config-repo 可服務：CM_CONFIG_REPO 未設定或為空。
+
+    不歸在 SessionError 底下——它與編輯階段無關，是啟動階段的接線問題。
+    """
