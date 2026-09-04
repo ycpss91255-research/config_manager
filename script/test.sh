@@ -32,6 +32,10 @@ Runs inside docker/Dockerfile.test-tools, which carries every checker.
 The host is not evidence about the project: its Python, its pytest and its
 absent linters have each produced a wrong answer here before.
 
+Whatever did not actually run is listed at the end: specs that skipped
+themselves, and levels that hold no specs at all. Neither fails the run --
+they are not broken -- but neither is allowed to be quiet either.
+
   CM_TEST_LOCAL=1     run on this host instead. Whatever is missing is
                       named and skipped -- a loud skip, still not a check.
 USAGE
@@ -175,13 +179,68 @@ run_lint() {
   esac
 }
 
-# 動態層級。smoke 是「類型」不是層級：那些規格在 runtime 映像建置時對映像本身
-# 跑，不從這裡跑。
+# 動態層級。四個，與設計 §3.6.1 的軸 2 逐字相同。smoke 不在其中：它是軸 3 的
+# **型別**，寫在檔名裡，而它的執行者是 `docker build --target runtime-test`。
 readonly LEVELS="unit integration system acceptance"
+
+# 本次執行**沒有真的跑到**的東西，累積在這裡，結束前一次列出。
+#
+# 兩種來源，同一個形狀：一組每次都跳過的規格，以及一個一條規格都沒有的層級。
+# 兩者在輸出上與「全綠」的差別都只有幾行字，而這個 repo 已經抓到八次
+# 「看起來在檢查、其實沒在檢查」——每一次都是這個形狀。它們不算失敗（那些規格
+# 在這個容器裡確實跑不了），但絕不可以安靜。降級要大聲：與 CM_LINT_ALLOW_MISSING
+# 同一個先例。
+_NOT_RUN=""
+
+_note_not_run() {
+  [[ -n "${_NOT_RUN}" ]] || _NOT_RUN="$(mktemp)"
+  printf '%s\n' "$1" >>"${_NOT_RUN}"
+}
+
+report_not_run() {
+  if [[ -z "${_NOT_RUN}" ]]; then
+    return 0
+  fi
+
+  local -a lines=()
+  mapfile -t lines <"${_NOT_RUN}"
+  rm -f "${_NOT_RUN}"
+  _NOT_RUN=""
+
+  if (( ${#lines[@]} == 0 )); then
+    return 0
+  fi
+
+  printf '\ntest.sh: %d spec(s)/level(s) did NOT run in this invocation:\n' "${#lines[@]}" >&2
+  printf '  %s\n' "${lines[@]}" >&2
+  printf 'test.sh: a spec that always skips is not a check, and a level with no\n' >&2
+  printf 'test.sh: specs is not a covered level. Each line above needs a reason\n' >&2
+  printf 'test.sh: written down in doc/TEST-PLAN.md, or it is a gap.\n' >&2
+}
 
 # shell 用 bats 測，Python 用 pytest 測；一個層級有哪種規格就跑哪種。bats 不在時
 # 交給 survey_tools 大聲回報，不靜默跳過——「沒有東西會執行的規格」正是這段接線
 # 要消滅的缺口（不變式 2）。
+#
+# 輸出格式定死成 TAP，不隨「stdout 是不是 terminal」而變。bats 兩種格式標記 skip
+# 的寫法不同，而被解析的那份輸出若在兩個環境裡長得不一樣，這裡數出來的數字就會
+# 在其中一個環境裡是錯的——那比不數還糟。
+run_bats() {
+  local label="$1"; shift
+  local tap status=0
+  tap="$(mktemp)"
+
+  bats --formatter tap "$@" | tee "${tap}" || status=$?
+
+  local line
+  while IFS= read -r line; do
+    _note_not_run "${label}: ${line}"
+  done < <(sed -n 's/^ok [0-9][0-9]* \(.*\) # skip[ ]*\(.*\)$/\1 -- skipped: \2/p' "${tap}")
+
+  rm -f "${tap}"
+  return "${status}"
+}
+
 run_bats_level() {
   # 兩行不是風格：local 的參數會在它執行前就全部展開，寫成一行的話 ${level}
   # 在展開當下還沒被賦值，set -u 會直接判定 unbound。
@@ -195,13 +254,49 @@ run_bats_level() {
 
   survey_tools bats
   require_tool bats || return 0
-  bats "${specs[@]}"
+  run_bats "test/bats/${level}" "${specs[@]}"
 }
 
 run_bats_levels() {
   local level
   for level in ${LEVELS}; do
     run_bats_level "${level}"
+  done
+}
+
+# 一個層級的 pytest 規格。空層級交給 _note_not_run，不交給 pytest：pytest 對
+# 「一條都沒收集到」回 5，而 5 在這裡是個假的紅燈——那一層是空的，不是壞的，
+# 而假紅燈與真紅燈混在一起的下場，是兩種都不再被相信。
+run_pytest_level() {
+  local level="$1"
+  local dir="${REPO_ROOT}/test/pytest/${level}"
+
+  local -a specs=()
+  if [[ -d "${dir}" ]]; then
+    mapfile -t specs < <(find "${dir}" -name 'test_*.py' -type f | sort)
+  fi
+  if (( ${#specs[@]} == 0 )); then
+    _note_not_run "test/pytest/${level}/ -- the level has no specs at all"
+    return 0
+  fi
+
+  pytest "${dir}"
+}
+
+# 預設執行把 test/pytest 一次收集完（覆蓋率要一個總數，分四次跑就得不到），
+# 於是空層級在那一次裡完全看不見。這裡把它們單獨點出來。
+note_levels_without_specs() {
+  local level dir
+  local -a specs
+  for level in ${LEVELS}; do
+    dir="${REPO_ROOT}/test/pytest/${level}"
+    specs=()
+    if [[ -d "${dir}" ]]; then
+      mapfile -t specs < <(find "${dir}" -name 'test_*.py' -type f | sort)
+    fi
+    if (( ${#specs[@]} == 0 )); then
+      _note_not_run "test/pytest/${level}/ -- the level has no specs at all"
+    fi
   done
 }
 
@@ -214,8 +309,13 @@ main() {
     dispatch_to_container "$@"
   fi
 
+  # 掛在 EXIT 上而不是每條路徑的結尾：一次失敗的執行裡「什麼沒跑到」與一次成功的
+  # 執行裡一樣重要，而 set -e 會讓收尾那一行永遠到不了。
+  trap report_not_run EXIT
+
   if (( $# == 0 )); then
     run_lint all
+    note_levels_without_specs
     pytest test/pytest --cov=src/config_manager/core --cov-report=term-missing
     run_bats_levels
     return 0
@@ -225,13 +325,15 @@ main() {
     --lint) shift; run_lint "${1:-all}" ;;
     --level)
       shift; [[ $# -gt 0 ]] || { usage >&2; exit 2; }
-      pytest "test/pytest/$1"
+      run_pytest_level "$1"
       run_bats_level "$1"
       ;;
     --file)
       shift; [[ $# -gt 0 ]] || { usage >&2; exit 2; }
       case "$1" in
-        *.bats) survey_tools bats; exec bats "$1" ;;
+        # exec 會把 EXIT trap 一起換掉，那樣單檔執行就是唯一數不出 skip 的入口
+        # ——而「跑單一個檔案」正好是最容易碰到一個整檔跳過的規格的入口。
+        *.bats) survey_tools bats; run_bats "$1" "$1" ;;
         *) exec pytest "$1" ;;
       esac
       ;;
