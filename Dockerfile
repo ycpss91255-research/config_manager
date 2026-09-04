@@ -183,14 +183,24 @@ RUN apt-get update \
         bats \
     && rm -rf /var/lib/apt/lists/*
 
-COPY test/bats/smoke/ /opt/smoke/
-RUN bats /opt/smoke
+# 測試工具只裝在這一層。runtime 不得含它們，而 runtime 是 FROM devel-base，
+# 所以 pytest 絕不能進 config/pip/requirements.txt——那份是 devel-base 裝的。
+RUN pip install --no-cache-dir pytest
 
-# 系統層級（T9）：服務在這份映像裡起在 loopback 上，並以真實 HTTP 回話。
-# script/test.sh 裝不下這些——它把自己跑在工具映像裡，那裡既沒有 docker socket 也
-# 沒有 docker CLI，起不了被測的那個容器。而在這裡，它本身就已經是那個容器。
-COPY test/bats/runtime/ /opt/runtime/
-RUN bats /opt/runtime
+COPY test/bats/system/ /opt/system-bats/
+RUN bats /opt/system-bats
+
+# 系統層級（T9／T10）：服務在**這份映像**裡起在 loopback 上，以真實 HTTP 回話。
+# 同一份規格也由 script/test.sh 在工具映像裡就地執行一次——那一次的覆蓋率算得進
+# 報告，這一次量的是保真度。兩者跑同一份檔案，所以不會分歧（#116、#97）。
+COPY test/pytest/system/ /opt/system/
+RUN mkdir -p /tmp/config-repo \
+    && ( CM_CONFIG_REPO=/tmp/config-repo CM_ROLE=backend \
+         /entrypoint.sh python -m config_manager.api.cli serve \
+           --host 127.0.0.1 --port 8080 & ) \
+    && CM_SYSTEM_BASE_URL=http://127.0.0.1:8080 \
+       CM_SYSTEM_CONFIG_REPO=/tmp/config-repo \
+       pytest /opt/system -q
 
 ARG USER_NAME="user"
 USER ${USER_NAME}

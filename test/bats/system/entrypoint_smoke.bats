@@ -2,6 +2,11 @@
 #
 # 建置期 smoke：「它到底起不起得來？」跑在 runtime-test 階段裡，對著真正會被部署的
 # 那個產物跑。
+#
+# 目錄是 system，不是 smoke。PDF §3.6.1 的三個正交軸裡，smoke 是**軸 3 的型別**
+# （目的），unit／integration／system／acceptance 才是**軸 2 的層級**（範圍）。
+# 型別寫在檔名裡，目錄留給層級——參照專案 ycpss91255-docker/base 就是這樣分的，
+# 它的 test/bats/ 底下只有那四個層級（#116）。
 
 @test "entrypoint 裝進去了且可執行" {
   [ -x /entrypoint.sh ]
