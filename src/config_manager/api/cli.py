@@ -5,6 +5,11 @@
 
 `serve` 是唯一的例外，它不是 client 而是把服務起起來：總得有一個地方做這件事，
 而讓它待在同一支 CLI 裡，容器的啟動指令與開發者手動起服務就是同一條路徑。
+
+**決定要跑什麼與真的跑起來是兩件事。** `serve_plan` 收 environ 當參數、回一份
+`ServePlan`，不碰網路也不建 app；`_serve` 拿那份計畫建 app 並交給 uvicorn。分開
+之前，讀環境變數、決定放行來源、啟動伺服器擠在同一個函式裡，而測試不會去跑
+`uvicorn.run`——於是那些**決定**跟著那一行一起量不到，`api/cli` 是 0%（#97）。
 """
 
 import argparse
@@ -12,10 +17,13 @@ import json
 import os
 import sys
 import urllib.request
+from collections.abc import Mapping
+from dataclasses import dataclass
 
 import uvicorn
 
-from config_manager.api.routes import create_app
+from config_manager.api.errors import ConfigRepoMissing
+from config_manager.api.routes import DEFAULT_ORIGINS, create_app
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8080
@@ -29,6 +37,56 @@ _STATE_TEXT = {
     "drift": "偏離",
     "missing": "未部署",
 }
+
+
+@dataclass(frozen=True)
+class ServePlan:
+    """要起的服務：服務哪一份 config-repo、聽在哪裡、放行哪些來源。
+
+    純資料，沒有 app 也沒有 socket。這份計畫是 `serve` 做的**全部決定**，所以把它
+    測完，`serve` 就只剩「照著做」——而照著做的那兩行看得出對錯，不需要靠測試。
+    """
+
+    repo: str
+    host: str
+    port: int
+    allowed_origins: tuple[str, ...]
+
+
+def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
+    """從參數與環境變數決定要起什麼服務。
+
+    config-repo 的位置從環境變數進來，因為那是容器的接線方式（compose 的
+    CM_CONFIG_REPO）。這一層是邊界，讀環境變數是它的工作；再往內的每一層都只從
+    參數收（ADR-00000011）——包含這個函式本身，所以 environ 是參數而不是隱含輸入。
+    """
+    repo = environ.get("CM_CONFIG_REPO", "")
+    if not repo:
+        raise ConfigRepoMissing(
+            "CM_CONFIG_REPO 未設定，服務沒有 config-repo 可服務。"
+            "下一步：設定它指向掛載進來的 config-repo"
+        )
+
+    return ServePlan(
+        repo=repo,
+        host=host,
+        port=port,
+        allowed_origins=_allowed_origins(environ),
+    )
+
+
+def _allowed_origins(environ: Mapping[str, str]) -> tuple[str, ...]:
+    """CM_ALLOWED_ORIGINS 的逗號分隔清單；未設定時回 app 的預設。
+
+    非本機的部署（用 IP 或主機名開頁面）來源會不同，必須自己指定。指定錯的話
+    請求會被瀏覽器擋下，而頁面會顯示「讀不到 config 清單」——大聲失敗，不是
+    顯示一份空清單假裝沒事。
+
+    沒指定不代表「放行全部」：回的是 DEFAULT_ORIGINS，預設值落向安全（不變式 4）。
+    """
+    raw = environ.get("CM_ALLOWED_ORIGINS", "")
+    named = tuple(origin.strip() for origin in raw.split(",") if origin.strip())
+    return named or DEFAULT_ORIGINS
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -48,11 +106,11 @@ def main(argv: list[str]) -> int:
     """進入點。回傳結束碼。"""
     args = _parser().parse_args(argv[1:])
 
+    # 子命令是 required=True，所以走到這裡的只會是這兩個之一；沒有第三條分支可寫，
+    # 寫了也永遠不會執行。
     if args.command == "serve":
         return _serve(args.host, args.port)
-    if args.command == "list":
-        return _list(args.api)
-    return 2
+    return _list(args.api)
 
 
 def _list(api: str) -> int:
@@ -84,32 +142,19 @@ def _list(api: str) -> int:
 
 
 def _serve(host: str, port: int) -> int:
-    # config-repo 的位置從環境變數進來，因為那是容器的接線方式（compose 的
-    # CM_CONFIG_REPO）。這一層是邊界，讀環境變數是它的工作；再往內的每一層
-    # 都只從參數收（ADR-00000011）。
-    repo = os.environ.get("CM_CONFIG_REPO")
-    if not repo:
-        print(
-            "config_manager: CM_CONFIG_REPO 未設定，服務沒有 config-repo 可服務。"
-            "下一步：設定它指向掛載進來的 config-repo",
-            file=sys.stderr,
-        )
+    try:
+        plan = serve_plan(host, port, os.environ)
+    except ConfigRepoMissing as error:
+        print(f"config_manager: {error}", file=sys.stderr)
         return 2
 
-    app = create_app(repo, _allowed_origins()) if _allowed_origins() else create_app(repo)
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    uvicorn.run(
+        create_app(plan.repo, plan.allowed_origins),
+        host=plan.host,
+        port=plan.port,
+        log_level="warning",
+    )
     return 0
-
-
-def _allowed_origins() -> list[str]:
-    """CM_ALLOWED_ORIGINS 的逗號分隔清單；未設定時回空清單，由 app 用它的預設。
-
-    非本機的部署（用 IP 或主機名開頁面）來源會不同，必須自己指定。指定錯的話
-    請求會被瀏覽器擋下，而頁面會顯示「讀不到 config 清單」——大聲失敗，不是
-    顯示一份空清單假裝沒事。
-    """
-    raw = os.environ.get("CM_ALLOWED_ORIGINS", "")
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
 if __name__ == "__main__":

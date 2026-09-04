@@ -71,7 +71,7 @@ commit 內文結尾加 `Co-Authored-By:` trailer；PR 描述結尾加 Claude Cod
 
 `CM_TEST_LOCAL=1` 仍可在主機跑。它會先盤點主機並列出**全部**缺少的檢查工具，然後停下。再加 `CM_LINT_ALLOW_MISSING=1` 才會跑其餘的，並重述哪些沒跑——**有跳過的執行不算通過**，不要把它報成綠燈。`CM_APT_MIRROR` 可覆寫映像的 Debian 鏡像。
 
-- `ruff check src test`／`mypy --strict src/config_manager/core`／`pylint src`（10.00/10）／`pytest test/pytest --cov=src/config_manager/core`（下限 85）
+- `ruff check src test`／`mypy --strict src/config_manager`／`pylint src`（10.00/10）／`pytest test/pytest --cov=src/config_manager`（`core`／`io`／`api`／`web` 各自下限 85，分開擋）
 - shell 腳本需要 **bash 4+**（macOS 用 `brew install bash`，內建的 3.2 跑不動）
 
 ## TDD

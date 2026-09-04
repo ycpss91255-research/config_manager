@@ -28,8 +28,11 @@ max-statements = 50
 max-args = 5
 
 [tool.mypy]
-# 只對 core/ 做完整覆蓋：那是型別錯誤代價最高的一層，而且沒有 I/O 可以躲在後面。
-files = ["src/config_manager/core"]
+# PDF §0.4 只要求 core/：型別錯誤代價最高、而且沒有 I/O 可以躲在後面的那一層。
+# 這裡加嚴到整個套件（core／io／api），與覆蓋率同一個理由——那幾層也是主要架構
+# （#97）。寫成套件根而不是逐層列舉，是為了讓下一個新增的層不必記得回來加一行：
+# 漏掉一層的失敗方式是安靜的。
+files = ["src/config_manager"]
 strict = true
 
 [tool.pylint.format]
@@ -43,10 +46,41 @@ disable = ["missing-docstring", "line-too-long"]
 max-nested-blocks = 3
 
 [tool.coverage.run]
-source = ["src/config_manager/core"]
+# PDF §0.4 只對 core/ 要求行覆蓋率。#97 決定加嚴：core／io／api／web 四個資料夾
+# 各自 >= 85，理由是那幾層也是主要架構——會有影響的就要有 coverage。
+#
+# 原本的理由「對一個 I/O wrapper 算行覆蓋率，量到的是那個 mock」在這個 repo 不成立：
+# io/ 的規格是對真實 git repo 與真實檔案系統跑的（T7／T8／T15／T20／T21），沒有 mock
+# 可以量。而 api/ 的 0% 也不是「測不到」，是規格放在 pytest 執行不到的地方（#116）。
+source = ["src/config_manager"]
 
 [tool.coverage.report]
-# 只算 core/。io/ 與 api/ 在整合與系統層級被覆蓋，那才是它們的行為真正所在之處；
-# 對一個 I/O wrapper 算行覆蓋率，量到的是那個 mock，不是程式碼。
-fail_under = 85
+# 這裡**刻意沒有 fail_under**。一個總數的門檻同時守四個標準不同的區域，結果是守住
+# 最鬆的那個——擋下限的是 script/coverage_gate.sh，它四個分開算、分開擋。
 show_missing = true
+
+[tool.config_manager.coverage]
+# 四個資料夾各自的下限，由 script/coverage_gate.sh 執行。
+#
+# 同一條線而不是四條：讓每一層各自訂一個「現況剛好擋得住」的值，等於把現況封成標準，
+# 而那些值之間的差距沒有理由，只有歷史。85 這個數字沿用 PDF §0.4 給 core/ 的那條。
+#
+# 調低任何一個都要在 PR 說明理由（§0.4 執行方式）。達不到時的預設處置是**改程式碼
+# 讓它可測**，不是調這裡，也不是用 `# pragma: no cover` 把量不到的東西藏起來。
+#
+# 四條各自做過突變檢查（#97），與 §0.4 那七條同一種形式：讓某一層掉到 85 以下，
+# 確認**只有那一層**轉紅。**設定存在不等於它在守**——這個 repo 已經抓到七次「看起來
+# 在檢查、其實沒在檢查」，而覆蓋率門檻是最容易長成那樣的一種，因為它平常永遠是綠的。
+#
+#   突變                            該層     其餘三層
+#   core/ 加 50 行未執行的陳述句    79.04%   全綠
+#   io/   同上                      68.86%   全綠
+#   api/  同上                      72.49%   全綠
+#   web/  index.html 加一個沒人呼叫的函式  75.68%   全綠
+#
+# 四次都只有被突變的那一層被指名。動了底下任何一個數字，或動了 coverage_gate.sh 的
+# 分區方式，就要重做一次這四個突變。
+core = 85
+io = 85
+api = 85
+web = 85

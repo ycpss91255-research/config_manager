@@ -831,7 +831,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `api/cli` | T10 | 已落地（`serve` 與 `list`） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 未落地（#33） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |
-| `web/` | T11 | 已落地，但 **T11 沒有執行通路——網頁行為零覆蓋（#99）** |
+| `web/` | T11 | 已落地。執行通路於 #97 補上：`test/pytest/system/test_web.py`，Playwright 驅動 Chromium，行覆蓋率由 V8 自己算 |
 | 四支 `__init__.py` | 無——見「刻意的空格」 | 已落地 |
 | `script/entrypoint.sh` | T15 | 已落地 |
 | `script/lint_adr.sh` | T19 | 已落地 |
@@ -842,6 +842,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/lint_messages.sh` | T19 | 已落地 |
 | `script/check_file.sh` | T19（單檔檢查的派工規則） | 已落地 |
 | `script/test.sh` | T19（缺工具不得靜默通過，#72） | 已落地 |
+| `script/coverage_gate.sh` | T19（四個門檻各自獨立、指名的只有轉紅的那一層） | 已落地 |
 | `script/{build,run,exec,stop,prune}.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/dispatch.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/{pre,post}/*.sh`（14 支） | 無——見「刻意的空格」 | 已落地 |
@@ -904,26 +905,37 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 
 | 量測 | 設定 | 範圍 |
 |---|---|---|
-| 覆蓋率 | `[tool.coverage.run] source = ["src/config_manager/core"]`，`fail_under = 85` | 只有 `core/` |
-| 型別 | `[tool.mypy] files = ["src/config_manager/core"]`，`strict = true` | 只有 `core/` |
+| 覆蓋率 | `[tool.coverage.run] source = ["src/config_manager"]`＋`[tool.config_manager.coverage]` 的四個下限，由 `script/coverage_gate.sh` 各自擋 | `core`／`io`／`api`／`web`（#97 起） |
+| 型別 | `[tool.mypy] files = ["src/config_manager"]`，`strict = true` | `core`／`io`／`api`（#97 起） |
 
 **影響：`io/` 與 `api/` 兩者皆無。** `io/writer`、`io/git`、`io/preflight`、`io/digest`、
 `io/scan` 確實各有整合層規格（T8／T7／T15／T20／T21），`api/routes` 有 T9、`api/cli` 有 T10
-——但**沒有任何數字會在它們新增的分支沒被執行時轉紅**，也沒有 `--strict` 擋住那兩層的型別錯誤。
+——但**沒有任何數字會在它們新增的分支沒被執行時轉紅**。型別那一半已經補上（#97）：
+`--strict` 現在涵蓋整個 `src/config_manager/`，逐檔清乾淨後零錯誤，並以突變檢查確認過
+它真的在看那兩層（`io/scan.py` 一個未標註的函式、`api/routes.py` 一個回傳型別不符，各自被擋下）。
 
-**`web/` 更徹底：連規格都沒有。** T11 沒有執行通路，頁面裡的 `data-testid` 是給未來的測試
-準備的，沒有測試在用它們。這與上面兩層是不同的缺口——那兩層是「有規格、沒數字」，這一層是
-「兩者皆無」。追蹤於 #99，理由同樣是「還沒做」而不是「不用做」。
+**`web/` 曾經更徹底：連規格都沒有。** T11 那時沒有執行通路，頁面裡的 `data-testid` 是給未來
+的測試準備的，沒有測試在用它們。#97 補上了那條通路：一個真的 Chromium 打開真的 `index.html`，
+對真的 FastAPI 服務發真的 fetch，覆蓋率由 V8 的 precise coverage 給出（不引入 npm 工具鏈
+——PDF §3.3 說前端不需框架也不需打包流程）。18 則規格，行覆蓋率 98.82%。
 
-**為什麼這裡只記錄、不順手修。** 把 `io/` 與 `api/` 加進 coverage 的 `source`，85 的下限會
+**為什麼當時只記錄、不順手修。** 把 `io/` 與 `api/` 加進 coverage 的 `source`，85 的下限會
 立刻落在一組覆蓋率遠低於 `core/` 的模組上，門檻在一個與本次審計無關的地方爆掉；為了讓它過而
 把下限調低，等於連 `core/` 的保證一起調弱——**一個門檻同時守兩個標準不同的區域，結果是守住
-比較鬆的那個。** mypy 同理：加進 `files` 是一行設定，但後面跟著一批要逐檔處理的 `--strict`
-錯誤，那是實作工作，不是文件工作。
+比較鬆的那個。** 這個推論成立，錯的是它的結論（見下）。 mypy 那一半在 #97 做掉了：加進 `files` 之後實測**零錯誤**——「後面跟著一批要逐檔處理的
+`--strict` 錯誤」是當時的推測，不是量出來的。
 
 **要修的話怎麼修**：兩件事分開，各自一個 issue，各自把數字釘在它守得住的地方——覆蓋率用
 per-module 的下限（讓 `core/` 維持 85，`io/`／`api/` 各自訂一個現況擋得住、之後只能往上調的值），
 mypy 先把 `io/` 與 `api/` 納入 `files` 再逐檔清乾淨。追蹤於 #97。
+
+**per-module 下限那個建議在 #97 被作廢。** 四條不同的線是同一個問題換個形狀：每一層各自訂一個
+「現況剛好擋得住」的值，等於把現況封成標準，而那些值之間的差距沒有理由，只有歷史。落地的是
+**四個資料夾同一條線 85，分開計算、分開擋**（`script/coverage_gate.sh`）。四層實測 97.29／
+88.70／99.28／98.82，沒有一層需要靠調低門檻才過。
+
+**這一節記的是 #97 之前的現況**，兩件事的實際結果見該 issue 與其 PR：per-module 下限那個
+建議被作廢，改成四個資料夾同一條線 85、分開計算分開擋。
 
 ---
 

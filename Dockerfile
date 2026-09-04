@@ -209,6 +209,15 @@ RUN CM_SYSTEM_IMAGE=1 bats --formatter tap /opt/system-bats | tee /tmp/system-ba
 # 系統層級（T9／T10）：服務在**這份映像**裡起在 loopback 上，以真實 HTTP 回話。
 # 同一份規格也由 script/test.sh 在工具映像裡就地執行一次——那一次的覆蓋率算得進
 # 報告，這一次量的是保真度。兩者跑同一份檔案，所以不會分歧（#116、#97）。
+#
+# T11（`test_web.py`，瀏覽器端到端）**明確排除**，不是讓它自己跳過：一組會自己跳過
+# 的規格，與沒有規格的差別只有輸出多幾行字。它需要 Chromium，而把瀏覽器裝進可部署
+# 產物的測試階段要多 500 MB，量到的又是同一份靜態檔——`index.html` 沒有打包步驟
+# （§3.3），它在這裡與在工具映像裡是同一個檔案。那一層由 script/test.sh 在
+# docker/Dockerfile.test-tools 裡跑，門檻同樣是 85（#97）。
+#
+# 檔案改名的話這一行的 --ignore 會失效，於是 test_web.py 會在這裡被收集、因為沒有
+# 瀏覽器而讓建置紅掉——大聲失敗，不是安靜地少跑一層。
 COPY test/pytest/system/ /opt/system/
 RUN mkdir -p /tmp/config-repo \
     && ( CM_CONFIG_REPO=/tmp/config-repo CM_ROLE=backend \
@@ -216,7 +225,7 @@ RUN mkdir -p /tmp/config-repo \
            --host 127.0.0.1 --port 8080 & ) \
     && CM_SYSTEM_BASE_URL=http://127.0.0.1:8080 \
        CM_SYSTEM_CONFIG_REPO=/tmp/config-repo \
-       pytest /opt/system -q
+       pytest /opt/system -q --ignore=/opt/system/test_web.py
 
 ARG USER_NAME="user"
 USER ${USER_NAME}
