@@ -127,6 +127,16 @@ def _entry_to_table(entry: FileEntry) -> "tomlkit.items.Table":
     table["groups"] = entry.groups
     if entry.description is not None:
         table["description"] = entry.description
+    if entry.schema_path is not None:
+        table["schema"] = entry.schema_path  # 清單檔的鍵名是 schema
+    if entry.requires_privilege:
+        table["requires_privilege"] = entry.requires_privilege
+    if entry.permissions is not None:
+        permissions = tomlkit.inline_table()
+        permissions["owner"] = entry.permissions.owner
+        permissions["group"] = entry.permissions.group
+        permissions["mode"] = entry.permissions.mode
+        table["permissions"] = permissions
     return table
 
 
