@@ -90,7 +90,13 @@ main() {
       else
         printf '     missing the "type(scope): " prefix\n' >&2
       fi
-      printf '     rewrite as: <type>(<scope>): <lowercase sentence saying what is now true>\n' >&2
+      # The example is itself a compliant subject: Chinese, declarative, no
+      # trailing period. It used to say "lowercase sentence" -- a rule that
+      # stopped existing when ADR-00000028 moved subjects to Chinese, which has
+      # no letter case. The header table was corrected in #70; this line, the
+      # one a person actually reads, was not (#106).
+      printf '     改寫成：<type>(<scope>): 中文陳述句，說明現在什麼成立\n' >&2
+      printf '     例如：feat(core): 清單檔載入時攔截未知欄位\n' >&2
       failures=$(( failures + 1 ))
       continue
     fi
