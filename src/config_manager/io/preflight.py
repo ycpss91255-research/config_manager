@@ -31,11 +31,16 @@ _ARGV_LEN = 2
 
 def preflight(repo: str) -> None:
     """檢查 config-repo 可用。通過則正常返回，失敗則丟具名例外。"""
-    config_list = _load_config_list(repo)
+    config_list = read_config_list(repo)
     _check_sources_exist(repo, config_list)
 
 
-def _load_config_list(repo: str) -> ConfigList:
+def read_config_list(repo: str) -> ConfigList:
+    """讀出並解析 repo 的清單檔。公開，因為 api 層也要讀同一份檔案。
+
+    只有一個地方知道清單檔叫什麼、在哪裡、讀不出來時該說什麼——第二個實作
+    遲早會與這個分歧，而分歧的那天不會有人發現。
+    """
     list_path = os.path.join(repo, CONFIG_LIST_NAME)
 
     if not os.path.isfile(list_path):

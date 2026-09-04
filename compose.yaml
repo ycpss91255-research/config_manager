@@ -35,7 +35,8 @@ services:
     environment:
       CM_CONFIG_REPO: /opt/config_manager/config-repo
       CM_ROLE: backend
-    command: ["python", "-m", "api.cli", "serve", "--host", "127.0.0.1", "--port", "8080"]
+    # config_manager.api.cli, not api.cli -- see the Dockerfile's CMD (#90).
+    command: ["python", "-m", "config_manager.api.cli", "serve", "--host", "127.0.0.1", "--port", "8080"]
 
   frontend:
     build:

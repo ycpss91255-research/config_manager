@@ -174,7 +174,11 @@ WORKDIR ${APP_ROOT}
 
 USER ${USER_NAME}
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["python", "-m", "api.cli", "serve"]
+# config_manager.api.cli, not api.cli: everything lives under the single
+# top-level package because a top-level io/ shadows the stdlib module of the
+# same name (ADR-00000026, #56). This line kept the pre-rename path long after
+# the rename, and nothing executed it -- api/cli did not exist yet (#90).
+CMD ["python", "-m", "config_manager.api.cli", "serve"]
 
 # ── runtime-test ────────────────────────────────────────────────────────────
 # FROM the stage under test, then layer the tools on top -- never the inverse.
@@ -192,6 +196,14 @@ RUN apt-get update \
 
 COPY test/bats/smoke/ /opt/smoke/
 RUN bats /opt/smoke
+
+# The system level (T9): the service is started on loopback inside this image
+# and answered over real HTTP. script/test.sh cannot host these -- it runs
+# itself inside the tools image, which has neither a docker socket nor a docker
+# CLI, so it cannot start the container under test. Here it already is that
+# container.
+COPY test/bats/runtime/ /opt/runtime/
+RUN bats /opt/runtime
 
 ARG USER_NAME="user"
 USER ${USER_NAME}
