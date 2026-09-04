@@ -3,6 +3,9 @@
 用語依 CONTEXT.md。純邏輯，不做 I/O（ADR-00000011）：index 收已解析的資料。
 """
 
+import pytest
+
+from config_manager.core.errors import UnknownScope
 from config_manager.core.index import (
     SCOPE_ALL,
     SCOPE_NAME,
@@ -80,3 +83,18 @@ def test_search_with_no_match_returns_empty_list_not_exception():
     # 查無結果回空清單，不是例外。
     idx = index("u1", {"max_vel": 0.8})
     assert search(idx, "nonexistent", SCOPE_ALL) == []
+
+
+def test_search_with_an_unknown_scope_raises_naming_the_allowed_values():
+    # 搜尋範圍不在允許集合內 → 具名例外，訊息列出允許的三個值。
+    #
+    # 回空清單的話，「範圍打錯」與「真的查無結果」在呼叫端與使用者眼裡完全一樣，
+    # 而兩者該做的處置相反：前者要改呼叫端，後者是合法的空結果。設計原則 N-2
+    # 說得很直接——無法辨識的值須指名並失敗，也絕不靜默降級為較寬鬆的行為。
+    idx = index("u1", {"max_vel": 0.8})
+
+    with pytest.raises(UnknownScope) as exc:
+        search(idx, "max_vel", "參數名稱們")
+
+    message = str(exc.value)
+    assert all(allowed in message for allowed in (SCOPE_NAME, SCOPE_VALUE, SCOPE_ALL))

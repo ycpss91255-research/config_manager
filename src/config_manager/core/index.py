@@ -5,6 +5,8 @@
 
 from typing import Any
 
+from config_manager.core.errors import UnknownScope
+
 Entry = tuple[str, str, Any]
 
 
@@ -33,24 +35,40 @@ SCOPE_NAME = "參數名稱"
 SCOPE_VALUE = "參數值"
 SCOPE_ALL = "全部"
 
+# 允許的搜尋範圍。守衛與訊息都讀這一份，所以「允許哪些」只有一個定義——訊息說
+# 允許三個、程式卻只認兩個，是這種對照最容易長出來的分歧。
+ALLOWED_SCOPES = (SCOPE_NAME, SCOPE_VALUE, SCOPE_ALL)
+
 
 def _as_text(value: Any) -> str:
     return str(value)
 
 
 def search(index_entries: list[Entry], query: str, scope: str) -> list[Entry]:
-    """在索引中依範圍搜尋，回傳命中的 (uid, 參數路徑, 值)。查無結果回空清單。"""
+    """在索引中依範圍搜尋，回傳命中的 (uid, 參數路徑, 值)。
+
+    查無結果回空清單，不是例外。**範圍本身不在允許集合內則丟 UnknownScope**——
+    那不是「查無結果」，是呼叫端給了一個不存在的範圍，兩者該做的處置相反。
+    回同一個空清單的話，使用者看到「找不到符合的參數」，會以為那個參數不存在，
+    然後去別的地方找（不變式 2、設計原則 N-2）。
+    """
+    if scope not in ALLOWED_SCOPES:
+        allowed = "／".join(ALLOWED_SCOPES)
+        raise UnknownScope(
+            f"搜尋範圍非允許值：「{scope}」不是可用的搜尋範圍，允許值為 {allowed}。"
+            f"下一步：改成其中一個；這不是查無結果，所以不會回空清單"
+        )
     if scope == SCOPE_NAME:
         return [entry for entry in index_entries if query in entry[1]]
     if scope == SCOPE_VALUE:
         return [entry for entry in index_entries if query in _as_text(entry[2])]
-    if scope == SCOPE_ALL:
-        return [
-            entry
-            for entry in index_entries
-            if query in entry[1] or query in _as_text(entry[2])
-        ]
-    return []
+    # 只剩 SCOPE_ALL——上面的守衛保證 scope 是三者之一，所以這裡不再有「都不是」
+    # 的出口可以掉進去。
+    return [
+        entry
+        for entry in index_entries
+        if query in entry[1] or query in _as_text(entry[2])
+    ]
 
 
 def reindex(index_entries: list[Entry], uid: str, data: dict[str, Any]) -> list[Entry]:
