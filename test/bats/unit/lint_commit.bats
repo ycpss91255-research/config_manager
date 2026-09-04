@@ -94,3 +94,19 @@ commit_subject() {
   run "${LINT}" "${BASE}"
   [ "${status}" -eq 0 ]
 }
+
+@test "合併提交的訊息不受檢查" {
+  # CI 在 pull request 上簽出的是 refs/pull/N/merge，HEAD 因此是一則合成的
+  # 「Merge <sha> into <sha>」——沒有任何慣例擋得住它。合併訊息是產生的，
+  # 不是作者寫的，所以 --no-merges 把它排除在外（#70）。
+  local main_branch
+  main_branch="$(git rev-parse --abbrev-ref HEAD)"
+  git checkout -q -b side
+  commit_subject "feat(side): 分支上的一則合規提交"
+  git checkout -q "${main_branch}"
+  commit_subject "feat(main): 主線上的一則合規提交"
+  git merge -q --no-ff -m "Merge branch 'side' into ${main_branch}" side
+
+  run "${LINT}" "${BASE}"
+  [ "${status}" -eq 0 ]
+}

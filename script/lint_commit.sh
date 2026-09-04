@@ -9,9 +9,15 @@
 #   type      fix 63 / feat 38 / refactor 31 / docs 26 / test 15 /
 #             chore 14 / ci 7 / perf 6                       -> 8 types, fail
 #   scope     181 of 200 carry one                           -> warn when absent
-#   subject   188 of 200 start lowercase                     -> warn otherwise
+#   subject   188 of 200 start lowercase                     -> not enforced
 #   length    median 90, max 153                             -> not enforced
 #   issue     118 of 200 carry (closes #N) / (refs #N)       -> not enforced
+#
+# CASE IS NOT ENFORCED, and this line used to claim it was. ADR-00000028 moved
+# subjects to Chinese, which has no letter case, so the rule became true of
+# every commit this repo will ever write -- a check that can never fire. The
+# stale claim was itself the defect: #70 listed "capitalized subject -> warn"
+# among the rules needing tests, copied from here, and no such rule exists.
 #
 # The fail/warn split mirrors the ADR lint (§0.5): fail on what is
 # unambiguous, warn on what is a signal. A missing scope is usually a
