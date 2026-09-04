@@ -1,0 +1,24 @@
+# Rollback produces a new commit; history is never rewritten
+
+> 服務：不變式 2 ＋ 設計原則 N-6（可逆性優先）
+
+- **Date:** 2026-09-02
+- **Status:** Accepted
+
+## Context
+
+退版可以移動分支指標（reset）或產生反向變更（revert）。
+對外部工具而言兩者結果相同，但對稽核需求差異很大。
+
+## Decision
+
+退版一律以反向變更實作，產生新的變更紀錄，歷史完整保留。介面不提供 reset。
+
+## Alternatives
+
+- **reset --hard**：中間的變更紀錄從歷史消失——而那正是稽核最需要的資訊
+  （曾經改成什麼、又退回來）。
+
+## Consequences
+
+- 歷史會累積退版紀錄，產生噪音。以變更紀錄的類型前綴解決（見 ADR-00000007）。

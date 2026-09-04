@@ -1,0 +1,25 @@
+# The config repo is the single source of truth; targets are generated output
+
+> 服務：不變式 6（在 config 傳播上的實例）
+
+- **Date:** 2026-09-02
+- **Status:** Accepted
+
+## Context
+
+Config 目前散在各處且各自為政，同一份設定在不同機器上可能不同，沒有一份是權威。
+
+## Decision
+
+來源 repo 是唯一真實來源，目標位置的檔案是寫出的產物。
+任何「以磁碟現況為準」的邏輯都違反此原則。
+
+## Alternatives
+
+- **以磁碟為準、repo 只做備份**：等於沒有真實來源，回到現狀。
+- **雙向同步**：兩邊都可寫則衝突無解，且無法判斷哪邊對。
+
+## Consequences
+
+- 目標位置被外部修改時是「偏離」而非「新版本」，需人為判斷（見 ADR-00000008）。
+- 系統必須提供寫出機制，且寫出必須是原子的（見 ADR-00000006）。

@@ -1,0 +1,33 @@
+# Record architecture decisions as ADR files carrying a Serves back-reference
+
+> 服務：機制，無對應不變式
+
+- **Date:** 2026-09-02
+- **Status:** Accepted
+
+## Context
+
+設計決策散在對話與 PR 描述裡，半年後無人能回答「為什麼不是別的做法」。
+既有的 ADR 格式都只記錄決策本身，不強制決策與產品目標的連結，因此容易累積一批
+「當時覺得這樣比較好」的紀錄。
+
+## Decision
+
+採用 Nygard 變體：`# 標題` → `> 服務：` → metadata → Context / Decision /
+Alternatives / Consequences。檔名 `NNNNNNNN-<slug>.md`，8 位數補零，檔案系統即註冊表。
+
+`> 服務：` 必填，回指 PRD 不變式編號、產品目標、或明寫「機制，無對應不變式」。
+
+修訂以原檔內的 Amendment 段落記錄；只有推翻才開新 ADR 並標 superseded。
+
+## Alternatives
+
+- **MADR 4.0.0**：欄位較完整但無 Serves 機制，決策不強制掛在產品目標上。
+- **僅用 PR 描述**：PR 會被搜尋淹沒，且無法表達「這條已被推翻」。
+- **不可變 ADR**：決策沒變但論證案例已消失時，強制開新 ADR 反而更難讀。
+
+## Consequences
+
+- 每個決策都能回答「這在服務什麼」，答不出來的就不是決策，是偏好。
+- 編號與結構 lint 需在 v0.1.0 就寫（見 ADR-00000017）。
+- 檔名與編號事後改動要重命名整個目錄並修正所有交叉引用，因此格式在第一份 ADR 之前定案。
