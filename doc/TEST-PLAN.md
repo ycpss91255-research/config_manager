@@ -410,6 +410,18 @@ T2 刻意不讀檔，雜湊由呼叫者算好傳入。這裡就是那個呼叫�
 
 以建好的容器測試，走真實 HTTP。
 
+**規格放在 `test/bats/runtime/`，由 `Dockerfile` 的 `runtime-test` 階段執行**，不是由
+`script/test.sh` 執行。原因是結構性的：`test.sh` 把自己 `docker run` 進工具映像裡跑，
+那個容器沒掛 docker socket、也沒有 docker CLI（實測過），因此無法啟動「被測的那個容器」。
+`runtime-test` 階段本身就是那個容器，服務起在 loopback，請求走真實 HTTP。
+CI 的 `build` job 會 `docker build --target runtime-test`，所以這些規格是被強制執行的。
+
+**這一層測不到 compose 的接線**：volume 掛載點、`CM_CONFIG_REPO` 與掛載是否一致、
+host networking。那半邊由 compose 自己的規格負責（#90）。**兩邊都要有才算蓋住 T9**，
+缺一邊就有一整類問題沒有人擋。
+
+端點集合由設計文件 §3.5.3 的表決定，不在實作時發明。
+
 | 驗證的行為 |
 |---|
 | 每個端點的正常路徑回傳預期結構 |
