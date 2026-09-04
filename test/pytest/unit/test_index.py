@@ -3,7 +3,7 @@
 用語依 CONTEXT.md。純邏輯，不做 I/O（ADR-00000011）：index 收已解析的資料。
 """
 
-from core.index import SCOPE_ALL, SCOPE_NAME, SCOPE_VALUE, index, search
+from core.index import SCOPE_ALL, SCOPE_NAME, SCOPE_VALUE, index, reindex, search
 
 
 def test_index_flattens_nested_dict_to_dotted_paths():
@@ -51,3 +51,11 @@ def test_specific_scope_excludes_other_dimension_matches():
     # 名稱含 "speed"、值不含；以「參數值」範圍搜尋不命中（釘住範圍排除，回歸測試）。
     idx = index("u1", {"speed_limit": 30})
     assert search(idx, "speed", SCOPE_VALUE) == []
+
+
+def test_reindex_replaces_a_uids_entries_old_value_gone_new_present():
+    # 修改一個參數後重新索引：舊值不再命中、新值命中（更新最容易漏）。
+    idx = index("u1", {"max_vel": 0.8})
+    idx = reindex(idx, "u1", {"max_vel": 1.2})
+    assert search(idx, "0.8", SCOPE_VALUE) == []
+    assert search(idx, "1.2", SCOPE_VALUE) == [("u1", "max_vel", 1.2)]

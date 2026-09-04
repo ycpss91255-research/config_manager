@@ -51,3 +51,12 @@ def search(index_entries: list[Entry], query: str, scope: str) -> list[Entry]:
             if query in entry[1] or query in _as_text(entry[2])
         ]
     return []
+
+
+def reindex(index_entries: list[Entry], uid: str, data: dict[str, Any]) -> list[Entry]:
+    """重新索引一份 config：先移除該 uid 的舊項目，再加入重新展平的結果。
+
+    更新最容易漏（既有項目未清就重加）。此函式一步完成移除＋加入。
+    """
+    kept = [entry for entry in index_entries if entry[0] != uid]
+    return kept + index(uid, data)
