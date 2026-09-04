@@ -7,8 +7,16 @@ from pathlib import PurePosixPath
 
 import tomlkit
 
-from core.errors import DuplicateTarget, DuplicateUid, TargetEscape
+from core.errors import (
+    DuplicateTarget,
+    DuplicateUid,
+    InvalidFormat,
+    TargetEscape,
+)
 from core.models import ConfigList, FileEntry
+
+# 被管理 config 的允許格式（T6 亦處理這些）。raw = 不解析、只做版控。
+ALLOWED_FORMATS = ("yaml", "json", "toml", "ini", "raw")
 
 
 def load(text: str) -> ConfigList:
@@ -27,6 +35,13 @@ def _check_integrity(config_list: ConfigList) -> None:
         if ".." in PurePosixPath(entry.target).parts:
             raise TargetEscape(
                 f"目標路徑含 ..（逃逸風險）：{entry.ref} 的目標「{entry.target}」"
+            )
+
+        if entry.format not in ALLOWED_FORMATS:
+            allowed = "／".join(ALLOWED_FORMATS)
+            raise InvalidFormat(
+                f"format 非允許值：{entry.ref} 的 format「{entry.format}」"
+                f"，允許值為 {allowed}"
             )
 
         first_uid = seen_uid.get(entry.uid)

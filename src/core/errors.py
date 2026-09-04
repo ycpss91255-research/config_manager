@@ -19,3 +19,7 @@ class DuplicateTarget(ConfigListError):
 
 class TargetEscape(ConfigListError):
     """目標路徑含 .. 路徑段，可逃逸到預期目錄外。"""
+
+
+class InvalidFormat(ConfigListError):
+    """format 非允許值。format 明寫、不由副檔名推斷。"""

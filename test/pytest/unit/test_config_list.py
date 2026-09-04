@@ -6,7 +6,7 @@
 import pytest
 
 from core.config_list import load
-from core.errors import DuplicateTarget, DuplicateUid, TargetEscape
+from core.errors import DuplicateTarget, DuplicateUid, InvalidFormat, TargetEscape
 
 
 def test_valid_config_list_loads_with_correct_field_values():
@@ -155,3 +155,31 @@ groups   = []
     message = str(exc.value)
     assert "navigation-params" in message
     assert "/opt/robot/../../etc/evil.yaml" in message
+
+
+def test_disallowed_format_raises_named_exception():
+    # format 明寫、不由副檔名推斷；允許值為 yaml/json/toml/ini/raw。其餘須大聲失敗。
+    text = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/a.xml"
+target   = "/opt/a.xml"
+format   = "xml"
+groups   = []
+"""
+
+    with pytest.raises(InvalidFormat) as exc:
+        load(text)
+
+    message = str(exc.value)
+    assert "navigation-params" in message
+    assert "xml" in message
