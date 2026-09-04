@@ -28,6 +28,53 @@
 
 ---
 
+## 規格放在哪：目錄是層級，型別寫在檔名裡
+
+設計 §3.6.1 把測試分成**三個正交軸**，而目錄樹只反映其中一個。
+
+| 軸 | 值 | 表現在哪 |
+|---|---|---|
+| 1 靜態分析 | ruff／mypy／pylint／hadolint | `test/lint/<tool>/`——根本不是動態測試 |
+| 2 **層級**（範圍） | unit／integration／system／acceptance | **目錄**：`test/pytest/<層級>/`、`test/bats/<層級>/` |
+| 3 **型別**（目的） | smoke／end-to-end／regression | **檔名**：`entrypoint_smoke.bats` |
+
+**只有四個層級，而且沒有第五個。** `test/bats/runtime/` 與 `test/bats/smoke/` 曾經
+各自站在層級的位置上，兩者都不是層級（#116）。`runtime` 講的是「誰執行它」，
+`smoke` 是軸 3 的型別。參照專案 `ycpss91255-docker/base` 的 `test/bats/` 底下也只有
+那四個。
+
+**「它在哪個目錄」與「誰執行它」是兩個獨立的問題，不該互相決定。**
+§3.6.1 的軸 3 明文寫著 smoke「在 runtime-test stage 的建置過程中執行」——那是型別的
+性質，不是它的位址。把執行者寫進目錄名稱，換來的是一個 PDF 裡不存在的層級。
+
+| 規格 | 層級（目錄） | 型別（檔名） | 執行者 |
+|---|---|---|---|
+| `test/bats/system/entrypoint_smoke.bats` | system | smoke | `docker build --target runtime-test` |
+| `test/pytest/system/test_api.py` | system | — | `script/test.sh` **與** `runtime-test`，同一份檔案 |
+
+### 兩層級的現況與代價
+
+**`test/bats/system/entrypoint_smoke.bats` 在別處會整檔跳過。** 它斷言的是建好的
+runtime 映像（裝進去的 entrypoint、烤在 `/opt` 的原始碼、映像自己的 PATH），在工具
+映像裡觀察到的是別的東西。守衛是 `CM_SYSTEM_IMAGE`——**一個與每條斷言都無關的旗標**，
+不是「`/entrypoint.sh` 在不在」：後者正是第一條斷言的東西，拿它當守衛會讓那條斷言恆真。
+
+**skip 的代價寫在這裡：一組永遠在跳過的規格，與「沒有規格」的差別只有輸出多幾行字。**
+所以兩端都擋著它：`script/test.sh` 在結束前把每一條跳過的規格逐條列出（T19 有規格
+釘住），而 `docker build --target runtime-test`——那組規格唯一該真的執行的地方——
+在有任何一條跳過時**讓建置失敗**。少了後面那道，這個 skip 只是把紅燈換成靜默通過。
+
+**`test/pytest/acceptance/` 是空的，而它在等的東西寫在這裡。** A1–A6 是瀏覽器操作的
+使用者旅程，依賴的功能尚未實作（納管 #11／#9、驗證 #16、草稿與進版 #18、屬性與角色），
+而**它們的執行通路本身也還沒有**——T11 沒有瀏覽器驅動，追蹤於 #99。所以這一層不是
+「忘了寫」而是「寫不了」，並且：
+
+- **A4 由另一個工作項目負責**，不在 #116 的範圍內。
+- `script/test.sh` 每一次執行都會指名這一層沒有規格。一個「有四個層級」的框架實際上
+  只有三個層級有東西，這件事必須從輸出看得出來，不是只寫在這份文件裡。
+
+---
+
 ## 核心層（純邏輯，無 I/O，可在無檔案系統／無 git 下執行）
 
 ### T1 — 清單檔載入與寫回
@@ -452,13 +499,32 @@ scan(repo) -> [(條目, 狀態)]
 
 ### T9 — HTTP 端點
 
-以建好的容器測試，走真實 HTTP。
+走真實 HTTP 對一個真的在跑的服務測。
 
-**規格放在 `test/bats/runtime/`，由 `Dockerfile` 的 `runtime-test` 階段執行**，不是由
-`script/test.sh` 執行。原因是結構性的：`test.sh` 把自己 `docker run` 進工具映像裡跑，
-那個容器沒掛 docker socket、也沒有 docker CLI（實測過），因此無法啟動「被測的那個容器」。
-`runtime-test` 階段本身就是那個容器，服務起在 loopback，請求走真實 HTTP。
-CI 的 `build` job 會 `docker build --target runtime-test`，所以這些規格是被強制執行的。
+**規格放在 `test/pytest/system/test_api.py`，同一份檔案在兩個地方執行**（#116、#97）：
+
+| 執行者 | 服務起在哪 | 拿到的是什麼 |
+|---|---|---|
+| `script/test.sh` | 工具映像裡就地起（`uvicorn` 起在 loopback） | **由 pytest 執行**，`api/` 因此進得了覆蓋率工具的視野 |
+| `docker build --target runtime-test` | **建好的映像**裡已經起好的那個 | **保真度**——那才是會被部署的東西 |
+
+**「進得了視野」不等於「有數字」。** 覆蓋率的 `source` 目前只有 `core/`
+（`pyproject.toml`），所以 `api/` 仍然不出現在報告裡。搬過來解掉的是「規格不由
+pytest 執行」這個結構障礙，量測範圍是另一件工作——見「已知的量測缺口」。
+
+`CM_SYSTEM_BASE_URL` 決定走哪一種：設了就對它測，沒設就自己起一個。**兩者跑同一個
+檔案，所以不會分歧**；各自補上對方拿不到的東西。只在其中一種環境會壞的缺陷，正是
+跑兩次才抓得到而跑一次抓不到的。
+
+**先前放在 `test/bats/runtime/`，那是錯的兩次。** 一是 `runtime` 不是層級——設計
+§3.6.1 軸 2 只有 unit／integration／system／acceptance，而這些規格斷言的範圍是
+「整個建好的映像，端到端」，那就是 System。二是它們測的是 Python，依「測試工具對應
+被測的語言」該用 pytest；放在 bats 的代價是 `api/routes.py` 與 `api/cli.py` 的覆蓋率
+長期是 0%——**不是沒測，是測它們的規格不由 pytest 執行**（#97）。
+
+當初放進 `test/bats/runtime/` 的那個理由（`test.sh` 在工具映像裡跑，那裡沒有 docker
+socket 也沒有 docker CLI，起不了被測的容器）**至今仍然成立**——它解釋的是為什麼
+`runtime-test` 那一次不可少，不是為什麼要新造一個層級名稱。兩件事分開之後，兩邊都拿得到。
 
 **這一層測不到 compose 的接線**：volume 掛載點、`CM_CONFIG_REPO` 與掛載是否一致、
 host networking。那半邊由 compose 自己的規格負責（#90）。**兩邊都要有才算蓋住 T9**，
@@ -485,10 +551,9 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | 端點回錯誤時，CLI 以非零碼結束並印出可讀訊息 |
 | 服務未啟動時，訊息明確指出服務未啟動（而非連線錯誤堆疊） |
 
-**規格與 T9 同放 `test/bats/runtime/`**，理由相同：CLI 要對著一個真的在跑的服務測，
-而那個服務要在建好的容器裡。同一份規格檔裡，CLI 那幾則排在 HTTP 那幾則之後，
-用的是前面寫進 config-repo 的同一批資料——**兩邊看到同一件事，正是 ADR-00000009
-要保證的東西**。
+**規格與 T9 同放 `test/pytest/system/test_api.py`**，理由相同：CLI 要對著一個真的在跑的
+服務測。同一份規格檔裡，CLI 那幾則排在 HTTP 那幾則之後，用的是前面寫進 config-repo 的
+同一批資料——**兩邊看到同一件事，正是 ADR-00000009 要保證的東西**。
 
 **把關的不是輸出比對，是 `--api`。** CLI 若改成自己讀清單檔，比對輸出的斷言仍會綠；
 但讀檔的實作根本不會用到 `--api` 指向的那個 HTTP 位址。斷言那個位址，才是斷言它
@@ -635,6 +700,13 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | 缺席的工具 | 不被呼叫（不是「呼叫了才發現不在」的 127） |
 | `CM_IN_TEST_IMAGE=1` ／ `CM_TEST_LOCAL=1` | 就地執行，不轉進容器 |
 | 兩者皆無 | 轉進容器；docker 缺席時訊息指出逃生口 |
+| 一條規格自己跳過 | 結束前被**逐條指名**，不混在一片 ok 裡 |
+| 一個層級一條規格都沒有 | 被指名；`--level` 不以 pytest 的 5 結束（那是假紅燈） |
+
+**後兩條與前六條是同一個保證的兩半。** 前面擋的是「工具不在卻回報通過」，後面擋的是
+「規格在卻沒有執行」——兩者在輸出上與全綠的差別都只有幾行字。兩種沉默都不算失敗
+（那些規格在工具映像裡確實跑不了，那一層確實還沒有規格），但兩種都不准安靜：
+降級要大聲，與 `CM_LINT_ALLOW_MISSING` 是同一個先例。
 
 **`lint_checkpoints.sh` 不由 `script/test.sh` 執行，是 CI 的一個獨立 job。**
 它需要 GitHub API 讀被引用的 issue，而 `test.sh` 在容器裡跑、那裡沒有 token。規格以
@@ -806,7 +878,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/{build,run,exec,stop,prune}.sh` | 薄 wrapper：行為即把參數轉給 `docker compose`。它們是**開發者的操作工具，不是交付物**，且不在任何 CI 路徑上——CI 直接 `docker build --target runtime-test`，不經過 `build.sh`。失效在下一次手動使用時立刻可見，且動不到來源 repo 或目標檔案。**代價**：`--stage`／`--all`／未知參數這幾條解析路徑因此沒有證據 |
 | `script/hooks/dispatch.sh` | 七行、一個函式，且 ADR-00000023 已決定模板導入時整支被取代——為一個即將被丟掉的實作寫規格，測到的是實作而不是行為。**代價寫明**：「pre-hook 失敗必須中止操作」這條屬於不變式 2 的保證目前沒有證據，**導入模板時必須重新確認**，因為那正是它靜默失效不會被發現的時刻 |
 | `script/hooks/pre/run.sh` | 它檢查的是**主機**上的掛載點在不在，而本專案所有檢查都在容器內跑（ADR-00000027）。容器裡沒有那個主機目錄可以觀察——要測它就得替「主機不是這個專案的證據」開一個例外，那個代價比這支七行守衛的風險大 |
-| `script/hooks/post/build.sh` | 行為即觸發 `runtime-test` 階段的建置。**那個階段本身就是被觀察的位置**：smoke（`test/bats/smoke/`）與 T9（`test/bats/runtime/`）都在它建置時執行，CI 的 build job 也直接建同一個階段 |
+| `script/hooks/post/build.sh` | 行為即觸發 `runtime-test` 階段的建置。**那個階段本身就是被觀察的位置**：smoke（`test/bats/system/entrypoint_smoke.bats`）與 T9／T10（`test/pytest/system/test_api.py`）都在它建置時執行，CI 的 build job 也直接建同一個階段 |
 | 其餘 12 支 `script/hooks/{pre,post}/*.sh` | 刻意的空殼（ADR-00000023）：檔案裡只有說明契約的註解，沒有可執行的行為。**空檔案沒有行為可觀察**；它們該不該存在、以及哪幾支永遠不會被呼叫，由 ADR-00000023 記錄並寫在各自的檔案裡，不由測試決定 |
 | `script/local/cfg/cfg.sh` | 行為即把 `just cfg <verb>` 轉給 `python -m config_manager.api.cli`。被轉呼叫的那一端落在 T10 |
 

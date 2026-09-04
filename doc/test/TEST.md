@@ -55,25 +55,31 @@ just test filter <regex>     # 符合樣式的 spec
 |---|---|---|---|
 | Unit | 單一函式／模組、隔離狀態下 | `core/` 的狀態判定、驗證、config 清單檔完整性 | `test/pytest/unit/`；守門腳本（T19）在 `test/bats/unit/` |
 | Integration | 數個模組協作 | 納管流程、commit + apply 的原子性、round-trip 讀寫、git wrapper 對真實 repo | `test/pytest/integration/`、`test/bats/integration/` |
-| System | 整個建好的映像，端到端 | 容器啟動 → API 可用 → 完整使用週期 | **`test/bats/runtime/`**（見下方說明）；`test/pytest/system/` 目前是空的佔位 |
-| Acceptance | 使用者實際收到的東西與 UX | Web UI 的可操作性、錯誤訊息可行動性、CLI help | `test/pytest/acceptance/` |
+| System | 整個建好的映像，端到端 | 容器啟動 → API 可用 → 完整使用週期 | `test/pytest/system/`、`test/bats/system/`（見下方說明） |
+| Acceptance | 使用者實際收到的東西與 UX | Web UI 的可操作性、錯誤訊息可行動性、CLI help | `test/pytest/acceptance/`——**目前是空的**，在等什麼記在 `doc/TEST-PLAN.md` |
 
 最高層級是 System。「End-to-end」是在 System／Acceptance 層執行的**型別**，不是層級名稱。
+
+**只有這四個目錄，沒有第五個。** `test/bats/runtime/` 曾經站在層級的位置上，
+`runtime` 講的是「誰執行它」不是範圍（#116）。**目錄是層級，型別寫在檔名裡。**
 
 **shell 用 bats、Python 用 pytest**，一個層級有哪種規格就跑哪種；`script/test.sh --level <name>`
 兩邊都跑。
 
-**System 層是唯一不由 `script/test.sh` 執行的位置。** `test/bats/runtime/` 由 `Dockerfile` 的
-`runtime-test` 階段在建置時執行，CI 的 build job 直接建那個階段。原因是結構性的：`test.sh`
-把自己 `docker run` 進工具映像裡跑，那個容器沒掛 docker socket、也沒有 docker CLI，
-因此無法啟動「被測的那個容器」；而 `runtime-test` 階段**本身就是**那個容器。
-完整說明見 `doc/TEST-PLAN.md` 的 T9。
+**System 層有兩個執行者，同一份規格跑兩次。** `test/pytest/system/test_api.py`（T9／T10）
+由 `script/test.sh` 就地起服務跑一次，再由 `Dockerfile` 的 `runtime-test` 階段對建好的
+映像跑一次（`CM_SYSTEM_BASE_URL` 切換）。後者不可少的理由是結構性的：`test.sh` 把自己
+`docker run` 進工具映像裡跑，那個容器沒掛 docker socket、也沒有 docker CLI，因此起不了
+「被測的那個容器」；而 `runtime-test` 階段**本身就是**那個容器。
+
+`test/bats/system/entrypoint_smoke.bats` 則只由 `runtime-test` 執行，在別處會**整檔跳過**
+並被 `script/test.sh` 逐條指名。完整說明見 `doc/TEST-PLAN.md` 的「規格放在哪」與 T9。
 
 ### 軸 3｜型別（目的，套用於某個層級）
 
 | 型別 | 意思 | 位置 |
 |---|---|---|
-| Smoke | 建置驗證：「它到底跑不跑得起來」的關鍵子集 | `test/bats/smoke/`，在 `runtime-test` stage 建置過程中執行 |
+| Smoke | 建置驗證：「它到底跑不跑得起來」的關鍵子集 | 型別寫在**檔名**裡：`test/bats/system/entrypoint_smoke.bats`，在 `runtime-test` stage 建置過程中執行 |
 | End-to-end | 一條從頭到尾的完整流程 | 套用於 System 層 |
 | Regression | 守住每個已修好的缺陷。**每個修好的 bug 都應留下一條 regression 測試** | 套用於其發生的層級 |
 | 非功能性 | Performance／Security／Usability／Reliability | `test/reserved/`，空目錄佔位 |

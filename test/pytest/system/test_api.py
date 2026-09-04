@@ -4,8 +4,10 @@ PDF §3.6.1 軸 2 的層級只有 Unit／Integration／System／Acceptance。先
 `test/bats/runtime/`——`runtime` 不是層級，是我發明的（#116）。而且測的是 Python，
 依「測試工具對應被測的語言」該用 pytest 不是 bats。
 
-搬到這裡之後 `api/` 的覆蓋率才量得到：先前 `api/routes.py` 與 `api/cli.py` 都是 0%，
-不是沒測，是測它們的規格不由 pytest 執行（#97）。
+搬到這裡解掉的是結構障礙：先前 `api/routes.py` 與 `api/cli.py` 在覆蓋率報告上是 0%，
+不是沒測，是測它們的規格不由 pytest 執行（#97）。**還沒解掉的是量測範圍**——覆蓋率的
+`source` 目前只有 `core/`，所以 `api/` 依然不在報告裡（見 `doc/TEST-PLAN.md`
+「已知的量測缺口」）。
 """
 
 import json
