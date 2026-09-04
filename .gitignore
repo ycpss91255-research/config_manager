@@ -3,3 +3,15 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Derived artifacts.
+coverage/
+htmlcov/
+.coverage
+.env
+
+# Operator-owned overrides. The `.local` suffix marks the whole family --
+# never committed, never overwritten by any tooling.
+*.local

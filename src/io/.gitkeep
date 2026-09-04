@@ -1,0 +1,3 @@
+# Layer io: everything outside the process. Parsers (yaml/json/toml/ini/raw),
+# the git CLI wrapper, the atomic writer. Dependency direction is
+# api -> core -> io, one way; core never imports api.

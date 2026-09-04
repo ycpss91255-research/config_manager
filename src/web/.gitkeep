@@ -1,0 +1,2 @@
+# The frontend: one HTML page (config_manager.html) plus static assets.
+# One page, one editing session (ADR-00000014).

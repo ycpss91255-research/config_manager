@@ -1,0 +1,18 @@
+# Container operations. Every recipe forwards to a script under script/ --
+# the scripts are the implementation, these are the names.
+
+# Build the image (default stage: devel)
+build *ARGS:
+    @./script/build.sh {{ARGS}}
+
+# Start backend + frontend
+run *ARGS:
+    @./script/run.sh {{ARGS}}
+
+# Shell into a running service (default: backend)
+exec *ARGS:
+    @./script/exec.sh {{ARGS}}
+
+# Stop the services; the config_repo volume survives
+stop *ARGS:
+    @./script/stop.sh {{ARGS}}

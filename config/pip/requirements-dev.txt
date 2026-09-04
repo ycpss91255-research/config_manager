@@ -1,0 +1,9 @@
+# Development and test tooling. Kept apart from requirements.txt so the
+# runtime stage cannot accidentally ship a linter.
+-r requirements.txt
+
+pytest>=8
+pytest-cov>=5
+ruff>=0.5
+mypy>=1.10
+pylint>=3.2

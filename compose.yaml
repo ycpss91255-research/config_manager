@@ -1,0 +1,58 @@
+# compose.yaml -- the self-built minimum (design appendix A.1).
+#
+# The shared container template renders this file from a `.setup.conf`
+# service description. That template is deliberately NOT adopted in v0.10.0,
+# so this repo writes compose directly and `.setup.conf` does not exist yet.
+# Keeping it hand-written and small is the point: a home-grown config parser
+# with host detection would grow into a competing version of the template's,
+# and appendix A.1 names that as the most likely mistake to make here.
+#
+# What IS adopted now are the decisions that are expensive to change later --
+# stage names, /opt for artifacts, and `host` networking below.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ${CM_STAGE:-devel}
+    image: config_manager:${CM_TAG:-devel}
+    container_name: config_manager_backend
+    # host, not bridge. bridge silently breaks ROS 2 discovery across the
+    # machine, and this service runs beside ROS nodes whose parameters it
+    # manages -- a convenient default that quietly breaks a real deployment
+    # is the case invariant 4 exists for. Opt into bridge explicitly when a
+    # deployment actually wants isolation.
+    network_mode: host
+    volumes:
+      # The source repo: the single source of truth (ADR-00000002). A named
+      # volume rather than a bind mount, because its lifecycle is the
+      # system's, not the host checkout's.
+      - config_repo:/opt/config_manager/config-repo
+      # The target filesystem. Read-write by necessity -- apply writes here --
+      # and the one mount that reaches outside the container's own world.
+      - /opt/robot/config:/opt/robot/config
+    environment:
+      CM_CONFIG_REPO: /opt/config_manager/config-repo
+      CM_ROLE: backend
+    command: ["python", "-m", "api.cli", "serve", "--host", "127.0.0.1", "--port", "8080"]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ${CM_STAGE:-devel}
+    image: config_manager:${CM_TAG:-devel}
+    container_name: config_manager_frontend
+    network_mode: host
+    environment:
+      CM_ROLE: frontend
+    # A static file server and nothing else. The frontend reaches neither the
+    # filesystem nor git; every guarantee lives behind the API (design
+    # principle N-3), so this container has no mounts to give it either.
+    command: ["python", "-m", "http.server", "8081", "--directory", "/opt/config_manager/src/web"]
+    depends_on:
+      - backend
+
+volumes:
+  config_repo:

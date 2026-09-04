@@ -1,0 +1,50 @@
+# CI, written directly rather than calling the shared reusable workers
+# (design appendix A.1: "現在不要做" -- adopting the worker fan-out means
+# adopting the template's release/version machinery with it, and this repo
+# does not publish an image yet).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r config/pip/requirements-dev.txt
+      - run: ruff check src test
+      - run: mypy --strict src/core
+      - run: pylint src
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r config/pip/requirements-dev.txt
+      - run: pytest test/pytest --cov=src/core --cov-report=term-missing
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # runtime-test is FROM runtime and runs the bats smoke specs as part of
+      # the build, so a green build here means the deployable artifact came
+      # up -- not merely that it compiled.
+      - run: docker build --target runtime-test -t config_manager:runtime-test .

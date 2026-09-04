@@ -1,0 +1,15 @@
+---
+# Aligned with ycpss91255-docker/base's ruleset, minus the rules that only
+# apply to the template's own consumer-chosen BASE_IMAGE story.
+ignored:
+  # Pin versions in apt-get install. Not pinned here for the same reason the
+  # template does not pin: an image that cannot take a security update
+  # without a repo release is worse for its audience than one that drifts.
+  # The compensating control is that BASE_IMAGE is pinned to a specific
+  # Debian-derived tag above, so the package set moves with a base bump
+  # rather than on an arbitrary rebuild.
+  - DL3008
+  # Pin versions in pip install. The pins live in config/pip/*.txt, which is
+  # where a reader looks for them; restating them in the Dockerfile would
+  # create a second place to update.
+  - DL3013

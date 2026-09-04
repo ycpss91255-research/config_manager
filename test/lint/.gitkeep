@@ -1,0 +1,3 @@
+# Axis 1: static analysis. Not a dynamic test level -- it never runs the
+# system. One directory per tool (ruff/ mypy/ pylint/ hadolint/); each holds
+# that tool's own configuration and any fixtures proving a rule fires.

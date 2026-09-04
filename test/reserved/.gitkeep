@@ -1,0 +1,4 @@
+# Axis 3, non-functional types: performance / security / usability /
+# reliability. Empty on purpose -- an empty slot WITH a stated reason is a
+# deliberate gap; one without is something that was forgotten. Fill when
+# needed, do not delete.

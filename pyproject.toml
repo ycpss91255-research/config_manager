@@ -1,3 +1,51 @@
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["test/pytest"]
+
+# ── Lint thresholds ─────────────────────────────────────────────────────────
+# These are the numbers design §0.6 records as provisional prose. They live
+# here now, which makes them checkable; the document keeps only the reason
+# each value was chosen. A rule that no tool can check does not exist.
+
+[tool.ruff]
+src = ["src"]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "C90", "PL", "B", "BLE", "RET", "SIM", "UP"]
+# C901 cyclomatic complexity <= 10, PLR0915 function length <= 50 statements,
+# PLR0913 parameter count <= 5, E722 + BLE001 no bare/blind except.
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-statements = 50
+max-args = 5
+
+[tool.mypy]
+# Full coverage on core/ only: it is the layer where a type error costs the
+# most and where there is no I/O to hide behind.
+files = ["src/core"]
+strict = true
+
+[tool.pylint.format]
+max-module-lines = 1000
+
+[tool.pylint."messages control"]
+# ruff already reports these; two tools reporting one finding trains people
+# to skim both.
+disable = ["missing-docstring", "line-too-long"]
+
+[tool.pylint.design]
+max-nested-blocks = 3
+
+[tool.coverage.run]
+source = ["src/core"]
+
+[tool.coverage.report]
+# core/ only. io/ and api/ are covered at the integration and system levels,
+# where their behaviour actually is; a line-coverage number over an I/O
+# wrapper measures the mock, not the code.
+fail_under = 85
+show_missing = true

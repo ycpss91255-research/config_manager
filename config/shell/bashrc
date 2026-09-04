@@ -1,0 +1,13 @@
+# Interactive shell for the devel stage. Convenience only -- nothing here may
+# become a precondition for anything, because runtime has no bashrc and must
+# behave identically.
+
+[[ $- == *i* ]] || return
+
+export PATH="${HOME}/.local/bin:${PATH}"
+export PYTHONPATH="${APP_ROOT:-/opt/config_manager}/src:${PYTHONPATH:-}"
+
+PS1='\[\e[1;32m\]config_manager\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
+
+alias ll='ls -alF'
+alias t='just test'

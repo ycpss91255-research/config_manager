@@ -1,0 +1,27 @@
+# Keep the build context to what the image actually needs. Everything below
+# either cannot affect the image or must not reach it.
+
+.git/
+.github/
+**/__pycache__/
+**/*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Design material, not build input.
+doc/
+figures/
+tools/
+*.pdf
+
+# Operator-owned overrides, never baked (the `.local` suffix marks the whole
+# family: `.setup.conf.local`, `.env.local`, ...).
+*.local
+.env
+
+# Derived artifacts.
+coverage/
+htmlcov/
+.coverage
