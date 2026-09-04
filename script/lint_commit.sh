@@ -59,8 +59,12 @@ main() {
     return 0
   fi
 
+  # --no-merges: a merge commit's message is generated, not authored. CI
+  # checks out refs/pull/N/merge on a pull request, so HEAD is a synthetic
+  # "Merge <sha> into <sha>" that no convention could ever match -- and a
+  # real merge of main into a branch is equally not the author's prose.
   local -a shas=()
-  mapfile -t shas < <(git rev-list "${base}..HEAD")
+  mapfile -t shas < <(git rev-list --no-merges "${base}..HEAD")
   if (( ${#shas[@]} == 0 )); then
     printf 'lint_commit: no commits after %s; nothing to check.\n' "${base}"
     return 0
