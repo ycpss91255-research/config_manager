@@ -28,6 +28,11 @@ class FileEntry(BaseModel):
     groups: list[str] = []
     description: str | None = None
 
+    @property
+    def ref(self) -> str:
+        """完整參照形式 <name>@<hostname>-<uid>（CONTEXT）。用於指名條目。"""
+        return f"{self.name}@{self.hostname}-{self.uid}"
+
 
 class ConfigList(BaseModel):
     list_version: int
