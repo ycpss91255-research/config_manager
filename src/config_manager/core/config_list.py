@@ -61,7 +61,8 @@ def dump(config_list: ConfigList, original: str) -> str:
         elif FileEntry.model_validate(doc_table.unwrap()) != entry:
             raise DumpMismatch(
                 f"dump 尚不支援改動既有條目：{entry.ref} 與原始清單檔內容不符"
-                "（目前只支援未改動與新增）"
+                "（目前只支援未改動與新增）。"
+                "下一步：先還原該條目的內容，改動要等 round-trip 編輯把手落地"
             )
 
     model_uids = {entry.uid for entry in config_list.files}
@@ -69,7 +70,8 @@ def dump(config_list: ConfigList, original: str) -> str:
     if removed:
         raise DumpMismatch(
             f"dump 尚不支援移除既有條目：uid {removed} 已從清單移除"
-            "（目前只支援未改動與新增）"
+            "（目前只支援未改動與新增）。"
+            "下一步：把這幾筆放回模型；解除納管要走 unmanage，不是從清單刪掉"
         )
 
     return tomlkit.dumps(doc)
@@ -91,7 +93,8 @@ def _reject_unknown(
             line = _find_line(text, key)
             loc = f"第 {line} 行" if line is not None else where
             raise UnknownField(
-                f"無法辨識的欄位「{key}」（{loc}）；{where} 不接受此欄位"
+                f"無法辨識的欄位「{key}」（{loc}）；{where} 不接受此欄位。"
+                f"下一步：刪掉該欄位，或改成 {where} 接受的欄位名"
             )
 
 
@@ -148,20 +151,23 @@ def _check_integrity(config_list: ConfigList) -> None:
     for entry in config_list.files:
         if ".." in PurePosixPath(entry.target).parts:
             raise TargetEscape(
-                f"目標路徑含 ..（逃逸風險）：{entry.ref} 的目標「{entry.target}」"
+                f"目標路徑含 ..（逃逸風險）：{entry.ref} 的目標「{entry.target}」。"
+                f"下一步：把目標改寫成不含 .. 的路徑"
             )
 
         if entry.format not in ALLOWED_FORMATS:
             allowed = "／".join(ALLOWED_FORMATS)
             raise InvalidFormat(
                 f"format 非允許值：{entry.ref} 的 format「{entry.format}」"
-                f"，允許值為 {allowed}"
+                f"，允許值為 {allowed}。"
+                f"下一步：改成其中一個；format 明寫，不由副檔名推斷"
             )
 
         first_uid = seen_uid.get(entry.uid)
         if first_uid is not None:
             raise DuplicateUid(
-                f"uid 重複：{first_uid.ref} 與 {entry.ref} 共用 uid「{entry.uid}」"
+                f"uid 重複：{first_uid.ref} 與 {entry.ref} 共用 uid「{entry.uid}」。"
+                f"下一步：移除重複的那一筆——uid 納管後永不變更，不該有兩筆共用"
             )
         seen_uid[entry.uid] = entry
 
@@ -169,7 +175,8 @@ def _check_integrity(config_list: ConfigList) -> None:
         if first_target is not None:
             raise DuplicateTarget(
                 f"目標位置重複：{first_target.ref} 與 {entry.ref} "
-                f"共用目標「{entry.target}」"
+                f"共用目標「{entry.target}」。"
+                f"下一步：改掉其中一筆的目標位置——寫出順序會決定最終內容"
             )
         seen_target[entry.target] = entry
 
