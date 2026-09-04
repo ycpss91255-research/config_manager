@@ -1,6 +1,5 @@
-# Interactive shell for the devel stage. Convenience only -- nothing here may
-# become a precondition for anything, because runtime has no bashrc and must
-# behave identically.
+# devel 階段的互動 shell。純粹是方便——這裡的任何東西都不可以變成別的東西的前提，
+# 因為 runtime 沒有 bashrc，而它必須表現得一模一樣。
 
 [[ $- == *i* ]] || return
 

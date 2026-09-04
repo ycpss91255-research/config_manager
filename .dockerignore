@@ -1,5 +1,5 @@
-# Keep the build context to what the image actually needs. Everything below
-# either cannot affect the image or must not reach it.
+# 讓建置脈絡只留下映像真正需要的東西。底下每一項不是影響不了映像，就是不該進到
+# 映像裡。
 
 .git/
 .github/
@@ -10,18 +10,18 @@
 .mypy_cache/
 .ruff_cache/
 
-# Design material, not build input.
+# 設計素材，不是建置輸入。
 doc/
 figures/
 tools/
 *.pdf
 
-# Operator-owned overrides, never baked (the `.local` suffix marks the whole
-# family: `.setup.conf.local`, `.env.local`, ...).
+# 操作者自有的覆寫設定，永不烤進映像（`.local` 字尾標記的是一整族：
+# `.setup.conf.local`、`.env.local`……）。
 *.local
 .env
 
-# Derived artifacts.
+# 衍生產物。
 coverage/
 htmlcov/
 .coverage

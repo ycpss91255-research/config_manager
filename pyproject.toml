@@ -2,10 +2,9 @@
 pythonpath = ["src"]
 testpaths = ["test/pytest"]
 
-# ── Lint thresholds ─────────────────────────────────────────────────────────
-# These are the numbers design §0.6 records as provisional prose. They live
-# here now, which makes them checkable; the document keeps only the reason
-# each value was chosen. A rule that no tool can check does not exist.
+# ── Lint 門檻 ───────────────────────────────────────────────────────────────
+# 這些數字是設計 §0.6 以暫定文字記下的那一組。現在它們住在這裡，於是變成檢查得了的
+# ；文件只留下每個值當初為何這樣選。沒有工具檢查得了的規範等於不存在。
 
 [tool.ruff]
 src = ["src"]
@@ -13,8 +12,8 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "C90", "PL", "B", "BLE", "RET", "SIM", "UP"]
-# C901 cyclomatic complexity <= 10, PLR0915 function length <= 50 statements,
-# PLR0913 parameter count <= 5, E722 + BLE001 no bare/blind except.
+# C901 循環複雜度 <= 10、PLR0915 函式長度 <= 50 個 statement、
+# PLR0913 參數數量 <= 5、E722 與 BLE001 不得使用 bare／blind except。
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10
@@ -24,8 +23,7 @@ max-statements = 50
 max-args = 5
 
 [tool.mypy]
-# Full coverage on core/ only: it is the layer where a type error costs the
-# most and where there is no I/O to hide behind.
+# 只對 core/ 做完整覆蓋：那是型別錯誤代價最高的一層，而且沒有 I/O 可以躲在後面。
 files = ["src/config_manager/core"]
 strict = true
 
@@ -33,8 +31,7 @@ strict = true
 max-module-lines = 1000
 
 [tool.pylint."messages control"]
-# ruff already reports these; two tools reporting one finding trains people
-# to skim both.
+# ruff 已經會回報這些；同一個發現由兩支工具各報一次，只會訓練出「兩邊都略讀」。
 disable = ["missing-docstring", "line-too-long"]
 
 [tool.pylint.design]
@@ -44,8 +41,7 @@ max-nested-blocks = 3
 source = ["src/config_manager/core"]
 
 [tool.coverage.report]
-# core/ only. io/ and api/ are covered at the integration and system levels,
-# where their behaviour actually is; a line-coverage number over an I/O
-# wrapper measures the mock, not the code.
+# 只算 core/。io/ 與 api/ 在整合與系統層級被覆蓋，那才是它們的行為真正所在之處；
+# 對一個 I/O wrapper 算行覆蓋率，量到的是那個 mock，不是程式碼。
 fail_under = 85
 show_missing = true

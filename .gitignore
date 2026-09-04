@@ -6,17 +6,16 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-# Derived artifacts.
+# 衍生產物。
 coverage/
 htmlcov/
 .coverage
 .env
 
-# Operator-owned overrides. The `.local` suffix marks the whole family --
-# never committed, never overwritten by any tooling.
+# 操作者自有的覆寫設定。`.local` 字尾標記的是一整族——永不提交，也永不被任何工具
+# 覆蓋。
 *.local
 
-# Agent worktrees. These are checkouts of this repo living inside it, so a
-# `git add -A` from the repo root sweeps a whole second copy of the tree into
-# the commit -- and the diff is large enough that nobody reads it closely.
+# Agent 的 worktree。它們是住在這個 repo 裡面的 repo 簽出，所以從 repo 根目錄下
+# `git add -A` 會把整棵樹的第二份副本掃進 commit——而那個 diff 大到不會有人細看。
 .claude/worktrees/

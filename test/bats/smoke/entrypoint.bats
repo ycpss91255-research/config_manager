@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 #
-# Build-time smoke: "does it even get up?" Runs inside the runtime-test
-# stage, against the artifact that would actually be deployed.
+# 建置期 smoke：「它到底起不起得來？」跑在 runtime-test 階段裡，對著真正會被部署的
+# 那個產物跑。
 
 @test "entrypoint is installed and executable" {
   [ -x /entrypoint.sh ]
