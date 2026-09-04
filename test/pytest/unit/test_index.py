@@ -3,7 +3,7 @@
 用語依 CONTEXT.md。純邏輯，不做 I/O（ADR-00000011）：index 收已解析的資料。
 """
 
-from core.index import SCOPE_ALL, SCOPE_NAME, SCOPE_VALUE, index, reindex, search
+from core.index import SCOPE_ALL, SCOPE_NAME, SCOPE_VALUE, index, reindex, search, unindex
 
 
 def test_index_flattens_nested_dict_to_dotted_paths():
@@ -59,3 +59,10 @@ def test_reindex_replaces_a_uids_entries_old_value_gone_new_present():
     idx = reindex(idx, "u1", {"max_vel": 1.2})
     assert search(idx, "0.8", SCOPE_VALUE) == []
     assert search(idx, "1.2", SCOPE_VALUE) == [("u1", "max_vel", 1.2)]
+
+
+def test_unindex_removes_all_entries_of_a_uid():
+    # 解除納管後，該 uid 的所有項目從索引移除，其他 uid 不受影響（移除最容易漏）。
+    idx = index("u1", {"a": 1, "b": 2}) + index("u2", {"c": 3})
+    idx = unindex(idx, "u1")
+    assert set(idx) == {("u2", "c", 3)}

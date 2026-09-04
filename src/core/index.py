@@ -60,3 +60,8 @@ def reindex(index_entries: list[Entry], uid: str, data: dict[str, Any]) -> list[
     """
     kept = [entry for entry in index_entries if entry[0] != uid]
     return kept + index(uid, data)
+
+
+def unindex(index_entries: list[Entry], uid: str) -> list[Entry]:
+    """解除納管：移除該 uid 的所有索引項目，其他 uid 不受影響。"""
+    return [entry for entry in index_entries if entry[0] != uid]
