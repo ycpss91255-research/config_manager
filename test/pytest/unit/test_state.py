@@ -15,3 +15,13 @@ def test_missing_when_target_does_not_exist():
 def test_in_sync_when_hashes_match():
     # 目標內容 == 來源內容（雜湊相同）→ 一致。
     assert decide(target_exists=True, target_hash="abc", source_hash="abc") is State.IN_SYNC
+
+
+def test_drift_when_hashes_differ():
+    # 目標內容 != 來源內容（雜湊不同）→ 偏離。
+    assert decide(target_exists=True, target_hash="abc", source_hash="xyz") is State.DRIFT
+
+
+def test_existence_is_decided_before_content():
+    # 判定順序：先存在性、後內容。目標不存在時即使雜湊看似相同也回未部署。
+    assert decide(target_exists=False, target_hash="abc", source_hash="abc") is State.MISSING
