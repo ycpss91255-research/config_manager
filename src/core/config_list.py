@@ -3,7 +3,9 @@
 純邏輯，不做 I/O（ADR-00000011）：load/dump 收字串、不讀磁碟。
 """
 
+import re
 from pathlib import PurePosixPath
+from typing import Iterable
 
 import tomlkit
 
@@ -12,17 +14,28 @@ from core.errors import (
     DuplicateUid,
     InvalidFormat,
     TargetEscape,
+    UnknownField,
 )
 from core.models import ConfigList, FileEntry
 
 # 被管理 config 的允許格式（T6 亦處理這些）。raw = 不解析、只做版控。
 ALLOWED_FORMATS = ("yaml", "json", "toml", "ini", "raw")
 
+# 允許的鍵集（用清單檔的鍵名，含 schema 別名）。不含 warnings 等內部欄位。
+_TOP_KEYS = {"list_version", "defaults", "files"}
+_DEFAULTS_KEYS = {"permissions"}
+_PERM_KEYS = {"owner", "group", "mode"}
+_ENTRY_KEYS = {
+    "uid", "name", "hostname", "source", "target", "format", "groups",
+    "description", "schema", "requires_privilege", "permissions",
+}
+
 
 def load(text: str) -> ConfigList:
     """把 config 清單檔的原始文字解析為已驗證的資料模型。"""
-    data = tomlkit.parse(text).unwrap()
-    config_list = ConfigList.model_validate(data)
+    doc = tomlkit.parse(text)
+    _check_unknown_fields(doc, text)
+    config_list = ConfigList.model_validate(doc.unwrap())
     _check_integrity(config_list)
     return config_list
 
@@ -46,6 +59,46 @@ def dump(config_list: ConfigList, original: str) -> str:
         files.append(_entry_to_table(entry))
 
     return tomlkit.dumps(doc)
+
+
+def _find_line(text: str, key: str) -> int | None:
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if pattern.match(line):
+            return lineno
+    return None
+
+
+def _reject_unknown(
+    keys: Iterable[str], allowed: set[str], text: str, where: str
+) -> None:
+    for key in keys:
+        if key not in allowed:
+            line = _find_line(text, key)
+            loc = f"第 {line} 行" if line is not None else where
+            raise UnknownField(
+                f"無法辨識的欄位「{key}」（{loc}）；{where} 不接受此欄位"
+            )
+
+
+def _check_unknown_fields(doc: "tomlkit.TOMLDocument", text: str) -> None:
+    """在轉為資料模型前，對照鍵集攔下未知欄位並指名行號（PDF §329）。"""
+    _reject_unknown(doc.keys(), _TOP_KEYS, text, "清單檔頂層")
+
+    defaults = doc.get("defaults")
+    if defaults is not None:
+        _reject_unknown(defaults.keys(), _DEFAULTS_KEYS, text, "defaults")
+        perms = defaults.get("permissions")
+        if perms is not None:
+            _reject_unknown(perms.keys(), _PERM_KEYS, text, "defaults.permissions")
+
+    files = doc.get("files")
+    if files is not None:
+        for entry in files:
+            _reject_unknown(entry.keys(), _ENTRY_KEYS, text, "檔案條目")
+            eperm = entry.get("permissions")
+            if eperm is not None and hasattr(eperm, "keys"):
+                _reject_unknown(eperm.keys(), _PERM_KEYS, text, "條目的 permissions")
 
 
 def _entry_to_table(entry: FileEntry) -> "tomlkit.items.Table":

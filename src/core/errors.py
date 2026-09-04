@@ -23,3 +23,7 @@ class TargetEscape(ConfigListError):
 
 class InvalidFormat(ConfigListError):
     """format 非允許值。format 明寫、不由副檔名推斷。"""
+
+
+class UnknownField(ConfigListError):
+    """清單檔含無法辨識的欄位。格式錯誤須大聲失敗、指名行號（PDF §329）。"""

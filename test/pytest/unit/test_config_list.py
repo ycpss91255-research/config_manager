@@ -6,7 +6,13 @@
 import pytest
 
 from core.config_list import dump, load
-from core.errors import DuplicateTarget, DuplicateUid, InvalidFormat, TargetEscape
+from core.errors import (
+    DuplicateTarget,
+    DuplicateUid,
+    InvalidFormat,
+    TargetEscape,
+    UnknownField,
+)
 
 
 def test_valid_config_list_loads_with_correct_field_values():
@@ -331,3 +337,35 @@ permissions = { owner = "root", group = "docker", mode = "0600" }
         entry.description,
         entry.permissions.mode,
     ) == (True, ".schemas/daemon.json", "Docker daemon 設定", "0600")
+
+
+def test_unrecognized_field_raises_named_exception_with_line_number():
+    # 無法辨識的欄位是格式錯誤，須大聲失敗並指名行號（不變式 2 / PDF §329）。
+    text = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/a.yaml"
+target   = "/opt/a.yaml"
+format   = "yaml"
+groups   = []
+bogus_field = "x"
+"""
+
+    with pytest.raises(UnknownField) as exc:
+        load(text)
+
+    message = str(exc.value)
+    expected_line = next(
+        i for i, line in enumerate(text.splitlines(), 1) if "bogus_field" in line
+    )
+    assert "bogus_field" in message
+    assert str(expected_line) in message
