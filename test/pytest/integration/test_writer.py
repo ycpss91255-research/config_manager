@@ -20,6 +20,7 @@ from config_manager.io.errors import (
     OwnershipRefused,
     TargetNotWritable,
     TargetOutsideRoots,
+    TemporaryLeftBehind,
 )
 from config_manager.io.writer import write
 
@@ -73,6 +74,61 @@ def test_an_interrupted_write_leaves_the_target_and_no_debris(tmp_path, monkeypa
 
     assert target.read_text() == "old\n"
     assert [path.name for path in tmp_path.iterdir()] == ["params.yaml"]
+
+
+def _write_that_fails_before_rename(monkeypatch):
+    """把 rename 打掉，讓 write 走進「暫存檔要被清掉」的那條路。
+
+    既有的中斷規格用同一種注入，但它驗的是清理成功的樣子（目錄裡只剩目標檔）。
+    下面兩則驗的是清理**失敗**時會發生什麼——那條路徑先前完全沒有規格。
+    """
+
+    def refuse(*_args, **_kwargs):
+        raise OSError("injected failure before rename")
+
+    monkeypatch.setattr(os, "replace", refuse)
+
+
+def _unlink_that_fails(monkeypatch):
+    """sticky bit、SELinux、NFS 的 stale handle 都會讓「建得出、刪不掉」成立。"""
+
+    def refuse(*_args, **_kwargs):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "unlink", refuse)
+
+
+def test_a_temporary_that_cannot_be_removed_keeps_the_original_failure_visible(
+    tmp_path, monkeypatch
+):
+    # 清理失敗不得蓋掉原本的失敗原因。使用者拿到「暫存檔刪不掉」而真正的原因
+    # 不見了的話，他會去修一個次要問題。
+    target = tmp_path / "params.yaml"
+    target.write_text("old\n")
+    _write_that_fails_before_rename(monkeypatch)
+    _unlink_that_fails(monkeypatch)
+
+    with pytest.raises(TemporaryLeftBehind) as exc:
+        write(str(target), "new\n", _own_permissions(), [str(tmp_path)])
+
+    assert "injected failure before rename" in str(exc.value)
+
+
+def test_a_temporary_that_cannot_be_removed_names_the_file_and_the_next_step(
+    tmp_path, monkeypatch
+):
+    # 清理失敗也不得消失（§0.4：不得捕捉後僅 pass）。目標目錄會逐次累積
+    # .config_manager-*.tmp，而這個系統的賣點正是「目標位置的內容由我們負責」。
+    target = tmp_path / "params.yaml"
+    target.write_text("old\n")
+    _write_that_fails_before_rename(monkeypatch)
+    _unlink_that_fails(monkeypatch)
+
+    with pytest.raises(TemporaryLeftBehind) as exc:
+        write(str(target), "new\n", _own_permissions(), [str(tmp_path)])
+
+    message = str(exc.value)
+    assert ".config_manager-" in message and "下一步" in message
 
 
 def test_an_unwritable_target_directory_fails_by_name(tmp_path):

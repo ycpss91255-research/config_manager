@@ -21,6 +21,14 @@ class OwnershipRefused(WriterError):
     """要求的 owner/group 設不上去：名字查不到，或沒有權限。"""
 
 
+class TemporaryLeftBehind(WriterError):
+    """寫出失敗，而沒搬成的暫存檔也刪不掉。
+
+    訊息裡同時說出原本的失敗與清理的失敗，`__cause__` 指向前者：清理失敗不該
+    蓋掉原本的錯誤，但留在目標目錄裡的 .config_manager-*.tmp 也不該沒有人知道。
+    """
+
+
 class ChangeError(Exception):
     """變更紀錄失敗的基底。"""
 
