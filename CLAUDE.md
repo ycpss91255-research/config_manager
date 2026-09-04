@@ -1,90 +1,62 @@
 # CLAUDE.md
 
-Agent guidance for `config_manager`. **Read `CONTEXT.md` first** for the domain
-vocabulary — use those terms, don't invent synonyms.
+`config_manager` 的 agent 指引。**先讀 `CONTEXT.md`** 取得領域用語——用那裡的詞，不要另造同義詞。
 
-## What this is
+## 這是什麼
 
-A centralized config management system: the config repo is the single source of
-truth, written out to targets, validated before change, with drift surfaced.
-Python 3.11 + FastAPI backend; so far only the core layer has landed.
+集中式 config 管理系統：config repo 是唯一真實來源，寫出至目標位置，變更前先驗證，偏離會被呈現而非自動處置。Python 3.11 + FastAPI backend；目前只有核心層落地。
 
-Read order: `CONTEXT.md` → `doc/PRD.md` (9 invariants, never violate) →
-`doc/adr/` (why it's shaped this way) → `doc/TEST-PLAN.md` (the confirmed test
-interfaces).
+閱讀順序：`CONTEXT.md` → `doc/PRD.md`（9 條不變式，不得違反）→ `doc/adr/`（為什麼長成這樣）→ `doc/TEST-PLAN.md`（已確認的測試介面）。
 
-## Layers
+## 分層
 
-`api → core → io`, one direction (ADR-00000011). Import by top-level module name
-(`from config_manager.core.config_list import load`, `python -m config_manager.api.cli`).
+`api → core → io` 單向（ADR-00000011）。以頂層模組名匯入（`from config_manager.core.config_list import load`、`python -m config_manager.api.cli`）。
 
-- `src/config_manager/core/` — pure logic, **no I/O**: need file content? take it as a parameter.
-  Every core test runs with no filesystem, git, or network.
-- `src/config_manager/io/` — filesystem/git adapters. Everything lives under one
-  top-level package because a top-level `io/` shadows the stdlib module and can stop
-  the interpreter from starting (ADR-00000026).
-- `src/config_manager/api/` — HTTP endpoints + CLI (the CLI is an HTTP client, ADR-00000009).
-- `src/config_manager/web/` — single HTML entry point.
+- `src/config_manager/core/` — 純邏輯，**不做 I/O**：需要檔案內容？當參數傳進來。核心層的每個測試都在無檔案系統、無 git、無網路的情況下執行。
+- `src/config_manager/io/` — 檔案系統與 git 的 adapter。所有東西都在單一頂層套件底下，因為頂層的 `io/` 會遮蔽 stdlib 的同名模組，甚至讓直譯器無法啟動（ADR-00000026）。
+- `src/config_manager/api/` — HTTP 端點與 CLI（CLI 是 HTTP client，ADR-00000009）。
+- `src/config_manager/web/` — 單一 HTML 入口。
 
-## Workflow
+## 工作流程
 
-- **Milestone/issue-driven.** Work the GitHub milestones in order
-  (`gh issue list --milestone v0.1.0`). Don't jump ahead.
-- **Branch → PR → squash.** New work on a feature branch; open a PR; the maintainer
-  squash-merges. **Never push to `main` directly, never force-push** — the org
-  co-pushes, so `git fetch` + `git rebase origin/main` before pushing.
-- **A decision you can't make yourself** (owner-level / architecture) → open a
-  GitHub issue and wait, but don't idle: move to another unblocked issue meanwhile.
-- **A bug in shipped behaviour** → `fix` + a patch version bump; a milestone's
-  features are the minor.
+- **依 milestone 與 issue 推進。** 照 GitHub milestone 的順序做（`gh issue list --milestone v0.1.0`），不要跳版。
+- **分支 → PR → squash。** 新工作開 feature branch，開 PR，由維護者 squash merge。**不得直推 `main`，不得 force push**——這個 org 是多人共推，推之前先 `git fetch` 加 `git rebase origin/main`。
+- **自己無法決定的事**（owner 層級／架構）→ 開 GitHub issue 並等待，但不要空轉：同時去做另一個沒被擋住的 issue。
+- **已交付行為的 bug** → `fix` 加 patch 版號；一個 milestone 的功能是 minor。
+- **決策要寫回它被提出的地方。** 討論定案後，把決策、佐證、以及被否決的選項與理由寫回該 issue 或 PR，不要只留在對話裡。關閉帶驗收條件的 issue 時，**證據附在 issue 上，勾選框實際勾起來**。
 
-## Commit messages
+## Commit 訊息
 
-Follow base's convention, enforced by `script/lint_commit.sh` (ADR-00000025).
-Self-check: `./script/test.sh --lint commit`.
+格式沿用 base 的慣例，由 `script/lint_commit.sh` 檢查（ADR-00000025、ADR-00000028）。自查：`./script/test.sh --lint commit`。
 
-- type ∈ `feat fix docs refactor test chore ci perf` (anything else fails)
-- the `type(scope): ` prefix must be present and well-formed; no trailing period
-- the subject is a lowercase **declarative** sentence saying what is now true
-  (`feat(state): the state is missing when the target is gone`), not `add X`
-- scope and issue refs are recommended; length is not checked
+- type 限 `feat fix docs refactor test chore ci perf`，其餘一律 fail
+- `type(scope): ` 前綴必須存在且格式正確；句尾不加句號
+- **主旨以中文書寫**，且是**陳述句**，說明現在什麼成立（`feat(state): 目標不存在時狀態判定為未部署`），不是「新增 X」這種祈使句
+- **只有 type 與 scope 維持英文**——那兩個是給工具讀的識別碼（ADR-00000028）
+- scope 與 issue 回指建議附上；長度不檢查
 
-End commit bodies with a `Co-Authored-By:` trailer; end PR descriptions with the
-Claude Code line.
+commit 內文結尾加 `Co-Authored-By:` trailer；PR 描述結尾加 Claude Code 那一行。
 
-## Quality gates (local == CI)
+## 品質閘門（本機與 CI 同一組）
 
-**Run every check inside the container. Never against this host.**
+**所有檢查一律在容器內執行，絕不對這台主機跑。**
 
-`./script/test.sh` (or `just test`) builds `dockerfile/Dockerfile.test-tools` and
-re-execs itself inside it; CI calls the same script and installs nothing. One
-image, two callers (ADR-00000027). Push only when green.
+`./script/test.sh`（或 `just test`）會建置 `dockerfile/Dockerfile.test-tools` 並把自己轉進容器重跑；CI 呼叫同一支腳本，不安裝任何工具。一份映像，兩個呼叫者（ADR-00000027）。綠了才推。
 
-Do not reach for the host interpreter to "just check something quickly". The
-host is not evidence about this project, and saying so is not a style
-preference -- it has produced four wrong answers here:
+不要為了「快速確認一下」就去呼叫主機的直譯器。**主機不是這個專案的證據**，而這句話不是風格偏好——它已經在這裡給過四個錯誤答案：
 
-| what the host said | what was true |
+| 主機說 | 實際 |
 |---|---|
-| pytest could not collect the suite | host pytest 6.2.5 silently ignores `pythonpath`; the project needs 8+ |
-| lint clean | host had no hadolint, so CI went red six pushes in a row |
-| the interpreter cannot start | on 3.11 the same `io` collision (#56) is a `ModuleNotFoundError` |
-| nothing to check in workflows | actionlint existed only in CI, and it reads what no YAML parser sees |
+| pytest 收集不到測試 | 主機的 pytest 6.2.5 靜默忽略 `pythonpath`，專案需要 8+ |
+| lint 乾淨 | 主機沒有 hadolint，CI 因此連續六次全紅 |
+| 直譯器無法啟動 | 在 3.11 下同一個 `io` 撞名（#56）是 `ModuleNotFoundError` |
+| workflow 沒東西可檢查 | actionlint 只存在於 CI，而它讀的是 YAML parser 看不到的那一層 |
 
-`CM_TEST_LOCAL=1` runs on the host anyway. It surveys the host first and names
-**every** checker that is missing, then stops. Adding `CM_LINT_ALLOW_MISSING=1`
-runs the rest and repeats what did not run — and **a run with skips is not a
-passing run**, so do not report one as green. `CM_APT_MIRROR` overrides the
-image's Debian mirror.
+`CM_TEST_LOCAL=1` 仍可在主機跑。它會先盤點主機並列出**全部**缺少的檢查工具，然後停下。再加 `CM_LINT_ALLOW_MISSING=1` 才會跑其餘的，並重述哪些沒跑——**有跳過的執行不算通過**，不要把它報成綠燈。`CM_APT_MIRROR` 可覆寫映像的 Debian 鏡像。
 
-- `ruff check src test` · `mypy --strict src/config_manager/core` · `pylint src` (10.00/10) ·
-  `pytest test/pytest --cov=src/config_manager/core` (fail_under 85)
-- The shell scripts need **bash 4+** (`brew install bash` on macOS; the stock 3.2
-  can't run them).
+- `ruff check src test`／`mypy --strict src/config_manager/core`／`pylint src`（10.00/10）／`pytest test/pytest --cov=src/config_manager/core`（下限 85）
+- shell 腳本需要 **bash 4+**（macOS 用 `brew install bash`，內建的 3.2 跑不動）
 
 ## TDD
 
-Red → green, one slice at a time. Write tests **only at the confirmed interfaces
-in `doc/TEST-PLAN.md`** — never at an unconfirmed one. Expected values from an
-independent source; one logical assertion per test; test names say what the code
-does, in `CONTEXT.md`'s words.
+紅 → 綠，一次一片。**測試只寫在 `doc/TEST-PLAN.md` 已確認的介面上**，絕不寫在未確認的介面上。期望值來自獨立來源；每個測試一個邏輯斷言；測試名稱說明程式碼做什麼，用 `CONTEXT.md` 的詞彙。
