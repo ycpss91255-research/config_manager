@@ -63,7 +63,8 @@ jobs:
           # lint_commit 要讀歷史；淺層 clone 沒有歷史。
           fetch-depth: 0
       # 每一支 linter、每一個測試層級，以及覆蓋率下限——全部在測試映像裡。
-      # src/config_manager/core 的 85% 下限寫在 pyproject.toml，所以這裡同樣不複述。
+      # core／io／api／web 各自的 85% 下限寫在 pyproject.toml、由
+      # script/coverage_gate.sh 四個分開擋，所以這裡同樣不複述。
       - run: ./script/test.sh
 
   build:

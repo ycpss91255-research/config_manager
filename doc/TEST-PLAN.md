@@ -842,6 +842,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/lint_messages.sh` | T19 | 已落地 |
 | `script/check_file.sh` | T19（單檔檢查的派工規則） | 已落地 |
 | `script/test.sh` | T19（缺工具不得靜默通過，#72） | 已落地 |
+| `script/coverage_gate.sh` | T19（四個門檻各自獨立、指名的只有轉紅的那一層） | 已落地 |
 | `script/{build,run,exec,stop,prune}.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/dispatch.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/{pre,post}/*.sh`（14 支） | 無——見「刻意的空格」 | 已落地 |
@@ -904,7 +905,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 
 | 量測 | 設定 | 範圍 |
 |---|---|---|
-| 覆蓋率 | `[tool.coverage.run] source = ["src/config_manager/core"]`，`fail_under = 85` | 只有 `core/` |
+| 覆蓋率 | `[tool.coverage.run] source = ["src/config_manager"]`＋`[tool.config_manager.coverage]` 的四個下限，由 `script/coverage_gate.sh` 各自擋 | `core`／`io`／`api`／`web`（#97 起） |
 | 型別 | `[tool.mypy] files = ["src/config_manager"]`，`strict = true` | `core`／`io`／`api`（#97 起） |
 
 **影響：`io/` 與 `api/` 兩者皆無。** `io/writer`、`io/git`、`io/preflight`、`io/digest`、
@@ -918,15 +919,20 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 對真的 FastAPI 服務發真的 fetch，覆蓋率由 V8 的 precise coverage 給出（不引入 npm 工具鏈
 ——PDF §3.3 說前端不需框架也不需打包流程）。18 則規格，行覆蓋率 98.82%。
 
-**為什麼這裡只記錄、不順手修。** 把 `io/` 與 `api/` 加進 coverage 的 `source`，85 的下限會
+**為什麼當時只記錄、不順手修。** 把 `io/` 與 `api/` 加進 coverage 的 `source`，85 的下限會
 立刻落在一組覆蓋率遠低於 `core/` 的模組上，門檻在一個與本次審計無關的地方爆掉；為了讓它過而
 把下限調低，等於連 `core/` 的保證一起調弱——**一個門檻同時守兩個標準不同的區域，結果是守住
-比較鬆的那個。** mypy 那一半在 #97 做掉了：加進 `files` 之後實測**零錯誤**——「後面跟著一批要逐檔處理的
+比較鬆的那個。** 這個推論成立，錯的是它的結論（見下）。 mypy 那一半在 #97 做掉了：加進 `files` 之後實測**零錯誤**——「後面跟著一批要逐檔處理的
 `--strict` 錯誤」是當時的推測，不是量出來的。
 
 **要修的話怎麼修**：兩件事分開，各自一個 issue，各自把數字釘在它守得住的地方——覆蓋率用
 per-module 的下限（讓 `core/` 維持 85，`io/`／`api/` 各自訂一個現況擋得住、之後只能往上調的值），
 mypy 先把 `io/` 與 `api/` 納入 `files` 再逐檔清乾淨。追蹤於 #97。
+
+**per-module 下限那個建議在 #97 被作廢。** 四條不同的線是同一個問題換個形狀：每一層各自訂一個
+「現況剛好擋得住」的值，等於把現況封成標準，而那些值之間的差距沒有理由，只有歷史。落地的是
+**四個資料夾同一條線 85，分開計算、分開擋**（`script/coverage_gate.sh`）。四層實測 97.29／
+88.70／99.28／98.82，沒有一層需要靠調低門檻才過。
 
 **這一節記的是 #97 之前的現況**，兩件事的實際結果見該 issue 與其 PR：per-module 下限那個
 建議被作廢，改成四個資料夾同一條線 85、分開計算分開擋。

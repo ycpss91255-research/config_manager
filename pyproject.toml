@@ -46,10 +46,28 @@ disable = ["missing-docstring", "line-too-long"]
 max-nested-blocks = 3
 
 [tool.coverage.run]
-source = ["src/config_manager/core"]
+# PDF §0.4 只對 core/ 要求行覆蓋率。#97 決定加嚴：core／io／api／web 四個資料夾
+# 各自 >= 85，理由是那幾層也是主要架構——會有影響的就要有 coverage。
+#
+# 原本的理由「對一個 I/O wrapper 算行覆蓋率，量到的是那個 mock」在這個 repo 不成立：
+# io/ 的規格是對真實 git repo 與真實檔案系統跑的（T7／T8／T15／T20／T21），沒有 mock
+# 可以量。而 api/ 的 0% 也不是「測不到」，是規格放在 pytest 執行不到的地方（#116）。
+source = ["src/config_manager"]
 
 [tool.coverage.report]
-# 只算 core/。io/ 與 api/ 在整合與系統層級被覆蓋，那才是它們的行為真正所在之處；
-# 對一個 I/O wrapper 算行覆蓋率，量到的是那個 mock，不是程式碼。
-fail_under = 85
+# 這裡**刻意沒有 fail_under**。一個總數的門檻同時守四個標準不同的區域，結果是守住
+# 最鬆的那個——擋下限的是 script/coverage_gate.sh，它四個分開算、分開擋。
 show_missing = true
+
+[tool.config_manager.coverage]
+# 四個資料夾各自的下限，由 script/coverage_gate.sh 執行。
+#
+# 同一條線而不是四條：讓每一層各自訂一個「現況剛好擋得住」的值，等於把現況封成標準，
+# 而那些值之間的差距沒有理由，只有歷史。85 這個數字沿用 PDF §0.4 給 core/ 的那條。
+#
+# 調低任何一個都要在 PR 說明理由（§0.4 執行方式）。達不到時的預設處置是**改程式碼
+# 讓它可測**，不是調這裡，也不是用 `# pragma: no cover` 把量不到的東西藏起來。
+core = 85
+io = 85
+api = 85
+web = 85

@@ -316,7 +316,10 @@ main() {
   if (( $# == 0 )); then
     run_lint all
     note_levels_without_specs
-    pytest test/pytest --cov=src/config_manager/core --cov-report=term-missing
+    # --cov 涵蓋整個套件；把它拆成四個資料夾各自的門檻，是 coverage_gate 的事。
+    # 一次測試、一份資料、四個獨立的判定（#97）。
+    pytest test/pytest --cov=src/config_manager --cov-report=term-missing
+    ./script/coverage_gate.sh
     run_bats_levels
     return 0
   fi

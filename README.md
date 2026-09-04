@@ -123,7 +123,9 @@ CI 呼叫的是同一支 `./script/test.sh`，不安裝任何工具。**一份�
 | `commit` | commit 訊息，規則取樣自 base（ADR-00000025） |
 | `adr` | ADR 檔名、編號與結構 |
 
-`pytest` 的 coverage 下限 85%（`src/config_manager/core/`）寫在 `pyproject.toml`，CI 不重述。
+`pytest` 的 coverage 下限 85% 寫在 `pyproject.toml`，CI 不重述。`core`／`io`／`api`／`web`
+**四個資料夾各自計算、各自擋**（`script/coverage_gate.sh`）——一個門檻同時守四個標準不同的
+區域，結果是守住最鬆的那個。
 
 ## 給後續維護者 / agent
 
