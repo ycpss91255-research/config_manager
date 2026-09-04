@@ -15,6 +15,17 @@ permissions:
   contents: read
 
 jobs:
+  commit-message:
+    # Only the commits this PR adds. Existing history predates the rule and
+    # rewriting it would mean force-pushing branches other people hold.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: ./script/lint_commit.sh "origin/${{ github.base_ref }}"
+
   lint:
     runs-on: ubuntu-latest
     steps:

@@ -78,13 +78,16 @@ git 操作集中在 `io/`，測試時可替換為 fake——這是整個系統�
 
 ## 給後續維護者 / agent
 
-- **不要重建設計文件。** 直接使用；有新決策就在 `doc/adr/` 加新號（目前 24 份，從 `00000025` 續接）。
+- **不要重建設計文件。** 直接使用；有新決策就在 `doc/adr/` 加新號（目前 25 份，從 `00000026` 續接）。
 - **ADR 的編號與結構 lint 要在 v0.1.0 就寫**：重號 fail、檔名格式不符 fail、
   缺 `> 服務：` 或必要段落 fail、跳號與缺 Alternatives 僅 warn。
   平行開發撞號是真實發生過的缺陷，人工檢查抓不到。
 - **圖表不要手改 SVG。** 改 `tools/` 的腳本再重跑（`cd tools && python3 gen_flows.py`）。
 - **Wireframe 是 HTML 的規格。** 實作介面時對照 `doc/UI-ELEMENTS.md`。
 - **新增術語前先查 `CONTEXT.md`**，不重新造詞。
+- **commit 訊息對齊 `ycpss91255-docker/base`**：`<type>(<scope>): <小寫陳述句>`。
+  規則不在文件裡，在 `just test lint commit`——它的規則取樣自 base 的實際 commit，
+  錯誤訊息會直接說該怎麼改。只檢查分支新增的 commit，不檢查歷史（ADR-00000025）。
 - **PDF 中標記為「推導內容」的章節**（目錄樹、端點表、欄位表、閾值表、里程碑）
   在對應程式碼落地後應刪除，改為指向真實來源。見 PDF §0.7。已落地的有：
   §0.6 閾值表 → `pyproject.toml`；§8 版本里程碑與驗收檢查點 → GitHub Milestones + Issues。

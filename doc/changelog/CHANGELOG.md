@@ -53,3 +53,11 @@ Versions follow the milestone ladder in the design document §8.
   `./script/<name>.sh` paths never resolved. They now go through
   `{{justfile_directory()}}`, which is the root justfile's directory
   regardless of which module the recipe lives in.
+- `script/lint_commit.sh` and `just test lint commit`: this repo's commit
+  messages follow ycpss91255-docker/base, and the rules are derived from a
+  200-commit sample of base rather than restated from memory. Fails on an
+  unknown type or a malformed prefix, warns on a missing scope or an
+  uppercase subject, and deliberately checks neither length nor issue refs
+  -- the conventional 50-character cap would reject most of the repo it is
+  meant to align with. Scoped to `origin/main..HEAD`, so existing history is
+  untouched (ADR-00000025).

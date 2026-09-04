@@ -20,7 +20,7 @@ Usage: script/test.sh [--level <name>] [--lint [<tool>]] [--file <path>] [--filt
 
   (no arguments)      lint + all levels + coverage
   --level <name>      unit | integration | system | acceptance
-  --lint [<tool>]     all linters, or one of: ruff | mypy | pylint | hadolint
+  --lint [<tool>]     all linters, or one of: ruff | mypy | pylint | hadolint | commit
   --file <path>       a single spec file
   --filter <regex>    specs matching a pattern
 USAGE
@@ -40,7 +40,8 @@ run_lint() {
         printf 'test.sh: hadolint not installed, skipping\n' >&2
       fi
       ;;&
-    ruff|mypy|pylint|hadolint|all) return 0 ;;
+    commit|all) ./script/lint_commit.sh ;;&
+    ruff|mypy|pylint|hadolint|commit|all) return 0 ;;
     *) printf 'test.sh: unknown linter %s\n' "${tool}" >&2; return 2 ;;
   esac
 }
