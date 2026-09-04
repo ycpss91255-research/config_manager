@@ -5,7 +5,7 @@
 
 import pytest
 
-from core.config_list import load
+from core.config_list import dump, load
 from core.errors import DuplicateTarget, DuplicateUid, InvalidFormat, TargetEscape
 
 
@@ -219,3 +219,41 @@ groups   = []
     joined = " ".join(config_list.warnings)
     # 警示須指出是哪兩筆（以各自的 uid 區分，name 與 hostname 相同）。
     assert "mfz3k9q1" in joined and "mfz3k9r7" in joined
+
+
+# 一份帶註解、空行、選填欄位、inline table 的清單檔，供原樣寫回的測試使用。
+_ROUNDTRIP_TEXT = """\
+list_version = 1
+
+# 未個別指定時套用的預設權限
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"          # 字串，避免被解析為整數
+
+[[files]]
+uid      = "mfz3k9q1"                             # 匯入時間戳，永不變
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/amr01/nav2_params.yaml"
+target   = "/opt/robot/config/nav2_params.yaml"
+format   = "yaml"
+groups   = ["navigation"]
+description = "Nav2 導航參數"
+
+[[files]]
+uid      = "mfz3k9r7"
+name     = "docker-daemon"
+hostname = "amr01"
+source   = "files/system/etc__docker__daemon.json"
+target   = "/etc/docker/daemon.json"
+format   = "json"
+groups   = ["system"]
+permissions = { owner = "root", group = "root", mode = "0644" }
+"""
+
+
+def test_dump_of_unchanged_config_list_is_byte_identical_to_input():
+    config_list = load(_ROUNDTRIP_TEXT)
+    # 清單檔本身也要原樣保留：未改動時逐位元組相同。
+    assert dump(config_list, _ROUNDTRIP_TEXT) == _ROUNDTRIP_TEXT

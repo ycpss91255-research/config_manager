@@ -69,3 +69,13 @@ def _check_integrity(config_list: ConfigList) -> None:
             )
         else:
             seen_name_host[key] = entry
+
+
+def dump(config_list: ConfigList, original: str) -> str:
+    """把清單檔寫回文字，保留原樣（註解、順序、引號樣式）。
+
+    原樣資訊為原始清單檔文字；以 tomlkit 重新解析後在其上套用變更，
+    未改動處逐位元組保留。
+    """
+    doc = tomlkit.parse(original)
+    return tomlkit.dumps(doc)
