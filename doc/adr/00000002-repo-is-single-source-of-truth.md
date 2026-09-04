@@ -1,4 +1,4 @@
-# The config repo is the single source of truth; targets are generated output
+# 來源 repo 是唯一真實來源，目標位置的檔案是寫出的產物
 
 > 服務：不變式 6（在 config 傳播上的實例）
 

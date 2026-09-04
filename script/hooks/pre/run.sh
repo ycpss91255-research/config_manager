@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# pre-run hook. Runs before `just docker run`.
+# pre-run hook：在 `just docker run` 之前執行。
 #
-# Confirm the config-repo mount point exists on the HOST. Docker silently
-# creates a root-owned empty directory when a bind-mount source is missing,
-# and the first symptom is a permission error deep inside an apply -- far in
-# both time and place from the cause. Failing here puts the error next to
-# the thing that is actually wrong.
+# 確認 config-repo 的掛載點在**主機上**存在。bind-mount 的來源不存在時，Docker
+# 會靜默地建一個 root 所有的空目錄，而第一個症狀是寫出過程深處的權限錯誤——在
+# 時間與位置上都離成因很遠。在這裡就失敗，能把錯誤放在真正出問題的東西旁邊。
 set -euo pipefail
 
 TARGET_ROOT="${CM_TARGET_ROOT:-/opt/robot/config}"

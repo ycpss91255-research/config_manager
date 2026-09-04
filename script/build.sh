@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 #
-# Build the image. Defaults to the `devel` stage; `--stage` picks another.
+# 建置映像。預設 `devel` 階段，`--stage` 可換成別的。
 #
-# Every operation the UI offers has a CLI equal (design principle N-5), and
-# that rule starts at the container operations: nothing here is reachable
-# only by remembering a `docker compose` incantation.
+# 介面提供的每個操作都有 CLI 對等（設計原則 N-5），而這條規則從容器操作就開始：
+# 這裡沒有任何一件事是「只有記得某串 docker compose 咒語才做得到」。
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"

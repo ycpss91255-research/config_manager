@@ -1,4 +1,4 @@
-# Role and environment are orthogonal concepts
+# 角色與環境是兩個正交的概念
 
 > 服務：不變式 4（預設值落向安全）＋ 不變式 5（兩分支預設規則）
 

@@ -1,4 +1,4 @@
-# Run every check inside one image, on the developer's machine and in CI alike
+# 每一項檢查都在同一份映像內執行，本機與 CI 一致
 
 > 服務：不變式 2（絕不靜默失效）
 

@@ -1,4 +1,4 @@
-# Browser end-to-end tests verify behaviour, selected by semantics
+# 瀏覽器端到端測試驗證行為，元素以語意選取
 
 > 服務：不變式 7（維持嚴謹且與業界對齊的測試門檻）
 

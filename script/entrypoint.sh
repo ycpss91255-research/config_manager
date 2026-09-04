@@ -1,42 +1,37 @@
 #!/usr/bin/env bash
 #
-# Container bringup. This IS the container entrypoint (the Dockerfile's
-# ENTRYPOINT), not a fragment sourced by an orchestrator -- the shared
-# template's two-part entrypoint arrives with the template, which v0.10.0
-# does not adopt.
+# 容器啟動。這支就是容器的 entrypoint（Dockerfile 的 ENTRYPOINT），不是被某個
+# orchestrator source 進去的片段——共用模板那種兩段式 entrypoint 是跟著模板一起
+# 來的，而 v0.10.0 不引入模板。
 #
-# One contract is honoured regardless: the last thing this file does is
-# `exec "$@"`. Without it the workload runs as a child of this shell, PID 1
-# stays here, and SIGTERM never reaches the thing that needs to shut down --
-# a container that cannot be stopped cleanly.
+# 有一條契約無論如何都要守住：這個檔案做的最後一件事是 `exec "$@"`。少了它，
+# 工作負載會變成這個 shell 的子程序，PID 1 留在這裡，SIGTERM 就永遠送不到真正
+# 需要收工的那個程序——變成一個無法乾淨停止的容器。
 #
-# frontend and backend share this file. What differs is the command they are
-# handed, so the checks below are the ones that hold for both, plus a
-# backend-only block guarded by CM_ROLE.
+# frontend 與 backend 共用這個檔案。差別在於它們被交付的指令，所以下面的檢查是
+# 兩者都成立的那些，另外加上一段以 CM_ROLE 圍起來、只給 backend 的區塊。
 set -euo pipefail
 
 die() {
-  # Errors name a file and a reason. "Startup failed" tells the operator
-  # nothing they can act on (design principle: an error message must be
-  # actionable), and startup is exactly when nobody is watching closely.
+  # 錯誤訊息要指名檔案與原因。「啟動失敗」沒有給操作者任何可以動手的東西
+  # （設計原則：錯誤訊息必須可據以行動），而啟動正好是沒有人盯著看的時候。
   printf 'entrypoint: %s\n' "$*" >&2
   exit 1
 }
 
-# The smallest config-list.toml core/models will accept: list_version plus a
-# defaults.permissions block. `files` defaults to an empty list, so it is left
-# out -- nothing is managed yet, which is the correct state on a first run.
+# core/models 能接受的最小 config-list.toml：list_version 加上一段
+# defaults.permissions。`files` 預設就是空清單，所以不寫——首次啟動時還沒有任何
+# 東西被納管，那正是正確的狀態。
 #
-# Values are the design's own example (§4.3), not invented here.
+# 值取自設計文件自己的範例（§4.3），不是在這裡自己編的。
 #
-# THIS DUPLICATES THE SHAPE core/models DECLARES, and that is a real cost. It
-# does not go silently wrong, though: preflight runs later in this same startup
-# and load() rejects a seed that stopped being valid. Drift fails loudly, here,
-# rather than surfacing in some request later.
+# 這裡複製了 core/models 宣告的形狀，那是實實在在的成本。但它不會靜默出錯：
+# preflight 在同一次啟動的稍後就會跑，load() 會擋下一份已經不再合法的種子。
+# 偏離會在這裡大聲失敗，而不是在之後某個請求裡才浮出來。
 #
-# It is committed, not left untracked. io/git.record starts with `git add -A`,
-# so an untracked seed would be swept into whichever user change happened to be
-# recorded first -- and that record would then claim changes it does not hold.
+# 它被提交進版控，不是留在工作區未追蹤。io/git.record 開頭是 `git add -A`，
+# 未追蹤的種子會被掃進「剛好第一個被記錄的使用者變更」裡——那筆紀錄於是宣稱了
+# 它其實沒有包含的改動。
 seed_config_list() {
   local repo="$1"
   local list="${repo}/config-list.toml"
@@ -51,8 +46,8 @@ group = "root"
 mode = "0644"
 TOML
 
-  # -c over `git config`: the identity belongs to this one commit, not to the
-  # repo the operator will later use.
+  # 用 -c 而不用 `git config`：這個身分只屬於這一筆 commit，不屬於操作者之後
+  # 會用到的那個 repo。
   git -C "${repo}" add config-list.toml \
     && git -C "${repo}" \
       -c user.name="config_manager" \
@@ -70,31 +65,27 @@ check_backend_preconditions() {
   [[ -d "${repo}" ]] || die "config-repo mount ${repo} does not exist (is the volume mounted?)"
 
   if [[ ! -e "${repo}/.git" ]]; then
-    # EMPTY and NON-EMPTY are different situations and this used to conflate
-    # them: the comment said "empty directory" while the condition only asked
-    # whether .git was absent, so a directory full of files was initialised and
-    # announced as empty (#69).
+    # 空與非空是兩種不同的狀況，而這裡曾經把它們混為一談：註解寫著「空目錄」，
+    # 條件卻只問 .git 在不在，於是一個裝滿檔案的目錄被初始化，還被宣告成空的
+    # （#69）。
     #
-    # It matters because io/git.record starts with `git add -A`. Initialising
-    # over someone else's files sweeps every one of them into the first commit,
-    # and a mistyped mount path looks like a successful startup.
+    # 這件事之所以要緊，是因為 io/git.record 開頭是 `git add -A`。在別人的檔案
+    # 上面初始化，會把那些檔案全部掃進第一筆 commit，而一個打錯的掛載路徑看起來
+    # 就跟啟動成功一模一樣。
     if [[ -n "$(ls -A "${repo}")" ]]; then
       die "config-repo mount ${repo} is not empty but is not under version control;" \
         "initialise it deliberately (git init) or check the mount path"
     fi
 
-    # An empty directory IS the first-run case: the volume exists, nothing has
-    # initialised it yet. A mount pointed at the wrong empty directory cannot be
-    # told apart from that from in here -- so print the resolved absolute path
-    # and let whoever reads it recognise their own mistake, rather than pretend
-    # the difference is knowable.
+    # 空目錄就是首次啟動的情況：volume 存在，還沒有東西初始化過它。掛到另一個
+    # 空目錄的錯誤設定，在這裡分辨不出來——所以印出解析後的絕對路徑，讓讀到的人
+    # 自己認出這是不是他要的位置，而不是假裝這個差別在這裡就知道得了。
     printf 'entrypoint: initialising empty config-repo at %s\n' "$(cd "${repo}" && pwd)"
     git init --quiet --initial-branch=main "${repo}" || die "git init failed at ${repo}"
     seed_config_list "${repo}"
-    # Falls through to check_config_list on purpose. The seed duplicates the
-    # shape core/models declares, and this is what keeps that duplication from
-    # going quietly wrong: a seed that stopped being valid is rejected here, in
-    # the same startup that wrote it, rather than in some later request.
+    # 刻意往下掉到 check_config_list。種子複製了 core/models 宣告的形狀，而這裡
+    # 正是讓那份複製不會靜默出錯的機制：一份已經不再合法的種子會在這裡被擋下，
+    # 就在寫出它的同一次啟動裡，而不是在之後某個請求。
   else
     git -C "${repo}" rev-parse --git-dir >/dev/null 2>&1 \
       || die "config-repo mount ${repo} exists but is not a git repository"
@@ -103,13 +94,12 @@ check_backend_preconditions() {
   check_config_list "${repo}"
 }
 
-# The list file and the source content it references. Delegated to Python
-# because the judgement belongs to core/config_list -- reimplementing "is this
-# list file valid" in shell would be a second, quietly diverging answer to a
-# question that already has one.
+# 清單檔，以及它所引用的來源內容。交給 Python 做，因為這個判斷屬於
+# core/config_list——在 shell 裡重寫一次「這份清單檔合不合法」，等於給一個
+# 已經有答案的問題再生出第二個、會安靜地漂移開來的答案。
 #
-# It runs BEFORE `exec "$@"`, which is the whole point: a broken list file must
-# stop the container here, not surface in some request once the service is up.
+# 它跑在 `exec "$@"` 之前，這就是重點：壞掉的清單檔必須在這裡把容器擋下來，
+# 而不是等服務起來之後才在某個請求裡浮出來。
 check_config_list() {
   local repo="$1"
   local output
@@ -126,7 +116,7 @@ main() {
     *) die "unknown CM_ROLE '${CM_ROLE}'; expected 'backend' or 'frontend'" ;;
   esac
 
-  # Hand over. Nothing may follow this line.
+  # 交棒。這一行之後不得再有任何東西。
   exec "$@"
 }
 

@@ -1,4 +1,4 @@
-# The system ships two containers; no monitor or log sidecars
+# 系統只出兩個容器，不加 monitor 與 log 的 sidecar
 
 > 服務：不變式 1
 

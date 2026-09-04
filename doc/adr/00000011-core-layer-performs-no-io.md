@@ -1,4 +1,4 @@
-# The core layer performs no I/O and every module is independently callable
+# 核心層不做 I/O，每個模組都能單獨呼叫
 
 > 服務：不變式 7（經設計原則 N-4）
 

@@ -1,4 +1,4 @@
-# The CLI is an HTTP client of the same endpoints as the web interface
+# CLI 是 HTTP client，呼叫與介面相同的端點
 
 > 服務：設計原則 N-5（每個介面操作都有 CLI 對等）
 

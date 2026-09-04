@@ -1,4 +1,4 @@
-# Change records use Conventional Commits with the uid as scope
+# 變更紀錄採 Conventional Commits，scope 只放 uid
 
 > 服務：機制，無對應不變式
 

@@ -1,4 +1,4 @@
-# Record architecture decisions as ADR files carrying a Serves back-reference
+# 架構決策記為 ADR 檔案，每份帶一條「服務」回指
 
 > 服務：機制，無對應不變式
 

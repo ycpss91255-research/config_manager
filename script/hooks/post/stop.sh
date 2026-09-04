@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# post-stop hook. Runs after `just docker stop`.
+# post-stop hook：在 `just docker stop` 之後執行。
 #
-# Empty by design. This is the seam the shared container template defines;
-# it is placeheld and wired now so that adding a step later means editing
-# this file only, not the wrapper. A failing pre-hook aborts the operation.
+# 刻意留空。這是共用容器模板定義的擴充點；現在先佔位並接好線，之後要加一個
+# 步驟時只改這個檔案，不必動 wrapper。post-hook 失敗時工作已經做完了，但離開
+# 狀態仍會傳出去，wrapper 以非零碼結束。
 set -euo pipefail

@@ -1,4 +1,4 @@
-# Tests are written only at pre-agreed interfaces
+# 測試只寫在事先確認的測試介面上
 
 > 服務：不變式 7（維持嚴謹且與業界對齊的測試門檻）
 

@@ -1,4 +1,4 @@
-# Resources over REST; state changes as action subresources
+# 資源查詢走 REST，狀態變更走動作子資源
 
 > 服務：機制，無對應不變式
 

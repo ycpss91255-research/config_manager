@@ -1,4 +1,4 @@
-# One HTML entry point, and one editing session at a time
+# 只有一個 HTML 入口，同時只有一個編輯階段
 
 > 服務：不變式 2
 

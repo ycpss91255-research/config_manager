@@ -1,4 +1,4 @@
-# Follow base's commit convention, with the lint deriving its rules from base rather than restating them
+# commit 慣例沿用 base，lint 的規則取樣自 base 而非複述
 
 > 服務：不變式 2（絕不靜默失效）
 

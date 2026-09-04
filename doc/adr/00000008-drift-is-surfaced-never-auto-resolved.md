@@ -1,4 +1,4 @@
-# Drift is surfaced for human judgement and never auto-resolved
+# 偏離呈現給人判斷，絕不自動處置
 
 > 服務：不變式 2 ＋ 設計原則 N-2（偵測與提示，不做自動修正）
 

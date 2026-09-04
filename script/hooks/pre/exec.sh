@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# pre-exec hook. Runs before `just docker exec`.
+# pre-exec hook：在 `just docker exec` 之前執行。
 #
-# Empty by design. This is the seam the shared container template defines;
-# it is placeheld and wired now so that adding a step later means editing
-# this file only, not the wrapper. A failing pre-hook aborts the operation.
+# 刻意留空。這是共用容器模板定義的擴充點；現在先佔位並接好線，之後要加一個
+# 步驟時只改這個檔案，不必動 wrapper。pre-hook 失敗會中止整個操作。
 set -euo pipefail

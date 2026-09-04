@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# Hook dispatcher, sourced by the wrappers under script/.
+# hook 分派器，由 script/ 底下的 wrapper source 進去。
 #
-# The shared container template ships its own dispatcher and will replace
-# this file when it is adopted. Until then this is what makes script/hooks/
-# a real extension point rather than a directory that merely looks wired:
-# every wrapper calls run_hook before and after its work, so a hook dropped
-# in here runs without editing the wrapper that runs it.
+# 共用容器模板自己帶了一支分派器，引入模板時會把這個檔案換掉。在那之前，是這支
+# 讓 script/hooks/ 成為真的擴充點，而不是一個看起來有接線的目錄：每支 wrapper 都
+# 在工作前後呼叫 run_hook，所以丟一支 hook 進去就會被執行，不必去改呼叫它的
+# wrapper。
 #
-# A missing or non-executable hook is not an error -- most stay empty. A
-# hook that FAILS is: pre-hooks exist to stop the operation, so their exit
-# status propagates and the wrapper's `set -e` aborts.
+# hook 不存在或沒有執行權限不算錯誤——多數 hook 本來就是空的。hook **失敗**才算：
+# pre-hook 的存在就是為了擋下這個操作，所以它的離開狀態會傳出去，由 wrapper 的
+# `set -e` 中止。
 
 run_hook() {
   local phase="$1" verb="$2"

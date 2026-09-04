@@ -1,4 +1,4 @@
-# Put every module under one top-level package, so no top-level name can shadow a standard-library one
+# 每個模組都放在單一頂層套件底下，讓頂層名稱無法遮蔽標準函式庫
 
 > 服務：不變式 2（絕不靜默失效）
 

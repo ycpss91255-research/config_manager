@@ -1,22 +1,18 @@
 #!/usr/bin/env bash
 #
-# Path lint. Fails when two tracked paths differ only by letter case.
+# 路徑 lint。兩個被追蹤的路徑若只差在字母大小寫就失敗。
 #
-# Linux is case-sensitive, so `Dockerfile` and `dockerfile/` are two entries
-# there and CI never notices. macOS and Windows are case-insensitive: the two
-# names are one entry, one of them wins the checkout, and the other simply is
-# not on disk. The failure is silent and confusing -- `git status` reports a
-# deletion nobody made, and the tool that wanted the missing file dies with a
-# message that names neither cause nor cure.
+# Linux 區分大小寫，所以 `Dockerfile` 與 `dockerfile/` 在那裡是兩筆，CI 永遠不會
+# 察覺。macOS 與 Windows 不區分大小寫：兩個名字是同一筆，其中一個贏得簽出，另一個
+# 就是不在磁碟上。這個失敗既無聲又令人困惑——`git status` 回報一筆沒有人做過的刪除，
+# 而需要那個檔案的工具死在一則既不指出成因也不指出解法的訊息上。
 #
-# That is not hypothetical: this repo shipped exactly that pair, and on macOS
-# the root Dockerfile could not be checked out at all, so `just test` stopped
-# at `hadolint: Dockerfile: does not exist` while CI stayed green.
+# 這不是假設：本 repo 就出過這一對，在 macOS 上根目錄的 Dockerfile 根本簽不出來，
+# 於是 `just test` 停在 `hadolint: Dockerfile: does not exist`，而 CI 一路是綠的。
 #
-# CI runs on Linux, so no dynamic check can catch this -- the collision has to
-# be read off the tracked paths themselves. Directory prefixes count: a file
-# named `Dockerfile` collides with a directory named `dockerfile/` even though
-# the directory never appears in `git ls-files`.
+# CI 跑在 Linux 上，所以沒有任何動態檢查抓得到這件事——撞名只能從被追蹤的路徑本身
+# 讀出來。目錄前綴也算：名為 `Dockerfile` 的檔案會和名為 `dockerfile/` 的目錄相撞，
+# 即使那個目錄從來不會出現在 `git ls-files` 裡。
 set -euo pipefail
 
 usage() {
@@ -38,7 +34,7 @@ main() {
     ;;
   esac
 
-  # Every tracked path plus every directory prefix of it, deduplicated.
+  # 每個被追蹤的路徑，加上它的每一段目錄前綴，去重。
   local paths
   paths="$(git ls-files |
     awk -F/ '{ p = ""; for (i = 1; i <= NF; i++) { p = (i == 1 ? $i : p "/" $i); print p } }' |

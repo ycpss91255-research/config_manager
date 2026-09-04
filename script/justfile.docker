@@ -1,22 +1,21 @@
-# Container operations. Every recipe forwards to a script under script/ --
-# the scripts are the implementation, these are the names.
+# 容器操作。每個 recipe 都轉給 script/ 底下的一支腳本——腳本是實作，這裡只是名字。
 
-# Build the image (default stage: devel)
+# 建置映像（預設階段：devel）
 build *ARGS:
     @{{justfile_directory()}}/script/build.sh {{ARGS}}
 
-# Start backend + frontend
+# 啟動 backend 與 frontend
 run *ARGS:
     @{{justfile_directory()}}/script/run.sh {{ARGS}}
 
-# Shell into a running service (default: backend)
+# 進入執行中的服務開 shell（預設：backend）
 exec *ARGS:
     @{{justfile_directory()}}/script/exec.sh {{ARGS}}
 
-# Stop the services; the config_repo volume survives
+# 停止服務；config_repo volume 會留著
 stop *ARGS:
     @{{justfile_directory()}}/script/stop.sh {{ARGS}}
 
-# Reclaim this project's containers and dangling images
+# 回收本專案的容器與懸空映像
 prune *ARGS:
     @{{justfile_directory()}}/script/prune.sh {{ARGS}}

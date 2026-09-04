@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Start the two services. The host-side precondition check lives in
-# script/hooks/pre/run.sh, which this calls before bringing anything up.
+# 啟動兩個服務。主機端的前置條件檢查放在 script/hooks/pre/run.sh，
+# 這支在把任何東西拉起來之前先呼叫它。
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"

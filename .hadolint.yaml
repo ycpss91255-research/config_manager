@@ -1,40 +1,32 @@
 ---
-# Aligned with ycpss91255-docker/base's ruleset, minus the rules that only
-# apply to the template's own consumer-chosen BASE_IMAGE story.
+# 對齊 ycpss91255-docker/base 的規則集，扣掉那些只適用於模板自己那套
+# 「BASE_IMAGE 由取用者選」情境的規則。
 ignored:
-  # Pin versions in apt-get install. Not pinned here for the same reason the
-  # template does not pin: an image that cannot take a security update
-  # without a repo release is worse for its audience than one that drifts.
+  # 「apt-get install 要釘版本」。這裡不釘，理由與模板不釘相同：一份映像若沒有
+  # repo 發版就吃不到安全更新，對它的使用者而言比會漂移更糟。
   #
-  # The compensating control, without which this ignore would be the kind
-  # that names nothing: the drift is RECORDED. Every image writes
-  # /usr/local/share/config_manager/packages.txt (every package and its exact
-  # version, rewritten after each apt layer) and base-image.env (the base
-  # reference, its digest where one was given, and the base OS), plus the OCI
-  # base.name / base.digest labels. Two images that behave differently can be
-  # diffed down to the version that changed.
+  # 補償控制——少了它，這個 ignore 就會是那種在指涉空氣的 ignore：漂移是被**記錄**
+  # 下來的。每份映像都會寫出 /usr/local/share/config_manager/packages.txt（每個套件
+  # 與它的確切版本，每一層 apt 之後重寫）與 base-image.env（base 的參照、有給的話
+  # 連 digest、以及 base OS），另外還有 OCI 的 base.name／base.digest 標籤。兩份行為
+  # 不同的映像，於是可以一路 diff 到那個變掉的版本。
   #
-  # An earlier revision of this file claimed the control was that BASE_IMAGE
-  # carries a tag. That was not a control: python:3.11-slim-bookworm is a
-  # MOVING tag, so the package set does move on an arbitrary rebuild -- which
-  # is exactly what the claim denied.
+  # 這個檔案先前的版本宣稱補償控制是「BASE_IMAGE 帶了 tag」。那不是控制：
+  # python:3.11-slim-bookworm 是會**移動**的 tag，所以套件集合確實會在任意一次重建時
+  # 移動——那正是該宣稱所否認的事。
   - DL3008
-  # Pin versions in pip install. The pins live in config/pip/*.txt, which is
-  # where a reader looks for them; restating them in the Dockerfile would
-  # create a second place to update.
+  # 「pip install 要釘版本」。釘住的版本放在 config/pip/*.txt，那正是讀的人會去找的
+  # 地方；在 Dockerfile 裡再複述一次，等於多出第二個要更新的地方。
   - DL3013
-  # Always tag the version of an image explicitly. Fires on
-  # `FROM ${BASE_IMAGE} AS sys`, which hadolint cannot resolve statically --
-  # it sees a variable and assumes the worst.
+  # 「映像版本一律明確標 tag」。它在 `FROM ${BASE_IMAGE} AS sys` 上觸發，而 hadolint
+  # 靜態解析不了那個值——它只看到一個變數，於是往最壞的情況假設。
   #
-  # The compensating control, without which this ignore would be the kind
-  # that names nothing: the ARG default two lines above the FROM *is*
-  # explicitly tagged (python:3.11-slim-bookworm). Overriding BASE_IMAGE is
-  # a deliberate act by whoever passes --build-arg, and an untagged value
-  # passed there is their choice, not a drift this repo introduced.
+  # 補償控制——少了它，這個 ignore 就會是那種在指涉空氣的 ignore：FROM 上方兩行的
+  # ARG 預設值**確實**明確標了 tag（python:3.11-slim-bookworm）。覆寫 BASE_IMAGE 是
+  # 傳 --build-arg 的那個人刻意做的事，往那裡傳一個沒有 tag 的值是他的選擇，不是這個
+  # repo 引入的漂移。
   #
-  # An earlier revision said a fixture in test/lint/hadolint/ proved the rule
-  # still fires on a genuinely untagged literal FROM. No such fixture exists;
-  # that directory holds a .gitkeep. Tracked in #74 -- until it exists, this
-  # ignore rests on reading the Dockerfile, not on a check.
+  # 先前的版本說 test/lint/hadolint/ 裡有一份 fixture 證明這條規則對真正沒標 tag 的
+  # 字面 FROM 仍會觸發。那份 fixture 不存在；那個目錄裡只有一個 .gitkeep。追蹤於
+  # #74——在它存在之前，這個 ignore 靠的是讀 Dockerfile，不是靠一項檢查。
   - DL3006

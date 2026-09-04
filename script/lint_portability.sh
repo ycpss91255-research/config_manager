@@ -1,22 +1,19 @@
 #!/usr/bin/env bash
 #
-# Portability lint. Fails when a shell script uses an option only GNU tools
-# accept.
+# 可攜性 lint。shell 腳本用到只有 GNU 工具接受的選項就失敗。
 #
-# These scripts run in two places: CI and the check image are Linux with GNU
-# coreutils, while a contributor's machine may be macOS with BSD ones. A GNU-only
-# option is green in CI forever and only breaks on macOS -- and not always
-# loudly. `grep -P` did exactly that here: BSD grep rejected the option, the
-# Chinese-subject check in lint_commit stopped working, and it reported that a
-# correct Chinese subject "has no Chinese". A wrong answer, not an error.
+# 這些腳本跑在兩個地方：CI 與檢查映像是帶 GNU coreutils 的 Linux，而貢獻者的機器
+# 可能是帶 BSD 工具的 macOS。GNU 專屬的選項在 CI 上會永遠是綠的，只在 macOS 上壞掉
+# ——而且不一定壞得大聲。`grep -P` 在這裡就是這樣：BSD grep 拒收該選項，lint_commit
+# 的中文主旨檢查因此失效，還回報一個正確的中文主旨「沒有中文」。那是錯的答案，
+# 不是錯誤。
 #
-# THE LIST COMES FROM MEASUREMENT, NOT MEMORY. Each option below was run on
-# macOS and observed to fail. Three plausible candidates were run and did NOT
-# fail -- `readlink -f`, `sort -V`, `xargs -r` -- so they are deliberately not
-# listed. Re-measure before adding to this list.
+# 這份清單來自實測，不是來自記憶。底下每一個選項都在 macOS 上跑過、看著它失敗。
+# 另有三個看起來很像的候選實測後**沒有**失敗——`readlink -f`、`sort -V`、`xargs -r`
+# ——所以刻意不列。要往這份清單加東西之前，先重新實測。
 #
-# This file excludes itself from the scan: it is the one script that has to
-# spell the offending constructs out, in its rules and in its usage text.
+# 這個檔案把自己排除在掃描之外：它是唯一必須把違規構造原樣拼出來的腳本，規則裡與
+# usage 文字裡都要。
 set -euo pipefail
 
 SELF="$(basename "${BASH_SOURCE[0]}")"
@@ -36,8 +33,8 @@ head with a negative -n, cp with --parents.
 USAGE
 }
 
-# name<TAB>extended-regex. The regexes deliberately anchor on the command name
-# followed by whitespace, so this table does not match itself.
+# 名稱<TAB>延伸正規式。正規式刻意錨定在「指令名稱後面接空白」，這樣這張表本身
+# 不會比對到自己。
 _rules() {
   cat <<'RULES'
 grep -P	(^|[^[:alnum:]_-])grep[[:space:]]+-[[:alnum:]]*P
@@ -50,7 +47,7 @@ cp --parents	(^|[^[:alnum:]_-])cp[[:space:]].*--parents
 RULES
 }
 
-# Non-comment lines, each keeping its original line number.
+# 非註解行，各自保留原本的行號。
 _code_lines() {
   awk '!/^[[:space:]]*#/ { printf "%d:%s\n", NR, $0 }' "$1"
 }
@@ -91,8 +88,8 @@ main() {
       done <<<"${hits}"
     done < <(_rules)
 
-    # sed -i is its own rule: GNU takes no backup suffix, BSD requires one, and
-    # `sed -i ''` is the form both accept -- so only the suffix-less form fails.
+    # sed -i 自成一條規則：GNU 不吃備份字尾，BSD 一定要有，而 `sed -i ''` 是兩邊
+    # 都接受的寫法——所以只有沒帶字尾的那種形式才失敗。
     hits="$(printf '%s\n' "${code}" |
       grep -E "(^|[^[:alnum:]_-])sed[[:space:]]+-[[:alnum:]]*i" |
       grep -vE "sed[[:space:]]+-i[[:space:]]+(''|\"\")" || true)"

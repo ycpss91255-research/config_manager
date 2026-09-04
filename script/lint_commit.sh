@@ -1,45 +1,38 @@
 #!/usr/bin/env bash
 #
-# Commit-message lint. Checks the commits this branch adds, not history.
+# commit 訊息 lint。檢查這條分支新增的 commit，不檢查歷史。
 #
-# The rules are derived from ycpss91255-docker/base, sampled over its 200
-# most recent commits, because "align with base" is only checkable if what
-# base actually does is written down somewhere a tool reads:
+# 規則取自 ycpss91255-docker/base，以它最近 200 筆 commit 取樣得出——因為
+# 「對齊 base」只有在「base 實際上怎麼做」被寫在工具讀得到的地方時才檢查得了：
 #
 #   type      fix 63 / feat 38 / refactor 31 / docs 26 / test 15 /
-#             chore 14 / ci 7 / perf 6                       -> 8 types, fail
-#   scope     181 of 200 carry one                           -> warn when absent
-#   subject   188 of 200 start lowercase                     -> not enforced
-#   length    median 90, max 153                             -> not enforced
-#   issue     118 of 200 carry (closes #N) / (refs #N)       -> not enforced
+#             chore 14 / ci 7 / perf 6                       -> 八種 type，fail
+#   scope     200 筆中 181 筆有                              -> 缺少則 warn
+#   主旨      200 筆中 188 筆首字小寫                        -> 不檢查
+#   長度      中位數 90、最長 153                            -> 不檢查
+#   issue     200 筆中 118 筆帶 (closes #N) / (refs #N)      -> 不檢查
 #
-# CASE IS NOT ENFORCED, and this line used to claim it was. ADR-00000028 moved
-# subjects to Chinese, which has no letter case, so the rule became true of
-# every commit this repo will ever write -- a check that can never fire. The
-# stale claim was itself the defect: #70 listed "capitalized subject -> warn"
-# among the rules needing tests, copied from here, and no such rule exists.
+# 大小寫不檢查，而這一行以前宣稱它有檢查。ADR-00000028 把主旨改成中文，中文沒有
+# 大小寫，於是這條規則對本 repo 之後寫的每一筆 commit 都恆真——一個永遠不會觸發的
+# 檢查。那句過期的宣稱本身就是缺陷：#70 把「主旨首字大寫 -> warn」列進「需要補
+# 測試的規則」，就是從這裡抄過去的，而那條規則根本不存在。
 #
-# The fail/warn split mirrors the ADR lint (§0.5): fail on what is
-# unambiguous, warn on what is a signal. A missing scope is usually a
-# commit that touches too much, but sometimes it genuinely spans the repo --
-# so it shows up in the output without blocking the merge.
+# fail／warn 的分界比照 ADR lint（§0.5）：明確的擋，是訊號的印出來。缺 scope 通常
+# 代表這筆 commit 動到太多東西，但有時它確實橫跨整個 repo——所以它出現在輸出裡，
+# 但不擋合併。
 #
-# LENGTH IS DELIBERATELY NOT CHECKED. base's median title is 90 characters
-# and its longest is 153; the conventional 50-character rule would reject
-# most of the repo this lint exists to align with. base writes a declarative
-# sentence saying what is now true ("base owns the orchestrator, the repo
-# owns its bringup"), not an imperative naming a change ("add orchestrator").
-# That is the house style, and a length cap would quietly fight it.
+# 長度刻意不檢查。base 的標題中位數 90 字、最長 153 字；傳統的 50 字上限會擋掉
+# 這支 lint 想對齊的那個 repo 的絕大多數 commit。base 寫的是陳述句，說明現在什麼
+# 成立（"base owns the orchestrator, the repo owns its bringup"），不是列舉改動的
+# 祈使句（"add orchestrator"）。那就是它的風格，加長度上限會安靜地跟它打架。
 #
-# LANGUAGE IS THIS REPO'S OWN RULE, not base's (ADR-00000028). base writes
-# English because base is read by whoever consumes the template; this repo is
-# not a base downstream and keeps its record in Chinese. So the machine-read
-# half of the line -- type and scope -- stays as base defines it, and the half
-# a human reads is written in the language the humans here use.
+# 語言是本 repo 自己的規則，不是 base 的（ADR-00000028）。base 用英文，是因為讀它
+# 的人是取用該模板的任何人；本 repo 不是 base 的 downstream，紀錄一律以中文書寫。
+# 所以這一行給機器讀的那一半——type 與 scope——維持 base 定義的形式，給人讀的那一半
+# 用這裡的人在用的語言寫。
 #
-# HISTORY IS NOT LINTED. Only origin/main..HEAD -- the commits a branch
-# proposes. Existing commits predate this rule and rewriting them would mean
-# force-pushing a branch other people have.
+# 歷史不在檢查範圍。只看 origin/main..HEAD——也就是一條分支提出的那些 commit。既有
+# commit 早於這條規則，重寫它們意味著對別人手上的分支強制推送。
 set -euo pipefail
 
 readonly TYPES="feat|fix|docs|refactor|test|chore|ci|perf"
@@ -71,10 +64,9 @@ main() {
     return 0
   fi
 
-  # --no-merges: a merge commit's message is generated, not authored. CI
-  # checks out refs/pull/N/merge on a pull request, so HEAD is a synthetic
-  # "Merge <sha> into <sha>" that no convention could ever match -- and a
-  # real merge of main into a branch is equally not the author's prose.
+  # --no-merges：合併提交的訊息是產生的，不是人寫的。CI 在 pull request 上簽出
+  # refs/pull/N/merge，所以 HEAD 是一筆合成的 "Merge <sha> into <sha>"，任何慣例
+  # 都不可能符合它——而把 main 併進分支的那種真實合併，同樣不是作者的文字。
   local -a shas=()
   mapfile -t shas < <(git rev-list --no-merges "${base}..HEAD")
   if (( ${#shas[@]} == 0 )); then
@@ -87,8 +79,8 @@ main() {
     subject="$(git log -1 --format=%s "${sha}")"
     short="${sha:0:7}"
 
-    # A squash merge appends " (#123)"; strip it before matching so a
-    # already-merged commit re-checked on a branch does not trip the rules.
+    # squash 合併會補上 " (#123)"；比對前先去掉，這樣一筆已合併的 commit 在
+    # 分支上被重新檢查時才不會被規則絆倒。
     local body="${subject% (#[0-9]*)}"
 
     if [[ ! "${body}" =~ ^(${TYPES})(\([A-Za-z0-9._/,-]+\))?:\  ]]; then
@@ -103,10 +95,9 @@ main() {
       continue
     fi
 
-    # Both periods: the rule predates ADR-00000028, when subjects were English
-    # and the only full stop was ASCII. Subjects are Chinese now, so the one a
-    # writer actually types is U+3002 -- checking only "." left the rule
-    # unenforced for the language this repo writes in.
+    # 兩種句號都擋：這條規則早於 ADR-00000028，當時主旨是英文，句號只有 ASCII
+    # 那一個。現在主旨是中文，人實際打出來的是 U+3002——只檢查 "." 等於這條規則
+    # 對本 repo 真正在寫的語言完全沒有生效。
     if [[ "${body}" == *. || "${body}" == *"。" ]]; then
       printf 'FAIL %s  %s\n' "${short}" "${subject}" >&2
       printf '     subject ends with a period (. or 。); drop it\n' >&2
@@ -114,15 +105,13 @@ main() {
       continue
     fi
 
-    # The half a human reads is Chinese; type and scope stay as base defines
-    # them because they are read by tools (ADR-00000028).
-    # Byte-level non-ASCII, not a CJK range: grep -P is GNU-only (BSD grep on
-    # macOS rejects -P outright, so the check silently mis-fired there and told
-    # a correct Chinese subject it had none), and a UTF-8 literal range like
-    # [一-鿿] is rejected by GNU grep under the image's C.UTF-8 locale
-    # ("Invalid collation character"). LC_ALL=C makes it a byte test both greps
-    # agree on: an all-English subject carries no byte above 0x7E, a Chinese
-    # one does.
+    # 給人讀的那一半是中文；type 與 scope 維持 base 定義的形式，因為那兩個是
+    # 給工具讀的（ADR-00000028）。
+    # 這裡測的是「有沒有非 ASCII 位元組」，不是 CJK 字元範圍：grep -P 是 GNU 專屬
+    # （macOS 的 BSD grep 直接拒收 -P，於是這個檢查在那裡靜默地誤判，對一個正確的
+    # 中文主旨說它沒有中文），而 [一-鿿] 這種 UTF-8 字面範圍在映像的 C.UTF-8 locale
+    # 下會被 GNU grep 拒絕（"Invalid collation character"）。LC_ALL=C 把它變成兩種
+    # grep 都同意的位元組測試：全英文的主旨沒有任何高於 0x7E 的位元組，中文的有。
     if ! printf '%s' "${body#*: }" | LC_ALL=C grep -q '[^ -~]'; then
       printf 'FAIL %s  %s\n' "${short}" "${subject}" >&2
       printf '     subject has no Chinese. This repo keeps its record in Chinese;\n' >&2

@@ -1,4 +1,4 @@
-# The config list file is TOML, not YAML or JSON
+# config 清單檔採 TOML，不用 YAML 或 JSON
 
 > 服務：不變式 2（經設計原則 N-1）
 

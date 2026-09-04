@@ -1,4 +1,4 @@
-# The ADR lint checks structure, not only numbering
+# ADR lint 檢查結構，不只檢查編號
 
 > 服務：不變式 2（絕不靜默失敗）
 
