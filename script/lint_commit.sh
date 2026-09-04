@@ -25,6 +25,12 @@
 # owns its bringup"), not an imperative naming a change ("add orchestrator").
 # That is the house style, and a length cap would quietly fight it.
 #
+# LANGUAGE IS THIS REPO'S OWN RULE, not base's (ADR-00000028). base writes
+# English because base is read by whoever consumes the template; this repo is
+# not a base downstream and keeps its record in Chinese. So the machine-read
+# half of the line -- type and scope -- stays as base defines it, and the half
+# a human reads is written in the language the humans here use.
+#
 # HISTORY IS NOT LINTED. Only origin/main..HEAD -- the commits a branch
 # proposes. Existing commits predate this rule and rewriting them would mean
 # force-pushing a branch other people have.
@@ -43,8 +49,8 @@ Rules, derived from ycpss91255-docker/base:
   fail  type must be one of: feat fix docs refactor test chore ci perf
   fail  the "type(scope): " prefix must be present and well-formed
   fail  subject must not end with a period
+  fail  subject must contain Chinese (ADR-00000028); type/scope stay English
   warn  scope should be present -- type(scope): not bare type:
-  warn  subject should start lowercase
 
 Not checked: title length, issue references. See this file's header for why.
 USAGE
@@ -98,6 +104,17 @@ main() {
       continue
     fi
 
+    # The half a human reads is Chinese; type and scope stay as base defines
+    # them because they are read by tools (ADR-00000028).
+    if ! printf '%s' "${body#*: }" | grep -qP '[\x{4e00}-\x{9fff}]'; then
+      printf 'FAIL %s  %s\n' "${short}" "${subject}" >&2
+      printf '     subject has no Chinese. This repo keeps its record in Chinese;\n' >&2
+      printf '     only the type(scope) prefix stays as base defines it.\n' >&2
+      printf '     e.g. feat(core): 清單檔載入時攔截未知欄位\n' >&2
+      failures=$(( failures + 1 ))
+      continue
+    fi
+
     if [[ ! "${body}" =~ ^(${TYPES})\( ]]; then
       printf 'WARN %s  %s\n' "${short}" "${subject}" >&2
       printf '     no scope. base carries one on 181 of its 200 most recent commits;\n' >&2
@@ -105,12 +122,6 @@ main() {
       warnings=$(( warnings + 1 ))
     fi
 
-    local after="${body#*: }"
-    if [[ "${after}" =~ ^[A-Z] ]]; then
-      printf 'WARN %s  %s\n' "${short}" "${subject}" >&2
-      printf '     subject starts uppercase; base starts lowercase on 188 of 200\n' >&2
-      warnings=$(( warnings + 1 ))
-    fi
   done
 
   printf 'lint_commit: %d commit(s) after %s -- %d failure(s), %d warning(s)\n' \
