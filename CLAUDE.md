@@ -71,9 +71,11 @@ preference -- it has produced four wrong answers here:
 | the interpreter cannot start | on 3.11 the same `io` collision (#56) is a `ModuleNotFoundError` |
 | nothing to check in workflows | actionlint existed only in CI, and it reads what no YAML parser sees |
 
-`CM_TEST_LOCAL=1` runs on the host anyway. It names every tool it had to skip,
-because **a loud skip is still a check that did not run** -- do not report such a
-run as a passing one. `CM_APT_MIRROR` overrides the image's Debian mirror.
+`CM_TEST_LOCAL=1` runs on the host anyway. It surveys the host first and names
+**every** checker that is missing, then stops. Adding `CM_LINT_ALLOW_MISSING=1`
+runs the rest and repeats what did not run — and **a run with skips is not a
+passing run**, so do not report one as green. `CM_APT_MIRROR` overrides the
+image's Debian mirror.
 
 - `ruff check src test` · `mypy --strict src/config_manager/core` · `pylint src` (10.00/10) ·
   `pytest test/pytest --cov=src/config_manager/core` (fail_under 85)

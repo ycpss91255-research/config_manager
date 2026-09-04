@@ -95,3 +95,10 @@ Versions follow the milestone ladder in the design document §8.
   bats, git). `script/test.sh` dispatches into it unless already inside, and
   CI calls the same script rather than installing anything, so a check
   cannot pass in one place and fail in the other (ADR-00000027, closes #63).
+- `CM_TEST_LOCAL=1` surveys the host up front and names every missing
+  checker at once, instead of aborting on the first. Aborting on the first
+  turned a survey into install-one-rerun-hit-the-next, and meant the run
+  never said what it had not checked — which is what the guard exists to
+  make visible. Found by verifying #63's acceptance criteria one by one
+  rather than assuming they held; CLAUDE.md had claimed the fixed behaviour
+  before it existed.
