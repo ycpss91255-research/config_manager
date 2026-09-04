@@ -36,3 +36,13 @@ def test_new_uid_is_eight_char_base36():
     base36 = string.digits + string.ascii_lowercase
     # uid 由毫秒時間戳轉 base36，長度 8 碼。
     assert len(uid) == 8 and all(c in base36 for c in uid)
+
+
+def test_new_uid_increments_within_the_same_millisecond():
+    import datetime
+
+    now = datetime.datetime(2026, 9, 4, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    first = new_uid(now)
+    second = new_uid(now, previous=first)
+    # 同一毫秒內的兩次呼叫不會相同：後者遞增 1。int(x, 36) 為獨立的 base36 解碼。
+    assert int(second, 36) == int(first, 36) + 1

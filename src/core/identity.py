@@ -30,7 +30,15 @@ def _to_base36(n: int) -> str:
     return "".join(reversed(out))
 
 
-def new_uid(now: datetime.datetime) -> str:
-    """由匯入時刻的毫秒時間戳產生 8 碼 base36 uid。"""
-    ms = int(now.timestamp() * 1000)
-    return _to_base36(ms).rjust(8, "0")
+def new_uid(now: datetime.datetime, previous: str | None = None) -> str:
+    """由匯入時刻的毫秒時間戳產生 8 碼 base36 uid。
+
+    唯一性來自時間單調遞增（backend 是唯一寫入者，無競爭）。傳入前一個 uid 時，
+    若時間值未超過它（例如同一毫秒內批次納管），則以前值加一，保證嚴格遞增。
+    """
+    value = int(now.timestamp() * 1000)
+    if previous is not None:
+        prev_value = int(previous, 36)
+        if value <= prev_value:
+            value = prev_value + 1
+    return _to_base36(value).rjust(8, "0")
