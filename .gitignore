@@ -12,6 +12,10 @@ htmlcov/
 .coverage
 # web/index.html 的覆蓋率報告，由 T11 的規格寫出、由 script/coverage_gate.sh 讀。
 .coverage-web.json
+# 驗收報表與 release notes，由 script/release.sh 寫在目前目錄下再交給 gh。
+# 它們是 release 的產物，不是 repo 的內容——權威的那一份在 release 上。
+acceptance-v*.txt
+release-notes-v*.md
 .env
 
 # 操作者自有的覆寫設定。`.local` 字尾標記的是一整族——永不提交，也永不被任何工具

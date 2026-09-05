@@ -728,6 +728,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `script/lint_checkpoints.sh` | `test/bats/unit/lint_checkpoints.bats` |
 | `script/coverage_gate.sh` | `test/bats/unit/coverage_gate.bats` |
 | `script/acceptance.sh` | `test/bats/unit/acceptance.bats` |
+| `script/release.sh` | `test/bats/unit/release.bats` |
 
 **`script/test.sh` 被觀察的不是 lint 規則，而是「缺工具不得靜默通過」**（#72）。
 它與四支 lint 同屬一個測試介面，因為觀察位置相同：命令列進去，結束碼與訊息出來。
@@ -787,6 +788,36 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 **它擋不住的那一件事**：工具只能確認「有一筆真的存在的 commit 被記在那一行」，
 **不能確認那筆 commit 真的實作了那條驗收條件**。那需要人看。寫在這裡，免得日後
 以為它被驗過了。
+
+**`script/release.sh` 被觀察的不是報表的內容，而是「哪一種 tag 發得出去」**（#150）。
+它把 `script/acceptance.sh` 的結束碼轉成一個發布判定：`v0.1.0-rcN` 這種 rc tag
+不論報表綠紅都建立 release，非 rc 的正式 `v0.1.0` 只在報表全數通過時才建得起來。
+它同屬 T19，因為觀察位置相同：命令列進去，結束碼與訊息出來——只多一項「對 `gh`
+發出了什麼呼叫」，而那一項由 `PATH` 上的假 `gh` 觀察，與 `lint_checkpoints.sh`
+同一個手法。被觀察的行為：
+
+| 行為 | 通過條件 |
+|---|---|
+| rc tag，報表未通過 | release **仍然建立**，標題與內文標示未通過，結束碼 0 |
+| rc tag，報表通過 | release 建立，標題標示通過 |
+| 非 rc tag，報表未通過 | **不建立 release**，非零結束，訊息逐條指名未通過與未涵蓋的檢查點 |
+| 非 rc tag，報表通過 | release 建立 |
+| 任何一種 tag | 報表逐條進 release notes，並以同一份內容作為附加檔案 |
+| 報表本身壞掉（對照表對不上，`acceptance.sh` 回 2） | 不建立 release，非零結束 |
+| rc 編號不是由既有 tag 推導出來的那一個 | 擋下，並指名應該用哪一個 |
+| `--next <milestone>` | 印出下一個 rc tag 名；一個 rc 都還沒有時是 `rc1` |
+| 認不得的 tag 格式 | 非零結束，不建立 release |
+| `gh` 不在 `PATH` 上 | 大聲失敗——一支建不了 release 卻回 0 的腳本就是不變式 2 的靜默通過 |
+
+**「報表未通過」與「報表壞掉」分得開，處置也不同。** 前者是「這一版還沒做完」，
+而那正是 rc 要記錄的事——**擋下紅色的 rc 等於讓 N 無法遞增**，rc 也就失去意義。
+後者是「這份報表不能信」，那時候連 rc 都不建：一個附著壞掉報表的 release，
+與一個宣稱有檢查其實沒檢查的表格是同一種東西。
+
+**規格餵的是替身報表，不是真的跑一次驗收**（`CM_RELEASE_ACCEPTANCE` 覆寫點，
+與 `CM_ACCEPTANCE_MAP` 同一個先例）。真的報表若參與這些規格，它們會在任何一條
+檢查點轉紅的那天跟著轉紅——而一組結果取決於別的規格有沒有跑的規格，測的不是
+這支腳本。
 
 **每條規則都要有一個會觸發它的案例。** 一支所有 FAIL 路徑都沒被執行過的 lint，
 它擋得住什麼是沒有證據的——規則看起來在運作，而那正是回歸風險最高的形狀。
@@ -898,6 +929,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/test.sh` | T19（缺工具不得靜默通過，#72） | 已落地 |
 | `script/coverage_gate.sh` | T19（四個門檻各自獨立、指名的只有轉紅的那一層） | 已落地 |
 | `script/acceptance.sh` | T19（未涵蓋不是通過、指到不存在的規格要失敗，#148） | 已落地 |
+| `script/release.sh` | T19（紅的 rc 仍發得出去、紅的正式 tag 發不出去，#150） | 已落地 |
 | `script/{build,run,exec,stop,prune}.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/dispatch.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/{pre,post}/*.sh`（14 支） | 無——見「刻意的空格」 | 已落地 |
