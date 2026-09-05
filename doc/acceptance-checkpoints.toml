@@ -95,10 +95,16 @@ specs = ['test/pytest/integration/test_writer.py::test_an_interrupted_write_leav
 [[milestone.checkpoint]]
 number = 5
 text = '瀏覽器可開啟並看到清單與各項狀態；同一功能可由 CLI 完成'
+# test_api.py 指的是整個檔，不是裡面那一條。CLI 與介面走同一組端點的規格是
+# test_cli_list_goes_through_the_same_endpoint_as_the_page，但它單獨執行時是紅的：
+# 它讀的清單由同檔前面的 test_configs_carries_the_state_of_every_entry 寫進
+# session 範圍的 repo fixture。那是那份規格的順序相依，不是產品的行為——把它
+# 單獨列在這裡會得到一個假紅燈，而一份會亂喊狼來了的報表，與一份會說謊的報表
+# 一樣沒有人會信。整個檔是它真正的執行單位。順序相依本身另案處理。
 specs = [
   'test/pytest/system/test_web.py::test_the_list_appears_once_an_identity_has_been_entered',
   'test/pytest/system/test_web.py::test_every_entry_carries_the_state_the_backend_reported',
-  'test/pytest/system/test_api.py::test_cli_list_goes_through_the_same_endpoint_as_the_page',
+  'test/pytest/system/test_api.py',
   'test/pytest/unit/test_cli.py::test_list_shows_each_state_in_the_words_the_page_uses',
 ]
 
