@@ -8,7 +8,6 @@ import pytest
 from config_manager.core.config_list import dump, load
 from config_manager.core.models import Permissions
 from config_manager.core.errors import (
-    DumpMismatch,
     DuplicateTarget,
     DuplicateUid,
     InvalidFormat,
@@ -547,39 +546,59 @@ def test_an_optional_field_that_gains_a_value_appears_in_the_list_file():
     assert dump(config_list, _EDIT_TEXT) == expected
 
 
-def test_dump_refuses_a_removed_entry():
-    # 從 model 移除既有條目後寫回，若靜默保留原檔即丟失意圖 → 應大聲失敗。
-    original = """\
-list_version = 1
-
-[defaults.permissions]
-owner = "root"
-group = "root"
-mode = "0644"
-
-[[files]]
-uid      = "mfz3k9q1"
-name     = "navigation-params"
-hostname = "amr01"
-source   = "files/a.yaml"
-target   = "/opt/a.yaml"
-format   = "yaml"
-groups   = []
-
+# 中間那一筆的完整區塊，含它自己的前導註解與後面那個空行。移除它之後，
+# 這一整塊要消失，而前後兩筆各自的註解要留在原位、不被挪用。
+_DOCKER_ENTRY_BLOCK = """\
+# Docker daemon 設定
 [[files]]
 uid      = "mfz3k9r7"
 name     = "docker-daemon"
 hostname = "amr01"
-source   = "files/b.json"
-target   = "/etc/b.json"
+source   = "files/system/daemon.json"
+target   = "/etc/docker/daemon.json"
 format   = "json"
-groups   = []
+groups   = ["system"]
+permissions = { owner = "root", group = "root", mode = "0644" }
+
 """
 
-    config_list = load(original)
-    del config_list.files[1]  # 移除既有條目
-    with pytest.raises(DumpMismatch):
-        dump(config_list, original)
+
+def test_removing_an_entry_takes_its_comment_and_leaves_the_others_verbatim():
+    # 移除既有條目後寫回：該條目連同它的註解一起消失，其餘條目的註解、順序、
+    # 引號樣式逐位元組不變——tomlkit 把註解掛在前一筆，所以「下一筆繼承了別人
+    # 的註解」是這裡真正會發生的靜默損壞。
+    expected = _EDIT_TEXT.replace(_DOCKER_ENTRY_BLOCK, "")
+
+    config_list = load(_EDIT_TEXT)
+    del config_list.files[1]
+
+    assert dump(config_list, _EDIT_TEXT) == expected
+
+
+def test_removing_the_first_entry_also_takes_the_comment_above_it():
+    # 第一筆的前導註解不在 AOT 裡，而在它前面那個 table 的尾端。留著它，
+    # 第二筆就會頂著第一筆的註解——與上一條是同一種損壞的另一個位置。
+    expected = _EDIT_TEXT.replace(
+        """\
+# 導航參數，勿手改
+[[files]]
+uid      = "mfz3k9q1"
+name     = 'navigation-params'   # 單引號
+hostname = "amr01"
+source   = "files/amr01/nav2_params.yaml"
+target   = "/opt/robot/config/nav2_params.yaml"
+format   = "yaml"
+groups   = ["navigation"]
+schema   = ".schemas/nav2.json"
+
+""",
+        "",
+    )
+
+    config_list = load(_EDIT_TEXT)
+    del config_list.files[0]
+
+    assert dump(config_list, _EDIT_TEXT) == expected
 
 
 def test_appending_an_entry_keeps_its_optional_fields():

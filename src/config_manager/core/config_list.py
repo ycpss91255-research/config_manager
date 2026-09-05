@@ -8,9 +8,9 @@ from pathlib import PurePosixPath
 from collections.abc import Iterable
 
 import tomlkit
+from tomlkit import items
 
 from config_manager.core.errors import (
-    DumpMismatch,
     DuplicateTarget,
     DuplicateUid,
     InvalidFormat,
@@ -18,6 +18,9 @@ from config_manager.core.errors import (
     UnknownField,
 )
 from config_manager.core.models import ConfigList, FileEntry, Permissions
+
+# tomlkit 容器 body 的一項：沒有鍵的是空白與註解，有鍵的是真正的值。
+_BodyItem = tuple[items.Key | None, items.Item]
 
 # 被管理 config 的允許格式（T6 亦處理這些）。raw = 不解析、只做版控。
 ALLOWED_FORMATS = ("yaml", "json", "toml", "ini", "raw")
@@ -67,13 +70,18 @@ def dump(config_list: ConfigList, original: str) -> str:
             _update_table(doc_table, entry)
 
     model_uids = {entry.uid for entry in config_list.files}
-    removed = [uid for uid in doc_by_uid if uid not in model_uids]
+    removed = [
+        index
+        for index, table in enumerate(files.body)
+        if table.get("uid") not in model_uids
+    ]
     if removed:
-        raise DumpMismatch(
-            f"dump 尚不支援移除既有條目：uid {removed} 已從清單移除"
-            "（目前只支援未改動與新增）。"
-            "下一步：把這幾筆放回模型；解除納管要走 unmanage，不是從清單刪掉"
-        )
+        # 搬前導註解要排在新增與改動之後：註解一旦進了 trivia.indent，tomlkit 會
+        # 把註解文字裡的空白當成縮排，套到後續新增的鍵上（`# 相機驅動` 的那個
+        # 空格會變成新鍵前面的一格）。只在真的要刪的時候搬，順序就不會咬到。
+        _adopt_leading_trivia(doc, files)
+        for index in reversed(removed):
+            del files[index]
 
     return tomlkit.dumps(doc)
 
@@ -117,6 +125,72 @@ def _check_unknown_fields(doc: "tomlkit.TOMLDocument", text: str) -> None:
             eperm = entry.get("permissions")
             if eperm is not None and hasattr(eperm, "keys"):
                 _reject_unknown(eperm.keys(), _PERM_KEYS, text, "條目的 permissions")
+
+
+def _take_trailing_trivia(body: list[_BodyItem], stop: int) -> str:
+    """取走 body[:stop] 尾端那段空白與註解，回傳它們的原文。
+
+    只動尾端，所以容器內部「鍵 → 位置」的對照不受影響——被搬走的項目本來就
+    沒有鍵，排在它們前面的鍵位置也沒有變。
+    """
+    start = stop
+    while start > 0 and body[start - 1][0] is None:
+        start -= 1
+    run = body[start:stop]
+    del body[start:stop]
+    return "".join(item.as_string() for _, item in run)
+
+
+def _body_before_files(doc: tomlkit.TOMLDocument) -> tuple[list[_BodyItem], int]:
+    """找出 files 這個 AOT 前方那段空白與註解所在的容器 body 與位置。
+
+    tomlkit 把「`[[files]]` 上方那幾行」存在**前一個容器**的尾端。第一筆條目的
+    前導註解因此不在 AOT 裡，而在前一個 table 的最深處——`[defaults.permissions]`
+    的尾端就是這個 repo 的清單檔實際長的樣子。
+    """
+    body: list[_BodyItem] = doc.body
+    index = next(
+        position
+        for position, (key, _) in enumerate(body)
+        if key is not None and key.key == "files"
+    )
+    while index > 0:
+        previous = body[index - 1][1]
+        if not isinstance(previous, items.Table):
+            break
+        body = previous.value.body
+        index = len(body)
+    return body, index
+
+
+def _adopt_leading_trivia(doc: tomlkit.TOMLDocument, files: items.AoT) -> None:
+    """把每一筆條目上方的空白與註解，搬到那一筆條目自己身上。
+
+    tomlkit 解析後，一筆條目的前導註解掛在**前一筆**的尾端。照那個形狀直接刪掉
+    一筆，被刪的那筆會把自己的註解留給下一筆，而下一筆的註解跟著它一起消失
+    ——輸出裡「那一筆不見了」成立，「其餘條目原樣保留」卻不成立，兩件事在這裡
+    分道揚鑣。搬完之後每一筆自帶前導註解，刪除就只是刪除。
+
+    搬移本身不改變輸出的任何一個位元組，但**只在真的要刪的時候呼叫**：理由寫在
+    `dump` 裡那一段（tomlkit 會把註解文字裡的空白當成後續新增鍵的縮排）。
+    """
+    tables = list(files.body)
+    if not tables:
+        return
+
+    body, index = _body_before_files(doc)
+    _prepend_indent(tables[0], _take_trailing_trivia(body, index))
+    for previous, current in zip(tables, tables[1:], strict=False):
+        previous_body: list[_BodyItem] = previous.value.body
+        _prepend_indent(
+            current, _take_trailing_trivia(previous_body, len(previous_body))
+        )
+
+
+def _prepend_indent(table: items.Table, trivia: str) -> None:
+    """把一段原文接到 table 的前導縮排前面（AOT 的表頭就從這裡渲染）。"""
+    if trivia:
+        table.trivia.indent = trivia + table.trivia.indent
 
 
 def _index_by_uid(files: "tomlkit.items.AoT") -> dict[str, "tomlkit.items.Table"]:
@@ -170,6 +244,21 @@ def _entry_to_table(entry: FileEntry) -> "tomlkit.items.Table":
     return table
 
 
+def _update_permissions(table: dict[str, object], permissions: Permissions) -> None:
+    """逐子鍵更新既有的 permissions，只寫變了的那一個。
+
+    整個換掉會把 `{ owner = …, mode = "0644" }` 重排成 tomlkit 的預設間距，
+    未改的兩個子鍵跟著失去原樣——改一個 mode 不該動到另外兩個。
+    """
+    for key, value in (
+        ("owner", permissions.owner),
+        ("group", permissions.group),
+        ("mode", permissions.mode),
+    ):
+        if table.get(key) != value:
+            table[key] = value
+
+
 def _update_table(table: "tomlkit.items.Table", entry: FileEntry) -> None:
     """把改動就地套用在既有條目上，只寫真的變了的鍵。
 
@@ -181,13 +270,7 @@ def _update_table(table: "tomlkit.items.Table", entry: FileEntry) -> None:
     for key, value in values:
         current = table.get(key)
         if isinstance(value, Permissions) and isinstance(current, dict):
-            for field, field_value in (
-                ("owner", value.owner),
-                ("group", value.group),
-                ("mode", value.mode),
-            ):
-                if current.get(field) != field_value:
-                    current[field] = field_value
+            _update_permissions(current, value)
         elif current != value:
             table[key] = _toml_value(value)
 
