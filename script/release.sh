@@ -21,6 +21,17 @@
 # 後者連 rc 都不建——一個附著壞掉報表的 release，與一份手寫的「已通過」表格一樣
 # 沒有證據力。兩者混成同一種處置，就分不出「還沒做完」與「沒有人在驗」。
 #
+# ## 正式 tag 的閘門
+#
+# 非 rc 的 vX.Y.Z **只有報表全數通過才建得起來**。這一條由這裡擋，不靠人記得
+# ——只寫在文件裡的規範等同不存在（§0.4）。擋下時逐條指名沒過的檢查點：說不出是
+# 哪一條的閘門，修的時候只能靠猜。
+#
+# 這裡沒有去查「有沒有一個綠的 rc」，而是**在正式 tag 指的那個 commit 上重跑一次
+# 報表**。一個 rc 的綠燈是關於那個 rc 的 commit 的，而正式 tag 可能指向別的地方：
+# 查「有沒有綠的 rc」擋不住「rc2 是綠的，之後又進了三個 commit 才打 v0.1.0」
+# ——而那正是這道閘門要擋的形狀。
+#
 # ## rc 的編號由既有 tag 推導
 #
 # 人工指定會撞號或跳號。`--next` 印出下一個編號；而**推上來的 rc tag 如果不是推導
@@ -31,8 +42,8 @@
 # ## 為什麼 gh 在容器外
 #
 # 檢查本身在容器裡：這支腳本呼叫 script/acceptance.sh，那支自己轉進映像（ADR-00000027）。
-# 這支只做容器裡做不到的事——呼叫 gh——與 CI 的 checkpoints job 同一種形狀：跑在映像
-# 之外，因為它只需要 gh 與 git，而容器裡沒有 token。
+# 這支只做兩件容器裡做不到的事——讀 git tag、呼叫 gh——與 CI 的 checkpoints job 同一種
+# 形狀：跑在映像之外，因為它只需要 gh 與 git，而容器裡沒有 token。
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -55,12 +66,14 @@ Usage: script/release.sh <tag>
 在 <tag> 指的這份程式碼上執行 script/acceptance.sh，並以那份報表建立 GitHub release。
 
   rc tag    不論報表綠紅都建立 release，紅綠寫在標題上
+  正式 tag  只有報表全數通過才建立；未通過時擋下，並指名是哪幾條檢查點
   兩者皆是  報表本身壞掉（對照表對不上）時不建立 release
 
   --next <milestone>  印出下一個 rc tag 名，由既有 tag 推導。編號不由人工指定：
                       人工指定會撞號或跳號，而推上來的 rc 若不是這個名字會被擋下
 
   exit 0   release 建好了（或 --next 印完了）
+  exit 1   正式 tag 的報表未通過，release 沒有建立
   exit 2   用法錯誤、tag 格式認不得、rc 編號跳號、缺 gh，或報表本身壞掉
 
   CM_RELEASE_ACCEPTANCE  改用這個指令產生報表（供 test/bats/unit/release.bats 使用）
@@ -194,6 +207,22 @@ _release() {
   local verdict='通過'
   if ((code != 0)); then
     verdict='未通過'
+  fi
+
+  local -a offenders=()
+  mapfile -t offenders < <(printf '%s\n' "${body}" |
+    grep -E '檢查點 [0-9]+[[:space:]]+(未通過|未涵蓋)' || true)
+
+  # 正式 tag 的閘門。rc 走不到這裡：它的紅燈是它要記錄的東西。
+  if [[ -z "${RC}" && "${verdict}" == '未通過' ]]; then
+    printf 'release: %s 的驗收報表未通過，正式 tag %s 不建立 release\n' "${MILESTONE}" "${tag}" >&2
+    if ((${#offenders[@]} > 0)); then
+      printf 'release: 沒過的是這幾條檢查點：\n' >&2
+      printf '%s\n' "${offenders[@]}" >&2
+    fi
+    printf 'release: 下一步：修好上面那幾條，推一個 %s 確認報表轉綠，再打 %s\n' \
+      "$(_next_rc_tag "${MILESTONE}")" "${tag}" >&2
+    return 1
   fi
 
   # notes 是給人在頁面上讀的，附加檔案是給人下載下來比對的。兩者同一份內容，
