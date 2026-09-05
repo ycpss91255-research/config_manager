@@ -144,6 +144,26 @@ gh_was_called() {
   grep -qx -- --prerelease "${GH_CALLS}"
 }
 
+
+# ── 報表進 release notes ──────────────────────────────────────────────────
+
+@test "通過與否寫在 release notes 的第一行" {
+  stub_red
+
+  run "${SCRIPT}" v0.1.0-rc1
+
+  [[ "$(head -n 1 "$(gh_value_after --notes-file)")" == *"未通過"* ]]
+}
+
+@test "報表的逐條判定進 release notes" {
+  # 只寫一句「未通過」的 release notes，讀者還是得自己去別的地方找是哪一條。
+  stub_red
+
+  run "${SCRIPT}" v0.1.0-rc1
+
+  grep -q "檢查點 3  未通過" "$(gh_value_after --notes-file)"
+}
+
 # ── 報表壞掉不是未通過 ────────────────────────────────────────────────────
 
 @test "對照表壞掉時連 rc 都不建立 release" {

@@ -52,6 +52,9 @@ Usage: script/release.sh <tag>
   exit 2   用法錯誤、tag 格式認不得、缺 gh，或報表本身壞掉
 
   CM_RELEASE_ACCEPTANCE  改用這個指令產生報表（供 test/bats/unit/release.bats 使用）
+
+報表的逐條判定進 release notes，判定寫在第一行。notes 寫在目前目錄下的
+release-notes-<tag>.md。
 USAGE
 }
 
@@ -82,11 +85,34 @@ _require_gh() {
   return 2
 }
 
+_write_notes() {
+  local notes="$1" verdict="$2" tag="$3" milestone="$4" commit="$5" body="$6"
+
+  {
+    # 第一行就是判定。一個要往下捲三頁才看得出紅綠的 release，與一個沒有標示的
+    # release 沒有差別。
+    printf '## 驗收：%s %s\n\n' "${milestone}" "${verdict}"
+    printf '%s\n\n' "$(printf '%s\n' "${body}" | grep -F '未涵蓋' | tail -n 1)"
+    printf '這份報表由 CI 在 tag `%s` 指的 commit `%s` 上執行 `script/acceptance.sh %s`\n' \
+      "${tag}" "${commit}" "${milestone}"
+    printf '產生，不是任何人手動貼上來的。\n\n'
+    printf '複驗：`git checkout %s && ./script/acceptance.sh %s`\n\n' "${tag}" "${milestone}"
+    # 逐條判定原樣進 notes。只寫一句「未通過」的 release notes，讀者還是得自己
+    # 去別的地方找是哪一條——而那正是這份報表要取代的東西。
+    printf '```text\n%s\n```\n' "${body}"
+  } >"${notes}"
+}
+
 _release() {
   local tag="$1"
   local MILESTONE RC
   _parse_tag "${tag}"
   _require_gh
+
+  # 報表要說得出它是在哪一份程式碼上跑出來的，否則它與一份本機跑出來的輸出沒有
+  # 差別——而那正是這份報表要取代的東西。
+  local commit
+  commit="$(git rev-parse --short HEAD)"
 
   local body code=0
   body="$("${ACCEPTANCE}" "${MILESTONE}" 2>&1)" || code=$?
@@ -107,7 +133,12 @@ _release() {
     verdict='未通過'
   fi
 
-  local -a create=(gh release create "${tag}" --title "${tag} — 驗收${verdict}")
+  local notes="${PWD}/release-notes-${tag}.md"
+  _write_notes "${notes}" "${verdict}" "${tag}" "${MILESTONE}" "${commit}" "${body}"
+
+  local -a create=(gh release create "${tag}"
+    --title "${tag} — 驗收${verdict}"
+    --notes-file "${notes}")
   if [[ -n "${RC}" ]]; then
     # rc 不是正式版本。標成正式版本的 rc 會出現在「最新版本」上。
     create+=(--prerelease)
