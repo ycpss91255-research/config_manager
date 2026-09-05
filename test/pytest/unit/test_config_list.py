@@ -452,30 +452,63 @@ groups   = []
     assert load(text).warnings == []
 
 
-def test_dump_refuses_a_diverged_existing_entry():
-    # dump 只支援未改動與新增；改了既有條目卻寫回會靜默丟失 → 應大聲失敗（不變式 2）。
-    original = """\
+# 三筆條目、各自帶前導註解、混用引號樣式與行內註解，供改動與移除的規格使用。
+# 這些規格斷言的是**整份輸出逐位元組相同**——只斷言「改的那一筆對了」擋不住
+# 其餘部分被重寫，而原樣保留正是這個系統存在的理由（ADR-00000029）。
+_EDIT_TEXT = """\
 list_version = 1
 
 [defaults.permissions]
 owner = "root"
 group = "root"
-mode = "0644"
+mode = "0644"          # 字串，避免被解析為整數
 
+# 導航參數，勿手改
 [[files]]
 uid      = "mfz3k9q1"
-name     = "navigation-params"
+name     = 'navigation-params'   # 單引號
 hostname = "amr01"
-source   = "files/a.yaml"
-target   = "/opt/a.yaml"
+source   = "files/amr01/nav2_params.yaml"
+target   = "/opt/robot/config/nav2_params.yaml"
 format   = "yaml"
-groups   = []
+groups   = ["navigation"]
+schema   = ".schemas/nav2.json"
+
+# Docker daemon 設定
+[[files]]
+uid      = "mfz3k9r7"
+name     = "docker-daemon"
+hostname = "amr01"
+source   = "files/system/daemon.json"
+target   = "/etc/docker/daemon.json"
+format   = "json"
+groups   = ["system"]
+permissions = { owner = "root", group = "root", mode = "0644" }
+
+# 相機驅動
+[[files]]
+uid      = "mfz3k9z9"
+name     = "camera-driver"
+hostname = "amr01"
+source   = "files/amr01/camera.yaml"
+target   = "/opt/robot/config/camera.yaml"
+format   = "yaml"
+groups   = ["sensor"]
 """
 
-    config_list = load(original)
-    config_list.files[0].target = "/opt/CHANGED.yaml"  # 改動既有條目
-    with pytest.raises(DumpMismatch):
-        dump(config_list, original)
+
+def test_editing_an_entry_leaves_every_other_entry_byte_identical():
+    # 改動既有條目後寫回：該條目更新，其餘條目的註解、順序、引號樣式逐位元組不變
+    # （PDF §8.2 v0.1.0 檢查點第三條）。期望值以獨立字面量寫下。
+    expected = _EDIT_TEXT.replace(
+        'target   = "/etc/docker/daemon.json"',
+        'target   = "/etc/docker/daemon.json.new"',
+    )
+
+    config_list = load(_EDIT_TEXT)
+    config_list.files[1].target = "/etc/docker/daemon.json.new"
+
+    assert dump(config_list, _EDIT_TEXT) == expected
 
 
 def test_dump_refuses_a_removed_entry():

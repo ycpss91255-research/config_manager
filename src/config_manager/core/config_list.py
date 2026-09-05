@@ -17,7 +17,7 @@ from config_manager.core.errors import (
     TargetEscape,
     UnknownField,
 )
-from config_manager.core.models import ConfigList, FileEntry
+from config_manager.core.models import ConfigList, FileEntry, Permissions
 
 # 被管理 config 的允許格式（T6 亦處理這些）。raw = 不解析、只做版控。
 ALLOWED_FORMATS = ("yaml", "json", "toml", "ini", "raw")
@@ -30,6 +30,10 @@ _ENTRY_KEYS = {
     "uid", "name", "hostname", "source", "target", "format", "groups",
     "description", "schema", "requires_privilege", "permissions",
 }
+# 條目的選填欄位（清單檔鍵名）。改動後不再帶值的，那一鍵要從清單檔消失。
+_OPTIONAL_ENTRY_KEYS = frozenset(
+    {"description", "schema", "requires_privilege", "permissions"}
+)
 
 
 def load(text: str) -> ConfigList:
@@ -45,7 +49,8 @@ def dump(config_list: ConfigList, original: str) -> str:
     """把清單檔寫回文字，保留原樣（註解、順序、引號樣式）。
 
     原樣資訊為原始清單檔文字；以 tomlkit 重新解析後在其上套用變更，
-    未觸動的條目逐位元組保留。目前支援的變更：新增條目（附加於既有之後）。
+    未觸動的部分逐位元組保留。三種變更皆支援：新增（附加於既有之後）、
+    改動（就地更新該條目，只寫真的變了的鍵）、移除。
     """
     doc = tomlkit.parse(original)
     files = doc.get("files")
@@ -53,17 +58,13 @@ def dump(config_list: ConfigList, original: str) -> str:
         files = tomlkit.aot()
         doc["files"] = files
 
-    doc_by_uid = {table.get("uid"): table for table in files}
+    doc_by_uid = _index_by_uid(files)
     for entry in config_list.files:
         doc_table = doc_by_uid.get(entry.uid)
         if doc_table is None:
             files.append(_entry_to_table(entry))
-        elif FileEntry.model_validate(doc_table.unwrap()) != entry:
-            raise DumpMismatch(
-                f"dump 尚不支援改動既有條目：{entry.ref} 與原始清單檔內容不符"
-                "（目前只支援未改動與新增）。"
-                "下一步：先還原該條目的內容，改動要等 round-trip 編輯把手落地"
-            )
+        else:
+            _update_table(doc_table, entry)
 
     model_uids = {entry.uid for entry in config_list.files}
     removed = [uid for uid in doc_by_uid if uid not in model_uids]
@@ -118,29 +119,82 @@ def _check_unknown_fields(doc: "tomlkit.TOMLDocument", text: str) -> None:
                 _reject_unknown(eperm.keys(), _PERM_KEYS, text, "條目的 permissions")
 
 
-def _entry_to_table(entry: FileEntry) -> "tomlkit.items.Table":
-    """把一筆新條目渲染為 tomlkit 表（既有條目不經此路徑，故不影響其原樣）。"""
-    table = tomlkit.table()
-    table["uid"] = entry.uid
-    table["name"] = entry.name
-    table["hostname"] = entry.hostname
-    table["source"] = entry.source
-    table["target"] = entry.target
-    table["format"] = entry.format
-    table["groups"] = entry.groups
+def _index_by_uid(files: "tomlkit.items.AoT") -> dict[str, "tomlkit.items.Table"]:
+    """以 uid 為索引指向原樣資訊裡的每一筆條目。uid 永不變（ADR-00000012）。"""
+    return {table.get("uid"): table for table in files}
+
+
+def _entry_values(entry: FileEntry) -> list[tuple[str, object]]:
+    """一筆條目要出現在清單檔裡的鍵與值，依 PDF §4.3 的欄位順序。
+
+    不帶值的選填欄位不在其中。新增（`_entry_to_table`）與改動（`_update_table`）
+    共用這一份對應，兩條路徑才不會各自漂移——選填欄位只寫在其中一邊，正是
+    「原本有、改後沒有」與反過來的情況被靜默丟掉的來源。
+    """
+    values: list[tuple[str, object]] = [
+        ("uid", entry.uid),
+        ("name", entry.name),
+        ("hostname", entry.hostname),
+        ("source", entry.source),
+        ("target", entry.target),
+        ("format", entry.format),
+        ("groups", entry.groups),
+    ]
     if entry.description is not None:
-        table["description"] = entry.description
+        values.append(("description", entry.description))
     if entry.schema_path is not None:
-        table["schema"] = entry.schema_path  # 清單檔的鍵名是 schema
+        values.append(("schema", entry.schema_path))  # 清單檔的鍵名是 schema
     if entry.requires_privilege:
-        table["requires_privilege"] = entry.requires_privilege
+        values.append(("requires_privilege", entry.requires_privilege))
     if entry.permissions is not None:
-        permissions = tomlkit.inline_table()
-        permissions["owner"] = entry.permissions.owner
-        permissions["group"] = entry.permissions.group
-        permissions["mode"] = entry.permissions.mode
-        table["permissions"] = permissions
+        values.append(("permissions", entry.permissions))
+    return values
+
+
+def _toml_value(value: object) -> object:
+    """把模型的值換成寫進清單檔的形狀。permissions 是 inline table。"""
+    if isinstance(value, Permissions):
+        table = tomlkit.inline_table()
+        table["owner"] = value.owner
+        table["group"] = value.group
+        table["mode"] = value.mode
+        return table
+    return value
+
+
+def _entry_to_table(entry: FileEntry) -> "tomlkit.items.Table":
+    """把一筆新條目渲染為 tomlkit 表（既有條目走 _update_table，原樣不受影響）。"""
+    table = tomlkit.table()
+    for key, value in _entry_values(entry):
+        table[key] = _toml_value(value)
     return table
+
+
+def _update_table(table: "tomlkit.items.Table", entry: FileEntry) -> None:
+    """把改動就地套用在既有條目上，只寫真的變了的鍵。
+
+    只寫變了的鍵，未改的欄位才留得住原本的引號樣式與行內註解——賦值會重建那個
+    值，原樣資訊隨之消失。permissions 逐子鍵比對，理由相同：改一個 mode 不該把
+    整個 inline table 重排一次。
+    """
+    values = _entry_values(entry)
+    for key, value in values:
+        current = table.get(key)
+        if isinstance(value, Permissions) and isinstance(current, dict):
+            for field, field_value in (
+                ("owner", value.owner),
+                ("group", value.group),
+                ("mode", value.mode),
+            ):
+                if current.get(field) != field_value:
+                    current[field] = field_value
+        elif current != value:
+            table[key] = _toml_value(value)
+
+    written = {key for key, _ in values}
+    for key in _OPTIONAL_ENTRY_KEYS - written:
+        if key in table:
+            del table[key]
 
 
 def _check_integrity(config_list: ConfigList) -> None:
