@@ -164,6 +164,15 @@ gh_was_called() {
   grep -q "檢查點 3  未通過" "$(gh_value_after --notes-file)"
 }
 
+@test "報表同時作為附加檔案交給 gh" {
+  # notes 會被編輯，附加檔案不會——要拿去比對的是後者。
+  stub_green
+
+  run "${SCRIPT}" v0.1.0-rc1
+
+  grep -q "檢查點 1  通過" "$(grep -F "acceptance-v0.1.0-rc1.txt" "${GH_CALLS}")"
+}
+
 # ── 報表壞掉不是未通過 ────────────────────────────────────────────────────
 
 @test "對照表壞掉時連 rc 都不建立 release" {

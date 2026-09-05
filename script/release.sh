@@ -53,8 +53,8 @@ Usage: script/release.sh <tag>
 
   CM_RELEASE_ACCEPTANCE  改用這個指令產生報表（供 test/bats/unit/release.bats 使用）
 
-報表的逐條判定進 release notes，判定寫在第一行。notes 寫在目前目錄下的
-release-notes-<tag>.md。
+報表的逐條判定進 release notes，判定寫在第一行；同一份內容也作為附加檔案。
+報表寫在目前目錄下的 acceptance-<tag>.txt，notes 寫在 release-notes-<tag>.md。
 USAGE
 }
 
@@ -85,6 +85,18 @@ _require_gh() {
   return 2
 }
 
+# 報表檔的表頭。附加檔案會被下載下來單獨閱讀，那時候 release 頁面上的脈絡都不在了
+# ——它得自己說得出是哪個 tag、哪個 commit、怎麼重跑。
+_report_header() {
+  local tag="$1" milestone="$2" commit="$3"
+  printf '驗收報表：%s\n' "${tag}"
+  printf 'commit：%s\n' "${commit}"
+  printf '產生時間：%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  printf '指令：script/acceptance.sh %s\n' "${milestone}"
+  printf '複驗：git checkout %s && ./script/acceptance.sh %s\n' "${tag}" "${milestone}"
+  printf '\n'
+}
+
 _write_notes() {
   local notes="$1" verdict="$2" tag="$3" milestone="$4" commit="$5" body="$6"
 
@@ -95,7 +107,7 @@ _write_notes() {
     printf '%s\n\n' "$(printf '%s\n' "${body}" | grep -F '未涵蓋' | tail -n 1)"
     printf '這份報表由 CI 在 tag `%s` 指的 commit `%s` 上執行 `script/acceptance.sh %s`\n' \
       "${tag}" "${commit}" "${milestone}"
-    printf '產生，不是任何人手動貼上來的。\n\n'
+    printf '產生，不是任何人手動貼上來的。同一份內容也作為附加檔案。\n\n'
     printf '複驗：`git checkout %s && ./script/acceptance.sh %s`\n\n' "${tag}" "${milestone}"
     # 逐條判定原樣進 notes。只寫一句「未通過」的 release notes，讀者還是得自己
     # 去別的地方找是哪一條——而那正是這份報表要取代的東西。
@@ -133,6 +145,14 @@ _release() {
     verdict='未通過'
   fi
 
+  # notes 是給人在頁面上讀的，附加檔案是給人下載下來比對的。兩者同一份內容，
+  # 但被編輯的只會是前者——要拿去比對的是後者。
+  local report="${PWD}/acceptance-${tag}.txt"
+  {
+    _report_header "${tag}" "${MILESTONE}" "${commit}"
+    printf '%s\n' "${body}"
+  } >"${report}"
+
   local notes="${PWD}/release-notes-${tag}.md"
   _write_notes "${notes}" "${verdict}" "${tag}" "${MILESTONE}" "${commit}" "${body}"
 
@@ -143,9 +163,10 @@ _release() {
     # rc 不是正式版本。標成正式版本的 rc 會出現在「最新版本」上。
     create+=(--prerelease)
   fi
+  create+=("${report}")
 
   "${create[@]}"
-  printf 'release: 已建立 %s（驗收%s）\n' "${tag}" "${verdict}"
+  printf 'release: 已建立 %s（驗收%s），報表 %s\n' "${tag}" "${verdict}" "${report}"
 }
 
 main() {
