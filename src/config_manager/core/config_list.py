@@ -127,10 +127,10 @@ def _check_unknown_fields(doc: "tomlkit.TOMLDocument", text: str) -> None:
                 _reject_unknown(eperm.keys(), _PERM_KEYS, text, "條目的 permissions")
 
 
-def _take_trailing_trivia(body: list[_BodyItem], stop: int) -> str:
-    """取走 body[:stop] 尾端那段空白與註解，回傳它們的原文。
+def _take_trailing_items(body: list[_BodyItem], stop: int) -> list[_BodyItem]:
+    """取走 body[:stop] 尾端那段空白與註解，回傳被取走的項目。
 
-    只動尾端，所以容器內部「鍵 → 位置」的對照不受影響——被搬走的項目本來就
+    只動尾端，所以容器內部「鍵 → 位置」的對照不受影響——被取走的項目本來就
     沒有鍵，排在它們前面的鍵位置也沒有變。
     """
     start = stop
@@ -138,7 +138,12 @@ def _take_trailing_trivia(body: list[_BodyItem], stop: int) -> str:
         start -= 1
     run = body[start:stop]
     del body[start:stop]
-    return "".join(item.as_string() for _, item in run)
+    return run
+
+
+def _take_trailing_trivia(body: list[_BodyItem], stop: int) -> str:
+    """同上，但回傳被取走那段的原文。"""
+    return "".join(item.as_string() for _, item in _take_trailing_items(body, stop))
 
 
 def _body_before_files(doc: tomlkit.TOMLDocument) -> tuple[list[_BodyItem], int]:
@@ -266,6 +271,12 @@ def _update_table(table: "tomlkit.items.Table", entry: FileEntry) -> None:
     值，原樣資訊隨之消失。permissions 逐子鍵比對，理由相同：改一個 mode 不該把
     整個 inline table 重排一次。
     """
+    # 條目尾端那段空白與註解，渲染出來是**下一筆條目**的前導註解。tomlkit 的
+    # append 一律加在容器最尾端，所以先把它取下來——否則新加的選填欄位會落到
+    # 下一筆的註解下方，而那一行看起來仍然「有寫出來」。
+    body: list[_BodyItem] = table.value.body
+    trailing = _take_trailing_items(body, len(body))
+
     values = _entry_values(entry)
     for key, value in values:
         current = table.get(key)
@@ -278,6 +289,8 @@ def _update_table(table: "tomlkit.items.Table", entry: FileEntry) -> None:
     for key in _OPTIONAL_ENTRY_KEYS - written:
         if key in table:
             del table[key]
+
+    body.extend(trailing)
 
 
 def _check_integrity(config_list: ConfigList) -> None:

@@ -535,13 +535,16 @@ def test_an_optional_field_that_loses_its_value_disappears_from_the_list_file():
 
 def test_an_optional_field_that_gains_a_value_appears_in_the_list_file():
     # 反過來的方向：由無變有時那一鍵要出現。兩個方向都會靜默丟東西（不變式 2）。
+    # 挑中間那一筆，因為它後面跟著下一筆的前導註解——新鍵要落在該條目的最後
+    # 一個值後面，不是落在那段註解下方。
     expected = _EDIT_TEXT.replace(
-        'groups   = ["sensor"]\n',
-        'groups   = ["sensor"]\nrequires_privilege = true\n',
+        'permissions = { owner = "root", group = "root", mode = "0644" }\n',
+        'permissions = { owner = "root", group = "root", mode = "0644" }\n'
+        "requires_privilege = true\n",
     )
 
     config_list = load(_EDIT_TEXT)
-    config_list.files[2].requires_privilege = True
+    config_list.files[1].requires_privilege = True
 
     assert dump(config_list, _EDIT_TEXT) == expected
 
@@ -597,6 +600,56 @@ schema   = ".schemas/nav2.json"
 
     config_list = load(_EDIT_TEXT)
     del config_list.files[0]
+
+    assert dump(config_list, _EDIT_TEXT) == expected
+
+
+# 附加在既有之後的新條目。欄位順序依 PDF §4.3；新條目沒有原樣可保留，
+# 所以它是唯一由 dump 自己排版的一塊。前面沒有空行——附加是對 AOT 的一次
+# list append，本來就是這樣（#149 之前即如此，這裡只是把它寫下來）。
+_APPENDED_ENTRY_BLOCK = """\
+[[files]]
+uid = "mfz3maa1"
+name = "imu-driver"
+hostname = "amr01"
+source = "files/amr01/imu.yaml"
+target = "/opt/robot/config/imu.yaml"
+format = "yaml"
+groups = ["sensor"]
+"""
+
+
+def test_adding_editing_and_removing_at_once_applies_all_three():
+    # 三種變更同時發生：全部正確套用，未觸動的部分不變。分開測看不到它們互相
+    # 干擾——「移除時要把註解搬到各自的條目上」與「改動時要補一個新的鍵」湊在
+    # 一起就會咬到：註解一旦進了條目的前導縮排，新鍵會多長出一個前導空格。
+    expected = (
+        _EDIT_TEXT.replace(_DOCKER_ENTRY_BLOCK, "")
+        .replace(
+            'target   = "/opt/robot/config/nav2_params.yaml"',
+            'target   = "/opt/robot/config/nav2.yaml"',
+        )
+        .replace(
+            'schema   = ".schemas/nav2.json"\n',
+            'schema   = ".schemas/nav2.json"\nrequires_privilege = true\n',
+        )
+        + _APPENDED_ENTRY_BLOCK
+    )
+
+    config_list = load(_EDIT_TEXT)
+    config_list.files[0].target = "/opt/robot/config/nav2.yaml"
+    config_list.files[0].requires_privilege = True
+    del config_list.files[1]
+    config_list.files.append(
+        config_list.files[1].model_copy(
+            update={
+                "uid": "mfz3maa1",
+                "name": "imu-driver",
+                "source": "files/amr01/imu.yaml",
+                "target": "/opt/robot/config/imu.yaml",
+            }
+        )
+    )
 
     assert dump(config_list, _EDIT_TEXT) == expected
 
