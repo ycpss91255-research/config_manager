@@ -34,7 +34,14 @@ class UnknownField(ConfigListError):
 
 
 class DumpMismatch(ConfigListError):
-    """dump 的資料模型與原始清單檔不符（改動或移除既有條目）。目前只支援未改動與新增。"""
+    """dump 拿到的原樣資訊無法以 uid 對回條目：有一筆沒有 uid，或兩筆共用 uid。
+
+    三種變更（新增／改動／移除）都由 dump 支援，所以這一則講的不是「還不支援」，
+    而是**定位不到**：dump 靠 uid 把模型的每一筆對回原文的那一筆（uid 納管後
+    永不變更，ADR-00000012）。對不回去就會刪錯或漏改，兩者都是靜默丟資料。
+    `load` 擋得住這兩種清單檔，但 dump 的原樣資訊是獨立參數，沒有東西保證它
+    經過 `load`。
+    """
 
 
 class UnknownScope(Exception):

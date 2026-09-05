@@ -452,65 +452,232 @@ groups   = []
     assert load(text).warnings == []
 
 
-def test_dump_refuses_a_diverged_existing_entry():
-    # dump 只支援未改動與新增；改了既有條目卻寫回會靜默丟失 → 應大聲失敗（不變式 2）。
-    original = """\
+# 三筆條目、各自帶前導註解、混用引號樣式與行內註解，供改動與移除的規格使用。
+# 這些規格斷言的是**整份輸出逐位元組相同**——只斷言「改的那一筆對了」擋不住
+# 其餘部分被重寫，而原樣保留正是這個系統存在的理由（ADR-00000029）。
+_EDIT_TEXT = """\
 list_version = 1
 
 [defaults.permissions]
 owner = "root"
 group = "root"
-mode = "0644"
+mode = "0644"          # 字串，避免被解析為整數
 
+# 導航參數，勿手改
 [[files]]
 uid      = "mfz3k9q1"
-name     = "navigation-params"
+name     = 'navigation-params'   # 單引號
 hostname = "amr01"
-source   = "files/a.yaml"
-target   = "/opt/a.yaml"
+source   = "files/amr01/nav2_params.yaml"
+target   = "/opt/robot/config/nav2_params.yaml"
 format   = "yaml"
-groups   = []
-"""
+groups   = ["navigation"]
+schema   = ".schemas/nav2.json"
 
-    config_list = load(original)
-    config_list.files[0].target = "/opt/CHANGED.yaml"  # 改動既有條目
-    with pytest.raises(DumpMismatch):
-        dump(config_list, original)
-
-
-def test_dump_refuses_a_removed_entry():
-    # 從 model 移除既有條目後寫回，若靜默保留原檔即丟失意圖 → 應大聲失敗。
-    original = """\
-list_version = 1
-
-[defaults.permissions]
-owner = "root"
-group = "root"
-mode = "0644"
-
-[[files]]
-uid      = "mfz3k9q1"
-name     = "navigation-params"
-hostname = "amr01"
-source   = "files/a.yaml"
-target   = "/opt/a.yaml"
-format   = "yaml"
-groups   = []
-
+# Docker daemon 設定
 [[files]]
 uid      = "mfz3k9r7"
 name     = "docker-daemon"
 hostname = "amr01"
-source   = "files/b.json"
-target   = "/etc/b.json"
+source   = "files/system/daemon.json"
+target   = "/etc/docker/daemon.json"
 format   = "json"
-groups   = []
+groups   = ["system"]
+permissions = { owner = "root", group = "root", mode = "0644" }
+
+# 相機驅動
+[[files]]
+uid      = "mfz3k9z9"
+name     = "camera-driver"
+hostname = "amr01"
+source   = "files/amr01/camera.yaml"
+target   = "/opt/robot/config/camera.yaml"
+format   = "yaml"
+groups   = ["sensor"]
 """
 
-    config_list = load(original)
-    del config_list.files[1]  # 移除既有條目
-    with pytest.raises(DumpMismatch):
-        dump(config_list, original)
+
+def test_editing_an_entry_leaves_every_other_entry_byte_identical():
+    # 改動既有條目後寫回：該條目更新，其餘條目的註解、順序、引號樣式逐位元組不變
+    # （PDF §8.2 v0.1.0 檢查點第三條）。期望值以獨立字面量寫下。
+    expected = _EDIT_TEXT.replace(
+        'target   = "/etc/docker/daemon.json"',
+        'target   = "/etc/docker/daemon.json.new"',
+    )
+
+    config_list = load(_EDIT_TEXT)
+    config_list.files[1].target = "/etc/docker/daemon.json.new"
+
+    assert dump(config_list, _EDIT_TEXT) == expected
+
+
+def test_editing_one_field_leaves_the_entrys_other_fields_verbatim():
+    # 改動只動到該欄位：同一條目未改的欄位保留原本的引號樣式與行內註解，
+    # permissions 也只改變了的那個子鍵，不把整個 inline table 重排一次。
+    expected = _EDIT_TEXT.replace('mode = "0644" }', 'mode = "0600" }')
+
+    config_list = load(_EDIT_TEXT)
+    config_list.files[1].permissions = Permissions(
+        owner="root", group="root", mode="0600"
+    )
+
+    assert dump(config_list, _EDIT_TEXT) == expected
+
+
+def test_an_optional_field_that_loses_its_value_disappears_from_the_list_file():
+    # 選填欄位由有變無：那一鍵要從清單檔消失。留著等於寫回一個模型沒說的值。
+    expected = _EDIT_TEXT.replace('schema   = ".schemas/nav2.json"\n', "")
+
+    config_list = load(_EDIT_TEXT)
+    config_list.files[0].schema_path = None
+
+    assert dump(config_list, _EDIT_TEXT) == expected
+
+
+def test_an_optional_field_that_gains_a_value_appears_in_the_list_file():
+    # 反過來的方向：由無變有時那一鍵要出現。兩個方向都會靜默丟東西（不變式 2）。
+    # 挑中間那一筆，因為它後面跟著下一筆的前導註解——新鍵要落在該條目的最後
+    # 一個值後面，不是落在那段註解下方。
+    expected = _EDIT_TEXT.replace(
+        'permissions = { owner = "root", group = "root", mode = "0644" }\n',
+        'permissions = { owner = "root", group = "root", mode = "0644" }\n'
+        "requires_privilege = true\n",
+    )
+
+    config_list = load(_EDIT_TEXT)
+    config_list.files[1].requires_privilege = True
+
+    assert dump(config_list, _EDIT_TEXT) == expected
+
+
+# 中間那一筆的完整區塊，含它自己的前導註解與後面那個空行。移除它之後，
+# 這一整塊要消失，而前後兩筆各自的註解要留在原位、不被挪用。
+_DOCKER_ENTRY_BLOCK = """\
+# Docker daemon 設定
+[[files]]
+uid      = "mfz3k9r7"
+name     = "docker-daemon"
+hostname = "amr01"
+source   = "files/system/daemon.json"
+target   = "/etc/docker/daemon.json"
+format   = "json"
+groups   = ["system"]
+permissions = { owner = "root", group = "root", mode = "0644" }
+
+"""
+
+
+def test_removing_an_entry_takes_its_comment_and_leaves_the_others_verbatim():
+    # 移除既有條目後寫回：該條目連同它的註解一起消失，其餘條目的註解、順序、
+    # 引號樣式逐位元組不變——tomlkit 把註解掛在前一筆，所以「下一筆繼承了別人
+    # 的註解」是這裡真正會發生的靜默損壞。
+    expected = _EDIT_TEXT.replace(_DOCKER_ENTRY_BLOCK, "")
+
+    config_list = load(_EDIT_TEXT)
+    del config_list.files[1]
+
+    assert dump(config_list, _EDIT_TEXT) == expected
+
+
+def test_removing_the_first_entry_also_takes_the_comment_above_it():
+    # 第一筆的前導註解不在 AOT 裡，而在它前面那個 table 的尾端。留著它，
+    # 第二筆就會頂著第一筆的註解——與上一條是同一種損壞的另一個位置。
+    expected = _EDIT_TEXT.replace(
+        """\
+# 導航參數，勿手改
+[[files]]
+uid      = "mfz3k9q1"
+name     = 'navigation-params'   # 單引號
+hostname = "amr01"
+source   = "files/amr01/nav2_params.yaml"
+target   = "/opt/robot/config/nav2_params.yaml"
+format   = "yaml"
+groups   = ["navigation"]
+schema   = ".schemas/nav2.json"
+
+""",
+        "",
+    )
+
+    config_list = load(_EDIT_TEXT)
+    del config_list.files[0]
+
+    assert dump(config_list, _EDIT_TEXT) == expected
+
+
+# 附加在既有之後的新條目。欄位順序依 PDF §4.3；新條目沒有原樣可保留，
+# 所以它是唯一由 dump 自己排版的一塊。前面沒有空行——附加是對 AOT 的一次
+# list append，本來就是這樣（#149 之前即如此，這裡只是把它寫下來）。
+_APPENDED_ENTRY_BLOCK = """\
+[[files]]
+uid = "mfz3maa1"
+name = "imu-driver"
+hostname = "amr01"
+source = "files/amr01/imu.yaml"
+target = "/opt/robot/config/imu.yaml"
+format = "yaml"
+groups = ["sensor"]
+"""
+
+
+def test_adding_editing_and_removing_at_once_applies_all_three():
+    # 三種變更同時發生：全部正確套用，未觸動的部分不變。分開測看不到它們互相
+    # 干擾——「移除時要把註解搬到各自的條目上」與「改動時要補一個新的鍵」湊在
+    # 一起就會咬到：註解一旦進了條目的前導縮排，新鍵會多長出一個前導空格。
+    expected = (
+        _EDIT_TEXT.replace(_DOCKER_ENTRY_BLOCK, "")
+        .replace(
+            'target   = "/opt/robot/config/nav2_params.yaml"',
+            'target   = "/opt/robot/config/nav2.yaml"',
+        )
+        .replace(
+            'schema   = ".schemas/nav2.json"\n',
+            'schema   = ".schemas/nav2.json"\nrequires_privilege = true\n',
+        )
+        + _APPENDED_ENTRY_BLOCK
+    )
+
+    config_list = load(_EDIT_TEXT)
+    config_list.files[0].target = "/opt/robot/config/nav2.yaml"
+    config_list.files[0].requires_privilege = True
+    del config_list.files[1]
+    config_list.files.append(
+        config_list.files[1].model_copy(
+            update={
+                "uid": "mfz3maa1",
+                "name": "imu-driver",
+                "source": "files/amr01/imu.yaml",
+                "target": "/opt/robot/config/imu.yaml",
+            }
+        )
+    )
+
+    assert dump(config_list, _EDIT_TEXT) == expected
+
+
+def test_dump_refuses_original_whose_entry_carries_no_uid():
+    # dump 以 uid 定位條目（uid 永不變，ADR-00000012）。原樣資訊裡有一筆沒有
+    # uid，dump 就定位不到它，會把它當成「已從清單移除」而刪掉——靜默丟一整筆。
+    # load 擋得住這種清單檔，但 original 是獨立參數，沒有東西保證它經過 load。
+    without_uid = _EDIT_TEXT.replace('uid      = "mfz3k9r7"\n', "")
+
+    with pytest.raises(DumpMismatch) as exc:
+        dump(load(_EDIT_TEXT), without_uid)
+
+    assert "uid" in str(exc.value)
+
+
+def test_dump_refuses_original_with_two_entries_sharing_a_uid():
+    # 兩筆共用 uid 時，以 uid 定位會只認得其中一筆：另一筆改不到、刪不掉，
+    # 或反過來被當成別人刪掉。同樣是靜默的錯改與錯刪。
+    duplicated = _EDIT_TEXT.replace(
+        'uid      = "mfz3k9r7"', 'uid      = "mfz3k9q1"'
+    )
+
+    with pytest.raises(DumpMismatch) as exc:
+        dump(load(_EDIT_TEXT), duplicated)
+
+    assert "mfz3k9q1" in str(exc.value)
 
 
 def test_appending_an_entry_keeps_its_optional_fields():
