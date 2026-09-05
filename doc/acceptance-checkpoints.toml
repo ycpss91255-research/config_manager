@@ -82,10 +82,25 @@ specs = [
 [[milestone.checkpoint]]
 number = 3
 text = '修改清單檔後寫出，註解與欄位順序完整保留'
-specs = []
-uncovered = '''core/config_list.dump 尚不支援改動與移除既有條目：兩者目前都是具名例外（#149 在修）。
-現有的兩條規格驗的是「未改動時逐位元組相同」與「附加一筆後既有條目不變」，
-兩條都不是這條檢查點說的那件事。把它們填在這裡會讓報表說 v0.1.0 通過，而那是假的。'''
+# 這一條是這份報表報過的第一個紅燈。#148 落地時 core/config_list.dump 還不支援改動
+# 與移除既有條目（兩者都是具名例外），沒有任何規格驗得了「修改後寫出仍保留註解與
+# 欄位順序」，所以它被判為未涵蓋、v0.1.0 非零結束。當時最容易做的事是把
+# test_dump_of_unchanged_config_list_is_byte_identical_to_input 這兩條填進來讓它轉綠
+# ——它們驗的是「沒有改動」與「只有附加」，不是這條檢查點說的那件事。
+#
+# #151（來由 #149）補上了改動、移除、以及三者同時發生的路徑，這裡才對得上。
+# 同一支腳本、同一份對照表，判定從未涵蓋變成通過，而腳本一行都沒有改。
+# 紅燈那一次的輸出記在 doc/changelog/CHANGELOG.md，因為一份從沒報過紅的報表
+# 證明不了它會報紅，而那件事在轉綠之後仍然要查得到。
+specs = [
+  'test/pytest/unit/test_config_list.py::test_dump_of_unchanged_config_list_is_byte_identical_to_input',
+  'test/pytest/unit/test_config_list.py::test_appending_an_entry_keeps_existing_entries_verbatim',
+  'test/pytest/unit/test_config_list.py::test_editing_an_entry_leaves_every_other_entry_byte_identical',
+  'test/pytest/unit/test_config_list.py::test_editing_one_field_leaves_the_entrys_other_fields_verbatim',
+  'test/pytest/unit/test_config_list.py::test_removing_an_entry_takes_its_comment_and_leaves_the_others_verbatim',
+  'test/pytest/unit/test_config_list.py::test_removing_the_first_entry_also_takes_the_comment_above_it',
+  'test/pytest/unit/test_config_list.py::test_adding_editing_and_removing_at_once_applies_all_three',
+]
 
 [[milestone.checkpoint]]
 number = 4
