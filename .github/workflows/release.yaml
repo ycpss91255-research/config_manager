@@ -1,0 +1,43 @@
+# 驗收報表隨 tag 發布。
+#
+# 本機跑得出來的報表，證明的是「某個人在某個時間點的某份程式碼上跑過」。release 上的
+# 報表證明的是「這個 tag 指的這份程式碼跑出來是這樣」——那才複驗得了（#150）。所以
+# 報表在**這裡**產生，不由人手動附上去：一份手動產生再上傳的檔案，與「宣稱有檢查其實
+# 沒檢查」是同一種東西，沒有東西保證它是這份程式碼跑出來的。
+#
+# 與 ci.yaml 分開，因為觸發條件不同：那一份跑在 pull request 與 main 上，這一份只在
+# tag 被推上來時跑。合成一份的話，每一個 PR 都要去讀一段與它無關的 if。
+#
+# 判定寫在 script/release.sh 裡，不寫在這裡：一段只存在於 YAML 的邏輯沒有規格跑得動它
+# （test/bats/unit/release.bats 餵的是命令列，不是 workflow）。這裡只負責把 tag 名交
+# 進去，與 checkpoints job 同一種形狀——跑在映像之外，因為它只需要 gh 與 git。
+# 檢查本身仍然在容器裡：release.sh 呼叫 script/acceptance.sh，那支自己轉進映像
+# （ADR-00000027）。
+
+name: Release
+
+on:
+  push:
+    # 所有 v 開頭的 tag 都進來，形狀由 release.sh 判定。在這裡用更嚴的樣式，
+    # 會讓一個打錯的 tag 名安靜地什麼都不發生——而「安靜地什麼都不發生」正是
+    # 這個 repo 抓過八次的那個形狀。release.sh 對認不得的 tag 大聲失敗。
+    tags: ['v*']
+
+permissions:
+  # 建 release 要寫。這是這個 repo 唯一需要寫入權限的地方。
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # rc 編號由既有 tag 推導，而淺層 clone 沒有 tag——沒有 tag 的推導會
+          # 把每一個 rc 都算成 rc1，於是每一次發布都擋下自己。
+          fetch-depth: 0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        # GITHUB_REF_NAME 是 tag 名。走環境變數而不是把運算式內插進 run，
+        # 與 ci.yaml 的 ci-rollup 同一個理由。
+        run: ./script/release.sh "${GITHUB_REF_NAME}"

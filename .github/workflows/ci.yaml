@@ -67,6 +67,26 @@ jobs:
       # script/coverage_gate.sh 四個分開擋，所以這裡同樣不複述。
       - run: ./script/test.sh
 
+  acceptance:
+    # 驗收報表跑在 main 上，不跑在每個 pull request 上。
+    #
+    # acceptance.sh 會把對照表指到的規格再跑一次，而那幾乎是整組規格——接成每個
+    # PR 的必要檢查，CI 時間翻倍換來的是同一批規格的第二個答案。它比 checks 多
+    # 出來的訊號只有一種：**對照表與規格之間的對應**（一條檢查點沒有人驗、一條
+    # 參照指到不存在的規格）。那個訊號只在對照表或規格名改動時才會變。
+    #
+    # 但它不能等到打 tag 那天才出現：對照表指錯時 acceptance.sh 回 2，而
+    # release.sh 對 2 的處置是不建立 release——那時候發現，代價是一個發不出去的
+    # tag。跑在 main 上，最多晚一次合併就會知道。
+    #
+    # 版號寫死。**v0.1.0 落地之後這裡要改成下一版**，否則這個 job 會在一個已經
+    # 完成的 milestone 上永遠報綠，而那與沒有這個 job 是同一件事。
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./script/acceptance.sh v0.1.0
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -87,7 +107,7 @@ jobs:
     # `always()` 加上明確的結果判定：少了它，被跳過或被取消的相依會被讀成成功，
     # 於是閘門會在一次什麼都沒檢查的執行上打開。
     if: always()
-    needs: [commit-message, checkpoints, checks, build]
+    needs: [commit-message, checkpoints, checks, acceptance, build]
     runs-on: ubuntu-latest
     steps:
       - name: Check that every job passed
