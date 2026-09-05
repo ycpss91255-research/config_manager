@@ -154,3 +154,91 @@ TOML
   [[ "${output}" == *"檢查點 1  未涵蓋"* ]]
 }
 
+# ── 指到不存在的東西是失敗，不是安靜跳過 ──────────────────────────────────
+
+@test "對照表指到不存在的規格檔時大聲失敗" {
+  start_map
+  checkpoint 1 '指錯了' "'test/pytest/unit/test_不存在.py'"
+
+  report
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"test_不存在.py"* ]]
+}
+
+@test "對照表指到存在的檔案、但不存在的測試名時同樣失敗" {
+  # 這一則才是真的缺口：檔案在，所以「檔案存在嗎」那種檢查會放它過去，而
+  # pytest 對收不到的 node id 的處置不會自己變成一條紅色的檢查點。
+  start_map
+  checkpoint 1 '指錯了' "'test/pytest/unit/test_green.py::test_這條不存在'"
+
+  report
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"test_這條不存在"* ]]
+}
+
+@test "bats 規格檔裡不存在的測試名也失敗，不被 bats 的過濾器安靜吃掉" {
+  # bats --filter 對比不到任何測試的樣式回 0，跑了零條測試——那正是靜默通過。
+  start_map
+  checkpoint 1 '指錯了' "'test/bats/unit/green.bats::這條不存在'"
+
+  report
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"這條不存在"* ]]
+}
+
+@test "對照表指到不存在的規格時，一條判定都不印" {
+  # 一份對照表已經對不上的報表，它印出來的「通過」沒有意義。
+  start_map
+  checkpoint 1 '會過的' "'test/pytest/unit/test_green.py'"
+  checkpoint 2 '指錯了' "'test/pytest/unit/test_不存在.py'"
+
+  report
+
+  [[ "${output}" != *"檢查點 1"* ]]
+}
+
+@test "bats 規格檔也能被指名並執行" {
+  start_map
+  checkpoint 1 '由 bats 驗的' "'test/bats/unit/green.bats'"
+
+  report
+
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"檢查點 1  通過"* ]]
+}
+
+@test "bats 規格檔裡的單一測試也能被指名" {
+  start_map
+  checkpoint 1 '由 bats 驗的' "'test/bats/unit/green.bats::一條會過的 bats 規格'"
+
+  report
+
+  [ "${status}" -eq 0 ]
+}
+
+# ── 缺工具不得靜默通過 ────────────────────────────────────────────────────
+
+@test "跑得動規格的工具不在時大聲失敗，不回報通過" {
+  # 與 test.sh 的「缺工具不得靜默通過」同一條（不變式 2）：一支因為跑不動規格
+  # 而回 0 的報表，比沒有報表更糟——它看起來與全綠一模一樣。
+  # 拿掉工具只能靠重建 PATH：腳本以 command -v 判定，覆寫不掉。
+  start_map
+  checkpoint 1 '會過的' "'test/pytest/unit/test_green.py'"
+
+  local bin="${WORK}/bin"
+  mkdir -p "${bin}"
+  local tool
+  for tool in bash dirname python3; do
+    ln -sf "$(command -v "${tool}")" "${bin}/${tool}"
+  done
+
+  run env -i PATH="${bin}" HOME="${WORK}" \
+    CM_IN_TEST_IMAGE=1 CM_ACCEPTANCE_MAP="${MAP}" CM_ACCEPTANCE_ROOT="${ROOT}" \
+    "${SCRIPT}" v0.1.0
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"pytest"* ]]
+}
