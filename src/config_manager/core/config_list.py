@@ -179,11 +179,9 @@ def _adopt_leading_trivia(doc: tomlkit.TOMLDocument, files: items.AoT) -> None:
 
     搬移本身不改變輸出的任何一個位元組，但**只在真的要刪的時候呼叫**：理由寫在
     `dump` 裡那一段（tomlkit 會把註解文字裡的空白當成後續新增鍵的縮排）。
+    呼叫端因此保證至少有一筆條目（有東西可刪才會走到這裡）。
     """
     tables = list(files.body)
-    if not tables:
-        return
-
     body, index = _body_before_files(doc)
     _prepend_indent(tables[0], _take_trailing_trivia(body, index))
     for previous, current in zip(tables, tables[1:], strict=False):
@@ -268,7 +266,7 @@ def _toml_value(value: object) -> object:
     return value
 
 
-def _entry_to_table(entry: FileEntry) -> "tomlkit.items.Table":
+def _entry_to_table(entry: FileEntry) -> items.Table:
     """把一筆新條目渲染為 tomlkit 表（既有條目走 _update_table，原樣不受影響）。"""
     table = tomlkit.table()
     for key, value in _entry_values(entry):
@@ -291,7 +289,7 @@ def _update_permissions(table: dict[str, object], permissions: Permissions) -> N
             table[key] = value
 
 
-def _update_table(table: "tomlkit.items.Table", entry: FileEntry) -> None:
+def _update_table(table: items.Table, entry: FileEntry) -> None:
     """把改動就地套用在既有條目上，只寫真的變了的鍵。
 
     只寫變了的鍵，未改的欄位才留得住原本的引號樣式與行內註解——賦值會重建那個
