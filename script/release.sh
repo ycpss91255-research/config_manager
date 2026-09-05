@@ -21,6 +21,13 @@
 # 後者連 rc 都不建——一個附著壞掉報表的 release，與一份手寫的「已通過」表格一樣
 # 沒有證據力。兩者混成同一種處置，就分不出「還沒做完」與「沒有人在驗」。
 #
+# ## rc 的編號由既有 tag 推導
+#
+# 人工指定會撞號或跳號。`--next` 印出下一個編號；而**推上來的 rc tag 如果不是推導
+# 出來的那一個就擋下**——少了後面這一半，「由工具推導」就只是一句建議，而建議與規範
+# 的差別正是這個 repo 反覆付過代價的地方（§0.4）。推導把這個 tag 自己排除在外：
+# CI 是在 tag 推上來之後才跑的，不排除的話每一次 release 都會擋下自己。
+#
 # ## 為什麼 gh 在容器外
 #
 # 檢查本身在容器裡：這支腳本呼叫 script/acceptance.sh，那支自己轉進映像（ADR-00000027）。
@@ -40,16 +47,21 @@ readonly ACCEPTANCE="${CM_RELEASE_ACCEPTANCE:-${REPO_ROOT}/script/acceptance.sh}
 usage() {
   cat <<'USAGE'
 Usage: script/release.sh <tag>
+       script/release.sh --next <milestone>
 
-  <tag>  vX.Y.Z-rcN（候選）或 vX.Y.Z（正式）
+  <tag>        vX.Y.Z-rcN（候選）或 vX.Y.Z（正式）
+  <milestone>  對照表裡的一個 id，例如 v0.1.0
 
 在 <tag> 指的這份程式碼上執行 script/acceptance.sh，並以那份報表建立 GitHub release。
 
   rc tag    不論報表綠紅都建立 release，紅綠寫在標題上
   兩者皆是  報表本身壞掉（對照表對不上）時不建立 release
 
-  exit 0   release 建好了
-  exit 2   用法錯誤、tag 格式認不得、缺 gh，或報表本身壞掉
+  --next <milestone>  印出下一個 rc tag 名，由既有 tag 推導。編號不由人工指定：
+                      人工指定會撞號或跳號，而推上來的 rc 若不是這個名字會被擋下
+
+  exit 0   release 建好了（或 --next 印完了）
+  exit 2   用法錯誤、tag 格式認不得、rc 編號跳號、缺 gh，或報表本身壞掉
 
   CM_RELEASE_ACCEPTANCE  改用這個指令產生報表（供 test/bats/unit/release.bats 使用）
 
@@ -67,12 +79,47 @@ _parse_tag() {
   if [[ ! "${tag}" =~ ${pattern} ]]; then
     printf 'release: 認不得的 tag 格式：%s\n' "${tag}" >&2
     printf 'release: 只認 vX.Y.Z（正式）與 vX.Y.Z-rcN（候選）兩種形狀\n' >&2
-    printf 'release: 下一步：改用 vX.Y.Z-rcN 的形狀重推這個 tag\n' >&2
+    printf 'release: 下一步：改用 script/release.sh --next <milestone> 印出來的那個 tag 名\n' >&2
     return 2
   fi
 
   MILESTONE="${BASH_REMATCH[1]}"
   RC="${BASH_REMATCH[3]:-}"
+}
+
+# 下一個 rc tag 名。看的是既有 tag 裡最大的編號，不是它們的個數——中間刪掉一個
+# tag 之後，用個數會撞號。第二個參數是要排除的 tag（發布時就是被推上來的那一個）。
+_next_rc_tag() {
+  local milestone="$1" exclude="${2:-}"
+  local highest=0 tag number
+
+  while IFS= read -r tag; do
+    if [[ -z "${tag}" || "${tag}" == "${exclude}" ]]; then
+      continue
+    fi
+    number="${tag##*-rc}"
+    if [[ ! "${number}" =~ ^[1-9][0-9]*$ ]]; then
+      continue
+    fi
+    if ((number > highest)); then
+      highest="${number}"
+    fi
+  done < <(git tag --list "${milestone}-rc*")
+
+  printf '%s-rc%d\n' "${milestone}" "$((highest + 1))"
+}
+
+_check_rc_number() {
+  local tag="$1" milestone="$2" expected
+  expected="$(_next_rc_tag "${milestone}" "${tag}")"
+
+  if [[ "${tag}" == "${expected}" ]]; then
+    return 0
+  fi
+  printf 'release: rc 編號由既有 tag 推導，%s 不是推導出來的那一個\n' "${tag}" >&2
+  printf 'release: 由既有 tag 推導出來的下一個是 %s\n' "${expected}" >&2
+  printf 'release: 下一步：git push origin :%s 收回這個 tag，改推 %s\n' "${tag}" "${expected}" >&2
+  return 2
 }
 
 _require_gh() {
@@ -120,6 +167,10 @@ _release() {
   local MILESTONE RC
   _parse_tag "${tag}"
   _require_gh
+
+  if [[ -n "${RC}" ]]; then
+    _check_rc_number "${tag}" "${MILESTONE}"
+  fi
 
   # 報表要說得出它是在哪一份程式碼上跑出來的，否則它與一份本機跑出來的輸出沒有
   # 差別——而那正是這份報表要取代的東西。
@@ -170,10 +221,20 @@ _release() {
 }
 
 main() {
-  case "${1:-}" in -h | --help)
-    usage
-    return 0
-    ;;
+  case "${1:-}" in
+    -h | --help)
+      usage
+      return 0
+      ;;
+    --next)
+      shift
+      if [[ $# -ne 1 ]]; then
+        usage >&2
+        return 2
+      fi
+      _next_rc_tag "$1"
+      return 0
+      ;;
   esac
 
   if [[ $# -ne 1 ]]; then

@@ -38,7 +38,7 @@ STUB
   ACCEPTANCE="${WORK}/acceptance"
   export CM_RELEASE_ACCEPTANCE="${ACCEPTANCE}"
 
-  # 一個真的 repo：這支腳本讀 git，而規格不該對主 repo 的狀態有意見。
+  # tag 由一個真的 repo 供應：rc 編號的推導讀的是 git tag，餵假的就測不到那件事。
   mkdir -p "${WORK}/repo"
   cd "${WORK}/repo" || return 1
   git init -q .
@@ -193,6 +193,72 @@ gh_was_called() {
 
   [ "${status}" -ne 0 ]
   [[ "${output}" == *"下一步："* ]]
+}
+
+# ── rc 編號由既有 tag 推導 ────────────────────────────────────────────────
+
+@test "一個 rc 都還沒有時，推導出來的是 rc1" {
+  run "${SCRIPT}" --next v0.1.0
+
+  [ "${output}" = "v0.1.0-rc1" ]
+}
+
+@test "已經有 rc1 與 rc2 時，推導出來的是 rc3" {
+  git tag v0.1.0-rc1
+  git tag v0.1.0-rc2
+
+  run "${SCRIPT}" --next v0.1.0
+
+  [ "${output}" = "v0.1.0-rc3" ]
+}
+
+@test "推導看的是最大的編號，不是既有 rc 的個數" {
+  # 中間刪掉一個 tag 之後，用個數會撞號。
+  git tag v0.1.0-rc4
+
+  run "${SCRIPT}" --next v0.1.0
+
+  [ "${output}" = "v0.1.0-rc5" ]
+}
+
+@test "別的 milestone 的 rc 不影響這一版的推導" {
+  git tag v0.2.0-rc7
+
+  run "${SCRIPT}" --next v0.1.0
+
+  [ "${output}" = "v0.1.0-rc1" ]
+}
+
+@test "人工跳號推上來的 rc tag 被擋下" {
+  # 人工指定會撞號或跳號。編號要由工具推導，就得有工具擋著人工指定的那一個。
+  git tag v0.1.0-rc1
+  git tag v0.1.0-rc5
+  stub_green
+
+  run "${SCRIPT}" v0.1.0-rc5
+
+  [ "${status}" -ne 0 ]
+}
+
+@test "跳號被擋下時，訊息指名應該用哪一個編號" {
+  git tag v0.1.0-rc1
+  git tag v0.1.0-rc5
+  stub_green
+
+  run "${SCRIPT}" v0.1.0-rc5
+
+  [[ "${output}" == *"v0.1.0-rc2"* ]]
+}
+
+@test "重跑同一個 rc tag 不會因為它自己已經存在而被擋" {
+  # tag 被推上來之後 CI 才跑，所以推導必須把這個 tag 自己排除在外。
+  # 少了這一條，每一次 release 都會擋下自己。
+  git tag v0.1.0-rc1
+  stub_green
+
+  run "${SCRIPT}" v0.1.0-rc1
+
+  [ "${status}" -eq 0 ]
 }
 
 # ── 認不得的輸入與缺工具 ──────────────────────────────────────────────────
