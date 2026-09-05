@@ -511,6 +511,42 @@ def test_editing_an_entry_leaves_every_other_entry_byte_identical():
     assert dump(config_list, _EDIT_TEXT) == expected
 
 
+def test_editing_one_field_leaves_the_entrys_other_fields_verbatim():
+    # 改動只動到該欄位：同一條目未改的欄位保留原本的引號樣式與行內註解，
+    # permissions 也只改變了的那個子鍵，不把整個 inline table 重排一次。
+    expected = _EDIT_TEXT.replace('mode = "0644" }', 'mode = "0600" }')
+
+    config_list = load(_EDIT_TEXT)
+    config_list.files[1].permissions = Permissions(
+        owner="root", group="root", mode="0600"
+    )
+
+    assert dump(config_list, _EDIT_TEXT) == expected
+
+
+def test_an_optional_field_that_loses_its_value_disappears_from_the_list_file():
+    # 選填欄位由有變無：那一鍵要從清單檔消失。留著等於寫回一個模型沒說的值。
+    expected = _EDIT_TEXT.replace('schema   = ".schemas/nav2.json"\n', "")
+
+    config_list = load(_EDIT_TEXT)
+    config_list.files[0].schema_path = None
+
+    assert dump(config_list, _EDIT_TEXT) == expected
+
+
+def test_an_optional_field_that_gains_a_value_appears_in_the_list_file():
+    # 反過來的方向：由無變有時那一鍵要出現。兩個方向都會靜默丟東西（不變式 2）。
+    expected = _EDIT_TEXT.replace(
+        'groups   = ["sensor"]\n',
+        'groups   = ["sensor"]\nrequires_privilege = true\n',
+    )
+
+    config_list = load(_EDIT_TEXT)
+    config_list.files[2].requires_privilege = True
+
+    assert dump(config_list, _EDIT_TEXT) == expected
+
+
 def test_dump_refuses_a_removed_entry():
     # 從 model 移除既有條目後寫回，若靜默保留原檔即丟失意圖 → 應大聲失敗。
     original = """\
