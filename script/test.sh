@@ -67,16 +67,38 @@ dispatch_to_container() {
   # HOME 被導向他處，是因為呼叫端的 uid 在這個映像裡沒有家目錄；git.safe.directory
   # 走 GIT_CONFIG_* 而不是全域設定，也是同一個原因：沒有可寫的 HOME，就沒有地方
   # 放那份設定。
-  exec docker run --rm \
-    --user "$(id -u):$(id -g)" \
-    --env HOME=/tmp \
-    --env GIT_CONFIG_COUNT=1 \
-    --env GIT_CONFIG_KEY_0=safe.directory \
-    --env GIT_CONFIG_VALUE_0='*' \
-    --volume "${REPO_ROOT}:/repo" \
-    --workdir /repo \
-    "${TEST_IMAGE}" \
-    ./script/test.sh "$@"
+  local -a _run=(
+    docker run --rm
+    --user "$(id -u):$(id -g)"
+    --env HOME=/tmp
+    --env GIT_CONFIG_COUNT=1
+    --env GIT_CONFIG_KEY_0=safe.directory
+    --env GIT_CONFIG_VALUE_0='*'
+    --volume "${REPO_ROOT}:/repo"
+  )
+
+  # git worktree 裡，REPO_ROOT/.git 是一個**檔案**，內容是主 repo 那個 git 目錄的
+  # 主機絕對路徑。只掛 REPO_ROOT 的話那條路徑在容器裡不存在，git 就不認得這是一份
+  # 簽出，於是 lint_commit 與 lint_paths 雙雙以「這裡不是 git repo」失敗——兩支需要
+  # git 的檢查沒跑到，而有跳過的執行不算通過（#103）。
+  #
+  # 掛載點必須是**同一個絕對路徑**：容器要解開的就是那個檔案裡寫死的那條路徑，
+  # 掛在別處解不開。讀寫而非唯讀，因為 git 會寫 index 與 lock；--user 已經是呼叫端
+  # 的 uid，所以寫進去的東西在主機上的所有權是對的。
+  #
+  # 一般簽出的 --git-common-dir 就是 REPO_ROOT/.git，已經在上面那個掛載的範圍內，
+  # 再掛一次是多餘的——所以只有它落在 REPO_ROOT 之外時才加。不是 git repo、或主機
+  # 上沒有 git 時，這裡什麼都不加：那與修這件事之前的行為相同。
+  local _git_common=""
+  _git_common="$(git -C "${REPO_ROOT}" rev-parse --git-common-dir 2>/dev/null)" || _git_common=""
+  [[ -n "${_git_common}" && "${_git_common}" != /* ]] && _git_common="${REPO_ROOT}/${_git_common}"
+  case "${_git_common}" in
+    ""|"${REPO_ROOT}"/*) ;;
+    *) _run+=(--volume "${_git_common}:${_git_common}") ;;
+  esac
+
+  _run+=(--workdir /repo "${TEST_IMAGE}" ./script/test.sh "$@")
+  exec "${_run[@]}"
 }
 
 # 每個 linter 需要 PATH 上有什麼，以及怎麼取得。只有一張表，這樣底下的事前盤點與
