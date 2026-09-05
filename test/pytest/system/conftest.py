@@ -126,8 +126,14 @@ def listing(repo):
             uid, deployed = _SAMPLES[name]
             (root / "files" / f"{name}.yaml").write_text(f"{name}: 1\n", encoding="utf-8")
             target = root / "deployed" / f"{name}.yaml"
-            # 未部署要的是目標「不存在」。前一則規格可能剛把它寫出來，所以這裡
-            # 明講要刪掉——狀態由目標與來源的關係決定，不由執行順序決定。
+            # 未部署要的是目標「不存在」，所以這裡明講要刪掉——狀態由目標與來源的
+            # 關係決定，不由執行順序決定。
+            #
+            # **這一行目前沒有任何突變檢查蓋得到它**：`c` 的目標從來沒有任何一則
+            # 規格寫出來過，拿掉它六則照樣全綠（#153 的 M5）。留著是因為它讓這個
+            # 夾具的約定是完整的——「排出指名的那個狀態」而不是「排出指名的那個
+            # 狀態，只要沒有人先部署過 c」。寫在這裡，是為了它不要被當成已經驗過的
+            # 東西（刻意留空：沒有測試介面蓋到、但寫下了理由）。
             if deployed is None:
                 target.unlink(missing_ok=True)
             else:
