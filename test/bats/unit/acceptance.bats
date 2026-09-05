@@ -298,3 +298,38 @@ TOML
   [ "${status}" -ne 0 ]
 }
 
+# ── 突變：只有轉紅的那一條被報成未通過 ────────────────────────────────────
+
+@test "某一條檢查點的規格轉紅時，被報成未通過的只有那一條" {
+  # 一份把整版一起報紅的報表，說不出是哪一條壞了——說不出來的報表，修的時候
+  # 只能靠猜。與 coverage_gate 的「被指名的只有 core」同一個保證。
+  start_map
+  checkpoint 1 '第一條' "'test/pytest/unit/test_green.py'"
+  checkpoint 2 '第二條' "'test/pytest/unit/test_red.py'"
+  checkpoint 3 '第三條' "'test/pytest/unit/test_green.py'"
+
+  report
+
+  [[ "${output}" == *"檢查點 2  未通過"* ]]
+  [[ "${output}" != *"檢查點 1  未通過"* ]]
+  [[ "${output}" != *"檢查點 3  未通過"* ]]
+}
+
+@test "有一條檢查點未通過時，整份報表非零結束" {
+  start_map
+  checkpoint 1 '會紅的' "'test/pytest/unit/test_red.py'"
+
+  report
+
+  [ "${status}" -ne 0 ]
+}
+
+@test "未通過的檢查點把規格自己的輸出帶出來，不是只說一句未通過" {
+  start_map
+  checkpoint 1 '會紅的' "'test/pytest/unit/test_red.py'"
+
+  report
+
+  [[ "${output}" == *"test_一條會紅的規格"* ]]
+}
+
