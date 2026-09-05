@@ -242,3 +242,59 @@ TOML
   [ "${status}" -ne 0 ]
   [[ "${output}" == *"pytest"* ]]
 }
+# ── 摘要，以及對照表本身壞掉時 ──────────────────────────────────────────
+
+@test "摘要印出通過、未通過、未涵蓋各幾條" {
+  start_map
+  checkpoint 1 '會過的' "'test/pytest/unit/test_green.py'"
+  checkpoint 2 '會紅的' "'test/pytest/unit/test_red.py'"
+  checkpoint 3 '沒人驗的' ""
+
+  report
+
+  [[ "${output}" == *"1 通過／1 未通過／1 未涵蓋"* ]]
+}
+
+@test "對照表裡沒有這個 milestone 時大聲失敗，不回報零條全部通過" {
+  # 打錯一個版號而得到一份綠色的空報表，是這支腳本能出的最糟的錯。
+  start_map
+  checkpoint 1 '會過的' "'test/pytest/unit/test_green.py'"
+
+  report v9.9.9
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" != *"檢查點 1"* ]]
+}
+
+@test "找不到 milestone 時列出對照表裡有哪些" {
+  start_map
+  checkpoint 1 '會過的' "'test/pytest/unit/test_green.py'"
+
+  report v9.9.9
+
+  [[ "${output}" == *"v0.1.0"* ]]
+}
+
+@test "對照表不存在時大聲失敗" {
+  rm -f "${MAP}"
+
+  report
+
+  [ "${status}" -ne 0 ]
+}
+
+@test "對照表解析不了時大聲失敗，並指名那份檔案" {
+  printf 'this is not toml =\n' >"${MAP}"
+
+  report
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"${MAP}"* ]]
+}
+
+@test "沒有給 milestone 參數時以用法結束，不預設跑某一版" {
+  CM_ACCEPTANCE_MAP="${MAP}" CM_ACCEPTANCE_ROOT="${ROOT}" run "${SCRIPT}"
+
+  [ "${status}" -ne 0 ]
+}
+
