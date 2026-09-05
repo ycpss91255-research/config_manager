@@ -125,9 +125,14 @@ def test_configs_carries_the_state_of_every_entry(api, repo, tmp_path):
     assert rows[0]["ref"] == "a@amr01-mfz3k9q1"
 
 
-def test_cli_list_goes_through_the_same_endpoint_as_the_page(api):
+def test_cli_list_goes_through_the_same_endpoint_as_the_page(api, listing):
     # ADR-00000009：不存在「CLI 能做但介面不能」或反之，因為根本是同一組端點。
     # 把關的不是輸出比對而是 --api：自己讀清單檔的實作根本用不到那個位址。
+    #
+    # 這三筆自己排。先前它讀的是同檔前一則寫進共用 repo 的清單，於是單獨執行時
+    # 清單是空的、迴圈裡的斷言一條都不成立（#153）。
+    listing("a", "b", "c")
+
     result = _cli("list", "--api", api)
 
     assert result.returncode == 0

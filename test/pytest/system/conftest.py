@@ -18,6 +18,7 @@
 """
 
 import os
+import pathlib
 import socket
 import threading
 import time
@@ -37,6 +38,28 @@ owner = "root"
 group = "root"
 mode = "0644"
 """
+
+_ENTRY = """
+[[files]]
+uid      = "{uid}"
+name     = "{name}"
+hostname = "amr01"
+source   = "files/{name}.yaml"
+target   = "{target}"
+format   = "yaml"
+groups   = []
+"""
+
+# 三種狀態各一個樣本。目標與來源的關係決定狀態（CONTEXT.md）：相同→一致、
+# 不同→偏離、不存在→未部署。
+#
+# uid 綁在名字上，不綁在呼叫時的位置：`a@amr01-mfz3k9q1` 這個參照因此不隨
+# 「這則規格要了哪幾筆」而變，一則只要 b 的規格也不會把 b 的 uid 變成 1。
+_SAMPLES = {
+    "a": ("mfz3k9q1", "a: 1\n"),
+    "b": ("mfz3k9q2", "b: 2\n"),
+    "c": ("mfz3k9q3", None),
+}
 
 _STARTUP_TIMEOUT = 10.0
 _POLL_INTERVAL = 0.05
@@ -72,6 +95,48 @@ def repo(tmp_path_factory):
     path = tmp_path_factory.mktemp("config-repo")
     (path / "config-list.toml").write_text(_MINIMAL_LIST, encoding="utf-8")
     return str(path)
+
+
+@pytest.fixture
+def listing(repo):
+    """把共用 config-repo 的清單檔換成指名的那幾筆，並備妥各自的來源與目標。
+
+    **函式範圍，而且是整份覆寫。** `repo` 與 `api` 留在 session 範圍——起一個真的
+    uvicorn 不便宜，而對著建好的映像跑時（`CM_SYSTEM_BASE_URL`）那個服務根本不是
+    這裡起的，重啟不了。所以貴的東西留在 session 範圍，**真正造成順序相依的東西
+    ——磁碟上的清單檔——改成每則規格自己安排**。`/api/configs` 每次請求重新掃描
+    （`api/routes.list_configs`），所以換掉檔案就夠了，服務不必重起。
+
+    覆寫而不是附加，一次解掉兩個方向的順序相依：不附加，後面的規格就看不見前面
+    留下的條目；覆寫而不是只附加，前面的規格也不必先跑過。**一條在某些執行方式下
+    必然為真的斷言不是斷言**（#153），而順序相依讓斷言在檔內順序被改動、`-k` 過濾、
+    並行執行這三種情況下無聲地變成那種東西。
+
+    `listing()` 不帶參數就是一份什麼都沒納管的清單——那是「還沒納管任何 config」
+    這個合法狀態本身，不是「還沒有人動過這份 repo」。
+    """
+
+    def _write(*names: str) -> None:
+        root = pathlib.Path(repo)
+        (root / "files").mkdir(exist_ok=True)
+        (root / "deployed").mkdir(exist_ok=True)
+
+        entries = ""
+        for name in names:
+            uid, deployed = _SAMPLES[name]
+            (root / "files" / f"{name}.yaml").write_text(f"{name}: 1\n", encoding="utf-8")
+            target = root / "deployed" / f"{name}.yaml"
+            # 未部署要的是目標「不存在」。前一則規格可能剛把它寫出來，所以這裡
+            # 明講要刪掉——狀態由目標與來源的關係決定，不由執行順序決定。
+            if deployed is None:
+                target.unlink(missing_ok=True)
+            else:
+                target.write_text(deployed, encoding="utf-8")
+            entries += _ENTRY.format(uid=uid, name=name, target=target)
+
+        (root / "config-list.toml").write_text(_MINIMAL_LIST + entries, encoding="utf-8")
+
+    return _write
 
 
 @pytest.fixture(scope="session")
