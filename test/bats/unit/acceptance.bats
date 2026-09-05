@@ -103,3 +103,54 @@ report() {
 
   [[ "${output}" == *"寫出中斷不產生半殘檔案"* ]]
 }
+# ── 未涵蓋不是通過 ────────────────────────────────────────────────────────
+
+@test "一條檢查點對不到任何規格時，判定為未涵蓋" {
+  start_map
+  checkpoint 1 '沒有人在驗的檢查點' ""
+
+  report
+
+  [[ "${output}" == *"檢查點 1  未涵蓋"* ]]
+}
+
+@test "未涵蓋的檢查點讓整份報表非零結束——未涵蓋不是通過" {
+  # 這一則是整份報表存在的理由。少了它，一個沒有人在驗的檢查點與一個驗過的
+  # 檢查點，在輸出與結束碼上完全一樣。
+  start_map
+  checkpoint 1 '沒有人在驗的檢查點' ""
+
+  report
+
+  [ "${status}" -ne 0 ]
+}
+
+@test "未涵蓋與未通過在輸出上分得開——兩者要做的事不同" {
+  start_map
+  checkpoint 1 '沒人驗的' ""
+  checkpoint 2 '會紅的' "'test/pytest/unit/test_red.py'"
+
+  report
+
+  [[ "${output}" == *"檢查點 1  未涵蓋"* ]]
+  [[ "${output}" == *"檢查點 2  未通過"* ]]
+}
+
+@test "未涵蓋的理由被印出來，但判定仍然是未涵蓋" {
+  # 理由是給讀者看的，不是給判定看的。寫得出理由不代表那個洞被補起來了。
+  start_map
+  cat >>"${MAP}" <<'TOML'
+
+[[milestone.checkpoint]]
+number = 1
+text = '沒人驗的'
+specs = []
+uncovered = 'dump 尚不支援改動既有條目'
+TOML
+
+  report
+
+  [[ "${output}" == *"dump 尚不支援改動既有條目"* ]]
+  [[ "${output}" == *"檢查點 1  未涵蓋"* ]]
+}
+
