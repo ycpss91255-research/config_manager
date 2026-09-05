@@ -11,6 +11,7 @@ import tomlkit
 from tomlkit import items
 
 from config_manager.core.errors import (
+    DumpMismatch,
     DuplicateTarget,
     DuplicateUid,
     InvalidFormat,
@@ -198,9 +199,35 @@ def _prepend_indent(table: items.Table, trivia: str) -> None:
         table.trivia.indent = trivia + table.trivia.indent
 
 
-def _index_by_uid(files: "tomlkit.items.AoT") -> dict[str, "tomlkit.items.Table"]:
-    """以 uid 為索引指向原樣資訊裡的每一筆條目。uid 永不變（ADR-00000012）。"""
-    return {table.get("uid"): table for table in files}
+def _index_by_uid(files: items.AoT) -> dict[str, items.Table]:
+    """以 uid 為索引指向原樣資訊裡的每一筆條目。
+
+    uid 是唯一的真實識別碼、納管後永不變更（ADR-00000012），dump 靠它把模型的
+    每一筆對回原文的那一筆。定位不了就不能繼續：缺 uid 的那一筆會被當成「已從
+    清單移除」而刪掉，共用 uid 的兩筆只有一筆認得出來、另一筆改不到也刪不掉。
+    兩者都是靜默丟資料，所以在動任何東西之前先擋（不變式 2）。
+
+    `load` 擋得住這兩種清單檔，但 `original` 是獨立參數，沒有東西保證它經過
+    `load`——契約在做實事之前先自我驗證。
+    """
+    indexed: dict[str, items.Table] = {}
+    for position, table in enumerate(files.body, 1):
+        uid = table.get("uid")
+        if uid is None:
+            raise DumpMismatch(
+                f"原樣資訊的第 {position} 筆條目沒有 uid：dump 以 uid 把模型的"
+                "每一筆對回原文的那一筆，沒有 uid 就對不回去。"
+                "下一步：把該筆的 uid 補回原始清單檔——uid 納管後永不變更，"
+                "不該有條目沒有它"
+            )
+        if uid in indexed:
+            raise DumpMismatch(
+                f"原樣資訊有兩筆共用 uid「{uid}」（第 {position} 筆與它之前的"
+                "一筆）：共用 uid 時 dump 只認得出其中一筆，另一筆改不到也刪不掉。"
+                "下一步：移除重複的那一筆——uid 是唯一的真實識別碼，不該有兩筆共用"
+            )
+        indexed[uid] = table
+    return indexed
 
 
 def _entry_values(entry: FileEntry) -> list[tuple[str, object]]:

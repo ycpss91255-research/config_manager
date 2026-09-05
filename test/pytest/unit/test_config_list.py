@@ -8,6 +8,7 @@ import pytest
 from config_manager.core.config_list import dump, load
 from config_manager.core.models import Permissions
 from config_manager.core.errors import (
+    DumpMismatch,
     DuplicateTarget,
     DuplicateUid,
     InvalidFormat,
@@ -652,6 +653,31 @@ def test_adding_editing_and_removing_at_once_applies_all_three():
     )
 
     assert dump(config_list, _EDIT_TEXT) == expected
+
+
+def test_dump_refuses_original_whose_entry_carries_no_uid():
+    # dump 以 uid 定位條目（uid 永不變，ADR-00000012）。原樣資訊裡有一筆沒有
+    # uid，dump 就定位不到它，會把它當成「已從清單移除」而刪掉——靜默丟一整筆。
+    # load 擋得住這種清單檔，但 original 是獨立參數，沒有東西保證它經過 load。
+    without_uid = _EDIT_TEXT.replace('uid      = "mfz3k9r7"\n', "")
+
+    with pytest.raises(DumpMismatch) as exc:
+        dump(load(_EDIT_TEXT), without_uid)
+
+    assert "uid" in str(exc.value)
+
+
+def test_dump_refuses_original_with_two_entries_sharing_a_uid():
+    # 兩筆共用 uid 時，以 uid 定位會只認得其中一筆：另一筆改不到、刪不掉，
+    # 或反過來被當成別人刪掉。同樣是靜默的錯改與錯刪。
+    duplicated = _EDIT_TEXT.replace(
+        'uid      = "mfz3k9r7"', 'uid      = "mfz3k9q1"'
+    )
+
+    with pytest.raises(DumpMismatch) as exc:
+        dump(load(_EDIT_TEXT), duplicated)
+
+    assert "mfz3k9q1" in str(exc.value)
 
 
 def test_appending_an_entry_keeps_its_optional_fields():
