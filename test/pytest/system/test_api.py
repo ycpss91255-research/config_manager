@@ -27,17 +27,6 @@ _TIMEOUT = 5
 # 「你送的值不行」折成同一個回覆。
 _UNPROCESSABLE = 422
 
-_ENTRY = """
-[[files]]
-uid      = "mfz3k9q{index}"
-name     = "{name}"
-hostname = "amr01"
-source   = "files/{name}.yaml"
-target   = "{target}"
-format   = "yaml"
-groups   = []
-"""
-
 
 def _get(api, path):
     with urllib.request.urlopen(f"{api}{path}", timeout=_TIMEOUT) as response:
@@ -70,8 +59,12 @@ def _cli(*args):
     )
 
 
-def test_configs_on_a_fresh_repo_is_an_empty_list(api):
+def test_configs_on_a_fresh_repo_is_an_empty_list(api, listing):
     # 什麼都還沒納管是合法狀態：回空清單，不是回錯誤，也不是起不來。
+    # 空清單自己排出來，不靠「這則排在會寫入的那則前面」——後者在檔內順序被改動、
+    # `-k` 過濾、或並行執行時，會把這條斷言變成一條不驗任何東西的規格。
+    listing()
+
     assert _get(api, "/api/configs") == []
 
 
@@ -100,24 +93,10 @@ def test_identity_that_would_break_the_author_string_is_refused(api):
     assert exc.value.code == _UNPROCESSABLE
 
 
-def test_configs_carries_the_state_of_every_entry(api, repo, tmp_path):
+def test_configs_carries_the_state_of_every_entry(api, listing):
     # 三種狀態各一筆，走真實 HTTP 看端點吐出來的形狀。判定本身由 T21 逐條測過；
     # 這裡證明的是「端點真的把它接上了」，不是回一個寫死的欄位。
-    root = pathlib.Path(repo)
-    (root / "files").mkdir(exist_ok=True)
-    (root / "deployed").mkdir(exist_ok=True)
-    entries = ""
-    for index, (name, deployed) in enumerate(
-        [("a", "a: 1\n"), ("b", "b: 2\n"), ("c", None)], start=1
-    ):
-        (root / "files" / f"{name}.yaml").write_text(f"{name}: 1\n", encoding="utf-8")
-        target = root / "deployed" / f"{name}.yaml"
-        if deployed is not None:
-            target.write_text(deployed, encoding="utf-8")
-        entries += _ENTRY.format(index=index, name=name, target=target)
-
-    listing = root / "config-list.toml"
-    listing.write_text(listing.read_text(encoding="utf-8") + entries, encoding="utf-8")
+    listing("a", "b", "c")
 
     rows = _get(api, "/api/configs")
 
