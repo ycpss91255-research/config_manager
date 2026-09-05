@@ -1,0 +1,349 @@
+# 驗收檢查點 → 規格 的對照表。
+#
+# 設計文件 §8.2 為每一版列了一組驗收檢查點。「那一版通過了沒有」在此之前只存在於
+# 一段散文裡，而**無法複驗，就等於無法證明**：一份手寫的「已通過」表格，與這個 repo
+# 已經抓到八次的「宣稱有檢查其實沒檢查」是同一種東西（#148）。
+#
+# 這份檔案是那些檢查點與**實際會被執行的規格**之間的對照。判定由
+# `script/acceptance.sh <milestone>` 跑出來，不由這裡寫下來——這裡只說「PDF 的哪一句
+# 該由誰驗」，說不了「它過了沒有」。
+#
+# ## 為什麼是資料不是程式碼
+#
+# 新增一條檢查點不該需要改腳本。腳本裡的一張 case 表，每加一條就要動一次控制流，
+# 而動控制流的地方就是會壞的地方；資料的改動在 diff 上是一段可以逐字對回 PDF 的文字。
+# 同一個理由讓覆蓋率閾值住在 pyproject.toml 而不是 coverage_gate.sh 裡（§0.4：
+# 「調整需修改設定檔並在 PR 中說明理由——使放寬本身成為可見的決策」）。
+#
+# ## 為什麼與 doc/TEST-PLAN.md 分開
+#
+# 兩者的讀者與更新時機不同。TEST-PLAN 講的是**測試介面**——從哪個位置觀察行為——它
+# 隨著程式碼的形狀改變；這份講的是**驗收檢查點 → 規格**，它隨著設計文件 §8.2 改變，
+# 而 §8.2 幾乎不動。混在一起，維護的人每次都要先分辨自己在改哪一種東西
+# （ADR-00000024：兩份寫著同一件事，只有一份會被讀）。
+#
+# ## 一條檢查點怎麼切
+#
+# **以 §8.2 該版塊的句號斷句，一句一條。** 這不是自訂的顆粒度，是 PDF 自己的：
+# v0.1.0 依此切出來的五條，與 #148 手工列出的五條逐條相同。唯一的例外是 v0.9.0
+# 第 2 條，它的後半句「全程無需詢問操作方式」是前一句的補述，獨立成條會得到一個
+# 沒有主詞的片段——併入前句，並記在這裡，免得日後被讀成漏了一條。
+#
+# 文字逐字抄自 §8.2（去掉句尾的句號）。**它與 PDF 的一致性目前沒有工具在檢查**：
+# 檢查映像裡沒有 pdftotext，而為了一份幾乎不動的文件把 PDF 解析拖進映像不划算。
+# 這是一個已知的洞，寫在這裡是為了它不要被當成已經驗過的東西。
+#
+# ## 規格參照怎麼寫
+#
+#   test/pytest/<層級>/<檔>.py                 整個 pytest 規格檔
+#   test/pytest/<層級>/<檔>.py::<測試名>       單一 pytest 規格
+#   test/bats/<層級>/<檔>.bats                 整個 bats 規格檔
+#   test/bats/<層級>/<檔>.bats::<測試名>       單一 bats 規格
+#
+# **指到不存在的東西是失敗，不是安靜跳過。** acceptance.sh 在跑任何東西之前先逐條
+# 解析：檔案要在、測試名要收得到、至少要收到一條。解析不過就整份報表非零結束，
+# 一條判定都不印——一份對照表已經對不上的報表，它印出來的「通過」沒有意義。
+#
+# ## specs = [] 是什麼意思
+#
+# **未涵蓋，而不是通過。** 那正是這份報表要防的東西：沒有人在驗的檢查點，在散文裡
+# 與驗過的檢查點長得一模一樣。`uncovered` 欄位讓那個洞帶著理由，**但理由不改變判定**
+# ——寫理由是為了讓讀者知道那個洞是已知的，不是為了把它關掉。
+#
+# 未落地的版本（v0.2.0 以後）因此整版都是未涵蓋。那是正確的答案：那些功能還沒做，
+# 對照表沒有東西可以指。它們現在就列在這裡，是因為 `acceptance.sh v0.5.0` 應該回答
+# 「五條全部未涵蓋」，而不是「沒這個 milestone」——後者會讓一個打錯的版號看起來像通過。
+
+# ── v0.1.0 資料層與唯讀介面 ────────────────────────────────────────────────
+
+[[milestone]]
+id = 'v0.1.0'
+title = '資料層與唯讀介面'
+
+[[milestone.checkpoint]]
+number = 1
+text = 'ADR lint 可攔截：檔名格式錯誤、重號、缺 > 服務：、缺必要段落、Status 值非法（皆 fail），並對跳號與缺 Alternatives 印出警示（不擋）'
+specs = ['test/bats/unit/lint_adr.bats']
+
+[[milestone.checkpoint]]
+number = 2
+text = '可載入手寫清單檔；五種完整性錯誤（uid 重複、目標重複、來源不存在、路徑含 ..、格式未知）皆能攔截並回報具體原因'
+# 五種錯誤各指一條。來源不存在在 T15 而不是 T1：核心層無 I/O，load(text) 不讀磁碟，
+# 「清單裡每筆來源檔是否存在」由啟動前置檢查逐筆驗證（TEST-PLAN T1 的末段）。
+specs = [
+  'test/pytest/unit/test_config_list.py::test_valid_config_list_loads_with_correct_field_values',
+  'test/pytest/unit/test_config_list.py::test_duplicate_uid_raises_named_exception_identifying_both_entries',
+  'test/pytest/unit/test_config_list.py::test_duplicate_target_raises_named_exception_identifying_both_entries',
+  'test/pytest/unit/test_config_list.py::test_target_containing_dotdot_raises_named_exception',
+  'test/pytest/unit/test_config_list.py::test_disallowed_format_raises_named_exception',
+  'test/pytest/integration/test_preflight.py::test_missing_source_content_raises_named_exception_with_the_ref_and_path',
+]
+
+[[milestone.checkpoint]]
+number = 3
+text = '修改清單檔後寫出，註解與欄位順序完整保留'
+# 這一條是這份報表報過的第一個紅燈。#148 落地時 core/config_list.dump 還不支援改動
+# 與移除既有條目（兩者都是具名例外），沒有任何規格驗得了「修改後寫出仍保留註解與
+# 欄位順序」，所以它被判為未涵蓋、v0.1.0 非零結束。當時最容易做的事是把
+# test_dump_of_unchanged_config_list_is_byte_identical_to_input 這兩條填進來讓它轉綠
+# ——它們驗的是「沒有改動」與「只有附加」，不是這條檢查點說的那件事。
+#
+# #151（來由 #149）補上了改動、移除、以及三者同時發生的路徑，這裡才對得上。
+# 同一支腳本、同一份對照表，判定從未涵蓋變成通過，而腳本一行都沒有改。
+# 紅燈那一次的輸出記在 doc/changelog/CHANGELOG.md，因為一份從沒報過紅的報表
+# 證明不了它會報紅，而那件事在轉綠之後仍然要查得到。
+specs = [
+  'test/pytest/unit/test_config_list.py::test_dump_of_unchanged_config_list_is_byte_identical_to_input',
+  'test/pytest/unit/test_config_list.py::test_appending_an_entry_keeps_existing_entries_verbatim',
+  'test/pytest/unit/test_config_list.py::test_editing_an_entry_leaves_every_other_entry_byte_identical',
+  'test/pytest/unit/test_config_list.py::test_editing_one_field_leaves_the_entrys_other_fields_verbatim',
+  'test/pytest/unit/test_config_list.py::test_removing_an_entry_takes_its_comment_and_leaves_the_others_verbatim',
+  'test/pytest/unit/test_config_list.py::test_removing_the_first_entry_also_takes_the_comment_above_it',
+  'test/pytest/unit/test_config_list.py::test_adding_editing_and_removing_at_once_applies_all_three',
+]
+
+[[milestone.checkpoint]]
+number = 4
+text = '寫出中斷（模擬強制終止）不產生半殘檔案'
+specs = ['test/pytest/integration/test_writer.py::test_an_interrupted_write_leaves_the_target_and_no_debris']
+
+[[milestone.checkpoint]]
+number = 5
+text = '瀏覽器可開啟並看到清單與各項狀態；同一功能可由 CLI 完成'
+# test_api.py 指的是整個檔，不是裡面那一條。CLI 與介面走同一組端點的規格是
+# test_cli_list_goes_through_the_same_endpoint_as_the_page，但它單獨執行時是紅的：
+# 它讀的清單由同檔前面的 test_configs_carries_the_state_of_every_entry 寫進
+# session 範圍的 repo fixture。那是那份規格的順序相依，不是產品的行為——把它
+# 單獨列在這裡會得到一個假紅燈，而一份會亂喊狼來了的報表，與一份會說謊的報表
+# 一樣沒有人會信。整個檔是它真正的執行單位。順序相依本身另案處理。
+specs = [
+  'test/pytest/system/test_web.py::test_the_list_appears_once_an_identity_has_been_entered',
+  'test/pytest/system/test_web.py::test_every_entry_carries_the_state_the_backend_reported',
+  'test/pytest/system/test_api.py',
+  'test/pytest/unit/test_cli.py::test_list_shows_each_state_in_the_words_the_page_uses',
+]
+
+# ── v0.2.0 納管與白名單 ────────────────────────────────────────────────────
+
+[[milestone]]
+id = 'v0.2.0'
+title = '納管與白名單'
+
+[[milestone.checkpoint]]
+number = 1
+text = '能從介面納管至少三種格式的真實 config；納管後來源檔案與原始檔案逐位元組相同；正確記錄原始 owner／group／mode；hostname 自動填入且寫進檔案，重跑不因環境改變而變動'
+specs = []
+uncovered = '納管流程尚未落地（T6／T12 未落地）'
+
+[[milestone.checkpoint]]
+number = 2
+text = '含歧義值的檔案能列出警告清單（指名值與行號）且不阻擋匯入'
+specs = []
+uncovered = 'core/inference 尚未落地（T12、#9）'
+
+[[milestone.checkpoint]]
+number = 3
+text = '白名單可從介面新增與移除；移除時若有受影響項目會列出並要求確認；納管被拒的錯誤訊息含加入白名單的入口'
+specs = []
+uncovered = 'core/whitelist 尚未落地（T4、#11）'
+
+[[milestone.checkpoint]]
+number = 4
+text = '以 ../、符號連結兩種方式嘗試逃逸白名單皆被攔截'
+specs = []
+uncovered = '白名單本身尚未落地；T8 已有寫出路徑的逃逸攔截，但那不是白名單的判定（T4、#11）'
+
+# ── v0.3.0 參數編輯與進版 ──────────────────────────────────────────────────
+
+[[milestone]]
+id = 'v0.3.0'
+title = '參數編輯與進版'
+
+[[milestone.checkpoint]]
+number = 1
+text = '修改兩份 config 各存為草稿後，目標檔案皆未改變；按一次進版兩份一起送出，各產生一筆變更紀錄；任一份驗證失敗時整批不進版且指出是哪一份的哪一個參數'
+specs = []
+uncovered = 'core/drafts 尚未落地（T18、#18）'
+
+[[milestone.checkpoint]]
+number = 2
+text = '從介面修改一個 double 參數後進版，寫出的值帶小數點（不是整數）；註解與未修改欄位的格式完全保留'
+specs = []
+uncovered = 'io/parsers 的原樣寫回尚未落地（T6、#17）'
+
+[[milestone.checkpoint]]
+number = 3
+text = 'bool 欄位是核取方塊，結構上無法輸入非布林值'
+specs = []
+uncovered = '參數欄位表尚未落地（T11）'
+
+[[milestone.checkpoint]]
+number = 4
+text = '在文字層面注入 yes、Tab 縮排、尾隨空白、重複 key 四種違規皆被攔截並指出行號（重複 key 須列出所有出現行號）'
+specs = []
+uncovered = 'core/validate 尚未落地（T3、#16）'
+
+[[milestone.checkpoint]]
+number = 5
+text = '變更紀錄的作者正確；寫出後目標的權限符合清單檔；模擬寫出失敗時變更紀錄亦回滾'
+specs = []
+uncovered = '進版流程尚未落地；T7／T8 已各自有規格，但「寫出失敗時變更紀錄回滾」的接線還沒有'
+
+# ── v0.4.0 歷史與退版 ──────────────────────────────────────────────────────
+
+[[milestone]]
+id = 'v0.4.0'
+title = '歷史與退版'
+
+[[milestone.checkpoint]]
+number = 1
+text = '連續修改同一 config 三次後可退回第一版；退版後歷史仍可見全部四筆紀錄，歷史未被截斷；以 cfg 類型過濾時退版紀錄不出現；目標內容確實回到第一版'
+specs = []
+uncovered = '退版尚未落地'
+
+[[milestone.checkpoint]]
+number = 2
+text = '差異以參數為單位呈現（哪個參數從什麼變成什麼），不是文字行差異'
+specs = []
+uncovered = '參數層級的差異呈現尚未落地'
+
+# ── v0.5.0 偏離偵測與處置 ──────────────────────────────────────────────────
+
+[[milestone]]
+id = 'v0.5.0'
+title = '偏離偵測與處置'
+
+[[milestone.checkpoint]]
+number = 1
+text = '以 vim 直接修改一個已納管的目標檔案，掃描後判定為偏離且差異內容正確；執行覆蓋後回到一致；另一份執行納入後來源更新且產生 adopt 紀錄；刪除一個目標後判定為未部署且可修復'
+specs = []
+uncovered = 'T20／T21 已落地（雜湊與差異掃描），但覆蓋與納入的處置路徑還沒有'
+
+[[milestone.checkpoint]]
+number = 2
+text = '四種狀態在左側樹上以色點正確彙總'
+specs = []
+uncovered = '左側樹尚未落地（T11、v0.6.0）'
+
+# ── 核心流程完成檢查點（§8.2 的 ✔✔，跨 v0.1.0–v0.5.0）────────────────────
+
+[[milestone]]
+id = 'core-flow'
+title = '核心流程完成檢查點'
+
+[[milestone.checkpoint]]
+number = 1
+text = 'v0.1.0‒v0.5.0 全數通過'
+specs = []
+uncovered = '''這一條的驗收方式是把 acceptance.sh 對那五個 milestone 各跑一次而且全綠。
+它現在不可能通過——v0.1.0 的檢查點 3 就是未涵蓋的。刻意不讓腳本自動遞迴驗它：
+一條「其他條全過」的檢查點若由腳本自己回答，它會在報表壞掉的時候跟著壞掉。'''
+
+[[milestone.checkpoint]]
+number = 2
+text = '能以純介面完成一次完整週期：納管 → 修改 → 退版 → 偵測偏離 → 處置；同樣的週期也能以純 CLI 完成'
+specs = []
+uncovered = '驗收旅程 A1–A3 尚未落地；test/pytest/acceptance/ 目前是空的'
+
+[[milestone.checkpoint]]
+number = 3
+text = '整合測試對真實 git repo 執行且全數通過；core/ 的單元測試在無檔案系統、無 git 的環境下全數通過'
+specs = []
+uncovered = '''兩件事都已經成立，但沒有一條規格在斷言它們成立：
+「整合測試對真實 git repo 執行」是 test/pytest/integration/ 的性質，不是它裡面的某一條。
+要驗它需要一條觀察測試執行環境本身的規格，而那個測試介面還沒有議定。'''
+
+# ── v0.6.0 樹、搜尋與編輯鎖 ────────────────────────────────────────────────
+
+[[milestone]]
+id = 'v0.6.0'
+title = '樹、搜尋與編輯鎖'
+
+[[milestone.checkpoint]]
+number = 1
+text = '左側樹依 hostname 與群組正確分層，父節點彙總最嚴重狀態；雙擊展開參數，可同時展開三個以上 config 並各自儲存；搜尋 max_vel 能列出所有含該參數的 config 並在展開時定位到該列；搜尋 0.55 能找到值符合的參數'
+specs = []
+uncovered = '左側樹尚未落地；T14 的參數索引已落地，但介面側還沒有'
+
+[[milestone.checkpoint]]
+number = 2
+text = '開第二個分頁時顯示唯讀並指名持有者與開始時間；持有者關閉分頁後第二個分頁可取得編輯權；異常中斷後階段於逾時內自動釋放'
+specs = []
+uncovered = '編輯階段尚未落地（T13、#33）'
+
+# ── v0.7.0 Schema 驗證 ────────────────────────────────────────────────────
+
+[[milestone]]
+id = 'v0.7.0'
+title = 'Schema 驗證'
+
+[[milestone.checkpoint]]
+number = 1
+text = '對一份已納管的 config 產生 schema 骨架；把 double 參數改為整數在輸入當下即被擋；有範圍限制的參數超出範圍時即時標示；schema 的說明文字顯示在欄位旁'
+specs = []
+uncovered = 'schema 驗證尚未落地（T3、#16）'
+
+[[milestone.checkpoint]]
+number = 2
+text = '同一份 schema 能驗證 YAML、TOML、JSON 三種格式的 config（驗證的是解析後的資料結構）'
+specs = []
+uncovered = 'schema 驗證尚未落地（T3、#16）'
+
+# ── v0.8.0 跨欄位規則與複雜結構 ────────────────────────────────────────────
+
+[[milestone]]
+id = 'v0.8.0'
+title = '跨欄位規則與複雜結構'
+
+[[milestone.checkpoint]]
+number = 1
+text = '違反 min < max 類規則時顯示警告且 override 需填理由，理由出現在變更紀錄；規則檔的修改能實際改變驗證行為，且退版時規則一併回退'
+specs = []
+uncovered = '第 3 層驗證尚未落地（T3、#16）'
+
+[[milestone.checkpoint]]
+number = 2
+text = '陣列可從介面增刪元素並調整順序；巢狀物件以可折疊區塊呈現且縮排由系統產生'
+specs = []
+uncovered = '參數欄位表尚未落地（T11）'
+
+[[milestone.checkpoint]]
+number = 3
+text = '型別未知的項目退回文字區塊並明確標示為未結構化編輯'
+specs = []
+uncovered = 'core/inference 尚未落地（T12、#9）'
+
+# ── v0.9.0 部署模式與 UX ──────────────────────────────────────────────────
+
+[[milestone]]
+id = 'v0.9.0'
+title = '部署模式與 UX'
+
+[[milestone.checkpoint]]
+number = 1
+text = '部署模式下不顯示「記住此裝置」，閒置 10 分鐘自動退出並釋放編輯階段，剩餘 1 分鐘時提示可延長；模式由 backend 判定，前端改動無法繞過'
+specs = []
+uncovered = '部署模式判定與編輯階段尚未落地（T13、#33）'
+
+[[milestone.checkpoint]]
+number = 2
+# §8.2 這裡有兩個句號。後半句「全程無需詢問操作方式」是前一句的補述，
+# 獨立成條會得到一個沒有主詞的片段，所以併入前句——這是句號斷句規則的唯一例外。
+text = '由未參與開發的同事在無人指導下完成：納管一份新 config、修改並儲存、故意輸入錯誤值並依錯誤訊息自行修正、查看歷史並退版、處理一次偏離。全程無需詢問操作方式'
+specs = []
+uncovered = '''A5 是人工驗收旅程（TEST-PLAN：「只能由真的沒摸索過的人來測」），
+沒有任何自動化規格驗得了它。它會永遠停在未涵蓋，而那是誠實的答案：
+一條需要人的檢查點，不該因為機器跑完了就變成綠的。'''
+
+# ── v0.10.0 功能完整 ──────────────────────────────────────────────────────
+
+[[milestone]]
+id = 'v0.10.0'
+title = '功能完整（發布檢查點）'
+
+[[milestone.checkpoint]]
+number = 1
+text = '以實際專案的至少 10 份 config 完成納管，連續使用兩週無資料遺失；期間所有修改皆可從變更紀錄追溯至具體人員與時間；至少完成一次真實的退版；至少偵測到一次真實的偏離並正確處置；容器重啟後狀態完整保留；備份與復原程序實際演練過一次'
+specs = []
+uncovered = '''發布檢查點的驗收方式是連續兩週的真實使用，不是一次執行。
+與 v0.9.0 第 2 條同一種：需要人與時間的檢查點，永遠停在未涵蓋。'''

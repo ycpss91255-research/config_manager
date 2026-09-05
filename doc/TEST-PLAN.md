@@ -726,6 +726,8 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `script/check_file.sh` | `test/bats/unit/check_file.bats` |
 | `script/test.sh` | `test/bats/unit/test.bats` |
 | `script/lint_checkpoints.sh` | `test/bats/unit/lint_checkpoints.bats` |
+| `script/coverage_gate.sh` | `test/bats/unit/coverage_gate.bats` |
+| `script/acceptance.sh` | `test/bats/unit/acceptance.bats` |
 
 **`script/test.sh` 被觀察的不是 lint 規則，而是「缺工具不得靜默通過」**（#72）。
 它與四支 lint 同屬一個測試介面，因為觀察位置相同：命令列進去，結束碼與訊息出來。
@@ -751,6 +753,31 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 **`lint_checkpoints.sh` 不由 `script/test.sh` 執行，是 CI 的一個獨立 job。**
 它需要 GitHub API 讀被引用的 issue，而 `test.sh` 在容器裡跑、那裡沒有 token。規格以
 PATH 上的假 `gh` 替換，所以規格本身不需要網路，也不會因為某張真的 issue 被改動而轉紅。
+
+**`script/acceptance.sh` 被觀察的不是任何一條驗收檢查點，而是「這份報表會不會說謊」**
+（#148）。它讀 `doc/acceptance-checkpoints.toml`——設計 §8.2 的檢查點與規格之間的
+對照表——逐條**實際執行**對應的規格，印出每條檢查點的判定。它與其餘守門腳本同屬
+T19，因為觀察位置相同：命令列進去，結束碼與訊息出來。被觀察的行為：
+
+| 行為 | 通過條件 |
+|---|---|
+| 一條檢查點對不到任何規格 | 判定為**未涵蓋**，且整份報表非零結束（未涵蓋不是通過） |
+| 對照表指到不存在的規格 | **大聲失敗**，不安靜跳過，並指名是哪一條參照 |
+| 對照表指到不存在的 milestone | 大聲失敗，並列出對照表裡有哪些 milestone |
+| 對照表不存在或解析不了 | 大聲失敗，不回報「零條檢查點全部通過」 |
+| 某一條檢查點的規格轉紅 | **只有那一條**被報成未通過，其餘不受影響 |
+| 全部檢查點通過 | 結束碼 0；否則非零 |
+| 缺 `pytest`／`bats` | 大聲失敗——一支因為跑不動規格而回 0 的報表，就是不變式 2 的靜默通過 |
+
+**「未涵蓋」與「未通過」在輸出上分開，在結束碼上合併。** 兩者要做的事不同（一個是
+補規格，一個是修程式），但兩者都不是通過——而把「沒有人在驗」讀成「驗過了」，正是
+這整份報表存在的理由。對照表可以為一條未涵蓋的檢查點寫下理由，**理由不改變判定**：
+寫理由是為了讓讀者知道那個洞是已知的，不是為了把它關掉。
+
+**規格用的是替身對照表，不是真的那一份**（`CM_ACCEPTANCE_MAP` 與 `CM_ACCEPTANCE_ROOT`
+兩個覆寫點，與 `coverage_gate.sh` 的 `CM_COVERAGE_JSON` 同一個先例）。真的檢查點結果
+若參與這些規格，它們就會在別人修好 `dump` 的那天無故轉紅——而一組結果取決於別的規格
+有沒有跑的規格，測的不是這支腳本。
 
 **帳本記 commit 主旨，不記 SHA。** SHA 不是穩定識別碼：rebase 改寫它、squash 合併
 讓它從歷史裡消失，而這個 repo 規定推送前 rebase、要求分支與 base 同步、合併一律
@@ -870,12 +897,13 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/check_file.sh` | T19（單檔檢查的派工規則） | 已落地 |
 | `script/test.sh` | T19（缺工具不得靜默通過，#72） | 已落地 |
 | `script/coverage_gate.sh` | T19（四個門檻各自獨立、指名的只有轉紅的那一層） | 已落地 |
+| `script/acceptance.sh` | T19（未涵蓋不是通過、指到不存在的規格要失敗，#148） | 已落地 |
 | `script/{build,run,exec,stop,prune}.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/dispatch.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/{pre,post}/*.sh`（14 支） | 無——見「刻意的空格」 | 已落地 |
 | `script/local/cfg/cfg.sh` | 無——見「刻意的空格」 | 已落地 |
 
-這張表涵蓋 `find src -name '*.py'` 的 20 個檔案與 `find script -name '*.sh'` 的 30 支腳本，
+這張表涵蓋 `find src -name '*.py'` 的 20 個檔案與 `find script -name '*.sh'` 的 32 支腳本，
 逐一比對過（#74；`lint_messages.sh` 與 `check_file.sh` 於 #113 補入）。**新增一個模組或一支腳本時，這裡要一起加一列**——沒有一列的檔案，
 既不算被覆蓋，也不算刻意留空。
 
@@ -1023,3 +1051,9 @@ ADR-00000018：**沒有經過確認的測試介面，不寫測試。** 在寫任
 
 一個版本的實作是**多輪垂直切片**，直到該版本的驗收檢查點通過。
 **不是「先寫完該版本的所有測試再實作」**，那正是橫向切片的反模式。
+
+**「該版本的驗收檢查點通過了沒有」由 `script/acceptance.sh <milestone>` 回答，
+不由散文回答**（#148）。設計 §8.2 的每一條檢查點與驗收它的規格之間的對照，寫在
+`doc/acceptance-checkpoints.toml`——與本文件分開，因為兩者的讀者與更新時機不同：
+本文件講的是**從哪裡觀察**（測試介面），那份講的是**PDF 的哪一句被誰驗**。
+一條檢查點對不到任何規格時，那份報表判它**未涵蓋**，而未涵蓋不是通過。
