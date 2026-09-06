@@ -17,13 +17,12 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: script/lint_paths.sh
+用法：script/lint_paths.sh
 
-  fail  two tracked paths differ only by letter case (they collide on a
-        case-insensitive filesystem: macOS, Windows)
+  fail  兩條被追蹤的路徑只差在大小寫（在不分大小寫的檔案系統上會互相蓋掉：
+        macOS、Windows）
 
-Directory prefixes are included, so a file and a directory whose names differ
-only by case are caught too.
+目錄前綴也算在內，所以一個檔案與一個目錄只差大小寫時同樣抓得到。
 USAGE
 }
 
@@ -57,8 +56,9 @@ main() {
   while IFS= read -r key; do
     [[ -n "${key}" ]] || continue
     originals="$(printf '%s\n' "${paths}" | awk -v k="${key}" 'tolower($0) == k { printf "%s ", $0 }')"
-    printf 'FAIL  these paths differ only by case: %s\n' "${originals}" >&2
-    printf '      on macOS/Windows only one of them exists; the rest vanish from the checkout\n' >&2
+    printf 'FAIL  這幾條路徑只差在大小寫：%s\n' "${originals}" >&2
+    printf '      在 macOS 與 Windows 上只會存在其中一條，其餘的從簽出裡消失\n' >&2
+    printf '      下一步：把其中一條改名，讓兩者不再只差大小寫\n' >&2
     failures=$((failures + 1))
   done < <(printf '%s\n' "${paths}" | awk '{ print tolower($0) }' | sort | uniq -d)
 

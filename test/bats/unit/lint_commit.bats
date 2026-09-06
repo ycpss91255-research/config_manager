@@ -41,7 +41,7 @@ commit_subject() {
 
   run "${LINT}" "${BASE}"
   [ "${status}" -ne 0 ]
-  [[ "${output}" == *"Chinese"* ]]
+  [[ "${output}" == *"主旨沒有中文"* ]]
 }
 
 @test "不在允許集合內的 type 被擋下" {

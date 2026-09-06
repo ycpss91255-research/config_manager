@@ -96,7 +96,8 @@ dispatch_to_container() {
     exit 2
   fi
 
-  printf 'acceptance: building %s\n' "${TEST_IMAGE}" >&2
+  # 進度往 stdout：fd 2 是錯誤的出口，而建置進度不是錯誤（#108，同 test.sh）。
+  printf 'acceptance: 建置 %s\n' "${TEST_IMAGE}"
   local -a build=(docker build --quiet -f "${REPO_ROOT}/${TEST_DOCKERFILE}" -t "${TEST_IMAGE}")
   [[ -n "${CM_APT_MIRROR:-}" ]] && build+=(--build-arg "APT_MIRROR=${CM_APT_MIRROR}")
   "${build[@]}" "${REPO_ROOT}" >/dev/null
