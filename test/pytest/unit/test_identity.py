@@ -18,6 +18,33 @@ _UID_LEN = 8
 # 「有沒有斜線」：一則說「要絕對路徑」卻沒給例子的訊息，三要素只有兩個。
 _QUALIFYING_EXAMPLE = "/opt/robot/navigation/params.yaml"
 
+# 推不出名稱的形狀，逐一列出而不是只留代表。四種來源：沒有分隔符、有分隔符但相對、
+# 絕對但只有一層、以及空層級落在頭／中／尾。分開列是因為它們走的是不同的守門。
+_UNDERIVABLE_TARGET_PATHS = (
+    "",
+    "params",
+    "params.yaml",
+    "navigation/params.yaml",
+    "./params.yaml",
+    "../params.yaml",
+    "/",
+    "//",
+    "/params.yaml",
+    "/opt/robot/",
+    "/opt//params.yaml",
+)
+
+
+def _rejection(target_path: str) -> str:
+    """derive_name 拒絕這個輸入時說的話。
+
+    裸例外刻意不接住——它就是判準說的第三種結果，讓它從這一格炸出來，
+    traceback 才帶得出是哪一個輸入。
+    """
+    with pytest.raises(NameUnderivable) as exc:
+        derive_name(target_path)
+    return str(exc.value)
+
 
 def test_derive_name_from_nested_target_path():
     # /opt/robot/navigation/params.yaml → navigation-params（取最後二層、去副檔名）。
@@ -96,6 +123,19 @@ def test_derive_name_rejection_of_a_short_absolute_path_shows_a_qualifying_examp
         derive_name("/params.yaml")
 
     assert f"下一步：改傳兩層都在的絕對路徑，例如 {_QUALIFYING_EXAMPLE}" in str(exc.value)
+
+
+def test_derive_name_answers_every_underivable_shape_with_this_repos_own_exception():
+    # 判準（#126）：任何輸入，要嘛回一個名字，要嘛丟一個**這個 repo 定義的**例外，
+    # 沒有第三種。裸 IndexError 是第三種。
+    #
+    # 這一則寫下來的當下就是綠的——它的紅由突變檢查給出：拿掉任一條守門，這裡
+    # 就有輸入落回 IndexError（`params.yaml`）或落回一個帶空層級的名字（`/`）。
+    # 上面那幾則各自釘住一個形狀，這一則釘住的是「清單本身沒有漏洞」。
+    assert all(
+        target_path in _rejection(target_path)
+        for target_path in _UNDERIVABLE_TARGET_PATHS
+    )
 
 
 def test_new_uid_is_eight_char_base36():
