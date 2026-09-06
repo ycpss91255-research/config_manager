@@ -119,12 +119,16 @@ STUB
   [[ "${output}" == *"沒有引用"* ]]
 }
 
-@test "沒有驗收條件的 issue 通過" {
-  # 不是每張 issue 都帶勾選框；沒有框就沒有要對的帳。
+@test "被引用的 issue 沒有任何勾選框時擋下，訊息指名 issue 並說明下一步" {
+  # 一張空帳本的 issue 配一個 closes 的 PR，不應該直接合併。
+  # 帳本可以是空的——這是 #158 要修的。
   stub_gh "closes #42" "這張 issue 只是描述一件事，沒有驗收條件。"
 
   run "${LINT}" 1 "${BASE}"
-  [ "${status}" -eq 0 ]
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"#42"* ]]
+  [[ "${output}" == *"勾選"* ]]
+  [[ "${output}" == *"驗收條件"* ]]
 }
 
 @test "一個 PR 引用多張 issue 時，每一張都要對" {
