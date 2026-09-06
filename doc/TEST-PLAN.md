@@ -723,6 +723,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `script/lint_paths.sh` | `test/bats/unit/lint_paths.bats` |
 | `script/lint_portability.sh` | `test/bats/unit/lint_portability.bats` |
 | `script/lint_messages.sh` | `test/bats/unit/lint_messages.bats` |
+| `script/lint_coverage_audit.sh` | `test/bats/unit/lint_coverage_audit.bats` |
 | `script/check_file.sh` | `test/bats/unit/check_file.bats` |
 | `script/test.sh` | `test/bats/unit/test.bats` |
 | `script/lint_checkpoints.sh` | `test/bats/unit/lint_checkpoints.bats` |
@@ -731,7 +732,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `script/release.sh` | `test/bats/unit/release.bats` |
 
 **`script/test.sh` 被觀察的不是 lint 規則，而是「缺工具不得靜默通過」**（#72）。
-它與四支 lint 同屬一個測試介面，因為觀察位置相同：命令列進去，結束碼與訊息出來。
+它與上表其餘的 lint 同屬一個測試介面，因為觀察位置相同：命令列進去，結束碼與訊息出來。
 差別只在輸入多了一項——它以 `command -v` 判定工具在不在，所以「拿掉一支工具」
 只能靠**重建 `PATH`**，覆寫不掉。被觀察的行為：
 
@@ -947,6 +948,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/lint_portability.sh` | T19 | 已落地 |
 | `script/lint_checkpoints.sh` | T19 | 已落地（CI job，不由 `test.sh` 執行） |
 | `script/lint_messages.sh` | T19 | 已落地 |
+| `script/lint_coverage_audit.sh` | T19（這張表自己立的規則，表與樹對不起來就停下，#117） | 已落地 |
 | `script/check_file.sh` | T19（單檔檢查的派工規則） | 已落地 |
 | `script/test.sh` | T19（缺工具不得靜默通過，#72；worktree 的 git 目錄要掛進容器，#103） | 已落地 |
 | `script/coverage_gate.sh` | T19（每層門檻各自獨立、指名的只有轉紅的那一層） | 已落地 |
