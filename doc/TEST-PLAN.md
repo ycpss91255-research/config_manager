@@ -908,6 +908,11 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 **「狀態」欄是為了讓這張表不會被讀成「全部都已覆蓋」。** 未落地的模組，其測試介面是
 **預定的落點**，不是既有的證據；把兩者混在同一欄，表就會在最需要它誠實的時候說謊。
 
+它也會往相反的方向說謊，而且真的發生過（#117）：`api/session` 的身分那一半早就
+落地了，狀態欄卻還寫著「未落地」——**把已經有的證據講成沒有**。所以只落地一半的
+模組寫「部分落地」，並講明是哪一半、另一半在哪張 issue。判定看的是這一欄**開頭**
+那幾個字，`script/lint_coverage_audit.sh` 兩個方向都擋。
+
 | 模組 | 測試介面 | 狀態 |
 |---|---|---|
 | `core/config_list` | T1（結構）＋ T15（來源存在性） | 已落地 |
@@ -929,9 +934,9 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/scan` | T21 | 已落地 |
 | `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言 | 已落地 |
 | `io/parsers` | T6 | 未落地（#17） |
-| `api/routes` | T9 | 已落地（`GET /api/configs` 與 CORS 中介層） |
+| `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/session`、`GET /api/session` 與 CORS 中介層） |
 | `api/cli` | T10 | 已落地（`serve` 與 `list`） |
-| `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 未落地（#33） |
+| `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 部分落地：身分（`author`）已落地；階段的 acquire／renew／release／sweep 未落地（#33） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |
 | `web/` | T11 | 已落地。執行通路於 #97 補上：`test/pytest/system/test_web.py`，Playwright 驅動 Chromium，行覆蓋率由 V8 自己算 |
 | 四支 `__init__.py` | 無——見「刻意的空格」 | 已落地 |
