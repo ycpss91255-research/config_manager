@@ -134,6 +134,46 @@ def has_chinese(text):
     return any(is_chinese(ch) for ch in text)
 
 
+# 剔掉「人照著打進去的東西」之後，還剩多少英文字母。ADR-00000028 把執行期輸出納入
+# 中文的範圍，同一段又明寫**旗標名稱、環境變數名、路徑、指令、型別與函式名維持英文**
+# ——所以判準不能是「有沒有英文」，只能是「剔掉識別碼之後還有沒有散文」。
+#
+# 用字母數而不是字數：`docker compose build` 按字數是三個字、按語意是一個指令，
+# 而字數的門檻要調到讓它過的話，就擋不住 `unknown argument` 這種兩個字的英文訊息了。
+_URL = re.compile(r"[a-z][a-z0-9+.-]*://\S+")
+_FORMAT = re.compile(r"%[-#0 +']*[0-9]*(?:\.[0-9]+)?[a-zA-Z%]")
+_ESCAPE = re.compile(r"\\[nrtv\\]")
+_SHELL_VAR = re.compile(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9*@#?]")
+_FLAG = re.compile(r"(?<![A-Za-z0-9])--?[A-Za-z][A-Za-z0-9-]*")
+_PLACEHOLDER = re.compile(r"<[^<>\s]{1,40}>")
+_WORD = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*")
+
+# 門檻。實測而來，數字寫在 `doc/TEST-PLAN.md` 的 T19 與 #108 的 PR 描述裡。
+PROSE_LETTERS = 12
+
+
+def _machine(token):
+    """這個 token 是不是人照著打進去的識別碼。"""
+    return (
+        any(ch in token for ch in "_./-")
+        or any(ch.isdigit() for ch in token)
+        or token.isupper()
+    )
+
+
+def prose_letters(text):
+    """剔掉 URL、格式指示、跳脫、變數、旗標、佔位符與識別碼之後，剩下的英文字母數。"""
+    for pattern in (_URL, _FORMAT, _ESCAPE, _SHELL_VAR, _FLAG, _PLACEHOLDER):
+        text = pattern.sub(" ", text)
+    text = _WORD.sub(lambda m: " " if _machine(m.group(0)) else m.group(0), text)
+    return sum(1 for ch in text if ch.isascii() and ch.isalpha())
+
+
+def english_prose(text):
+    """帶散文、而且一個中文字都沒有——ADR-00000028 說那不合格。"""
+    return not has_chinese(text) and prose_letters(text) >= PROSE_LETTERS
+
+
 # ============================================================================
 # Python
 # ============================================================================
@@ -193,7 +233,7 @@ def python_sites(source, path):
             if not name or not name.rsplit(".", 1)[-1][:1].isupper():
                 continue
             text, holes = message_of(node.exc)
-            found.append((node.lineno, f"raise {name}", text, holes, False))
+            found.append((node.lineno, f"raise {name}", text, holes, False, "message"))
         elif isinstance(node, ast.Call) and dotted(node.func) == "print":
             to_stderr = any(
                 kw.arg == "file" and dotted(kw.value) == "sys.stderr"
@@ -202,7 +242,7 @@ def python_sites(source, path):
             if not to_stderr:
                 continue
             text, holes = message_of(node, PRINT_PLUMBING)
-            found.append((node.lineno, "print -> stderr", text, holes, False))
+            found.append((node.lineno, "print -> stderr", text, holes, False, "message"))
     return sorted(found)
 
 
@@ -249,9 +289,10 @@ class Unterminated(Exception):
 
 
 def logical_lines(lines):
-    """[(起始行號, [(kind, text), ...])]。kind 是 code／sq／dq。
+    """[(起始行號, [(kind, text), ...], heredoc 主體)]。kind 是 code／sq／dq。
 
-    heredoc 主體、註解與續行在這裡消化掉；引號跨行的算同一個邏輯行。
+    註解與續行在這裡消化掉；引號跨行的算同一個邏輯行。heredoc 主體不當程式碼看，
+    但**要帶出來**——`usage()` 的說明文字就住在那裡，而 ADR-00000028 管得到它。
     """
     out = []
     total = len(lines)
@@ -345,11 +386,13 @@ def logical_lines(lines):
             break
         pieces.append(("code", "".join(buf)))
         # heredoc 主體排在整個邏輯行之後，不是排在 `<<TAG` 之後。
+        body = []
         for tag in heredocs:
             while index < total and lines[index].strip() != tag:
+                body.append(lines[index])
                 index += 1
             index += 1
-        out.append((start + 1, pieces))
+        out.append((start + 1, pieces, "\n".join(body)))
     return out
 
 
@@ -370,11 +413,11 @@ def _writes_stderr(pieces):
 
 
 def _functions(logical):
-    """{函式名: [本體的邏輯行]}。收尾靠行首的 `}`，那是這個 repo 每支腳本的形狀。"""
+    """{函式名: [(邏輯行, heredoc 主體)]}。收尾靠行首的 `}`，那是每支腳本的形狀。"""
     bodies = {}
     open_name = None
     body = []
-    for _lineno, pieces in logical:
+    for lineno, pieces, heredoc in logical:
         code = _code(pieces)
         if open_name is None:
             match = _FUNC_OPEN.match(code)
@@ -386,7 +429,7 @@ def _functions(logical):
             bodies[open_name] = body
             open_name = None
             continue
-        body.append(pieces)
+        body.append((lineno, pieces, heredoc))
     return bodies
 
 
@@ -399,7 +442,7 @@ def _relay_functions(bodies):
     """
     names = set()
     for name, body in bodies.items():
-        writes = [pieces for pieces in body if _writes_stderr(pieces)]
+        writes = [pieces for _l, pieces, _h in body if _writes_stderr(pieces)]
         if writes and all(
             not has_chinese(_literal(pieces))
             and _RELAY_ARG.search(_code(pieces) + _literal(pieces))
@@ -417,9 +460,24 @@ def _help_functions(bodies):
     return {
         name
         for name, body in bodies.items()
-        if any("<<" in _code(pieces) for pieces in body)
-        and not any(_writes_stderr(pieces) for pieces in body)
+        if any("<<" in _code(pieces) for _l, pieces, _h in body)
+        and not any(_writes_stderr(pieces) for _l, pieces, _h in body)
     }
+
+
+def _usage_texts(bodies):
+    """[(行號, 說明文字)]——`usage()` 的 heredoc 主體。
+
+    這一條認 `usage` 這個名字，不像轉述函式那樣從結構推導。理由是**規範本身就是
+    對這個名字說的**：ADR-00000028 的適用範圍逐字寫著「`usage()` 的說明文字」。
+    別的 heredoc 不是說明文字——`entrypoint.sh` 的 `seed_toml()` 吐的是一份
+    `config-list.toml` 種子，要求它含中文只會是一條莫名其妙的規則。
+    """
+    found = []
+    for lineno, _pieces, heredoc in bodies.get("usage", []):
+        if heredoc:
+            found.append((lineno, heredoc))
+    return found
 
 
 def _calls(code, names):
@@ -438,7 +496,11 @@ MERGE_WINDOW = 2
 
 
 def shell_sites(source, path):
-    """(行號, 標籤, 訊息文字, 有沒有標的, 有沒有順帶傾印用法)。相鄰的出口已合併。"""
+    """(行號, 標籤, 文字, 有沒有標的, 有沒有順帶傾印用法, 種類)。相鄰的出口已合併。
+
+    種類是 `message`（錯誤訊息，受 §0.4 三要素管）或 `usage`（說明文字，只受
+    ADR-00000028 的語言規則管——說明文字本來就不是「發生了什麼」）。
+    """
     lines = source.splitlines()
     logical = logical_lines(lines)
     bodies = _functions(logical)
@@ -446,7 +508,7 @@ def shell_sites(source, path):
     helps = _help_functions(bodies)
 
     outlets = []
-    for lineno, pieces in logical:
+    for lineno, pieces, _body in logical:
         code = _code(pieces)
         label = None
         if _writes_stderr(pieces):
@@ -469,7 +531,7 @@ def shell_sites(source, path):
     # 邏輯行，所以編號時把它們跳過；剩下的距離就是 MERGE_WINDOW 在數的東西。
     order = {}
     position = 0
-    for lineno, pieces in logical:
+    for lineno, pieces, _body in logical:
         if not _code(pieces).strip() and not _literal(pieces):
             continue
         order[lineno] = position
@@ -489,7 +551,12 @@ def shell_sites(source, path):
             )
             continue
         merged.append((lineno, label, text, target, dumps_help, order[lineno]))
-    return [entry[:5] for entry in merged]
+    sites = [entry[:5] + ("message",) for entry in merged]
+    sites += [
+        (lineno, "usage()", text, True, True, "usage")
+        for lineno, text in _usage_texts(bodies)
+    ]
+    return sorted(sites)
 
 
 # ============================================================================
@@ -555,8 +622,37 @@ for root in roots:
             failures += 1
             continue
 
-        for lineno, label, text, has_target, dumps_help in sites:
+        for lineno, label, text, has_target, dumps_help, kind in sites:
             messages += 1
+            # ADR-00000028：人會讀到的執行期輸出以中文書寫。帶散文卻一個中文字都
+            # 沒有的，直接判失敗——這一條才是「翻完之後擋著它退回去」的那個東西
+            # （#108）。沒有散文的（`printf '%s\n' "${body}"`、`usage >&2`）仍然
+            # 判為轉述，因為它們本來就沒有語言可言。
+            # 說明文字**逐行**判定。整段只要有一個中文字就放行的話，一份二十行的
+            # 英文用法說明只要註解裡有一句中文就過關——`test.sh` 的 usage 當時正是
+            # 那個形狀。錯誤訊息不逐行判，因為相鄰的出口已經合併成一則了。
+            if kind == "usage":
+                bad = [line for line in text.splitlines() if english_prose(line)]
+                if bad:
+                    print(
+                        f"FAIL  {path}:{lineno}  {label}: 說明文字有 {len(bad)} 行是"
+                        f"英文散文——ADR-00000028 要求中文，只有旗標名、環境變數名、"
+                        f"路徑、指令、型別與函式名維持英文",
+                        file=sys.stderr,
+                    )
+                    print(f"      {excerpt(bad[0])}", file=sys.stderr)
+                    failures += 1
+                continue
+            if english_prose(text):
+                print(
+                    f"FAIL  {path}:{lineno}  {label}: 執行期輸出以英文散文書寫"
+                    f"——ADR-00000028 要求中文，只有旗標名、環境變數名、路徑、指令、"
+                    f"型別與函式名維持英文",
+                    file=sys.stderr,
+                )
+                print(f"      {excerpt(text)}", file=sys.stderr)
+                failures += 1
+                continue
             if not has_chinese(text):
                 print(
                     f"SKIP  {path}:{lineno}  {label}: no Chinese in it -- read as a relay "
