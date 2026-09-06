@@ -189,8 +189,310 @@ write_py() {
   [ "${status}" -eq 0 ]
 }
 
-@test "掃描的預設目標是 src/config_manager，且它現在是乾淨的" {
+@test "預設標的含 src/config_manager，且它現在是乾淨的" {
   cd "${REPO_ROOT}"
   run "${LINT}"
   [ "${status}" -eq 0 ]
+  [[ "${output}" == *"message(s) in src/config_manager"* ]]
+}
+
+# --- shell（#133）-----------------------------------------------------------
+#
+# `script/` 底下 32 支腳本的執行期輸出先前完全不在管轄內：預設標的是
+# `src/config_manager`，單檔模式明寫「不是 .py 就什麼都不檢查」。而
+# `doc/review/2026-09-04-pdf-conformance.md` 把 `script/` 「另計」、逐則人工判讀
+# ——人工判讀正是 §0.4 說「等同不存在」的那種規範。
+
+write_sh() {
+  cat >"${DIR}/$1"
+  chmod +x "${DIR}/$1"
+}
+
+@test "shell 的訊息缺「下一步：」被擋下，並指名檔案與行號" {
+  write_sh nofix.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  printf 'seed: 寫不進清單檔 %s\n' "$1" >&2
+  exit 1
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"nofix.sh:5"* ]]
+  [[ "${output}" == *"下一步"* ]]
+}
+
+@test "第一行說發生什麼、最後一行說下一步——相鄰的 stderr 寫入算同一則訊息" {
+  write_sh block.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  printf 'seed: 寫不進清單檔 %s\n' "$1" >&2
+  printf 'seed: 下一步：確認掛載點可寫，或改指到另一個 config-repo\n' >&2
+  exit 1
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "隔太遠的兩則訊息不會互相頂替：後一則的下一步救不了前一則" {
+  write_sh apart.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  printf 'seed: 寫不進清單檔 %s\n' "$1" >&2
+  cd /tmp
+  ls >/dev/null
+  cat /dev/null
+  printf 'seed: 下一步：確認掛載點可寫，或改指到另一個 config-repo\n' >&2
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"apart.sh:5"* ]]
+}
+
+@test "字面裡的 >&2 不是出口，不會被誤認成訊息" {
+  write_sh quoted.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  printf '把它寫成 foo >&2 就會送到標準錯誤\n'
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" != *"quoted.sh"* ]]
+}
+
+@test "heredoc 主體裡的中文散文不是訊息" {
+  write_sh heredoc.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+用法：script/heredoc.sh
+  說明文字，沒有下一步，也沒有任何標的
+USAGE
+}
+
+usage
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "註解裡的 >&2 不是出口" {
+  write_sh commented.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  # 這裡本來寫成 printf '格式錯誤\n' >&2，已經拿掉
+  return 0
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "轉述函式由結構推導：die 的呼叫點才是訊息，定義不是" {
+  write_sh relay.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() {
+  printf 'entrypoint: %s\n' "$*" >&2
+  exit 1
+}
+
+main() {
+  die "找不到 /etc/config-list.toml"
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"relay.sh:10"* ]]
+  [[ "${output}" == *"die()"* ]]
+}
+
+@test "只內插第一個位置參數的函式不算轉述函式：任何吃位置參數的函式都長那樣" {
+  write_sh positional.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  case "$1" in
+    *) printf 'build.sh: unknown argument %s\n' "$1" >&2; exit 2 ;;
+  esac
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" != *"main()"* ]]
+}
+
+@test "同一個出口把用法說明一起送到 fd 2 時，「該怎麼改」已經在使用者眼前" {
+  write_sh withusage.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: script/withusage.sh [--all]
+USAGE
+}
+
+main() {
+  case "${1:-}" in
+    --all) ;;
+    *) printf 'withusage.sh: 不認得的參數 %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "bash 解析不了的 shell 檔大聲失敗，不當作沒有訊息" {
+  write_sh broken.sh <<'SH'
+#!/usr/bin/env bash
+main() {
+  if [[ -z "$1" ]]; then
+    printf 'broken.sh: 壞了。下一步：修好它\n' >&2
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"broken.sh"* ]]
+  [[ "${output}" == *"NOT"* || "${output}" == *"cannot be parsed"* ]]
+}
+
+@test "不含中文的 shell 訊息判為轉述，不擋，但要被列出來" {
+  write_sh english.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  printf 'english.sh: something went wrong\n' >&2
+  exit 1
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"SKIP"* ]]
+  [[ "${output}" == *"english.sh:5"* ]]
+}
+
+@test "全大寫沒有底線的環境變數名算標的" {
+  write_sh envvar.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  printf 'release: gh 不在 PATH 上，release 建不起來\n' >&2
+  printf 'release: 下一步：安裝 gh，或改在有 gh 的 CI job 上執行\n' >&2
+  exit 1
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "被描述的那個「。」不足以判定訊息是中文" {
+  write_sh period.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  printf 'lint_commit: subject ends with a period (. or 。); drop it\n' >&2
+  exit 1
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"SKIP"* ]]
+}
+
+@test "給一支 shell 腳本時只檢查那一支" {
+  write_sh only.sh <<'SH'
+#!/usr/bin/env bash
+main() {
+  printf 'only.sh: 壞了 %s\n' "$1" >&2
+}
+SH
+  write_sh fine.sh <<'SH'
+#!/usr/bin/env bash
+main() {
+  printf 'fine.sh: 壞了 %s。下一步：修好它\n' "$1" >&2
+}
+SH
+
+  run "${LINT}" "${DIR}/fine.sh"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" != *"only.sh"* ]]
+
+  run "${LINT}" "${DIR}/only.sh"
+  [ "${status}" -ne 0 ]
+}
+
+
+@test "掃不下去時大聲失敗：讀不懂的引號不等於那底下沒有訊息" {
+  write_sh ansiquote.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  printf $'don\'t\n'
+  printf 'main: 壞了 %s\n' "$1" >&2
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"ansiquote.sh"* ]]
+  [[ "${output}" == *"NOT"* ]]
 }
