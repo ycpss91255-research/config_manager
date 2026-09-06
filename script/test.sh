@@ -110,6 +110,7 @@ _tool_install_hint() {
     shellcheck) printf 'apt-get install shellcheck' ;;
     bats) printf 'apt-get install bats' ;;
     hadolint) printf 'https://github.com/hadolint/hadolint/releases' ;;
+    just) printf 'https://github.com/casey/just/releases' ;;
     actionlint) printf 'https://github.com/rhysd/actionlint/releases' ;;
     *) printf 'see docker/Dockerfile.test-tools' ;;
   esac
@@ -279,6 +280,12 @@ run_bats_level() {
   (( ${#specs[@]} == 0 )) && return 0
 
   survey_tools bats
+  # unit 層有一則規格直接執行 justfile 的接線（#108），所以那一層還多需要 just。
+  # 不盤點的話，`just` 缺席時那則規格以 127 失敗——一個看起來像「接線壞了」的紅燈，
+  # 而實際上是「工具不在」。兩者的下一步完全不同。
+  if [[ "${level}" == "unit" ]]; then
+    survey_tools just
+  fi
   require_tool bats || return 0
   run_bats "test/bats/${level}" "${specs[@]}"
 }

@@ -20,6 +20,7 @@ FROM python:3.11-slim-bookworm
 ARG DEBIAN_FRONTEND=noninteractive
 ARG HADOLINT_VERSION=2.12.0
 ARG ACTIONLINT_VERSION=1.7.7
+ARG JUST_VERSION=1.42.4
 # 換鏡像的理由與 base 帶 APT_MIRROR_UBUNTU 相同：deb.debian.org 是一個 Fastly 的
 # anycast 位址，從開發這個 repo 的網路連不到；而一份只有在 GitHub runner 上建得起來
 # 的映像，當不了「所有人都在裡面跑檢查」的那份映像——那正是這個檔案唯一的工作。
@@ -49,12 +50,20 @@ RUN sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sou
 
 # 釘住版本，不用 "latest"：會在你腳下自己變動的 linter 會讓一筆無關的 commit 變紅，
 # 而遇到無法解釋的紅燈，人的第一個反應就是不再信任這個閘門。
+#
+# `just` 裝在這裡，是因為在它之前**整個 justfile 家族沒有任何東西執行過它**：主機沒有
+# `just`，這份映像也沒有，於是 `justfile` 的擴充點指向一個被 gitignore 的檔案這件事
+# 安靜地成立了不知道多久（#108）。#74 的盤點把 justfile 列為刻意的空格，理由是
+# 「薄 wrapper」——那個理由對**接線是否成立**不適用：接線壞掉時，薄不薄都一樣叫不動。
 RUN curl -fsSL -o /usr/local/bin/hadolint \
         "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-Linux-x86_64" \
     && chmod +x /usr/local/bin/hadolint \
     && curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
         | tar -xz -C /usr/local/bin actionlint \
-    && chmod +x /usr/local/bin/actionlint
+    && chmod +x /usr/local/bin/actionlint \
+    && curl -fsSL "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+        | tar -xz -C /usr/local/bin just \
+    && chmod +x /usr/local/bin/just
 
 COPY config/pip/requirements-dev.txt /tmp/requirements-dev.txt
 COPY config/pip/requirements.txt /tmp/requirements.txt
