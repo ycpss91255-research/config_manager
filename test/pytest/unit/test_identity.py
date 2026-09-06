@@ -7,9 +7,16 @@
 import datetime
 import string
 
+import pytest
+
+from config_manager.core.errors import NameUnderivable
 from config_manager.core.identity import derive_name, new_uid
 
 _UID_LEN = 8
+
+# 訊息裡那個合格的例子，與 T5 第一列的推導範例是同一條路徑。斷言整串而非
+# 「有沒有斜線」：一則說「要絕對路徑」卻沒給例子的訊息，三要素只有兩個。
+_QUALIFYING_EXAMPLE = "/opt/robot/navigation/params.yaml"
 
 
 def test_derive_name_from_nested_target_path():
@@ -30,6 +37,34 @@ def test_derive_name_converts_underscores_to_hyphens():
 def test_derive_name_dedupes_overlapping_levels():
     # 去重疊層級：/etc/docker/docker.json → docker（不是 docker-docker）。
     assert derive_name("/etc/docker/docker.json") == "docker"
+
+
+def test_derive_name_rejects_a_relative_path_naming_what_it_received():
+    # 相對路徑 → 具名例外，訊息指名收到的那一個路徑（不變式 2：大聲且具體）。
+    #
+    # 先前這裡丟的是 parts[-2] 的裸 IndexError。一個 IndexError 說不出被拒絕的是
+    # 什麼、也說不出該傳什麼進來，呼叫端只能靠 traceback 的行號回推——那正是核心層
+    # 其餘失敗都用具名例外的理由。
+    with pytest.raises(NameUnderivable) as exc:
+        derive_name("params.yaml")
+
+    assert "params.yaml" in str(exc.value)
+
+
+def test_derive_name_rejects_a_relative_path_that_already_has_two_levels():
+    # 有兩層但仍是相對路徑 → 一樣拒絕。T4 白名單判定要求絕對路徑，而這一條擋的是
+    # 「層數夠了就放行」——navigation/params.yaml 推得出 navigation-params，
+    # 一個看起來完全正常、但來源不是目標位置的名字。
+    with pytest.raises(NameUnderivable):
+        derive_name("navigation/params.yaml")
+
+
+def test_derive_name_rejection_shows_a_qualifying_absolute_path():
+    # 三要素的「該怎麼改」：訊息給一個合格的例子，不是只說「請改成絕對路徑」。
+    with pytest.raises(NameUnderivable) as exc:
+        derive_name("params.yaml")
+
+    assert f"下一步：改傳絕對路徑，例如 {_QUALIFYING_EXAMPLE}" in str(exc.value)
 
 
 def test_new_uid_is_eight_char_base36():
