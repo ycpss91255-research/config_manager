@@ -112,7 +112,7 @@ _check_issue() {
   unchecked="$(printf '%s\n' "${body}" | grep -cE '^[[:space:]]*- \[ \]' || true)"
   if ((unchecked > 0)); then
     printf 'FAIL #%s  還有 %s 條驗收條件沒有勾起來\n' "${issue}" "${unchecked}" >&2
-    printf '      都完成後才能開 PR。做不完就把這張 issue 拆小\n' >&2
+    printf '      下一步：都完成後才能開 PR。做不完就把這張 issue 拆小\n' >&2
     counter=$((counter + 1))
   fi
 
@@ -123,7 +123,7 @@ _check_issue() {
 
     if [[ "${text}" != *"${_SEPARATOR}"* ]]; then
       printf 'FAIL #%s  勾起來了但沒有記 commit：%s\n' "${issue}" "${text}" >&2
-      printf '      在該行後面加上「 — <commit 主旨>」。只勾不記，帳本只是一個聲明\n' >&2
+      printf '      下一步：在該行後面加上「 — <commit 主旨>」。只勾不記，帳本只是一個聲明\n' >&2
       counter=$((counter + 1))
       continue
     fi
@@ -131,7 +131,7 @@ _check_issue() {
     candidate="${text##*"${_SEPARATOR}"}"
     if ! _known_subject "${candidate}"; then
       printf 'FAIL #%s  記下的主旨在 git 歷史裡找不到：%s\n' "${issue}" "${candidate}" >&2
-      printf '      主旨要與 git log 的某一筆逐字相同（本 PR 或 main 的歷史都算）\n' >&2
+      printf '      下一步：主旨要與 git log 的某一筆逐字相同（本 PR 或 main 的歷史都算）\n' >&2
       counter=$((counter + 1))
     fi
   done < <(printf '%s\n' "${body}" | grep -E '^[[:space:]]*- \[x\]' || true)
