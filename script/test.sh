@@ -24,7 +24,7 @@ Usage: script/test.sh [--level <name>] [--lint [<tool>]] [--file <path>] [--filt
                       （同時跑該層級的 pytest 與 bats 規格）
   --lint [<tool>]     all linters, or one of:
                       ruff | mypy | pylint | shellcheck | hadolint | actionlint | commit | adr | paths
-                      | portability | messages | audit
+                      | portability | messages | audit | derived
   --file <path>       a single spec file
   --filter <regex>    specs matching a pattern
 
@@ -195,7 +195,8 @@ run_lint() {
         && ./script/lint_messages.sh
       ;;&
     audit|all) ./script/lint_coverage_audit.sh ;;&
-    ruff|mypy|pylint|shellcheck|hadolint|actionlint|commit|adr|paths|portability|messages|audit|all)
+    derived|all) ./script/lint_derived.sh ;;&
+    ruff|mypy|pylint|shellcheck|hadolint|actionlint|commit|adr|paths|portability|messages|audit|derived|all)
       return 0
       ;;
     *) printf 'test.sh: unknown linter %s\n' "${tool}" >&2; return 2 ;;

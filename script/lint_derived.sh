@@ -97,7 +97,7 @@ main() {
     [[ -n "${name}" ]] || continue
     while IFS= read -r line; do
       [[ -n "${line}" ]] || continue
-      printf 'FAIL %s:%s 抄了一份可推導的%s\n' "${target}" "${line}" "${name}" >&2
+      printf 'FAIL 抄了一份可推導的「%s」——%s:%s\n' "${name}" "${target}" "${line}" >&2
       printf '     下一步：拿掉那個數字，改成指向來源——%s\n' "${source}" >&2
       failures=$((failures + 1))
     done < <(grep -nE "${pattern}" "${target}" || true)
@@ -105,7 +105,7 @@ main() {
 
   while IFS= read -r line; do
     [[ -n "${line}" ]] || continue
-    printf 'FAIL %s:%s 提到測試介面或驗收旅程的代號\n' "${target}" "${line}" >&2
+    printf 'FAIL 提到測試介面或驗收旅程的代號——%s:%s\n' "${target}" "${line}" >&2
     printf '     下一步：拿掉它，改成指向 doc/TEST-PLAN.md 的「覆蓋率審計」\n' >&2
     printf '     哪個模組落在哪個介面、哪一層落地到哪裡，那張表是唯一的一份\n' >&2
     failures=$((failures + 1))
