@@ -27,20 +27,19 @@ readonly TEST_IMAGE="config_manager-test-tools:local"
 
 usage() {
   cat <<'USAGE'
-Usage: script/check_file.sh [<path>]
+用法：script/check_file.sh [<path>]
 
-  <path>  One file to check. Absolute or relative to the repo root.
-          With no argument, a Claude Code PostToolUse hook payload is read
-          from stdin and its tool_input.file_path is used.
+  <path>  要檢查的那一個檔案。絕對路徑，或相對於 repo 根目錄。
+          不帶參數時，從 stdin 讀 Claude Code 的 PostToolUse hook 酬載，
+          取其中的 tool_input.file_path。
 
-  src/**/*.py      ruff check, plus script/lint_messages.sh
-  script/**/*.sh   shellcheck --severity=warning, plus script/lint_messages.sh
-  anything else    nothing to check, exit 0
+  src/**/*.py      ruff check，外加 script/lint_messages.sh
+  script/**/*.sh   shellcheck --severity=warning，外加 script/lint_messages.sh
+  其餘             沒有可以單檔判定的檢查，結束碼 0
 
-Runs inside docker/Dockerfile.test-tools, and does NOT build it: a hook has to
-answer in seconds. This is not a substitute for ./script/test.sh or for CI --
-it only moves the same feedback earlier, and only for checks a single file can
-answer on its own.
+在 docker/Dockerfile.test-tools 裡執行，而且**不建置它**：hook 要在幾秒內回答。
+這支不是 ./script/test.sh 或 CI 的替代品——它只是把同一組回饋提前，而且只提前
+那些單一檔案就判定得了的檢查。
 USAGE
 }
 
@@ -49,7 +48,7 @@ USAGE
 hook_path() {
   [[ -t 0 ]] && return 0
   command -v python3 >/dev/null 2>&1 || {
-    printf 'check_file: python3 is not on PATH, so the hook payload was not read.\n' >&2
+    printf 'check_file: python3 不在 PATH 上，所以 hook 的酬載沒有被讀取。下一步：改用 ./script/test.sh\n' >&2
     return 0
   }
   python3 -c 'import json, sys
@@ -96,13 +95,14 @@ run_checks() {
 
 dispatch_to_container() {
   if ! command -v docker >/dev/null 2>&1; then
-    printf 'check_file: docker is not installed, so %s was NOT checked.\n' "$1" >&2
-    printf 'check_file: this is the early-feedback path only; ./script/test.sh and CI still gate.\n' >&2
+    printf 'check_file: docker 沒有安裝，所以 %s **沒有**被檢查。\n' "$1" >&2
+    printf 'check_file: 這條只是提前回饋的路徑，擋不擋得住仍由 ./script/test.sh 與 CI 決定。\n' >&2
+    printf 'check_file: 下一步：安裝 docker，或直接跑 ./script/test.sh\n' >&2
     return 0
   fi
   if ! docker image inspect "${TEST_IMAGE}" >/dev/null 2>&1; then
-    printf 'check_file: %s does not exist yet, so %s was NOT checked.\n' "${TEST_IMAGE}" "$1" >&2
-    printf 'check_file: run ./script/test.sh once to build it. Not built here: a hook has to be fast.\n' >&2
+    printf 'check_file: %s 還不存在，所以 %s **沒有**被檢查。\n' "${TEST_IMAGE}" "$1" >&2
+    printf 'check_file: 下一步：先跑一次 ./script/test.sh 把它建起來。這裡不建，是因為 hook 要快\n' >&2
     return 0
   fi
 
