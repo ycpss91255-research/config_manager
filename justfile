@@ -11,8 +11,17 @@
 mod docker 'script/justfile.docker'
 mod test 'script/justfile.test'
 
-# repo 自己的命令組，註冊在 script/local/justfile.local。用 `import?`，這樣註冊表
-# 是空的不算錯誤。
+# repo 擁有的東西由 repo 註冊，操作者擁有的由操作者註冊——兩者不共用同一個入口。
+#
+# `cfg` 是 repo 自己的命令組，`script/local/cfg/justfile.cfg` 與 `cfg.sh` 兩個檔案
+# 都在版控裡，所以這裡用 **`mod`（沒有問號）**：檔案不見了就大聲失敗。先前它是靠
+# `import? 'script/local/justfile.local'` 註冊的，而 `.gitignore` 的 `*.local` 讓
+# 那個檔案**永遠不存在於乾淨簽出**——問號使缺席不報錯，於是「repo 送出了一組沒有人
+# 叫得動的指令」安靜地成立（#108）。本 issue 原本傾向 `mod?`；改成 `mod`，因為問號
+# 正是讓這件事無聲的那個東西，而 repo 擁有的檔案不見了不是一個合法狀態（不變式 2）。
+mod cfg 'script/local/cfg/justfile.cfg'
+
+# 操作者自有的追加。這一個維持 `import?`：它本來就可能不存在，而那是合法的。
 import? 'script/local/justfile.local'
 
 default:
