@@ -110,6 +110,27 @@ ROWS
   [ "${status}" -eq 0 ]
 }
 
+@test "狀態寫「未落地」但檔案已經在的列被擋下，訊息指名那個檔案" {
+  _module core/state.py
+  _plan <<'ROWS'
+| `core/state` | T2 | 未落地（#58） |
+ROWS
+
+  run "${LINT}" "${WORK}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"src/config_manager/core/state.py"* ]]
+}
+
+@test "狀態寫「部分落地」的列不被當成宣告未落地" {
+  _module api/session.py
+  _plan <<'ROWS'
+| `api/session` | T13 | 部分落地：身分已落地；階段未落地（#33） |
+ROWS
+
+  run "${LINT}" "${WORK}"
+  [ "${status}" -eq 0 ]
+}
+
 @test "萬用字元的列同時涵蓋頂層與子套件的套件標記" {
   _module __init__.py
   _module core/__init__.py
