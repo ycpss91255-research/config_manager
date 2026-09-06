@@ -723,6 +723,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `script/lint_paths.sh` | `test/bats/unit/lint_paths.bats` |
 | `script/lint_portability.sh` | `test/bats/unit/lint_portability.bats` |
 | `script/lint_messages.sh` | `test/bats/unit/lint_messages.bats` |
+| `script/lint_derived.sh` | `test/bats/unit/lint_derived.bats` |
 | `script/check_file.sh` | `test/bats/unit/check_file.bats` |
 | `script/test.sh` | `test/bats/unit/test.bats` |
 | `script/lint_checkpoints.sh` | `test/bats/unit/lint_checkpoints.bats` |
@@ -942,6 +943,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/lint_portability.sh` | T19 | 已落地 |
 | `script/lint_checkpoints.sh` | T19 | 已落地（CI job，不由 `test.sh` 執行） |
 | `script/lint_messages.sh` | T19 | 已落地 |
+| `script/lint_derived.sh` | T19（文件不得抄一份可推導的東西，#98） | 已落地 |
 | `script/check_file.sh` | T19（單檔檢查的派工規則） | 已落地 |
 | `script/test.sh` | T19（缺工具不得靜默通過，#72；worktree 的 git 目錄要掛進容器，#103） | 已落地 |
 | `script/coverage_gate.sh` | T19（四個門檻各自獨立、指名的只有轉紅的那一層） | 已落地 |
@@ -952,7 +954,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/hooks/{pre,post}/*.sh`（14 支） | 無——見「刻意的空格」 | 已落地 |
 | `script/local/cfg/cfg.sh` | 無——見「刻意的空格」 | 已落地 |
 
-這張表涵蓋 `find src -name '*.py'` 的 20 個檔案與 `find script -name '*.sh'` 的 32 支腳本，
+這張表涵蓋 `find src -name '*.py'` 的 20 個檔案與 `find script -name '*.sh'` 的 34 支腳本，
 逐一比對過（#74；`lint_messages.sh` 與 `check_file.sh` 於 #113 補入）。**新增一個模組或一支腳本時，這裡要一起加一列**——沒有一列的檔案，
 既不算被覆蓋，也不算刻意留空。
 
