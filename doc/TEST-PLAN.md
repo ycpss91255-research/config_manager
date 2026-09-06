@@ -723,6 +723,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `script/lint_paths.sh` | `test/bats/unit/lint_paths.bats` |
 | `script/lint_portability.sh` | `test/bats/unit/lint_portability.bats` |
 | `script/lint_messages.sh` | `test/bats/unit/lint_messages.bats` |
+| `script/lint_coverage_audit.sh` | `test/bats/unit/lint_coverage_audit.bats` |
 | `script/check_file.sh` | `test/bats/unit/check_file.bats` |
 | `script/test.sh` | `test/bats/unit/test.bats` |
 | `script/lint_checkpoints.sh` | `test/bats/unit/lint_checkpoints.bats` |
@@ -731,7 +732,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `script/release.sh` | `test/bats/unit/release.bats` |
 
 **`script/test.sh` 被觀察的不是 lint 規則，而是「缺工具不得靜默通過」**（#72）。
-它與四支 lint 同屬一個測試介面，因為觀察位置相同：命令列進去，結束碼與訊息出來。
+它與上表其餘的 lint 同屬一個測試介面，因為觀察位置相同：命令列進去，結束碼與訊息出來。
 差別只在輸入多了一項——它以 `command -v` 判定工具在不在，所以「拿掉一支工具」
 只能靠**重建 `PATH`**，覆寫不掉。被觀察的行為：
 
@@ -908,10 +909,15 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 **「狀態」欄是為了讓這張表不會被讀成「全部都已覆蓋」。** 未落地的模組，其測試介面是
 **預定的落點**，不是既有的證據；把兩者混在同一欄，表就會在最需要它誠實的時候說謊。
 
+它也會往相反的方向說謊，而且真的發生過（#117）：`api/session` 的身分那一半早就
+落地了，狀態欄卻還寫著「未落地」——**把已經有的證據講成沒有**。所以只落地一半的
+模組寫「部分落地」，並講明是哪一半、另一半在哪張 issue。判定看的是這一欄**開頭**
+那幾個字，`script/lint_coverage_audit.sh` 正反兩邊都擋。
+
 | 模組 | 測試介面 | 狀態 |
 |---|---|---|
 | `core/config_list` | T1（結構）＋ T15（來源存在性） | 已落地 |
-| `core/errors` | T1——六個具名例外於載入／寫回時逐一被斷言 | 已落地 |
+| `core/errors` | T1——各具名例外於載入／寫回時逐一被斷言 | 已落地 |
 | `core/state` | T2 | 已落地 |
 | `core/identity` | T5 | 已落地 |
 | `core/index` | T14 | 已落地 |
@@ -929,12 +935,12 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/scan` | T21 | 已落地 |
 | `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言 | 已落地 |
 | `io/parsers` | T6 | 未落地（#17） |
-| `api/routes` | T9 | 已落地（`GET /api/configs` 與 CORS 中介層） |
+| `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/session`、`GET /api/session` 與 CORS 中介層） |
 | `api/cli` | T10 | 已落地（`serve` 與 `list`） |
-| `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 未落地（#33） |
+| `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 部分落地：身分（`author`）已落地；階段的 acquire／renew／release／sweep 未落地（#33） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |
 | `web/` | T11 | 已落地。執行通路於 #97 補上：`test/pytest/system/test_web.py`，Playwright 驅動 Chromium，行覆蓋率由 V8 自己算 |
-| 四支 `__init__.py` | 無——見「刻意的空格」 | 已落地 |
+| `**/__init__.py` | 無——見「刻意的空格」 | 已落地 |
 | `script/entrypoint.sh` | T15 | 已落地 |
 | `script/lint_adr.sh` | T19 | 已落地 |
 | `script/lint_commit.sh` | T19 | 已落地 |
@@ -942,22 +948,31 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/lint_portability.sh` | T19 | 已落地 |
 | `script/lint_checkpoints.sh` | T19 | 已落地（CI job，不由 `test.sh` 執行） |
 | `script/lint_messages.sh` | T19 | 已落地 |
+| `script/lint_coverage_audit.sh` | T19（這張表自己立的規則，表與樹對不起來就停下，#117） | 已落地 |
 | `script/check_file.sh` | T19（單檔檢查的派工規則） | 已落地 |
 | `script/test.sh` | T19（缺工具不得靜默通過，#72；worktree 的 git 目錄要掛進容器，#103） | 已落地 |
-| `script/coverage_gate.sh` | T19（四個門檻各自獨立、指名的只有轉紅的那一層） | 已落地 |
+| `script/coverage_gate.sh` | T19（每層門檻各自獨立、指名的只有轉紅的那一層） | 已落地 |
 | `script/acceptance.sh` | T19（未涵蓋不是通過、指到不存在的規格要失敗，#148） | 已落地 |
 | `script/release.sh` | T19（紅的 rc 仍發得出去、紅的正式 tag 發不出去，#150） | 已落地 |
 | `script/{build,run,exec,stop,prune}.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/dispatch.sh` | 無——見「刻意的空格」 | 已落地 |
-| `script/hooks/{pre,post}/*.sh`（14 支） | 無——見「刻意的空格」 | 已落地 |
+| `script/hooks/{pre,post}/*.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/local/cfg/cfg.sh` | 無——見「刻意的空格」 | 已落地 |
 
-這張表涵蓋 `find src -name '*.py'` 的 20 個檔案與 `find script -name '*.sh'` 的 32 支腳本，
-逐一比對過（#74；`lint_messages.sh` 與 `check_file.sh` 於 #113 補入）。**新增一個模組或一支腳本時，這裡要一起加一列**——沒有一列的檔案，
-既不算被覆蓋，也不算刻意留空。
+這張表涵蓋 `src/` 底下的每個 `.py` 與 `script/` 底下的每支 `.sh`。**新增一個模組或
+一支腳本時，這裡要一起加一列**——沒有一列的檔案，既不算被覆蓋，也不算刻意留空。
 
-盤點於 #74 完成時的 repo 狀態；其後合併的 `io/scan`（T21）、`web/index.html`、
-`api/cli` 的 `list` 已補入。
+**表與樹對不對得起來，由 `script/lint_coverage_audit.sh` 檢查，不由這裡的一個數字
+宣稱。** 原本這裡寫著涵蓋幾個檔案與幾支腳本，而那個數字漂了兩輪：#104 加了
+`api/errors` 與 `api/session` 卻沒加列，`.py` 的數字從此少了三；#113 把腳本那半補齊
+之後，#150 的 `script/release.sh` 又讓 `.sh` 的數字少了一。一份需要有人手動維持一致的數量，
+遲早會與它宣稱的東西不符，而讀者無從分辨——那正是不變式 9 說的「可從樹推導出來的
+數字或清單，在被閱讀時計算，不存進一份需要有人手動維持一致的追蹤檔案」。
+
+留在這裡的是產生器做不出來的那一半：**哪個模組落在哪個測試介面、以及為什麼**。
+
+列的第一欄是一個路徑樣式：`{a,b}` 展開、`*` 只比對單一路徑段、`**/` 比對任意深度；
+副檔名沒寫就是 `.py`。`web/` 那一列指的是 HTML 入口，不在 `.py`／`.sh` 的稽核範圍內。
 
 ### 流程 → 測試介面
 
