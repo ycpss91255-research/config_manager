@@ -159,7 +159,8 @@ run_lint() {
   case "${tool}" in
     all) survey_tools ruff mypy pylint shellcheck hadolint actionlint python3 ;;
     ruff|mypy|pylint|shellcheck|hadolint|actionlint) survey_tools "${tool}" ;;
-    # lint_messages 讀 Python 的 AST，所以它需要的工具是直譯器本身。
+    # lint_messages 讀 Python 的 AST，所以它需要的工具是直譯器本身。shell 那一半
+    # 另外需要 bash（用 `bash -n` 確認檔案真的解析得了），而這支腳本自己就是 bash。
     messages) survey_tools python3 ;;
   esac
 
@@ -191,6 +192,9 @@ run_lint() {
     paths|all) ./script/lint_paths.sh ;;&
     portability|all) ./script/lint_portability.sh ;;&
     messages|all)
+      # 不帶參數：標的是 lint_messages.sh 自己的預設，也就是 src/config_manager
+      # **加上 script/**（#133）。先前只有前者，於是 32 支腳本的執行期輸出完全不在
+      # 三要素的管轄內，而 review 只能逐則人工判讀——§0.4 說那等同不存在。
       require_tool python3 \
         && ./script/lint_messages.sh
       ;;&
