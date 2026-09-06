@@ -36,7 +36,10 @@
 # **不含中文的訊息不擋，但會被列出來。** 介面文案一律中文（CONTEXT.md），所以純
 # ASCII 的字串是 usage 行，或 `print(f"preflight: {error}")` 這種轉述既有訊息的殼——
 # 它轉述的那則訊息本身已經在這支 lint 的管轄裡。這是已知的漏洞：用英文寫的、真的
-# 面向使用者的訊息會從這裡溜過去。所以它們**逐則印出來**，不是靜默跳過（不變式 2）。
+# 面向使用者的訊息會從這裡溜過去。所以它們**逐則印出來**，不是靜默跳過（不變式 2），
+# 而且**每個標的結束時再把數量印成一段大聲的結論**——`script/` 的執行期輸出目前
+# 幾乎全是英文（#106／#108），一個「掃了、每則都跳過、回報 0 violation」的摘要
+# 比不掃更危險，因為它看起來在檢查（#133）。
 #
 # Python 那邊用 python3 的 ast 而不是 grep：訊息會跨行、會隱含串接、括號會出現在
 # 字串裡面，而這三件事在這個 repo 的訊息裡同時發生。用正規式去逼近它只會得到一支
@@ -56,8 +59,8 @@ Usage: script/lint_messages.sh [<path>...]
   fail  a user-facing message names nothing concrete (no interpolation, no
         env var, path or filename to point at)
   fail  a source file cannot be parsed, so its messages were not checked
-  skip  a message with no Chinese in it -- a relay or a usage line; listed,
-        not silent
+  skip  a message with no Chinese in it -- a relay or a usage line; listed
+        one by one, and counted again in a loud closing note
 
 Checked: raise <NamedException>(...) messages and print(..., file=sys.stderr)
 in Python; writes to fd 2 and relay-function calls in shell.
@@ -518,6 +521,7 @@ def collect(path):
 
 roots = [pathlib.Path(arg) for arg in sys.argv[1:]]
 failures = 0
+skipped_overall = []
 
 for root in roots:
     if not root.exists():
@@ -556,6 +560,7 @@ for root in roots:
                     f"or a usage line, not a user-facing message"
                 )
                 skipped += 1
+                skipped_overall.append(f"{path}:{lineno}  {label}")
                 continue
             reasons = []
             if DIRECTIVE not in text and not dumps_help:
@@ -571,6 +576,28 @@ for root in roots:
     print(
         f"lint_messages: {messages} message(s) in {root} -- "
         f"{skipped} relayed/not user-facing, {failures} violation(s)"
+    )
+
+# 跳過的數量印成一段大聲的結論，不是摘要行裡的一個數字（#133）。`script/` 的執行期
+# 輸出目前幾乎全是英文，所以「不含中文 → 轉述」那條規則對它幾乎全面生效——一份
+# 「掃了、每則都跳過、0 violation」的報告看起來與真的檢查過一模一樣，而那正是
+# 不變式 2 禁止的形狀。數量與比例一起印，因為「98 則裡跳過 3 則」與「98 則裡跳過
+# 95 則」是兩件完全不同的事，而摘要行的那個數字分不出來。
+if skipped_overall:
+    total = len(skipped_overall)
+    print(
+        f"\nlint_messages: 上面有 {total} 則訊息不含中文，判準對它們一則都沒有生效。",
+        file=sys.stderr,
+    )
+    print(
+        "lint_messages: 那不是「檢查過而且通過」——用英文寫的、真的面向使用者的訊息"
+        "會從「不含中文 → 轉述」這條底下溜過去。",
+        file=sys.stderr,
+    )
+    print(
+        "lint_messages: 下一步：把 script/ 的執行期輸出改成中文（ADR-00000028、#108），"
+        "改完這份清單會自己縮短",
+        file=sys.stderr,
     )
 
 raise SystemExit(1 if failures else 0)

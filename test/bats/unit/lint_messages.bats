@@ -400,7 +400,7 @@ SH
   [[ "${output}" == *"NOT"* || "${output}" == *"cannot be parsed"* ]]
 }
 
-@test "不含中文的 shell 訊息判為轉述，不擋，但要被列出來" {
+@test "不含中文的 shell 訊息判為轉述，但跳過的數量印成一段大聲的結論" {
   write_sh english.sh <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -417,6 +417,8 @@ SH
   [ "${status}" -eq 0 ]
   [[ "${output}" == *"SKIP"* ]]
   [[ "${output}" == *"english.sh:5"* ]]
+  [[ "${output}" == *"1 則訊息不含中文"* ]]
+  [[ "${output}" == *"下一步"* ]]
 }
 
 @test "全大寫沒有底線的環境變數名算標的" {
@@ -476,7 +478,6 @@ SH
   run "${LINT}" "${DIR}/only.sh"
   [ "${status}" -ne 0 ]
 }
-
 
 @test "掃不下去時大聲失敗：讀不懂的引號不等於那底下沒有訊息" {
   write_sh ansiquote.sh <<'SH'
