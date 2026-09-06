@@ -17,27 +17,26 @@ readonly TEST_DOCKERFILE="docker/Dockerfile.test-tools"
 
 usage() {
   cat <<'USAGE'
-Usage: script/test.sh [--level <name>] [--lint [<tool>]] [--file <path>] [--filter <regex>]
+用法：script/test.sh [--level <name>] [--lint [<tool>]] [--file <path>] [--filter <regex>]
 
-  (no arguments)      lint + all levels + coverage
+  （不帶參數）        lint ＋ 全部層級 ＋ 覆蓋率
   --level <name>      unit | integration | system | acceptance
                       （同時跑該層級的 pytest 與 bats 規格）
-  --lint [<tool>]     all linters, or one of:
+  --lint [<tool>]     全部 linter，或指定其中一項：
                       ruff | mypy | pylint | shellcheck | hadolint | actionlint | commit | adr | paths
                       | portability | messages
-  --file <path>       a single spec file
-  --filter <regex>    specs matching a pattern
+  --file <path>       單一規格檔
+  --filter <regex>    符合這個樣式的規格
 
-Runs inside docker/Dockerfile.test-tools, which carries every checker.
-The host is not evidence about the project: its Python, its pytest and its
-absent linters have each produced a wrong answer here before.
+在 docker/Dockerfile.test-tools 裡執行，那份映像帶齊每一支檢查工具。
+主機不是這個專案的證據：它的 Python、它的 pytest、它缺席的 linter，
+三者都在這裡給過錯誤的答案。
 
-Whatever did not actually run is listed at the end: specs that skipped
-themselves, and levels that hold no specs at all. Neither fails the run --
-they are not broken -- but neither is allowed to be quiet either.
+這次執行**沒有真的跑到**的東西列在最後：自己跳過的規格，以及一條規格都沒有的
+層級。兩者都不算失敗（它們不是壞的），但兩者都不准安靜。
 
-  CM_TEST_LOCAL=1     run on this host instead. Whatever is missing is
-                      named and skipped -- a loud skip, still not a check.
+  CM_TEST_LOCAL=1     改在這台主機上跑。缺什麼會被指名並跳過——大聲的跳過，
+                      仍然不是一項檢查。
 USAGE
 }
 
@@ -45,13 +44,16 @@ USAGE
 # `just test` 與 CI 走同一條路徑，所以一項檢查不可能在一邊過、在另一邊掛。
 dispatch_to_container() {
   if ! command -v docker >/dev/null 2>&1; then
-    printf 'test.sh: docker is not installed, so the checks cannot run in their image.\n' >&2
-    printf 'test.sh: install docker, or set CM_TEST_LOCAL=1 to run on this host with whatever it has.\n' >&2
+    printf 'test.sh: docker 沒有安裝，所以檢查沒有它們的映像可以跑\n' >&2
+    printf 'test.sh: 下一步：安裝 docker，或設 CM_TEST_LOCAL=1 以這台主機現有的工具執行\n' >&2
     exit 1
   fi
 
   # 有快取時很便宜；只有 Dockerfile 或釘住的 requirements 真的變了，層才會重建。
-  printf 'test.sh: building %s\n' "${TEST_IMAGE}" >&2
+  # 進度往 stdout，不往 fd 2。**fd 2 是錯誤的出口**，而建置進度不是錯誤——寫到
+  # 那裡的話，它會落在 §0.4 三要素的管轄內，而「下一步」對一行進度訊息沒有意義
+  # （#108 實測）。
+  printf 'test.sh: 建置 %s\n' "${TEST_IMAGE}"
   local -a _build=(docker build --quiet -f "${REPO_ROOT}/${TEST_DOCKERFILE}" -t "${TEST_IMAGE}")
   # 映像預設用台灣的 Debian 鏡像，因為從開發這個 repo 的網路連不到
   # deb.debian.org。在別的地方答案不同的話，設 CM_APT_MIRROR，不要改檔案。
@@ -110,6 +112,7 @@ _tool_install_hint() {
     shellcheck) printf 'apt-get install shellcheck' ;;
     bats) printf 'apt-get install bats' ;;
     hadolint) printf 'https://github.com/hadolint/hadolint/releases' ;;
+    just) printf 'https://github.com/casey/just/releases' ;;
     actionlint) printf 'https://github.com/rhysd/actionlint/releases' ;;
     *) printf 'see docker/Dockerfile.test-tools' ;;
   esac
@@ -128,18 +131,18 @@ survey_tools() {
   done
   (( ${#missing[@]} == 0 )) && return 0
 
-  printf 'test.sh: this host is missing %d of the %d checkers this run needs:\n' \
-    "${#missing[@]}" "${#needed[@]}" >&2
+  printf 'test.sh: 這次執行需要 %d 支檢查工具，這台主機少了 %d 支。下一步：照下面每一行後面的方式取得\n' \
+    "${#needed[@]}" "${#missing[@]}" >&2
   for t in "${missing[@]}"; do
     printf '  %-11s %s\n' "${t}" "$(_tool_install_hint "${t}")" >&2
   done
   if [[ "${CM_LINT_ALLOW_MISSING:-}" == "1" ]]; then
-    printf 'test.sh: CM_LINT_ALLOW_MISSING=1 -- continuing, and the above did NOT run.\n' >&2
-    printf 'test.sh: a run with skips is not a passing run. Prefer dropping CM_TEST_LOCAL.\n' >&2
+    printf 'test.sh: CM_LINT_ALLOW_MISSING=1——繼續往下跑，而上面那幾項沒有執行\n' >&2
+    printf 'test.sh: 有跳過的執行不算通過。下一步：拿掉 CM_TEST_LOCAL，改用帶齊工具的映像\n' >&2
     return 0
   fi
-  printf 'test.sh: install them, drop CM_TEST_LOCAL to use the image that has them,\n' >&2
-  printf 'test.sh: or set CM_LINT_ALLOW_MISSING=1 to run the rest and be told what was skipped.\n' >&2
+  printf 'test.sh: 下一步：把它們裝起來，或拿掉 CM_TEST_LOCAL 改用帶齊工具的映像，\n' >&2
+  printf 'test.sh: 也可以設 CM_LINT_ALLOW_MISSING=1 跑其餘的，並被告知哪幾項沒跑\n' >&2
   exit 1
 }
 
@@ -201,7 +204,7 @@ run_lint() {
     ruff|mypy|pylint|shellcheck|hadolint|actionlint|commit|adr|paths|portability|messages|all)
       return 0
       ;;
-    *) printf 'test.sh: unknown linter %s\n' "${tool}" >&2; return 2 ;;
+    *) printf 'test.sh: 不認得的 linter %s。下一步：見 --help 列出的那幾項\n' "${tool}" >&2; return 2 ;;
   esac
 }
 
@@ -237,11 +240,10 @@ report_not_run() {
     return 0
   fi
 
-  printf '\ntest.sh: %d spec(s)/level(s) did NOT run in this invocation:\n' "${#lines[@]}" >&2
+  printf '\ntest.sh: 這次執行有 %d 項規格或層級**沒有真的跑到**：\n' "${#lines[@]}" >&2
   printf '  %s\n' "${lines[@]}" >&2
-  printf 'test.sh: a spec that always skips is not a check, and a level with no\n' >&2
-  printf 'test.sh: specs is not a covered level. Each line above needs a reason\n' >&2
-  printf 'test.sh: written down in doc/TEST-PLAN.md, or it is a gap.\n' >&2
+  printf 'test.sh: 一條每次都跳過的規格不是檢查，一個沒有規格的層級不是被涵蓋的層級。\n' >&2
+  printf 'test.sh: 下一步：上面每一行都要在 doc/TEST-PLAN.md 有寫下來的理由，否則就是缺口\n' >&2
 }
 
 # shell 用 bats 測，Python 用 pytest 測；一個層級有哪種規格就跑哪種。bats 不在時
@@ -279,6 +281,12 @@ run_bats_level() {
   (( ${#specs[@]} == 0 )) && return 0
 
   survey_tools bats
+  # unit 層有一則規格直接執行 justfile 的接線（#108），所以那一層還多需要 just。
+  # 不盤點的話，`just` 缺席時那則規格以 127 失敗——一個看起來像「接線壞了」的紅燈，
+  # 而實際上是「工具不在」。兩者的下一步完全不同。
+  if [[ "${level}" == "unit" ]]; then
+    survey_tools just
+  fi
   require_tool bats || return 0
   run_bats "test/bats/${level}" "${specs[@]}"
 }
@@ -302,7 +310,7 @@ run_pytest_level() {
     mapfile -t specs < <(find "${dir}" -name 'test_*.py' -type f | sort)
   fi
   if (( ${#specs[@]} == 0 )); then
-    _note_not_run "test/pytest/${level}/ -- the level has no specs at all"
+    _note_not_run "test/pytest/${level}/ —— 這一層一條規格都沒有"
     return 0
   fi
 
@@ -321,7 +329,7 @@ note_levels_without_specs() {
       mapfile -t specs < <(find "${dir}" -name 'test_*.py' -type f | sort)
     fi
     if (( ${#specs[@]} == 0 )); then
-      _note_not_run "test/pytest/${level}/ -- the level has no specs at all"
+      _note_not_run "test/pytest/${level}/ —— 這一層一條規格都沒有"
     fi
   done
 }
@@ -367,7 +375,7 @@ main() {
       esac
       ;;
     --filter) shift; [[ $# -gt 0 ]] || { usage >&2; exit 2; }; exec pytest test/pytest -k "$1" ;;
-    *) printf 'test.sh: unknown argument %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    *) printf 'test.sh: 不認得的參數 %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 }
 

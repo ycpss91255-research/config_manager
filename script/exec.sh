@@ -14,7 +14,7 @@ main() {
 
   if [[ "${1:-}" == "--service" ]]; then
     shift
-    [[ $# -gt 0 ]] || { printf 'exec.sh: --service needs a name\n' >&2; exit 2; }
+    [[ $# -gt 0 ]] || { printf 'exec.sh: --service 後面要接一個服務名。下一步：例如 --service backend\n' >&2; exit 2; }
     service="$1"
     shift
   fi

@@ -9,8 +9,8 @@ set -euo pipefail
 TARGET_ROOT="${CM_TARGET_ROOT:-/opt/robot/config}"
 
 if [[ ! -d "${TARGET_ROOT}" ]]; then
-  printf 'pre-run: target root %s does not exist on the host.\n' "${TARGET_ROOT}" >&2
-  printf 'pre-run: create it first (sudo mkdir -p %s), or set CM_TARGET_ROOT.\n' "${TARGET_ROOT}" >&2
-  printf 'pre-run: Docker would otherwise create it root-owned and apply would fail later.\n' >&2
+  printf 'pre-run: 目標位置的根目錄 %s 在主機上不存在。\n' "${TARGET_ROOT}" >&2
+  printf 'pre-run: 否則 Docker 會用 root 建出那個目錄，之後的寫出會失敗。\n' >&2
+  printf 'pre-run: 下一步：先建起來（sudo mkdir -p %s），或設 CM_TARGET_ROOT 指到別處\n' "${TARGET_ROOT}" >&2
   exit 1
 fi

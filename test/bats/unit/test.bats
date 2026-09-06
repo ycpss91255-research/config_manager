@@ -119,7 +119,7 @@ teardown() {
   gate CM_IN_TEST_IMAGE=1 CM_LINT_ALLOW_MISSING=1 "${SCRIPT}" --lint hadolint
 
   [[ "${output}" == *"hadolint"* ]]
-  [[ "${output}" == *"did NOT run"* ]]
+  [[ "${output}" == *"上面那幾項沒有執行"* ]]
 }
 
 @test "降級之後缺席的 shellcheck 不被呼叫，結束碼仍為 0" {
@@ -172,7 +172,7 @@ in_image() {
   in_image "${SCRIPT}" --file "${WORK}/skips.bats"
 
   [ "${status}" -eq 0 ]
-  [[ "${output}" == *"did NOT run"* ]]
+  [[ "${output}" == *"沒有真的跑到"* ]]
   [[ "${output}" == *"這裡不是被測的映像"* ]]
 }
 
@@ -186,7 +186,7 @@ in_image() {
 
   [ "${status}" -eq 0 ]
   [[ "${output}" == *"test/pytest/acceptance/"* ]]
-  [[ "${output}" == *"no specs"* ]]
+  [[ "${output}" == *"一條規格都沒有"* ]]
 }
 
 @test "已在檢查映像內時就地執行，不轉進容器" {
@@ -209,7 +209,7 @@ in_image() {
   gate "${SCRIPT}" --lint no-such-linter
 
   [ "${status}" -ne 0 ]
-  [[ "${output}" == *"docker is not installed"* ]]
+  [[ "${output}" == *"docker 沒有安裝"* ]]
   [[ "${output}" == *"CM_TEST_LOCAL=1"* ]]
 }
 

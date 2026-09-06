@@ -21,15 +21,15 @@ readonly SELF
 
 usage() {
   cat <<'USAGE'
-Usage: script/lint_portability.sh [<dir>]
+用法：script/lint_portability.sh [<dir>]
 
-  <dir>  Directory of shell scripts to check (default: script).
+  <dir>  要檢查的 shell 腳本目錄（預設 script）。
 
-  fail  an option only GNU tools accept, in a non-comment line
+  fail  非註解行用到只有 GNU 工具接受的選項
 
-Measured on macOS as failing with BSD tools: grep with -P, sed -i without a
-backup suffix, find with -printf, stat with -c, date with -d, base64 with -w,
-head with a negative -n, cp with --parents.
+在 macOS 上以 BSD 工具實測會失敗的：grep 的 -P、sed 的 -i 不帶備份字尾、
+find 的 -printf、stat 的 -c、date 的 -d、base64 的 -w、head 的負數 -n、
+cp 的 --parents。
 USAGE
 }
 
@@ -84,8 +84,9 @@ main() {
       hits="$(printf '%s\n' "${code}" | grep -E "${regex}" || true)"
       [[ -n "${hits}" ]] || continue
       while IFS= read -r hit; do
-        printf 'FAIL  %s:%s  uses %s, which BSD tools reject\n' \
+        printf 'FAIL  %s:%s  用到 %s，BSD 工具不接受\n' \
           "${file}" "${hit%%:*}" "${name}" >&2
+        printf '      下一步：改用兩邊都接受的寫法，或換一支工具\n' >&2
         failures=$((failures + 1))
       done <<<"${hits}"
     done < <(_rules)
@@ -97,9 +98,9 @@ main() {
       grep -vE "sed[[:space:]]+-i[[:space:]]+(''|\"\")" || true)"
     if [[ -n "${hits}" ]]; then
       while IFS= read -r hit; do
-        printf 'FAIL  %s:%s  uses sed -i with no backup suffix, which BSD rejects\n' \
+        printf 'FAIL  %s:%s  sed -i 沒帶備份字尾，BSD 不接受\n' \
           "${file}" "${hit%%:*}" >&2
-        printf "      write it as: sed -i '' ...\n" >&2
+        printf "      下一步：寫成 sed -i '' ...\n" >&2
         failures=$((failures + 1))
       done <<<"${hits}"
     fi
