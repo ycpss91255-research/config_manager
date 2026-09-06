@@ -617,3 +617,83 @@ SH
   run "${LINT}" "${DIR}"
   [ "${status}" -eq 0 ]
 }
+
+@test "說明文字裡有一行中文不算過關：其餘每一行各自判定" {
+  write_sh onelinechinese.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+用法：script/onelinechinese.sh [--all]
+
+  --all  Also remove images that no container is using at the moment.
+USAGE
+}
+
+usage
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"onelinechinese.sh"* ]]
+}
+
+@test "旗標接受哪些值那一行不是散文：那是一份填得進去的值清單" {
+  write_sh values.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+用法：script/values.sh [--level <name>]
+
+  --level <name>  unit | integration | system | acceptance
+USAGE
+}
+
+usage
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "中文句子的續行不是散文：全形標點只出現在中文排版裡" {
+  write_sh continuation.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+用法：script/continuation.sh
+
+  fail  兩條被追蹤的路徑只差在大小寫（在不分大小寫的檔案系統上會互相蓋掉：
+        macOS、Windows）
+USAGE
+}
+
+usage
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "路徑、環境變數名與指令名不算散文" {
+  write_sh identifiers.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  printf 'FAIL CM_CONFIG_REPO /opt/robot/config docker compose --no-cache\n' >&2
+  exit 1
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"SKIP"* ]]
+}
