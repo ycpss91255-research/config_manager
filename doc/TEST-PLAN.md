@@ -729,6 +729,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `script/coverage_gate.sh` | `test/bats/unit/coverage_gate.bats` |
 | `script/acceptance.sh` | `test/bats/unit/acceptance.bats` |
 | `script/release.sh` | `test/bats/unit/release.bats` |
+| `justfile`（任務進入點的接線） | `test/bats/unit/justfile.bats` |
 
 **`script/lint_messages.sh` 的管轄範圍從 Python 擴到 shell**（#133）。先前它的預設
 標的只有 `src/config_manager`，單檔模式還明寫「不是 `.py` 就什麼都不檢查」，所以
@@ -804,6 +805,29 @@ worktree 的 `.git` 是一個檔案，內容是主 repo 那個 git 目錄的主�
 `.git`。那需要在容器裡再起一個容器才觀察得到，本專案不具備那個位置。**刻意留空，
 理由寫在這裡**：它的替代證據是 `./script/test.sh` 在一個真的 worktree 裡由非零轉為
 0——那是一次人執行的驗證，記在 #103 的 PR 描述裡，不是自動化的。
+
+**`justfile` 被觀察的不是任何一個 recipe，而是「乾淨簽出上叫得動哪些指令」**（#108）。
+recipe 本體仍然是刻意的空格——它們是薄 wrapper，#74 寫下的理由到今天成立。**接線不是。**
+`justfile` 先前把 repo 自己的 `cfg` 命令組註冊在 `import? 'script/local/justfile.local'`，
+而 `.gitignore` 的 `*.local` 讓那個檔案**永遠不存在於簽出**；`import?` 的問號使它缺席時
+不報錯，於是「repo 送出了一組沒有人叫得動的指令」安靜地成立。它同屬 T19，因為觀察位置
+相同：命令列進去，結束碼與訊息出來。被觀察的行為：
+
+| 行為 | 通過條件 |
+|---|---|
+| 乾淨簽出上 `just --list` | 列得出 repo 自己註冊的 `cfg` 命令組 |
+| `just --list cfg` | 列得出 `serve` 與 `list`，不是只有命名空間存在 |
+| 操作者自有的 `justfile.local` 缺席 | **不算錯誤**——那一個本來就可能不存在 |
+| `docker`／`test` 兩個既有命名空間 | 仍然列得出來 |
+
+**「乾淨簽出」是 `git ls-files`，不是 `REPO_ROOT`。** 開發用的簽出可能真的有一份操作者
+自有的 `script/local/justfile.local`，那樣這幾則規格會因為一個不在版控裡的檔案而變綠
+——測到的是那台機器，不是這個 repo。內容取自工作區而不是 `HEAD`，所以一次還沒提交的
+修改也在管轄內。
+
+**它擋不住的那一件事**：recipe 真的做了它說的事。`just cfg serve` 會不會真的起得來，
+這幾則規格看不到——它們只回答「叫得動嗎」。被轉呼叫的那一端落在 T10（`api/cli`），
+而 `cfg.sh` 本身仍是刻意的空格。**寫在這裡，免得日後以為 justfile 家族整個被驗過了。**
 
 **`lint_checkpoints.sh` 不由 `script/test.sh` 執行，是 CI 的一個獨立 job。**
 它需要 GitHub API 讀被引用的 issue，而 `test.sh` 在容器裡跑、那裡沒有 token。規格以
@@ -988,6 +1012,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/hooks/dispatch.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/{pre,post}/*.sh`（14 支） | 無——見「刻意的空格」 | 已落地 |
 | `script/local/cfg/cfg.sh` | 無——見「刻意的空格」 | 已落地 |
+| `justfile`（含 `script/justfile.*`、`script/local/cfg/justfile.cfg`） | T19（接線：乾淨簽出上叫得動哪些指令，#108） | 已落地 |
 
 這張表涵蓋 `find src -name '*.py'` 的 20 個檔案與 `find script -name '*.sh'` 的 32 支腳本，
 逐一比對過（#74；`lint_messages.sh` 與 `check_file.sh` 於 #113 補入）。**新增一個模組或一支腳本時，這裡要一起加一列**——沒有一列的檔案，
