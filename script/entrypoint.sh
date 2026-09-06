@@ -56,10 +56,10 @@ seed_config_list() {
   # 磁碟滿、路徑被別的東西佔住，三者的下一步完全不同，而操作者從那句話裡分辨
   # 不出來（設計 §0.4 三要素）。
   if ! output="$({ seed_toml >"${list}"; } 2>&1)"; then
-    die "could not write the initial config list at ${list}:" \
-      "${output:-no error output from the shell};" \
-      "next: check that the config-repo mount is writable by the user running this" \
-      "container and that its volume is not full or mounted read-only"
+    die "寫不出初始的 config 清單檔 ${list}：" \
+      "${output:-shell 沒有給出任何錯誤輸出}；" \
+      "下一步：確認 config-repo 的掛載對執行這個容器的使用者可寫，" \
+      "且該 volume 沒有滿、也不是唯讀掛載"
   fi
 
   # 用 -c 而不用 `git config`：這個身分只屬於這一筆 commit，不屬於操作者之後
@@ -69,22 +69,24 @@ seed_config_list() {
       -c user.name="config_manager" \
       -c user.email="config_manager@localhost" \
       commit --quiet -m "chore(repo): 初始化空的 config 清單檔"; } 2>&1)"; then
-    die "could not commit the initial config list at ${list}:" \
-      "${output:-no error output from git};" \
-      "next: check that ${repo}/.git is writable and not locked by another process," \
-      "then either commit ${list} by hand or delete it before restarting --" \
-      "left untracked, the first 'git add -A' sweeps it into an unrelated change record"
+    die "提交不了初始的 config 清單檔 ${list}：" \
+      "${output:-git 沒有給出任何錯誤輸出}；" \
+      "下一步：確認 ${repo}/.git 可寫、也沒有被別的程序鎖住，" \
+      "然後手動提交 ${list}，或在重新啟動前把它刪掉——" \
+      "留成未追蹤的話，第一次 'git add -A' 會把它掃進一筆不相干的變更紀錄"
   fi
 
-  printf 'entrypoint: seeded an empty config list at %s\n' "${list}"
+  printf 'entrypoint: 已在 %s 種下一份空的 config 清單檔\n' "${list}"
 }
 
 check_backend_preconditions() {
   local repo="${CM_CONFIG_REPO:-}"
   local output
 
-  [[ -n "${repo}" ]] || die "CM_CONFIG_REPO is unset; the backend has no source repo to serve"
-  [[ -d "${repo}" ]] || die "config-repo mount ${repo} does not exist (is the volume mounted?)"
+  [[ -n "${repo}" ]] || die "CM_CONFIG_REPO 未設定，backend 沒有來源 repo 可以服務。" \
+    "下一步：把它設成掛載進來的 config-repo 路徑"
+  [[ -d "${repo}" ]] || die "config-repo 的掛載點 ${repo} 不存在。" \
+    "下一步：確認那個 volume 真的掛上來了，或改 CM_CONFIG_REPO 指到正確的位置"
 
   if [[ ! -e "${repo}/.git" ]]; then
     # 空與非空是兩種不同的狀況，而這裡曾經把它們混為一談：註解寫著「空目錄」，
@@ -95,22 +97,21 @@ check_backend_preconditions() {
     # 上面初始化，會把那些檔案全部掃進第一筆 commit，而一個打錯的掛載路徑看起來
     # 就跟啟動成功一模一樣。
     if [[ -n "$(ls -A "${repo}")" ]]; then
-      die "config-repo mount ${repo} is not empty but is not under version control;" \
-        "initialise it deliberately (git init) or check the mount path"
+      die "config-repo 的掛載點 ${repo} 不是空的，但也不在版控之下。" \
+        "下一步：確定要用它的話就自己 git init，否則檢查掛載路徑是不是打錯了"
     fi
 
     # 空目錄就是首次啟動的情況：volume 存在，還沒有東西初始化過它。掛到另一個
     # 空目錄的錯誤設定，在這裡分辨不出來——所以印出解析後的絕對路徑，讓讀到的人
     # 自己認出這是不是他要的位置，而不是假裝這個差別在這裡就知道得了。
-    printf 'entrypoint: initialising empty config-repo at %s\n' "$(cd "${repo}" && pwd)"
+    printf 'entrypoint: 正在初始化空的 config-repo：%s\n' "$(cd "${repo}" && pwd)"
     # git 自己的失敗原因要帶出來：權限、磁碟滿、路徑被佔住，看起來都一樣是
     # 「git init failed」，但下一步不同（設計 §0.4 三要素）。
     if ! output="$(git init --quiet --initial-branch=main "${repo}" 2>&1)"; then
-      die "could not initialise a git repo at ${repo}:" \
-        "${output:-no error output from git};" \
-        "next: check that the mount is writable by the user running this container" \
-        "and is not mounted read-only, or run 'git init --initial-branch=main' on it" \
-        "yourself before starting the container"
+      die "在 ${repo} 初始化 git repo 失敗：" \
+        "${output:-git 沒有給出任何錯誤輸出}；" \
+        "下一步：確認那個掛載對執行這個容器的使用者可寫、也不是唯讀掛載，" \
+        "或在啟動容器前自己對它跑 'git init --initial-branch=main'"
     fi
     seed_config_list "${repo}"
     # 刻意往下掉到 check_config_list。種子複製了 core/models 宣告的形狀，而這裡
@@ -118,7 +119,8 @@ check_backend_preconditions() {
     # 就在寫出它的同一次啟動裡，而不是在之後某個請求。
   else
     git -C "${repo}" rev-parse --git-dir >/dev/null 2>&1 \
-      || die "config-repo mount ${repo} exists but is not a git repository"
+      || die "config-repo 的掛載點 ${repo} 存在，但不是一個 git repo。" \
+        "下一步：對它跑 'git init --initial-branch=main'，或檢查掛載路徑"
   fi
 
   check_config_list "${repo}"
@@ -143,7 +145,7 @@ main() {
   case "${CM_ROLE:-backend}" in
     backend) check_backend_preconditions ;;
     frontend) ;;
-    *) die "unknown CM_ROLE '${CM_ROLE}'; expected 'backend' or 'frontend'" ;;
+    *) die "不認得的 CM_ROLE '${CM_ROLE}'。下一步：設成 'backend' 或 'frontend'" ;;
   esac
 
   # 交棒。這一行之後不得再有任何東西。
