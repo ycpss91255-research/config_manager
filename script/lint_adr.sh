@@ -19,17 +19,17 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: script/lint_adr.sh [<adr-dir>]
+用法：script/lint_adr.sh [<adr-dir>]
 
-  <adr-dir>  Directory of ADR files to check (default: doc/adr).
+  <adr-dir>  要檢查的 ADR 目錄（預設 doc/adr）。
 
-  fail  filename must match NNNNNNNN-<slug>.md
-  fail  duplicate ADR number
-  fail  missing "> 服務：" backref
-  fail  missing ## Context / ## Decision / ## Consequences
-  fail  Status not in: Accepted | Rejected | Superseded by ADR-NNNNNNNN
-  warn  a gap in the numbering
-  warn  missing ## Alternatives
+  fail  檔名不符 NNNNNNNN-<slug>.md
+  fail  ADR 編號重複
+  fail  缺「> 服務：」回指行
+  fail  缺 ## Context ／ ## Decision ／ ## Consequences
+  fail  Status 不是 Accepted ｜ Rejected ｜ Superseded by ADR-NNNNNNNN
+  warn  編號中間有空號
+  warn  缺 ## Alternatives
 USAGE
 }
 
@@ -59,7 +59,8 @@ main() {
     [[ "${base}" == "README.md" ]] && continue
 
     if [[ ! "${base}" =~ ^[0-9]{8}-.+\.md$ ]]; then
-      printf 'FAIL %s  filename must match NNNNNNNN-<slug>.md\n' "${base}" >&2
+      printf 'FAIL %s  檔名不符 NNNNNNNN-<slug>.md\n' "${base}" >&2
+      printf '         下一步：改成八位數編號加一個 slug，例如 00000029-foo.md\n' >&2
       failures=$((failures + 1))
       continue
     fi
@@ -69,14 +70,15 @@ main() {
     entries+=("${num} ${base}")
 
     if ! grep -q '^> 服務' "${path}"; then
-      printf 'FAIL %s  missing "> 服務：" backref\n' "${base}" >&2
+      printf 'FAIL %s  缺「> 服務：」回指行\n' "${base}" >&2
       printf '         下一步：在標題底下補一行「> 服務：<不變式編號>」，或「機制，無對應不變式」\n' >&2
       failures=$((failures + 1))
     fi
 
     for section in Context Decision Consequences; do
       if ! grep -qx "## ${section}" "${path}"; then
-        printf 'FAIL %s  missing "## %s" section\n' "${base}" "${section}" >&2
+        printf 'FAIL %s  缺「## %s」這一節\n' "${base}" "${section}" >&2
+        printf '         下一步：補上該節；三節缺一不可\n' >&2
         failures=$((failures + 1))
       fi
     done
@@ -87,13 +89,14 @@ main() {
         sed -E 's/^- \*\*Status:\*\*[[:space:]]*//; s/[[:space:]]*$//')"
     fi
     if [[ ! "${st}" =~ ^(Accepted|Rejected|Superseded\ by\ ADR-[0-9]{8})$ ]]; then
-      printf 'FAIL %s  Status "%s" not in: Accepted | Rejected | Superseded by ADR-NNNNNNNN\n' \
-        "${base}" "${st}" >&2
+      printf 'FAIL %s  Status「%s」不在允許的三種之內\n' "${base}" "${st}" >&2
+      printf '         下一步：改成 Accepted、Rejected，或 Superseded by ADR-NNNNNNNN\n' >&2
       failures=$((failures + 1))
     fi
 
     if ! grep -qx '## Alternatives' "${path}"; then
-      printf 'WARN %s  missing "## Alternatives" section\n' "${base}" >&2
+      printf 'WARN %s  缺「## Alternatives」這一節\n' "${base}" >&2
+      printf '         下一步：寫下被否決的選項與理由；沒有替代方案的決策通常沒被想過\n' >&2
       warnings=$((warnings + 1))
     fi
   done
@@ -103,7 +106,8 @@ main() {
     local dup files
     while IFS= read -r dup; do
       files="$(printf '%s\n' "${entries[@]}" | awk -v n="${dup}" '$1 == n { printf "%s ", $2 }')"
-      printf 'FAIL duplicate number %s: %s\n' "${dup}" "${files}" >&2
+      printf 'FAIL 編號 %s 重複：%s\n' "${dup}" "${files}" >&2
+      printf '     下一步：把其中一份改成下一個沒有人用的編號\n' >&2
       failures=$((failures + 1))
     done < <(printf '%s\n' "${entries[@]}" | awk '{ print $1 }' | sort | uniq -d)
 
@@ -114,7 +118,8 @@ main() {
     for ((n = 10#${first}; n <= 10#${last}; n++)); do
       expect="$(printf '%08d' "${n}")"
       if ! printf '%s\n' "${entries[@]}" | awk -v e="${expect}" '$1 == e { f = 1 } END { exit !f }'; then
-        printf 'WARN missing number %s (gap in the sequence)\n' "${expect}" >&2
+        printf 'WARN 編號 %s 沒有人用（連續編號中間跳號）\n' "${expect}" >&2
+        printf '     下一步：確認那份 ADR 是不是被刪掉了，或下一份就補這個號\n' >&2
         warnings=$((warnings + 1))
       fi
     done

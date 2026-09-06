@@ -49,23 +49,22 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: script/lint_messages.sh [<path>...]
+用法：script/lint_messages.sh [<path>...]
 
-  <path>  A directory, one .py file, or one .sh file
-          (default: src/config_manager script). A single file is what the
-          post-edit hook passes -- see script/check_file.sh.
+  <path>  一個目錄、一個 .py 檔，或一個 .sh 檔
+          （預設 src/config_manager script）。單一檔案是編輯後的 hook 走的
+          那條路徑——見 script/check_file.sh。
 
-  fail  a user-facing message is missing "下一步：" (what to do about it)
-  fail  a user-facing message names nothing concrete (no interpolation, no
-        env var, path or filename to point at)
-  fail  a source file cannot be parsed, so its messages were not checked
-  skip  a message with no Chinese in it -- a relay or a usage line; listed
-        one by one, and counted again in a loud closing note
+  fail  面向使用者的訊息缺「下一步：」（該怎麼改）
+  fail  面向使用者的訊息沒有指名任何具體的東西（沒有內插值，也沒有環境變數名、
+        路徑或檔名可以指過去）
+  fail  執行期輸出以英文散文書寫（ADR-00000028）
+  fail  原始碼解析不了，所以它的訊息沒有被檢查
+  skip  沒有散文的轉述殼；逐則列出，並在結尾把數量再印一次
 
-Checked: raise <NamedException>(...) messages and print(..., file=sys.stderr)
-in Python; writes to fd 2 and relay-function calls in shell.
-There is no per-line suppression comment: loosening the rule means editing this
-script and saying why in the PR (design §0.4).
+檢查範圍：Python 的 raise <具名例外>(...) 與 print(..., file=sys.stderr)；
+shell 寫到 fd 2 的東西與轉述函式的呼叫點。
+**沒有逐行的抑制註解**：要放行某一則就改這支腳本的判準並在 PR 說明（設計 §0.4）。
 USAGE
 }
 
@@ -146,6 +145,10 @@ _ESCAPE = re.compile(r"\\[nrtv\\]")
 _SHELL_VAR = re.compile(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9*@#?]")
 _FLAG = re.compile(r"(?<![A-Za-z0-9])--?[A-Za-z][A-Za-z0-9-]*")
 _PLACEHOLDER = re.compile(r"<[^<>\s]{1,40}>")
+# 以 `|` 隔開的一串備選值——`unit | integration | system | acceptance`。那是一份
+# 可以填進旗標的值清單，不是散文；不剔掉的話，`test.sh` 的 usage 有三行會因為
+# 「列出旗標接受哪些值」而被判成英文散文（#108）。
+_ALTERNATIVES = re.compile(r"[A-Za-z0-9_.-]+(?:[ \t]*\|[ \t]*[A-Za-z0-9_.-]+)+")
 _WORD = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*")
 
 # 門檻。實測而來，數字寫在 `doc/TEST-PLAN.md` 的 T19 與 #108 的 PR 描述裡。
@@ -163,15 +166,32 @@ def _machine(token):
 
 def prose_letters(text):
     """剔掉 URL、格式指示、跳脫、變數、旗標、佔位符與識別碼之後，剩下的英文字母數。"""
-    for pattern in (_URL, _FORMAT, _ESCAPE, _SHELL_VAR, _FLAG, _PLACEHOLDER):
+    for pattern in (
+        _URL, _FORMAT, _ESCAPE, _SHELL_VAR, _FLAG, _PLACEHOLDER, _ALTERNATIVES
+    ):
         text = pattern.sub(" ", text)
     text = _WORD.sub(lambda m: " " if _machine(m.group(0)) else m.group(0), text)
     return sum(1 for ch in text if ch.isascii() and ch.isalpha())
 
 
+def _cjk_typography(text):
+    """CJK 標點與全形符號：、。（）「」：等。
+
+    `is_chinese` 刻意不認它們（一則英文訊息可能在描述 `。` 這個字元本身），但
+    「這一行是不是英文散文」是另一個問題，而答案是否定的：全形標點只出現在中文
+    排版裡。實測 `lint_paths.sh` 的說明文字有一行是 `macOS、Windows）`——中文句子
+    的續行，剔掉識別碼之後剛好踩到門檻，而它顯然不是英文散文（#108）。
+    """
+    return any(
+        "　" <= ch <= "〿" or "＀" <= ch <= "￯" for ch in text
+    )
+
+
 def english_prose(text):
-    """帶散文、而且一個中文字都沒有——ADR-00000028 說那不合格。"""
-    return not has_chinese(text) and prose_letters(text) >= PROSE_LETTERS
+    """帶散文、而且既沒有中文字也沒有中文標點——ADR-00000028 說那不合格。"""
+    if has_chinese(text) or _cjk_typography(text):
+        return False
+    return prose_letters(text) >= PROSE_LETTERS
 
 
 # ============================================================================
