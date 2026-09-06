@@ -28,6 +28,12 @@ def derive_name(target_path: str) -> str:
             f"取決於當下的工作目錄，推不出一個穩定的名稱。"
             f"下一步：改傳絕對路徑，例如 {_EXAMPLE_TARGET}"
         )
+    if not parts[-1] or not parts[-2]:
+        raise NameUnderivable(
+            f"目標路徑推不出兩層：derive_name 收到「{target_path}」，"
+            f"名稱取自最後二層（上層目錄與檔名），這裡有一層是空的。"
+            f"下一步：改傳兩層都在的絕對路徑，例如 {_EXAMPLE_TARGET}"
+        )
     parent = parts[-2].replace("_", "-")
     filename = PurePosixPath(parts[-1]).stem.replace("_", "-")
     if parent == filename:

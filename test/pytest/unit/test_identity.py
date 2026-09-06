@@ -67,6 +67,37 @@ def test_derive_name_rejection_shows_a_qualifying_absolute_path():
     assert f"下一步：改傳絕對路徑，例如 {_QUALIFYING_EXAMPLE}" in str(exc.value)
 
 
+def test_derive_name_rejects_an_absolute_path_with_no_parent_level():
+    # /params.yaml 是絕對路徑，但根目錄之下只有一層。上層目錄是空字串，湊出來的
+    # 名字是 `-params`——一個帶空層級的名字，接進 <name>@<hostname>-<uid> 之後
+    # 分不出哪一段是 name。
+    with pytest.raises(NameUnderivable) as exc:
+        derive_name("/params.yaml")
+
+    assert "/params.yaml" in str(exc.value)
+
+
+def test_derive_name_rejects_a_target_path_that_names_no_file():
+    # /opt/robot/ 指的是一個目錄，不是目標位置。檔名層是空的，湊出來的是 `robot-`。
+    with pytest.raises(NameUnderivable):
+        derive_name("/opt/robot/")
+
+
+def test_derive_name_rejects_an_empty_level_in_the_middle_of_the_path():
+    # /opt//params.yaml 兩層都在的樣子只是切出來的假象：上層目錄是空字串。
+    # 空層級出現在路徑中間與出現在頭尾是同一件事，守門不該只認得後者。
+    with pytest.raises(NameUnderivable):
+        derive_name("/opt//params.yaml")
+
+
+def test_derive_name_rejection_of_a_short_absolute_path_shows_a_qualifying_example():
+    # 與相對路徑那一則分開的訊息：這裡缺的不是「絕對」，是「兩層都在」。
+    with pytest.raises(NameUnderivable) as exc:
+        derive_name("/params.yaml")
+
+    assert f"下一步：改傳兩層都在的絕對路徑，例如 {_QUALIFYING_EXAMPLE}" in str(exc.value)
+
+
 def test_new_uid_is_eight_char_base36():
 
     now = datetime.datetime(2026, 9, 4, 12, 0, 0, tzinfo=datetime.timezone.utc)
