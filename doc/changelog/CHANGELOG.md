@@ -189,6 +189,12 @@ Changelog 這個格式的識別碼，判準與 ADR-00000028 對 `type`／`scope`
   不再被裸的 except 吞掉（#136）。
 - `io/writer`：暫存檔清不掉時大聲說，而且在同一則訊息裡帶著原本的失敗——
   清理失敗不該把它要回報的那個錯誤蓋掉（#138）。
+- `core/identity`：推導不出名稱的目標路徑丟具名例外，不再丟裸 `IndexError`、也不再
+  湊一個帶空層級的名字出來。防的是兩種形狀：`params.yaml` 這種相對路徑先前在
+  `parts[-2]` 炸開，訊息說不出被拒絕的是什麼；`/params.yaml`、`/opt/robot/` 這種
+  「絕對但推不出兩層」先前會回 `-params`、`robot-`，接進完整參照形式
+  `<name>@<hostname>-<uid>` 之後分不出哪一段是 name——一個看起來像名字的東西，
+  比一個大聲的失敗難查得多。行為由 `doc/TEST-PLAN.md` 的 T5 議定（#126）。
 
 ### Notes
 
