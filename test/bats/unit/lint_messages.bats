@@ -349,7 +349,7 @@ set -euo pipefail
 
 main() {
   case "$1" in
-    *) printf 'build.sh: unknown argument %s\n' "$1" >&2; exit 2 ;;
+    *) printf 'positional.sh: 不認得的參數 %s。下一步：改用 --all\n' "$1" >&2; exit 2 ;;
   esac
 }
 
@@ -400,13 +400,13 @@ SH
   [[ "${output}" == *"NOT"* || "${output}" == *"cannot be parsed"* ]]
 }
 
-@test "不含中文的 shell 訊息判為轉述，但跳過的數量印成一段大聲的結論" {
+@test "沒有散文的轉述判為轉述，但跳過的數量印成一段大聲的結論" {
   write_sh english.sh <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 
 main() {
-  printf 'english.sh: something went wrong\n' >&2
+  printf 'FAIL %s\n' "$1" >&2
   exit 1
 }
 
@@ -453,8 +453,8 @@ main "$@"
 SH
 
   run "${LINT}" "${DIR}"
-  [ "${status}" -eq 0 ]
-  [[ "${output}" == *"SKIP"* ]]
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"ADR-00000028"* ]]
 }
 
 @test "給一支 shell 腳本時只檢查那一支" {
@@ -503,4 +503,112 @@ SH
   [ "${status}" -ne 0 ]
   [[ "${output}" == *"ansiquote.sh"* ]]
   [[ "${output}" == *"NOT"* ]]
+}
+
+# --- ADR-00000028：執行期輸出以中文書寫（#108）--------------------------------
+#
+# #133 把 shell 的訊息納進 §0.4 三要素的管轄，但「不含中文 → 判為轉述」那條規則
+# 讓英文訊息整片溜過去。這裡把那道口子關上：**帶散文的執行期輸出不含中文就失敗**。
+# 判準是字母數而不是字數——`docker compose build` 這種指令名連在一起會被字數判成
+# 散文，而它是識別碼。識別碼（含 / . _ - 或數字、或全大寫）先剔掉，剩下的英文字母
+# 超過門檻才算散文。
+
+@test "usage() 的說明文字寫成英文時被擋下" {
+  write_sh englishusage.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: script/englishusage.sh [--all]
+
+  --all  Also remove images that no container is using.
+USAGE
+}
+
+usage
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"englishusage.sh"* ]]
+  [[ "${output}" == *"ADR-00000028"* ]]
+}
+
+@test "usage() 的說明文字是中文、旗標名與路徑維持英文時通過" {
+  write_sh chineseusage.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+用法：script/chineseusage.sh [--all]
+
+  --all  連同沒有任何容器在用的映像一起移除。
+USAGE
+}
+
+usage
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "帶英文散文的執行期輸出被擋下，不再判為轉述" {
+  write_sh englishmsg.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  printf 'englishmsg: python3 is not on PATH, so nothing was checked\n' >&2
+  exit 1
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"englishmsg.sh:5"* ]]
+  [[ "${output}" == *"ADR-00000028"* ]]
+}
+
+@test "沒有散文的轉述殼仍然判為轉述，不被誤擋" {
+  write_sh plumbing.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+report() {
+  printf '%s\n' "$1" >&2
+}
+
+main() {
+  printf 'FAIL %s  %s\n' "$1" "$2" >&2
+  report "$1"
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"SKIP"* ]]
+}
+
+@test "指令名連在一起不算散文：那是照著打進去的識別碼" {
+  write_sh command.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  printf 'command: docker/Dockerfile.test-tools 建置失敗。下一步：改跑 docker compose build --no-cache\n' >&2
+  exit 1
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
 }
