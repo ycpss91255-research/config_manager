@@ -479,6 +479,13 @@ SH
   [ "${status}" -ne 0 ]
 }
 
+@test "預設標的含 script，且它現在是乾淨的" {
+  cd "${REPO_ROOT}"
+  run "${LINT}"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"message(s) in script"* ]]
+}
+
 @test "掃不下去時大聲失敗：讀不懂的引號不等於那底下沒有訊息" {
   write_sh ansiquote.sh <<'SH'
 #!/usr/bin/env bash

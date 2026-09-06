@@ -7,6 +7,9 @@
 # 匯入、pytest 要跑整組測試、覆蓋率下限只有在全部跑完之後才有意義：那些留在
 # `./script/test.sh` 與 CI。這支說「乾淨」只代表那三項乾淨，不代表這次修改可以合併。
 #
+# `script/**/*.sh` 除了 shellcheck 之外也走 lint_messages：shell 的執行期輸出從 #133
+# 起在三要素的管轄內，而單檔就判定得了它（與 `src/**/*.py` 同一個理由）。
+#
 # 為什麼要有它：閾值與規則本來就都擋得住（設計 §0.4），但擋下的時機是「推上去之後」。
 # 同一個違規，在寫下它的當下看見，跟在十個 commit 之後從 CI 的紅燈回推，成本差很遠。
 #
@@ -31,7 +34,7 @@ Usage: script/check_file.sh [<path>]
           from stdin and its tool_input.file_path is used.
 
   src/**/*.py      ruff check, plus script/lint_messages.sh
-  script/**/*.sh   shellcheck --severity=warning
+  script/**/*.sh   shellcheck --severity=warning, plus script/lint_messages.sh
   anything else    nothing to check, exit 0
 
 Runs inside docker/Dockerfile.test-tools, and does NOT build it: a hook has to
@@ -82,6 +85,7 @@ run_checks() {
       ;;
     script/*.sh)
       shellcheck --severity=warning "${file}" || failed=1
+      ./script/lint_messages.sh "${file}" || failed=1
       ;;
     *)
       printf 'check_file: %s has no single-file check; nothing was run.\n' "${file}"

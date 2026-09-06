@@ -77,7 +77,10 @@ main() {
   esac
 
   local -a targets=("$@")
-  (( ${#targets[@]} )) || targets=(src/config_manager)
+  # 預設兩個標的。`script/` 是 #133 補上的：先前的預設只有 src/config_manager，
+  # 於是 32 支腳本的執行期輸出完全不在管轄內，而 pdf-conformance review 只好把
+  # 它們「另計」、逐則人工判讀——人工判讀正是 §0.4 說「等同不存在」的那種規範。
+  (( ${#targets[@]} )) || targets=(src/config_manager script)
 
   # python3 缺席時大聲失敗。一支因為直譯器不在而回 0 的 lint，就是不變式 2 禁止的
   # 靜默通過——而那個形狀在這個 repo 已經讓 hadolint 連綠六次、CI 連紅六次。
