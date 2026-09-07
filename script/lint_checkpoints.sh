@@ -2,10 +2,11 @@
 #
 # 驗收條件的帳本檢查：PR 引用的每一張 issue 都必須做完，而且做完這件事要有證據。
 #
-# 規則有三條，全部擋（fail）：
-#   1. issue 還有未勾的 `- [ ]`          —— 都完成後才能開 PR
-#   2. 勾起來的項目那一行沒有 commit 主旨 —— 只勾不記，帳本只是一個聲明
-#   3. 記的主旨在 git 歷史裡找不到        —— 隨手編一句話等於沒記
+# 規則有四條，全部擋（fail）：
+#   1. 被引用的 issue 沒有任何勾選行       —— 帳本不存在，什麼都沒得對
+#   2. issue 還有未勾的 `- [ ]`          —— 都完成後才能開 PR
+#   3. 勾起來的項目那一行沒有 commit 主旨 —— 只勾不記，帳本只是一個聲明
+#   4. 記的主旨在 git 歷史裡找不到        —— 隨手編一句話等於沒記
 #
 # 記主旨不記 SHA，因為 **SHA 不是穩定識別碼**：rebase 會改寫它，squash 合併會讓它
 # 從歷史裡消失。而這個 repo 規定推送前 rebase、分支保護要求與 base 同步、合併一律
@@ -24,6 +25,9 @@
 # 擋不住的那一件事，寫在這裡免得日後以為它被驗過：**工具只能確認「有一個屬於本
 # PR 的 SHA 被記在那一行」，不能確認那個 commit 真的實作了那條驗收條件。**
 # 那需要人看。
+#
+# 一條敷衍的 `- [x] 做完了 — <主旨>` 兩條規則都過。這道門擋得住的是**帳本存在
+# 且每一條都指得到一個 commit**，不是**驗收條件寫得對**。後者需要人。
 set -euo pipefail
 
 usage() {
@@ -107,6 +111,18 @@ _check_issue() {
 
   local body
   body="$(gh issue view "${issue}" --json body --jq .body)"
+
+  # 規則 1：被引用的 issue 至少要有一個勾選行。
+  # 沒有勾選框的 issue 三條後續規則全部跑不到——零個勾選框時既有檢查都不進來，
+  # 而「兩個都不成立」被當成「沒有問題」。帳本可以是空的（#158）。
+  local total_checkboxes
+  total_checkboxes="$(printf '%s\n' "${body}" | grep -cE '^[[:space:]]*- \[(x| )\]' || true)"
+  if ((total_checkboxes == 0)); then
+    printf 'FAIL #%s  issue 內文沒有任何勾選框——帳本不存在\n' "${issue}" >&2
+    printf '      在 issue 內文寫下驗收條件並勾起來，不是把 closes 拿掉\n' >&2
+    counter=$((counter + 1))
+    return 0
+  fi
 
   local unchecked
   unchecked="$(printf '%s\n' "${body}" | grep -cE '^[[:space:]]*- \[ \]' || true)"
