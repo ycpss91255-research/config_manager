@@ -756,6 +756,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `script/check_file.sh` | `test/bats/unit/check_file.bats` |
 | `script/test.sh` | `test/bats/unit/test.bats` |
 | `script/lint_checkpoints.sh` | `test/bats/unit/lint_checkpoints.bats` |
+| `script/lint_test_interfaces.sh` | `test/bats/unit/lint_test_interfaces.bats` |
 | `script/coverage_gate.sh` | `test/bats/unit/coverage_gate.bats` |
 | `script/acceptance.sh` | `test/bats/unit/acceptance.bats` |
 | `script/release.sh` | `test/bats/unit/release.bats` |
@@ -1058,6 +1059,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/lint_paths.sh` | T19 | 已落地 |
 | `script/lint_portability.sh` | T19 | 已落地 |
 | `script/lint_checkpoints.sh` | T19 | 已落地（CI job，不由 `test.sh` 執行） |
+| `script/lint_test_interfaces.sh` | T19（新測試介面不得與其第一批測試同一個 commit，#144） | 已落地（規則 A 由 `test.sh` 執行，規則 B 是 CI job） |
 | `script/lint_messages.sh` | T19 | 已落地 |
 | `script/lint_coverage_audit.sh` | T19（這張表自己立的規則，表與樹對不起來就停下，#117） | 已落地 |
 | `script/lint_derived.sh` | T19（文件不得抄一份可推導的東西，#98） | 已落地 |
