@@ -35,6 +35,12 @@ max-args = 5
 files = ["src/config_manager"]
 strict = true
 
+[[tool.mypy.overrides]]
+# configobj 沒有型別 stub 也沒有 py.typed（ADR-00000029 指名它作 INI 的 lossless
+# 往返函式庫）。只忽略它缺 stub 這件事，不放寬 core/ 自己的 strict。
+module = "configobj"
+ignore_missing_imports = true
+
 [tool.pylint.format]
 max-module-lines = 1000
 
