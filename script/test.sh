@@ -24,7 +24,7 @@ usage() {
                       （同時跑該層級的 pytest 與 bats 規格）
   --lint [<tool>]     全部 linter，或指定其中一項：
                       ruff | mypy | pylint | shellcheck | hadolint | actionlint | commit | adr | paths
-                      | portability | messages | audit | derived
+                      | portability | messages | audit | derived | interfaces
   --file <path>       單一規格檔
   --filter <regex>    符合這個樣式的規格
 
@@ -203,7 +203,10 @@ run_lint() {
       ;;&
     audit|all) ./script/lint_coverage_audit.sh ;;&
     derived|all) ./script/lint_derived.sh ;;&
-    ruff|mypy|pylint|shellcheck|hadolint|actionlint|commit|adr|paths|portability|messages|audit|derived|all)
+    # 規則 A（order）：新測試介面標題不得與 test/ 底下的檔案同一個 commit。只需要
+    # git，所以進得了這裡；規則 B 需要 token，是 CI 的獨立 job（#144）。
+    interfaces|all) ./script/lint_test_interfaces.sh order ;;&
+    ruff|mypy|pylint|shellcheck|hadolint|actionlint|commit|adr|paths|portability|messages|audit|derived|interfaces|all)
       return 0
       ;;
     *) printf 'test.sh: 不認得的 linter %s。下一步：見 --help 列出的那幾項\n' "${tool}" >&2; return 2 ;;
