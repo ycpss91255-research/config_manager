@@ -245,7 +245,7 @@ die_message() {
   # 在哪裡
   [[ "${message}" == *"${WORK}/repo"* ]]
   # 該怎麼改
-  [[ "${message}" == *"next:"* ]]
+  [[ "${message}" == *"下一步："* ]]
   # 發生什麼——git 自己說的原因要被帶進這一行，不是丟掉換成一句「做不到」
   [[ "${message}" == *"ermission denied"* || "${message}" == *"annot"* ]]
 }
@@ -259,7 +259,7 @@ die_message() {
   local message
   message="$(die_message)"
   [[ "${message}" == *"config-list.toml"* ]]
-  [[ "${message}" == *"next:"* ]]
+  [[ "${message}" == *"下一步："* ]]
   [[ "${message}" == *"ermission denied"* ]]
 }
 
@@ -272,6 +272,6 @@ die_message() {
   local message
   message="$(die_message)"
   [[ "${message}" == *"config-list.toml"* ]]
-  [[ "${message}" == *"next:"* ]]
+  [[ "${message}" == *"下一步："* ]]
   [[ "${message}" == *"injected commit failure"* ]]
 }

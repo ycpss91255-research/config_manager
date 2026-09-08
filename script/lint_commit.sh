@@ -39,19 +39,19 @@ readonly TYPES="feat|fix|docs|refactor|test|chore|ci|perf"
 
 usage() {
   cat <<'USAGE'
-Usage: script/lint_commit.sh [<base-ref>]
+用法：script/lint_commit.sh [<base-ref>]
 
-  <base-ref>  Commits after this ref are checked (default: origin/main).
+  <base-ref>  檢查這個 ref 之後的 commit（預設 origin/main）。
 
-Rules, derived from ycpss91255-docker/base:
+規則取樣自 ycpss91255-docker/base：
 
-  fail  type must be one of: feat fix docs refactor test chore ci perf
-  fail  the "type(scope): " prefix must be present and well-formed
-  fail  subject must not end with a period
-  fail  subject must contain Chinese (ADR-00000028); type/scope stay English
-  warn  scope should be present -- type(scope): not bare type:
+  fail  type 不在 feat fix docs refactor test chore ci perf 之內
+  fail  缺少「type(scope): 」前綴，或前綴格式不對
+  fail  主旨以句號結尾
+  fail  主旨沒有中文（ADR-00000028）；type 與 scope 維持英文
+  warn  建議附上 scope——寫成 type(scope): 而不是光禿禿的 type:
 
-Not checked: title length, issue references. See this file's header for why.
+不檢查標題長度與 issue 回指。理由寫在本檔開頭。
 USAGE
 }
 
@@ -116,7 +116,8 @@ main() {
     # 對本 repo 真正在寫的語言完全沒有生效。
     if [[ "${body}" == *. || "${body}" == *"。" ]]; then
       printf 'FAIL %s  %s\n' "${short}" "${subject}" >&2
-      printf '     subject ends with a period (. or 。); drop it\n' >&2
+      printf '     主旨以句號結尾（. 或 。）\n' >&2
+      printf '     下一步：把結尾那個句號拿掉\n' >&2
       failures=$(( failures + 1 ))
       continue
     fi
@@ -130,9 +131,9 @@ main() {
     # grep 都同意的位元組測試：全英文的主旨沒有任何高於 0x7E 的位元組，中文的有。
     if ! printf '%s' "${body#*: }" | LC_ALL=C grep -q '[^ -~]'; then
       printf 'FAIL %s  %s\n' "${short}" "${subject}" >&2
-      printf '     subject has no Chinese. This repo keeps its record in Chinese;\n' >&2
-      printf '     only the type(scope) prefix stays as base defines it.\n' >&2
-      printf '     e.g. feat(core): 清單檔載入時攔截未知欄位\n' >&2
+      printf '     主旨沒有中文。本 repo 的紀錄一律以中文書寫（ADR-00000028）；\n' >&2
+      printf '     只有 type(scope) 前綴維持 base 定義的形式。\n' >&2
+      printf '     例如：feat(core): 清單檔載入時攔截未知欄位\n' >&2
       printf '     下一步：把主旨的說明那一半改寫成中文，type(scope) 前綴不動\n' >&2
       failures=$(( failures + 1 ))
       continue
@@ -140,8 +141,9 @@ main() {
 
     if [[ ! "${body}" =~ ^(${TYPES})\( ]]; then
       printf 'WARN %s  %s\n' "${short}" "${subject}" >&2
-      printf '     no scope. base carries one on 181 of its 200 most recent commits;\n' >&2
-      printf '     a commit with no nameable scope often touches too much\n' >&2
+      printf '     沒有 scope。base 最近 200 筆 commit 有 181 筆帶著它；\n' >&2
+      printf '     一筆說不出 scope 的 commit，通常動到了太多東西\n' >&2
+      printf '     下一步：寫成 type(scope): ，scope 用被改動的那一層或那支腳本\n' >&2
       warnings=$(( warnings + 1 ))
     fi
 

@@ -57,26 +57,24 @@ readonly PACKAGE='src/config_manager'
 
 usage() {
   cat <<'USAGE'
-Usage: script/lint_coverage_audit.sh [<repo root>]
+用法：script/lint_coverage_audit.sh [<repo 根目錄>]
 
-  <repo root>  Tree to audit (default: this repo).
+  <repo 根目錄>  要稽核的樹（預設：本 repo）。
 
-  fail  the "模組 → 測試介面" table cannot be read (missing file, missing
-        section, or a row whose first cell holds no `backticked path`)
-  fail  a src/**/*.py or script/**/*.sh file that no row matches
-  fail  a row that matches no file while its 狀態 column does not start 未落地
-  fail  a row whose 狀態 column starts 未落地 while the file is already there
-  fail  a hand-copied count ("<數字>個" / "<數字>支") inside that section
+  fail  讀不到「模組 → 測試介面」那張表（檔案不存在、找不到該節，
+        或某列第一格沒有 `用反引號括起來的路徑`）
+  fail  有一個 src/**/*.py 或 script/**/*.sh 檔案沒有任何列對得上
+  fail  某列對不到任何檔案，而它的「狀態」欄又不是以「未落地」開頭
+  fail  某列的「狀態」欄以「未落地」開頭，但那個檔案其實已經在了
+  fail  那一節裡出現手抄的數量（「<數字>個」／「<數字>支」）
 
-Row patterns are paths rooted at src/config_manager/, or at the repo root when
-they start with script/. A pattern with no .py / .sh / trailing-slash ending
-means .py. {a,b} expands, * matches within one segment, **/ matches any depth.
-A pattern that ends in neither .py nor .sh is outside the audited set: it is
-exempt from the empty-row rule and covers nothing.
+列的樣式是以 src/config_manager/ 為根的路徑，或在以 script/ 開頭時以 repo 根目錄
+為根。沒有 .py／.sh／結尾斜線的樣式，一律當成 .py。{a,b} 會展開，* 只在單一段內
+比對，**/ 比對任意深度。結尾既不是 .py 也不是 .sh 的樣式落在稽核範圍之外：它不受
+空列規則約束，也不涵蓋任何檔案。
 
-This checks that every file has a row -- not that the row says the right test
-interface. Which interface observes a module is authored intent; no generator
-produces it (invariant 9).
+這只檢查每個檔案都有一列——不檢查那一列寫的測試介面對不對。哪個介面觀察哪個模組
+是作者的意圖，沒有任何產生器產得出來（不變式 9）。
 USAGE
 }
 

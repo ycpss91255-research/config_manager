@@ -349,7 +349,7 @@ set -euo pipefail
 
 main() {
   case "$1" in
-    *) printf 'build.sh: unknown argument %s\n' "$1" >&2; exit 2 ;;
+    *) printf 'positional.sh: 不認得的參數 %s。下一步：改用 --all\n' "$1" >&2; exit 2 ;;
   esac
 }
 
@@ -400,13 +400,13 @@ SH
   [[ "${output}" == *"NOT"* || "${output}" == *"cannot be parsed"* ]]
 }
 
-@test "不含中文的 shell 訊息判為轉述，但跳過的數量印成一段大聲的結論" {
+@test "沒有散文的轉述判為轉述，但跳過的數量印成一段大聲的結論" {
   write_sh english.sh <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 
 main() {
-  printf 'english.sh: something went wrong\n' >&2
+  printf 'FAIL %s\n' "$1" >&2
   exit 1
 }
 
@@ -457,6 +457,11 @@ SH
   [[ "${output}" == *"SKIP"* ]]
 }
 
+# **這一則同時記下一個已知的洞。** 上面那則英文訊息因為帶著一個 `。` 而躲過
+# ADR-00000028 的散文規則（`_cjk_typography`），被判成沒有語言可言的轉述。實測
+# `script/` 只有這一個形狀，而它在 #108 被翻掉了；留這則規格是為了讓那個洞在
+# 有人改判準時仍然看得見，不是為了主張它已經被堵上。
+
 @test "給一支 shell 腳本時只檢查那一支" {
   write_sh only.sh <<'SH'
 #!/usr/bin/env bash
@@ -503,4 +508,192 @@ SH
   [ "${status}" -ne 0 ]
   [[ "${output}" == *"ansiquote.sh"* ]]
   [[ "${output}" == *"NOT"* ]]
+}
+
+# --- ADR-00000028：執行期輸出以中文書寫（#108）--------------------------------
+#
+# #133 把 shell 的訊息納進 §0.4 三要素的管轄，但「不含中文 → 判為轉述」那條規則
+# 讓英文訊息整片溜過去。這裡把那道口子關上：**帶散文的執行期輸出不含中文就失敗**。
+# 判準是字母數而不是字數——`docker compose build` 這種指令名連在一起會被字數判成
+# 散文，而它是識別碼。識別碼（含 / . _ - 或數字、或全大寫）先剔掉，剩下的英文字母
+# 超過門檻才算散文。
+
+@test "usage() 的說明文字寫成英文時被擋下" {
+  write_sh englishusage.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: script/englishusage.sh [--all]
+
+  --all  Also remove images that no container is using.
+USAGE
+}
+
+usage
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"englishusage.sh"* ]]
+  [[ "${output}" == *"ADR-00000028"* ]]
+}
+
+@test "usage() 的說明文字是中文、旗標名與路徑維持英文時通過" {
+  write_sh chineseusage.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+用法：script/chineseusage.sh [--all]
+
+  --all  連同沒有任何容器在用的映像一起移除。
+USAGE
+}
+
+usage
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "帶英文散文的執行期輸出被擋下，不再判為轉述" {
+  write_sh englishmsg.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  printf 'englishmsg: python3 is not on PATH, so nothing was checked\n' >&2
+  exit 1
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"englishmsg.sh:5"* ]]
+  [[ "${output}" == *"ADR-00000028"* ]]
+}
+
+@test "沒有散文的轉述殼仍然判為轉述，不被誤擋" {
+  write_sh plumbing.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+report() {
+  printf '%s\n' "$1" >&2
+}
+
+main() {
+  printf 'FAIL %s  %s\n' "$1" "$2" >&2
+  report "$1"
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"SKIP"* ]]
+}
+
+@test "指令名連在一起不算散文：那是照著打進去的識別碼" {
+  write_sh command.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  printf 'command: docker/Dockerfile.test-tools 建置失敗。下一步：改跑 docker compose build --no-cache\n' >&2
+  exit 1
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "說明文字裡有一行中文不算過關：其餘每一行各自判定" {
+  write_sh onelinechinese.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+用法：script/onelinechinese.sh [--all]
+
+  --all  Also remove images that no container is using at the moment.
+USAGE
+}
+
+usage
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"onelinechinese.sh"* ]]
+}
+
+@test "旗標接受哪些值那一行不是散文：那是一份填得進去的值清單" {
+  write_sh values.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+用法：script/values.sh [--level <name>]
+
+  --level <name>  unit | integration | system | acceptance
+USAGE
+}
+
+usage
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "中文句子的續行不是散文：全形標點只出現在中文排版裡" {
+  write_sh continuation.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+用法：script/continuation.sh
+
+  fail  兩條被追蹤的路徑只差在大小寫（在不分大小寫的檔案系統上會互相蓋掉：
+        macOS、Windows）
+USAGE
+}
+
+usage
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "路徑、環境變數名與指令名不算散文" {
+  write_sh identifiers.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  printf 'FAIL CM_CONFIG_REPO /opt/robot/config docker compose --no-cache\n' >&2
+  exit 1
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"SKIP"* ]]
 }
