@@ -70,3 +70,32 @@ class NameUnderivable(Exception):
     `params`——前者接進參照形式之後分不出哪一段是 name，後者悄悄把一個相對路徑
     當成合法的目標位置。兩者都是不變式 2 禁止的靜默處理：消掉的是訊號，不是麻煩。
     """
+
+
+class ParseError(Exception):
+    """T6 格式解析的錯誤基底。
+
+    自成一族，不併進 `ConfigListError`。那一族講的是「清單檔（config-list.toml）
+    的內容有問題」；這一族講的是「**被管理的那份 config 檔**解析不了」——兩者的來源
+    與處置都不同（前者改清單檔，後者改被納管的檔案或它宣告的 format）。
+    """
+
+
+class UnsupportedFormat(ParseError):
+    """format 不是支援的五種（yaml／json／toml／ini／raw）之一。
+
+    format 明寫於清單檔、不由副檔名推斷（`.yml`、`.param` 等變體不可靠），所以
+    「不支援」是一個明確的值錯誤，不是「猜不出來」。
+    """
+
+
+class SyntaxParse(ParseError):
+    """被管理的 config 檔語法本身壞掉，解析不下去。
+
+    訊息含行號（不變式 2：壞掉的檔案要大聲失敗、指得出位置），這樣呼叫端與使用者
+    都知道去哪裡看，而不是收到一句「解析失敗」。
+    """
+
+    def __init__(self, message: str, line: int | None = None) -> None:
+        super().__init__(message)
+        self.line = line
