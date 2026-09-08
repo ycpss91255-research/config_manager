@@ -119,7 +119,7 @@ _check_issue() {
   total_checkboxes="$(printf '%s\n' "${body}" | grep -cE '^[[:space:]]*- \[(x| )\]' || true)"
   if ((total_checkboxes == 0)); then
     printf 'FAIL #%s  issue 內文沒有任何勾選框——帳本不存在\n' "${issue}" >&2
-    printf '      在 issue 內文寫下驗收條件並勾起來，不是把 closes 拿掉\n' >&2
+    printf '      下一步：在 issue 內文寫下驗收條件並勾起來，不是把 closes 拿掉\n' >&2
     counter=$((counter + 1))
     return 0
   fi
