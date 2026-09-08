@@ -55,6 +55,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ./script/lint_checkpoints.sh "${{ github.event.pull_request.number }}" "origin/${{ github.base_ref }}"
 
+  test-interfaces:
+    # 規則 B：新增的測試介面段落要有 #issue 回指，且該 issue 早於加入它的 commit
+    # （介面事先議定，#144）。規則 A（順序）不需要 token，跑在容器裡的 test.sh；
+    # 這一條需要 gh 讀 issue 的 createdAt，所以與 checkpoints 同一種形狀——跑在
+    # 映像之外的獨立 job，因為 script/test.sh 在容器裡跑、那裡沒有 token。
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # rev-list base..HEAD 需要完整歷史。
+          fetch-depth: 0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./script/lint_test_interfaces.sh agreed "origin/${{ github.base_ref }}"
+
   checks:
     runs-on: ubuntu-latest
     steps:
@@ -107,7 +123,7 @@ jobs:
     # `always()` 加上明確的結果判定：少了它，被跳過或被取消的相依會被讀成成功，
     # 於是閘門會在一次什麼都沒檢查的執行上打開。
     if: always()
-    needs: [commit-message, checkpoints, checks, acceptance, build]
+    needs: [commit-message, checkpoints, test-interfaces, checks, acceptance, build]
     runs-on: ubuntu-latest
     steps:
       - name: Check that every job passed
