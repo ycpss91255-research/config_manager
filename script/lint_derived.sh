@@ -39,25 +39,23 @@ readonly REPO_ROOT
 
 usage() {
   cat <<'USAGE'
-Usage: script/lint_derived.sh [<file>]
+用法：script/lint_derived.sh [<檔案>]
 
-  <file>  A markdown document to check (default: README.md).
+  <檔案>  要檢查的 markdown 文件（預設：README.md）。
 
-  fail  a hand-copied count the tree already answers ("22 份決策紀錄",
-        "18 個測試介面", "54 個 issue", ...)
-  fail  the next ADR number written out as a literal ("從 `00000029` 續接")
-  fail  a test-interface or acceptance-journey code (T<N> / A<N>) -- that
-        mapping lives in doc/TEST-PLAN.md and nowhere else
-  fail  the file does not exist (a linter that passes on a missing file is
-        indistinguishable from one that checked it)
+  fail  手抄一份樹本身就答得出來的數量（「22 份決策紀錄」、
+        「18 個測試介面」、「54 個 issue」……）
+  fail  把下一個 ADR 編號寫成字面值（「從 `00000029` 續接」）
+  fail  出現測試介面或驗收旅程的代號（T<N>／A<N>）——那份對照只在
+        doc/TEST-PLAN.md，別的地方都不該有
+  fail  檔案不存在（一支對不存在的檔案也通過的 lint，與真的檢查過分不出來）
 
-Markdown cannot compute anything at read time, so invariant 9 has exactly one
-implementation here: drop the copy and point at the source. This blocks the
-copy from being written back.
+Markdown 在讀取時算不出任何東西，所以不變式 9 在這裡只有一種實作：把抄本刪掉，
+指回來源。這擋住那份抄本被寫回去。
 
-R1 and R2 are a phrase table, not a general rule: "數字 + 量詞" would flag
-"兩個服務" and "四次代價" too, and a linter that cries wolf gets switched off.
-The cost is that the table can miss a phrasing -- add a row to _rules.
+R1 與 R2 是一張詞組表，不是通則：「數字 + 量詞」會連「兩個服務」「四次代價」
+一起擋，而一支亂叫的 lint 會被關掉。代價是這張表可能漏掉某種寫法——去 _rules
+補一列。
 USAGE
 }
 
