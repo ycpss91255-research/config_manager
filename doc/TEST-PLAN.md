@@ -1033,6 +1033,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `core/state` | T2 | 已落地 |
 | `core/identity` | T5 | 已落地 |
 | `core/index` | T14 | 已落地 |
+| `core/parse` | T6（格式解析與原樣寫回） | 已落地（yaml／json／toml／ini／raw；#8） |
 | `core/models` | 無獨立測試介面——見「刻意的空格」 | 已落地 |
 | `core/validate` | T3 | 未落地（#16） |
 | `core/whitelist` | T4（正規化比對）＋ T8（符號連結逃逸） | 未落地（#11） |
