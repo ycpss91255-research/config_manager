@@ -70,6 +70,7 @@ main() {
 
     if ! grep -q '^> 服務' "${path}"; then
       printf 'FAIL %s  missing "> 服務：" backref\n' "${base}" >&2
+      printf '         下一步：在標題底下補一行「> 服務：<不變式編號>」，或「機制，無對應不變式」\n' >&2
       failures=$((failures + 1))
     fi
 

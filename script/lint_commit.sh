@@ -105,7 +105,7 @@ main() {
       # stopped existing when ADR-00000028 moved subjects to Chinese, which has
       # no letter case. The header table was corrected in #70; this line, the
       # one a person actually reads, was not (#106).
-      printf '     改寫成：<type>(<scope>): 中文陳述句，說明現在什麼成立\n' >&2
+      printf '     下一步：改寫成 <type>(<scope>): 中文陳述句，說明現在什麼成立\n' >&2
       printf '     例如：feat(core): 清單檔載入時攔截未知欄位\n' >&2
       failures=$(( failures + 1 ))
       continue
@@ -133,6 +133,7 @@ main() {
       printf '     subject has no Chinese. This repo keeps its record in Chinese;\n' >&2
       printf '     only the type(scope) prefix stays as base defines it.\n' >&2
       printf '     e.g. feat(core): 清單檔載入時攔截未知欄位\n' >&2
+      printf '     下一步：把主旨的說明那一半改寫成中文，type(scope) 前綴不動\n' >&2
       failures=$(( failures + 1 ))
       continue
     fi
