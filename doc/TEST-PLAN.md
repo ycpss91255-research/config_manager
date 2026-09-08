@@ -867,6 +867,10 @@ recipe 本體仍然是刻意的空格——它們是薄 wrapper，#74 寫下的�
 這幾則規格看不到——它們只回答「叫得動嗎」。被轉呼叫的那一端落在 T10（`api/cli`），
 而 `cfg.sh` 本身仍是刻意的空格。**寫在這裡，免得日後以為 justfile 家族整個被驗過了。**
 
+**`justfile` 家族不進「模組 → 測試介面」那張稽核表。** 那張表只涵蓋 `.py` 與 `.sh`
+（`script/lint_coverage_audit.sh` 把第一欄的裸名補成 `.py` 再要求檔案存在，`justfile`
+兩者都不是）。它的接線記在這裡與前面的「介面 → 測試檔」表，不需要在稽核表再列一次。
+
 **`lint_checkpoints.sh` 不由 `script/test.sh` 執行，是 CI 的一個獨立 job。**
 它需要 GitHub API 讀被引用的 issue，而 `test.sh` 在容器裡跑、那裡沒有 token。規格以
 PATH 上的假 `gh` 替換，所以規格本身不需要網路，也不會因為某張真的 issue 被改動而轉紅。
@@ -1057,7 +1061,6 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/hooks/dispatch.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/hooks/{pre,post}/*.sh` | 無——見「刻意的空格」 | 已落地 |
 | `script/local/cfg/cfg.sh` | 無——見「刻意的空格」 | 已落地 |
-| `justfile`（含 `script/justfile.*`、`script/local/cfg/justfile.cfg`） | T19（接線：乾淨簽出上叫得動哪些指令，#108） | 已落地 |
 
 這張表涵蓋 `src/` 底下的每個 `.py` 與 `script/` 底下的每支 `.sh`。**新增一個模組或
 一支腳本時，這裡要一起加一列**——沒有一列的檔案，既不算被覆蓋，也不算刻意留空。
