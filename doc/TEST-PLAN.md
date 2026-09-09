@@ -1037,7 +1037,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `core/models` | 無獨立測試介面——見「刻意的空格」 | 已落地 |
 | `core/validate` | T3 | 未落地（#16） |
 | `core/whitelist` | T4（正規化比對）＋ T8（符號連結逃逸） | 未落地（#11） |
-| `core/inference` | T12 | 未落地（#9） |
+| `core/inference` | T12 | 部分落地：型別推斷（`infer_types`）已落地（#9）；`draft_schema` 與人工指定型別未落地——v0.2.0 只做推斷這一層 |
 | `core/attributes` | T16 | 未落地 |
 | `core/roles` | T17 | 未落地 |
 | `core/drafts` | T18 | 未落地（#18） |
