@@ -17,9 +17,12 @@ import stat
 import pytest
 
 from config_manager.io.errors import (
+    ContentUnreadable,
+    SourceAbsent,
     SourceNotRegularFile,
     SourceOutsideRoots,
     SourcePathUnstable,
+    SourceUnreachable,
 )
 from config_manager.io.source import local_hostname, read_source
 
@@ -271,3 +274,78 @@ def test_final_component_becoming_a_symlink_at_open_time_is_refused(tmp_path, mo
     monkeypatch.setattr(os, "open", racing_open)
     with pytest.raises(SourcePathUnstable):
         read_source(str(source), [str(inside)])
+
+
+# ── 讀取失敗的三種結果各自分開（#182）───────────────────────────────────────
+#
+# 先前 ENOENT（不存在）被歸進 SourceNotRegularFile——那句話講不出根據，我們根本
+# 沒看到那個 inode。io/digest 的 docstring 早寫過這個分界為什麼重要：把「你沒權限
+# 讀它」說成「那不是一個檔案」，使用者會去改錯的東西（不變式 2）。
+
+
+def test_missing_source_is_reported_as_missing_not_as_a_non_file(tmp_path):
+    inside, _ = _inside_and_outside(tmp_path)
+
+    with pytest.raises(SourceAbsent):
+        read_source(str(inside / "never-existed.yaml"), [str(inside)])
+
+
+def test_missing_source_message_says_it_does_not_exist(tmp_path):
+    inside, _ = _inside_and_outside(tmp_path)
+
+    with pytest.raises(SourceAbsent) as caught:
+        read_source(str(inside / "never-existed.yaml"), [str(inside)])
+    assert "不存在" in str(caught.value)
+
+
+def test_unreadable_content_is_reported_as_a_permission_problem(tmp_path):
+    inside, _ = _inside_and_outside(tmp_path)
+    source = inside / "params.yaml"
+    source.write_bytes(b"a: 1\n")
+    os.chmod(source, 0o000)
+
+    with pytest.raises(ContentUnreadable):
+        read_source(str(source), [str(inside)])
+
+
+def test_parent_without_traverse_permission_is_not_reported_as_missing(tmp_path):
+    # 父目錄少了 +x：檔案明明在，lexists 卻回 False。要看 lstat 的 errno 才分得出
+    # 「不存在」與「上層目錄擋住去路」——後者是 EACCES，不是 ENOENT。
+    inside, _ = _inside_and_outside(tmp_path)
+    locked = inside / "locked"
+    locked.mkdir()
+    source = locked / "params.yaml"
+    source.write_bytes(b"a: 1\n")
+    os.chmod(locked, 0o000)
+
+    try:
+        with pytest.raises(SourceUnreachable):
+            read_source(str(source), [str(inside)])
+    finally:
+        os.chmod(locked, 0o755)  # 讓 tmp_path 清理得掉
+
+
+def test_traverse_failure_names_the_directory_in_the_way(tmp_path):
+    inside, _ = _inside_and_outside(tmp_path)
+    locked = inside / "locked"
+    locked.mkdir()
+    source = locked / "params.yaml"
+    source.write_bytes(b"a: 1\n")
+    os.chmod(locked, 0o000)
+
+    try:
+        with pytest.raises(SourceUnreachable) as caught:
+            read_source(str(source), [str(inside)])
+        assert str(locked) in str(caught.value)
+    finally:
+        os.chmod(locked, 0o755)
+
+
+def test_broken_symlink_is_still_a_non_regular_file(tmp_path):
+    # T22 的行為表明列斷掉的連結屬「不是一般檔案」——本 issue 不改變這一分類。
+    inside, _ = _inside_and_outside(tmp_path)
+    link = inside / "link.yaml"
+    link.symlink_to(inside / "gone.yaml")
+
+    with pytest.raises(SourceNotRegularFile):
+        read_source(str(link), [str(inside)])
