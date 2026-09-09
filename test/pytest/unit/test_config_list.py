@@ -725,3 +725,50 @@ groups   = []
         if token not in result
     ]
     assert dropped == []
+
+
+# ── 寫入路徑的完整性檢查（#181）──────────────────────────────────────────────
+#
+# 這四條檢查原本只掛在 load 這條路上，dump 完全不做——無效條目寫得進清單檔，
+# 錯誤要到下一次啟動才爆，而那時擋的是容器啟動，不是造成它的那次寫入。
+# 無效的模型只能用 model_copy 造出來：load 本身就會擋掉無效的輸入。
+
+
+def _with_files(config_list, files):
+    return config_list.model_copy(update={"files": files})
+
+
+def test_dump_refuses_two_entries_sharing_a_target():
+    config_list = load(_ROUNDTRIP_TEXT)
+    first, second = config_list.files
+    clashing = second.model_copy(update={"target": first.target})
+
+    with pytest.raises(DuplicateTarget):
+        dump(_with_files(config_list, [first, clashing]), _ROUNDTRIP_TEXT)
+
+
+def test_dump_refuses_two_entries_sharing_a_uid():
+    config_list = load(_ROUNDTRIP_TEXT)
+    first, second = config_list.files
+    clashing = second.model_copy(update={"uid": first.uid})
+
+    with pytest.raises(DuplicateUid):
+        dump(_with_files(config_list, [first, clashing]), _ROUNDTRIP_TEXT)
+
+
+def test_dump_refuses_a_target_containing_dotdot():
+    config_list = load(_ROUNDTRIP_TEXT)
+    first, second = config_list.files
+    escaping = first.model_copy(update={"target": "/opt/robot/../../etc/passwd"})
+
+    with pytest.raises(TargetEscape):
+        dump(_with_files(config_list, [escaping, second]), _ROUNDTRIP_TEXT)
+
+
+def test_dump_refuses_a_format_outside_the_allowed_set():
+    config_list = load(_ROUNDTRIP_TEXT)
+    first, second = config_list.files
+    unknown = first.model_copy(update={"format": "xml"})
+
+    with pytest.raises(InvalidFormat):
+        dump(_with_files(config_list, [unknown, second]), _ROUNDTRIP_TEXT)
