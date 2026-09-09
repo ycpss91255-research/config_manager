@@ -93,3 +93,23 @@ class SourcePathUnstable(SourceError):
 
     失敗方向是拒絕，不是讀取——寧可這次匯入不成立，也不讀一份來歷不明的內容。
     """
+
+
+class SourceAbsent(SourceError):
+    """要納管的來源路徑不存在。
+
+    與 `SourceNotRegularFile` 分開：後者是「看到了那個 inode、但它不是一般檔案」，
+    這一則是「根本沒有那個 inode」。把「不存在」說成「不是一般檔案」是講不出根據的
+    話——我們沒看到它。與 `PreflightError` 家族的 `SourceMissing` 也分開：那一則講的
+    是清單檔某條目引用的來源不在 repo 裡（啟動時），這一則是匯入當下要讀的那份檔案。
+    """
+
+
+class SourceUnreachable(SourceError):
+    """來源的某一層上層目錄沒有 traverse（`+x`）權限，去不到那個檔案。
+
+    父目錄少了 `+x` 時 `os.path.lexists` 回 False——檔案明明在，卻被判成不存在。
+    那正是 `io/digest` 的 docstring 警告過的形狀：把「你到不了它」說成「它不存在」，
+    UI 會把一個權限問題呈現成「未部署」，操作者去修錯的東西。訊息指名是**哪一層**
+    目錄擋住去路。
+    """

@@ -38,9 +38,11 @@ from config_manager.core.models import Permissions
 from config_manager.core.whitelist import decide
 from config_manager.io.errors import (
     ContentUnreadable,
+    SourceAbsent,
     SourceNotRegularFile,
     SourceOutsideRoots,
     SourcePathUnstable,
+    SourceUnreachable,
 )
 
 _CHUNK = 65536
@@ -87,7 +89,7 @@ def read_source(path: str, allowed_roots: Iterable[str]) -> Source:
             f"或把該位置納入白名單"
         )
 
-    descriptor = _open_no_follow(path, resolved)
+    descriptor = _open_source(path, resolved)
     try:
         info = os.fstat(descriptor)
         kind = _not_a_regular_file(info.st_mode)
@@ -126,8 +128,8 @@ def _resolve(path: str) -> str:
         ) from error
 
 
-def _open_no_follow(path: str, resolved: str) -> int:
-    """以 `O_NOFOLLOW` 開檔。
+def _open_source(path: str, resolved: str) -> int:
+    """以 `O_NOFOLLOW` 開檔；失敗時把原因分類成具名例外。
 
     `O_NONBLOCK` 讓具名管道不會把整個匯入卡住——開得成之後 `fstat` 會認出它不是
     一般檔案並拒絕。
@@ -135,21 +137,81 @@ def _open_no_follow(path: str, resolved: str) -> int:
     try:
         return os.open(resolved, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as error:
-        if error.errno == errno.ELOOP:
-            # 解析之後最後一段又變成了符號連結——那就是競速本身。
-            raise SourcePathUnstable(
-                f"開檔時來源變成了符號連結：{path} → {resolved}。"
-                f"下一步：確認沒有其他程序正在改寫這條路徑，然後重試"
-            ) from error
-        if error.errno in (errno.EACCES, errno.EPERM):
-            raise ContentUnreadable(
-                f"內容讀不出來：{path} → {resolved}（{error.strerror}）。"
-                f"下一步：確認執行身分對它有讀取權限"
-            ) from error
-        raise SourceNotRegularFile(
-            f"來源開不起來（{error.strerror}）：{path} → {resolved}。"
-            f"下一步：確認它存在、而且是一份一般檔案"
-        ) from error
+        raise _classify_open_failure(path, resolved, error) from error
+
+
+def _classify_open_failure(path: str, resolved: str, error: OSError) -> Exception:
+    """把 `os.open` 的失敗分成四種——它們的成因與處置各不相同（#182）。
+
+    把「不存在」「讀不到」「上層目錄擋住去路」混成同一種，等於把訊號消掉：使用者
+    收到「不是一般檔案」時會去改錯的東西（不變式 2，`io/digest` 的 docstring 寫過
+    同一件事）。
+    """
+    if error.errno == errno.ELOOP:
+        # 解析之後最後一段又變成了符號連結——那就是競速本身。
+        return SourcePathUnstable(
+            f"開檔時來源變成了符號連結：{path} → {resolved}。"
+            f"下一步：確認沒有其他程序正在改寫這條路徑，然後重試"
+        )
+
+    if error.errno == errno.ENOENT:
+        if os.path.islink(path):
+            # realpath 把連結收斂成了不存在的目標——那是一條斷掉的符號連結。
+            return SourceNotRegularFile(
+                f"來源是一條斷掉的符號連結（指向不存在的目標）：{path} → {resolved}。"
+                f"下一步：納管的對象是一份 config 檔案本身，改指向那個檔案"
+            )
+        return SourceAbsent(
+            f"來源不存在：{path} → {resolved}。"
+            f"下一步：確認路徑拼對了，且那份檔案真的在那個位置"
+        )
+
+    if error.errno in (errno.EACCES, errno.EPERM):
+        blocker = _blocking_parent(resolved)
+        if blocker is not None:
+            return SourceUnreachable(
+                f"上層目錄擋住去路（「{blocker}」沒有 traverse 權限）：{path}。"
+                f"下一步：給那個目錄加上執行（+x）權限，或改由讀得到它的身分執行"
+            )
+        return ContentUnreadable(
+            f"內容讀不出來：{path} → {resolved}（{error.strerror}）。"
+            f"下一步：確認執行身分對它有讀取權限"
+        )
+
+    return SourceNotRegularFile(
+        f"來源開不起來（{error.strerror}）：{path} → {resolved}。"
+        f"下一步：確認它是一份一般檔案（不是裝置或 socket）"
+    )
+
+
+def _blocking_parent(resolved: str) -> str | None:
+    """去不到 `resolved` 時，是哪一層目錄擋住的；若目標本身可 `stat` 則回 None。
+
+    從根往下逐層 `stat`：第一個 `stat` 不了的祖先，它的上一層就是缺 `+x` 的那個
+    目錄。目標本身 `stat` 得到（EACCES 來自檔案自己的讀取權限、不是 traverse）時
+    回 None，交給呼叫端判為 `ContentUnreadable`。
+    """
+    reachable = "/"
+    for ancestor in _ancestors(resolved)[1:]:
+        try:
+            os.stat(ancestor)
+        except OSError:
+            return reachable
+        reachable = ancestor
+    return None
+
+
+def _ancestors(path: str) -> list[str]:
+    """path 從根到它自己的每一層，根在最前面。"""
+    chain = []
+    current = path
+    while True:
+        chain.append(current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return list(reversed(chain))
 
 
 def _read_all(descriptor: int, path: str, resolved: str) -> bytes:
