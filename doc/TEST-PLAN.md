@@ -1106,7 +1106,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/scan` | T21 | 已落地 |
 | `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言 | 已落地 |
 | `io/parsers` | T6 | 未落地（#17） |
-| `io/source` | T22（匯入時刻對外界的讀取，介面議定於 #177） | 未落地（#174／#175／#12） |
+| `io/source` | T22（匯入時刻對外界的讀取，介面議定於 #177） | 部分落地：路徑判定（realpath 後比對白名單、一般檔案檢查）與一次性讀取已落地（#174）；讀取失敗的錯誤分類（不存在／讀不到／上層目錄無 traverse 權限）未落地（#175） |
 | `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/session`、`GET /api/session` 與 CORS 中介層） |
 | `api/cli` | T10 | 已落地（`serve` 與 `list`） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 部分落地：身分（`author`）已落地；階段的 acquire／renew／release／sweep 未落地（#33） |

@@ -55,3 +55,41 @@ class SourceMissing(PreflightError):
 
 class ContentUnreadable(Exception):
     """路徑存在但內容讀不出來。與「不存在」分開：後者是未部署，是合法狀態。"""
+
+
+class SourceError(Exception):
+    """匯入時刻讀取來源失敗的基底（T22）。
+
+    自成一族，不併進 `WriterError`：那一族講的是「寫出到目標」，這一族講的是
+    「從外界讀進來」。兩者的處置不同——前者改目標或權限，後者改要納管的那條路徑。
+    """
+
+
+class SourceOutsideRoots(SourceError):
+    """來源經 realpath 解析後落在白名單之外。
+
+    與 `TargetOutsideRoots` 是同一種危害的兩個時刻：那一個管寫出，這一個管讀取。
+    納管不寫出目標（見 T22），所以寫出端那道檢查在這條路上不會被走到——**讀取
+    本身就是危害**，內容一旦被複製進 config repo 就永久留在版控裡。
+    """
+
+
+class SourceNotRegularFile(SourceError):
+    """來源不是可讀的一般檔案：目錄、裝置、socket，或斷掉的符號連結。
+
+    設計 §5.1 的路徑檢查要求三件事——落在白名單內、不含 `..` 逃逸、**且為可讀的
+    一般檔案**。這一則是第三項。
+    """
+
+
+class SourcePathUnstable(SourceError):
+    """解析或開啟期間來源路徑被改動，這一次匯入不成立。
+
+    非 strict 的 `os.path.realpath` **不保證不丟例外**——它只保證不因「路徑不存在」
+    而丟。CPython 3.11 的 `_joinrealpath` 在 `os.lstat` 說「這是連結」之後才裸呼叫
+    `os.readlink`（`posixpath.py:480`），兩者之間連結被移除，`FileNotFoundError`
+    就會往外拋。開檔時 `O_NOFOLLOW` 收到 `ELOOP` 也是同一件事的另一個時刻：解析之後
+    最後一段又變成了符號連結，那就是競速本身。
+
+    失敗方向是拒絕，不是讀取——寧可這次匯入不成立，也不讀一份來歷不明的內容。
+    """
