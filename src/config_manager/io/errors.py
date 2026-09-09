@@ -80,3 +80,16 @@ class SourceNotRegularFile(SourceError):
     設計 §5.1 的路徑檢查要求三件事——落在白名單內、不含 `..` 逃逸、**且為可讀的
     一般檔案**。這一則是第三項。
     """
+
+
+class SourcePathUnstable(SourceError):
+    """解析或開啟期間來源路徑被改動，這一次匯入不成立。
+
+    非 strict 的 `os.path.realpath` **不保證不丟例外**——它只保證不因「路徑不存在」
+    而丟。CPython 3.11 的 `_joinrealpath` 在 `os.lstat` 說「這是連結」之後才裸呼叫
+    `os.readlink`（`posixpath.py:480`），兩者之間連結被移除，`FileNotFoundError`
+    就會往外拋。開檔時 `O_NOFOLLOW` 收到 `ELOOP` 也是同一件事的另一個時刻：解析之後
+    最後一段又變成了符號連結，那就是競速本身。
+
+    失敗方向是拒絕，不是讀取——寧可這次匯入不成立，也不讀一份來歷不明的內容。
+    """

@@ -7,12 +7,20 @@
 整合層：這裡真的碰檔案系統，符號連結也用真的建（比照 `test_writer.py` 的手法）。
 """
 
+import errno
+import grp
 import os
+import pwd
+import socket
 import stat
 
 import pytest
 
-from config_manager.io.errors import SourceNotRegularFile, SourceOutsideRoots
+from config_manager.io.errors import (
+    SourceNotRegularFile,
+    SourceOutsideRoots,
+    SourcePathUnstable,
+)
 from config_manager.io.source import local_hostname, read_source
 
 
@@ -149,3 +157,117 @@ def test_mode_is_reported_as_four_digit_octal(tmp_path):
 
     expected = f"{stat.S_IMODE(os.stat(source).st_mode):04o}"
     assert read_source(str(source), [str(inside)]).permissions.mode == expected
+
+
+# ── 對抗性驗證補上的規格（見 PR 描述的突變檢查一節）─────────────────────────
+
+
+def test_socket_is_refused(tmp_path):
+    # 突變檢查抓到的缺口：原本只有目錄與具名管道有規格，socket 與裝置沒有。
+    inside, _ = _inside_and_outside(tmp_path)
+    endpoint = inside / "a-socket"
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(endpoint))
+    try:
+        with pytest.raises(SourceNotRegularFile):
+            read_source(str(endpoint), [str(inside)])
+    finally:
+        server.close()
+
+
+def test_character_device_is_refused():
+    # /dev/null 是字元裝置。把 /dev 放進白名單，才驗得到這條分支。
+    with pytest.raises(SourceNotRegularFile):
+        read_source("/dev/null", ["/dev"])
+
+
+def test_owner_identifies_the_uid_that_owns_the_file(tmp_path):
+    # 突變檢查抓到的缺口：把 owner／group 寫死成 "root"，原本 13 則全過。
+    # 名字查得到就回名字、查不到就回數字——兩種形式都必須指回同一個 uid。
+    inside, _ = _inside_and_outside(tmp_path)
+    source = inside / "params.yaml"
+    source.write_bytes(b"a: 1\n")
+
+    owner = read_source(str(source), [str(inside)]).permissions.owner
+    uid = int(owner) if owner.isdigit() else pwd.getpwnam(owner).pw_uid
+    assert uid == os.stat(source).st_uid
+
+
+def test_group_identifies_the_gid_that_owns_the_file(tmp_path):
+    inside, _ = _inside_and_outside(tmp_path)
+    source = inside / "params.yaml"
+    source.write_bytes(b"a: 1\n")
+
+    group = read_source(str(source), [str(inside)]).permissions.group
+    gid = int(group) if group.isdigit() else grp.getgrnam(group).gr_gid
+    assert gid == os.stat(source).st_gid
+
+
+def test_permissions_do_not_come_from_a_second_lookup_by_path(tmp_path, monkeypatch):
+    # 「只讀一次」的可觀察形式：權限必須來自已開啟的那個 fd，不是對路徑再查一次
+    # ——第二次查詢可能查到另一個 inode，那樣回報的權限描述的就不是被讀到的內容。
+    inside, _ = _inside_and_outside(tmp_path)
+    source = inside / "params.yaml"
+    source.write_bytes(b"a: 1\n")
+    resolved = os.path.realpath(source)
+
+    looked_up = []
+    real_stat = os.stat
+
+    def spy(target, *args, **kwargs):
+        looked_up.append(str(target))
+        return real_stat(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", spy)
+    read_source(str(source), [str(inside)])
+
+    assert resolved not in looked_up
+
+
+def test_a_symlinked_whitelist_root_still_covers_what_is_inside_it(tmp_path):
+    # 白名單的「根」自己也要解析。io/writer 的逃逸檢查對它的 roots 就是這樣做的
+    # ——同一個問題的兩道檢查不該給出不同答案。
+    real_root = tmp_path / "real-root"
+    real_root.mkdir()
+    linked_root = tmp_path / "linked-root"
+    linked_root.symlink_to(real_root)
+    source = real_root / "params.yaml"
+    source.write_bytes(b"a: 1\n")
+
+    assert read_source(str(source), [str(linked_root)]).content == b"a: 1\n"
+
+
+def test_path_changing_during_resolution_is_a_named_exception(tmp_path, monkeypatch):
+    # 非 strict 的 realpath 只保證不因「路徑不存在」而丟，不保證完全不丟：CPython
+    # 3.11 的 _joinrealpath 在 lstat 說「這是連結」之後才裸呼叫 readlink，兩者之間
+    # 連結被移除就會拋出。呼叫端不該收到未分類的原生例外。
+    inside, _ = _inside_and_outside(tmp_path)
+    source = inside / "params.yaml"
+    source.write_bytes(b"a: 1\n")
+
+    def unstable(_target, *_args, **_kwargs):
+        raise OSError(errno.ENOENT, "No such file or directory")
+
+    monkeypatch.setattr(os.path, "realpath", unstable)
+    with pytest.raises(SourcePathUnstable):
+        read_source(str(source), [str(inside)])
+
+
+def test_final_component_becoming_a_symlink_at_open_time_is_refused(tmp_path, monkeypatch):
+    # O_NOFOLLOW 收到 ELOOP：解析之後最後一段又變成了符號連結，那就是競速本身。
+    # 失敗方向是拒絕——寧可這次匯入不成立，也不讀一份來歷不明的內容。
+    inside, _ = _inside_and_outside(tmp_path)
+    source = inside / "params.yaml"
+    source.write_bytes(b"a: 1\n")
+    resolved = os.path.realpath(source)
+
+    real_open = os.open
+
+    def racing_open(target, *args, **kwargs):
+        if str(target) == resolved:
+            raise OSError(errno.ELOOP, "Too many levels of symbolic links")
+        return real_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", racing_open)
+    with pytest.raises(SourcePathUnstable):
+        read_source(str(source), [str(inside)])
