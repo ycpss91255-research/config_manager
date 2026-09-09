@@ -1,8 +1,10 @@
-"""T12 — 型別推斷。core/inference 的單元規格。
+"""T12 — 型別推斷與歧義偵測。core/inference 的單元規格。
 
-本檔只涵蓋 T12 的**推斷**那一半（#9）：`infer_types(資料) -> {欄位路徑: 型別}`。
-`draft_schema` 與人工指定型別不在 v0.2.0 的範圍（#9 明寫「只做這一層，不產生完整
-JSON Schema」），所以不在這裡寫規格——那會是寫在還沒議定要落地的行為上。
+涵蓋 T12 的兩半：`infer_types(資料) -> {欄位路徑: 型別}`（#9），以及
+`find_ambiguous(原文, format) -> [歧義]`（#10）。
+
+`draft_schema` 與人工指定型別**不**在這裡：它們不在 v0.2.0 的範圍（#9 明寫「只做這
+一層，不產生完整 JSON Schema」），寫規格會是寫在還沒議定要落地的行為上。
 
 核心層測試在無檔案系統、無 git、無網路下執行（CLAUDE.md）：資料直接以 Python 結構
 餵進去。
@@ -10,7 +12,7 @@ JSON Schema」），所以不在這裡寫規格——那會是寫在還沒議定
 
 import datetime
 
-from config_manager.core.inference import infer_types
+from config_manager.core.inference import find_ambiguous, infer_types
 from config_manager.core.parse import parse
 
 
@@ -91,3 +93,69 @@ def test_types_are_inferred_from_a_parsed_toml_document():
         "ratio": "float",
         "flag": "bool",
     }
+
+
+# ── 歧義偵測（T12 的 find_ambiguous，#10）─────────────────────────────────────
+
+
+def test_bool_word_is_reported_with_its_line_and_value():
+    # `no` 在 YAML 1.1 是布林 false、1.2 是字串 "no"——兩種讀法都成立，所以要問人。
+    found = find_ambiguous("name: amr01\nflag: no\n", "yaml")
+    assert [(a.line, a.value) for a in found] == [(2, "no")]
+
+
+def test_leading_zero_number_is_reported():
+    # 0755 可能是八進位、可能是十進位，也可能根本是檔案權限字串。
+    found = find_ambiguous("mode: 0755\n", "yaml")
+    assert [(a.line, a.value) for a in found] == [(1, "0755")]
+
+
+def test_trailing_zero_decimal_is_reported():
+    # 1.10 讀成浮點數之後，尾數那個 0 就消失了。
+    found = find_ambiguous("ratio: 1.10\n", "yaml")
+    assert [(a.line, a.value) for a in found] == [(1, "1.10")]
+
+
+def test_list_item_value_is_reported():
+    found = find_ambiguous("flags:\n  - no\n", "yaml")
+    assert [(a.line, a.value) for a in found] == [(2, "no")]
+
+
+def test_quoted_value_is_not_ambiguous():
+    # 已經加引號就沒有歧義——作者已經表明它是字串。
+    assert find_ambiguous('flag: "no"\n', "yaml") == []
+
+
+def test_unambiguous_values_are_not_reported():
+    assert find_ambiguous("name: amr01\ncount: 3\nflag: true\n", "yaml") == []
+
+
+def test_comment_line_is_not_scanned():
+    assert find_ambiguous("# no\nname: amr01\n", "yaml") == []
+
+
+def test_inline_comment_is_not_scanned():
+    assert find_ambiguous("name: amr01  # no\n", "yaml") == []
+
+
+def test_the_possible_readings_name_both_bool_and_string():
+    # 光說「這個值有歧義」不夠——要說得出它可以被讀成哪幾種，人才決定得了。
+    readings = " ".join(find_ambiguous("flag: no\n", "yaml")[0].readings)
+    assert "布林" in readings and "字串" in readings
+
+
+def test_reported_value_is_verbatim_not_corrected():
+    # 不自動修正：回報的是原樣的 `no`，不是改寫後的 `"no"`（#10）。
+    found = find_ambiguous("flag: no\n", "yaml")
+    assert found[0].value == "no"
+
+
+def test_formats_with_explicit_typing_have_no_ambiguity():
+    # json／toml 的型別由寫法決定，ini 全部是字串——都沒有這類歧義。
+    assert find_ambiguous('{"flag": false}\n', "json") == []
+
+
+def test_block_scalar_continuation_is_not_treated_as_a_value():
+    # 區塊純量的續行既沒有鍵也不是清單項目——不當成值，否則多行字串裡的 `no`
+    # 會被誤報成歧義。
+    assert find_ambiguous("note: |\n  no\n", "yaml") == []
