@@ -29,6 +29,7 @@ import errno
 import grp
 import os
 import pwd
+import re
 import socket
 import stat
 from collections.abc import Iterable
@@ -38,12 +39,17 @@ from config_manager.core.models import Permissions
 from config_manager.core.whitelist import decide
 from config_manager.io.errors import (
     ContentUnreadable,
+    HostnameInvalid,
     SourceAbsent,
     SourceNotRegularFile,
     SourceOutsideRoots,
     SourcePathUnstable,
     SourceUnreachable,
 )
+
+# 安全的 hostname 段：字母數字加 . _ -（涵蓋 FQDN 與容器 ID）。用來擋住會逃出
+# `files/<hostname>/` 或重塑 commit 主旨的值——`/`、控制字元、空白都不match（#178）。
+_SAFE_HOSTNAME = re.compile(r"[A-Za-z0-9._-]+")
 
 _CHUNK = 65536
 
@@ -113,12 +119,34 @@ def read_source(path: str, allowed_roots: Iterable[str]) -> Source:
 
 
 def local_hostname() -> str:
-    """本機 hostname。
+    """本機 hostname——這台機器在紀錄裡的身分。
 
-    T22 只保證「讀到的是本機 hostname」。它在不同部署形態下穩不穩定是部署決策
-    ——容器在 bridge 網路下讀到的是每次重建都變的容器 ID（#178）。
+    優先取環境變數 `CM_HOSTNAME`，沒設才回 `socket.gethostname()`（#178）。
+
+    為什麼要 `CM_HOSTNAME`：納管當下讀一次、寫進檔案、之後永不再讀（不變式 8、
+    ADR-00000012），所以那一次讀到的必須穩定。而 `gethostname()` 在 bridge 網路下讀到的
+    是每次重建都變的容器 ID，v0.2.0 檢查點 1 要求「重跑不因環境改變而變動」就會靜默不成立。
+    `CM_HOSTNAME` 由 compose 明寫這台機器的正規名稱，任何網路模式都穩定、重建不變，也讓
+    部署者明確命名機器。這不違反 ADR-00000012 否決的「執行期重讀」——仍是納管當下讀一次，
+    只是讓那一次是穩定值。
+
+    這一層讀環境變數（而非照 ADR-00000011 一路從 cli 邊界傳進來）是刻意的：`local_hostname`
+    本就是「向外界取這台機器的身分」的那個點，`CM_HOSTNAME` 是那個身分的明確形式，與它讀
+    `gethostname()` 同性質；把它一路穿過 create_app／onboard 只為改一個部署身分值，代價不成
+    比例。空字串當作沒設（`.strip()` 後為空）。
     """
-    return socket.gethostname()
+    override = os.environ.get("CM_HOSTNAME", "").strip()
+    hostname = override or socket.gethostname()
+    # hostname 會流進 `files/<hostname>/` 的路徑段與 commit 主旨 `<name>@<hostname>`。含 `/`、
+    # `.`／`..`、或控制字元（換行）的值會逃出 `files/` 邊界或重塑主旨。gethostname() 本就安全，
+    # 會出事的是部署者手打的 CM_HOSTNAME——不安全就大聲失敗，不悄悄清洗（#178 資安審查）。
+    if hostname in (".", "..") or not _SAFE_HOSTNAME.fullmatch(hostname):
+        raise HostnameInvalid(
+            f"hostname 不是安全的名稱：「{hostname}」。它會被寫進 files/<hostname>/ 的路徑與"
+            f"變更紀錄的主旨，只允許字母數字與 . _ -。"
+            f"下一步：把 CM_HOSTNAME 設成這台機器的正規名稱（例如 amr01），不要含 / 或空白"
+        )
+    return hostname
 
 
 def service_identity() -> tuple[str, frozenset[str], bool]:

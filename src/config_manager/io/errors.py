@@ -115,6 +115,16 @@ class SourceAbsent(SourceError):
     """
 
 
+class HostnameInvalid(Exception):
+    """`CM_HOSTNAME` 覆寫的值不是安全的 hostname（#178 的資安審查）。
+
+    hostname 會流進 `files/<hostname>/` 的路徑段與 commit 主旨 `<name>@<hostname>`。含 `/`、
+    `..`／`.`、或控制字元（換行）的值會逃出 `files/` 邊界、或重塑 commit 主旨。`gethostname()`
+    的結果本就是安全的 hostname；會出事的是部署者手打的 `CM_HOSTNAME`——寧可大聲失敗，不
+    悄悄把機器身分清洗成別的東西（不變式 2）。
+    """
+
+
 class BrowseError(Exception):
     """檔案系統瀏覽失敗的基底（GET /api/browse，#185）。
 

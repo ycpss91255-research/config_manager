@@ -117,6 +117,28 @@ sys.exit(0 if config_list.files == [] else 1)
   [[ "${output}" == *"config-list.toml"* ]]
 }
 
+@test "白名單允許的路徑在容器裡看不到時，啟動失敗並指名是哪一條（#146）" {
+  # 掛載是白名單的上界：白名單有、掛載沒有 → 大聲失敗，而不是等第一次寫出才以指錯
+  # 方向的「權限不足」爆。
+  git init --quiet --initial-branch=main "${WORK}"
+  write_minimal_list "${WORK}"
+
+  CM_CONFIG_REPO="${WORK}" CM_ALLOWED_ROOTS="${WORK}/not-mounted" \
+    run "${ENTRYPOINT}" true
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"${WORK}/not-mounted"* ]]
+}
+
+@test "白名單允許的路徑都在容器裡看得到時，繼續啟動（#146）" {
+  git init --quiet --initial-branch=main "${WORK}"
+  write_minimal_list "${WORK}"
+  mkdir -p "${WORK}/targets"
+
+  CM_CONFIG_REPO="${WORK}" CM_ALLOWED_ROOTS="${WORK}/targets" \
+    run "${ENTRYPOINT}" true
+  [ "${status}" -eq 0 ]
+}
+
 @test "清單檔壞掉時在 exec 之前就失敗" {
   # 前置檢查的意義是「不啟動服務」。清單檔壞掉卻讓 exec 跑起來的話，錯誤會延到
   # 之後某個請求才爆——離現場最遠的地方（不變式 2）。
