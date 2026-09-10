@@ -80,6 +80,20 @@ def test_two_sources_from_the_same_host_coexist(tmp_path):
     assert (repo / second).read_bytes() == b"b\n"
 
 
+def test_targets_that_flatten_alike_get_distinct_paths(tmp_path):
+    # #192：/etc/a/b 與 /etc/a__b 都把中段變成 `a__b`。編碼若只做 /→__、不跳脫路徑本身
+    # 的 _，兩者會編成同一檔名，第二次靜默覆蓋第一次的複本。編碼必須單射。
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    nested = place_source(str(repo), "amr01", "/etc/a/b", b"nested\n")
+    flat = place_source(str(repo), "amr01", "/etc/a__b", b"flat\n")
+
+    assert nested != flat
+    assert (repo / nested).read_bytes() == b"nested\n"
+    assert (repo / flat).read_bytes() == b"flat\n"
+
+
 def test_written_config_list_is_readable(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
