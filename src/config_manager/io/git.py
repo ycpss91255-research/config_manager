@@ -59,6 +59,15 @@ def stage(repo: str, *paths: str) -> None:
     _git(repo, "add", "--", *paths)
 
 
+def unstage(repo: str, *paths: str) -> None:
+    """把指定路徑的索引狀態還原到 HEAD（`git reset -q -- <paths>`）。
+
+    納管中途失敗要回滾時用（#173）：`stage` 已跑過的話，索引裡有這次的暫存變更；把它們
+    退回 HEAD，工作區的還原才不會被殘留的索引狀態干擾。點名路徑，不動索引裡的其他東西。
+    """
+    _git(repo, "reset", "-q", "--", *paths)
+
+
 def record(repo: str, uid: str, kind: str, message: str, author: str) -> None:
     """把**已 staged** 的變更記成一筆 commit。
 

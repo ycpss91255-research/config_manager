@@ -18,10 +18,12 @@ import subprocess
 from config_manager.core.config_list import load
 from config_manager.core.errors import DuplicateTarget, DuplicateUid
 from config_manager.io.digest import digest
-from config_manager.io.errors import SourceOutsideRoots
+from config_manager.io.errors import OnboardLeftBehind, SourceOutsideRoots
 from config_manager.io.git import history
 from config_manager.io.onboard import OnboardRequest, onboard
 from config_manager.io.preflight import CONFIG_LIST_NAME
+from config_manager.io.repo import source_relpath, write_config_list as real_write_config_list
+from config_manager.io.source import local_hostname
 
 import pytest
 
@@ -272,3 +274,144 @@ def test_a_refused_duplicate_uid_leaves_the_repo_untouched(tmp_path, monkeypatch
         onboard(str(repo), _request(root, second), _AUTHOR)
 
     assert _git_state(repo) == before
+
+
+# ── 寫入步驟中途失敗即整批回滾（#173 的 AC1／AC2／AC3）─────────────────────────
+
+
+def test_a_failed_list_write_rolls_the_repo_back(tmp_path, monkeypatch):
+    # 乙-1：來源檔放進去了，寫清單檔失敗。回滾把來源檔清掉，repo 回到納管前。
+    repo = _repo(tmp_path)
+    root, path = _source(tmp_path)
+    before = _git_state(repo)
+
+    seen = []
+
+    def _fail_first_write(*args, **kwargs):
+        # 納管當下那一次寫入失敗；回滾要還原清單檔時（第二次）放行。
+        seen.append(1)
+        if len(seen) == 1:
+            raise OSError("寫不進去")
+        return real_write_config_list(*args, **kwargs)
+
+    monkeypatch.setattr("config_manager.io.onboard.write_config_list", _fail_first_write)
+
+    with pytest.raises(OSError, match="寫不進去"):
+        onboard(str(repo), _request(root, path), _AUTHOR)
+
+    assert _git_state(repo) == before
+
+
+def test_a_failed_commit_rolls_the_repo_back(tmp_path, monkeypatch):
+    # 乙-2：來源檔與清單檔都寫好、也 stage 了，commit 失敗。回滾 unstage、還原清單檔、
+    # 清掉來源檔，repo 回到納管前。
+    repo = _repo(tmp_path)
+    root, path = _source(tmp_path)
+    before = _git_state(repo)
+
+    def _commit_boom(*args, **kwargs):
+        raise RuntimeError("commit 壞了")
+
+    monkeypatch.setattr("config_manager.io.onboard.record", _commit_boom)
+
+    with pytest.raises(RuntimeError, match="commit 壞了"):
+        onboard(str(repo), _request(root, path), _AUTHOR)
+
+    assert _git_state(repo) == before
+
+
+def test_a_rollback_that_cannot_finish_fails_loudly(tmp_path, monkeypatch):
+    # AC2：commit 失敗觸發回滾，而回滾還原清單檔那一步也失敗（磁碟持續寫不進去）。
+    # onboard 大聲失敗（OnboardLeftBehind）並指名殘留了什麼，原本的失敗掛在 __cause__。
+    repo = _repo(tmp_path)
+    root, path = _source(tmp_path)
+
+    seen = []
+
+    def _write_then_fail(*args, **kwargs):
+        seen.append(1)
+        if len(seen) == 1:
+            return real_write_config_list(*args, **kwargs)  # 納管當下寫成功
+        raise OSError("還原也寫不進去")  # 回滾要還原清單檔時失敗
+
+    monkeypatch.setattr("config_manager.io.onboard.write_config_list", _write_then_fail)
+
+    def _commit_boom(*args, **kwargs):
+        raise RuntimeError("commit 壞了")
+
+    monkeypatch.setattr("config_manager.io.onboard.record", _commit_boom)
+
+    with pytest.raises(OnboardLeftBehind) as caught:
+        onboard(str(repo), _request(root, path), _AUTHOR)
+
+    assert CONFIG_LIST_NAME in str(caught.value)
+    assert isinstance(caught.value.__cause__, RuntimeError)
+
+
+def _repo_relpath(repo, path):
+    """來源檔在 repo 內會落到的相對路徑，與 onboard 內部算的一致（用 realpath 的目標）。"""
+    return source_relpath(local_hostname(), os.path.realpath(str(path)))
+
+
+def test_a_rollback_restores_a_pre_existing_source_copy(tmp_path, monkeypatch):
+    # 來源檔該落的位置本來就有東西（前一次失敗納管的孤兒）。這次納管會覆蓋它，中途失敗時
+    # 回滾要還原成原本的位元組、不是刪掉——「回到納管前」對本來就存在的檔也成立（AC1）。
+    repo = _repo(tmp_path)
+    root, path = _source(tmp_path)
+    orphan = repo / _repo_relpath(repo, path)
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_bytes(b"old orphan\n")
+    before = _git_state(repo)
+
+    def _commit_boom(*args, **kwargs):
+        raise RuntimeError("commit 壞了")
+
+    monkeypatch.setattr("config_manager.io.onboard.record", _commit_boom)
+
+    with pytest.raises(RuntimeError, match="commit 壞了"):
+        onboard(str(repo), _request(root, path), _AUTHOR)
+
+    assert orphan.read_bytes() == b"old orphan\n"
+    assert _git_state(repo) == before
+
+
+def test_a_rollback_names_the_index_when_unstage_fails(tmp_path, monkeypatch):
+    # AC2：回滾第一步 unstage 就失敗（索引被鎖）。殘留裡指名索引，原本的失敗掛在 __cause__。
+    repo = _repo(tmp_path)
+    root, path = _source(tmp_path)
+
+    def _commit_boom(*args, **kwargs):
+        raise RuntimeError("commit 壞了")
+
+    def _unstage_boom(*args, **kwargs):
+        raise OSError("索引鎖住")
+
+    monkeypatch.setattr("config_manager.io.onboard.record", _commit_boom)
+    monkeypatch.setattr("config_manager.io.onboard.unstage", _unstage_boom)
+
+    with pytest.raises(OnboardLeftBehind) as caught:
+        onboard(str(repo), _request(root, path), _AUTHOR)
+
+    assert "索引" in str(caught.value)
+    assert isinstance(caught.value.__cause__, RuntimeError)
+
+
+def test_a_rollback_names_the_source_when_cleanup_fails(tmp_path, monkeypatch):
+    # AC2：回滾清掉來源檔那一步失敗（刪不掉）。殘留指名那個孤兒來源檔的路徑。
+    repo = _repo(tmp_path)
+    root, path = _source(tmp_path)
+
+    def _commit_boom(*args, **kwargs):
+        raise RuntimeError("commit 壞了")
+
+    def _remove_boom(*args, **kwargs):
+        raise OSError("刪不掉")
+
+    monkeypatch.setattr("config_manager.io.onboard.record", _commit_boom)
+    monkeypatch.setattr("config_manager.io.onboard.os.remove", _remove_boom)
+
+    with pytest.raises(OnboardLeftBehind) as caught:
+        onboard(str(repo), _request(root, path), _AUTHOR)
+
+    assert _repo_relpath(repo, path) in str(caught.value)
+    assert isinstance(caught.value.__cause__, RuntimeError)
