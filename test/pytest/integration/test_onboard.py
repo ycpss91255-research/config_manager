@@ -16,6 +16,7 @@ import re
 import subprocess
 
 from config_manager.core.config_list import load
+from config_manager.core.errors import DuplicateTarget, DuplicateUid
 from config_manager.io.digest import digest
 from config_manager.io.errors import SourceOutsideRoots
 from config_manager.io.git import history
@@ -64,6 +65,32 @@ def _request(root, path, fmt="yaml", note=""):
     return OnboardRequest(
         source_path=str(path), fmt=fmt, allowed_roots=(str(root),), ambiguity_note=note
     )
+
+
+def _fixed_uids(monkeypatch, *values):
+    """讓 onboard 依序取用這些 uid，而不看時鐘。
+
+    毫秒時間戳的 uid 在兩次快速呼叫下可能真的撞號，所以要測「target 重複」與
+    「uid 重複」得先把它們彼此隔開：想試哪一條，就給哪一條會撞的 uid。
+    """
+    supply = iter(values)
+    monkeypatch.setattr("config_manager.io.onboard.new_uid", lambda _now: next(supply))
+
+
+def _git_state(repo):
+    """(HEAD sha, 工作區相對 HEAD 的變動)。攔截後這一對不變，才算 repo 完全沒動。
+
+    兩者缺一不可：porcelain 看得到殘留檔與清單檔的改動，但它是**相對 HEAD** 算的，
+    多出來的 commit 會讓 HEAD 一起前移、於是 porcelain 反而空的——而「寫進去**並提交**」
+    正是 #172 的害處。補上 HEAD sha，才擋得住「驗證過了卻仍偷偷提交一筆」。
+    """
+    def _git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True, text=True, check=True,
+        ).stdout
+
+    return _git("rev-parse", "HEAD").strip(), _git("status", "--porcelain")
 
 
 def test_onboarded_source_is_byte_identical_in_the_repo(tmp_path):
@@ -196,3 +223,38 @@ def test_refusal_leaves_the_repo_untouched(tmp_path):
 
     assert (repo / CONFIG_LIST_NAME).read_text(encoding="utf-8") == before
     assert not (repo / "files").exists()
+
+
+def test_onboarding_the_same_target_twice_is_refused(tmp_path, monkeypatch):
+    # AC1／AC4：第二次納管同一路徑這條路。兩個不同 uid，孤立出 target 這一項。
+    _fixed_uids(monkeypatch, "aaaaaaaa", "bbbbbbbb")
+    repo = _repo(tmp_path)
+    root, path = _source(tmp_path)
+    onboard(str(repo), _request(root, path), _AUTHOR)
+    before = _git_state(repo)
+
+    with pytest.raises(DuplicateTarget) as caught:
+        onboard(str(repo), _request(root, path), _AUTHOR)
+
+    # AC1：訊息指名既有那一筆——ref 帶著 uid，訊息也帶著共用的 target。
+    assert "aaaaaaaa" in str(caught.value)
+    assert str(path) in str(caught.value)
+    # AC2：DuplicateTarget 這條路上，攔截時 repo 也完全沒動（沒有殘留、沒有偷偷提交）。
+    assert _git_state(repo) == before
+
+
+def test_a_refused_duplicate_uid_leaves_the_repo_untouched(tmp_path, monkeypatch):
+    # AC2／AC3：兩個不同 target 撞同一個 uid。第二筆的來源會被編碼成一個新檔名，
+    # 若在完整性檢查之前就寫下去，那就是一個沒人清的殘留檔——commit 後由下一次
+    # git add -A 默默收走（#172 的後果鏈）。攔截必須發生在任何寫入之前。
+    _fixed_uids(monkeypatch, "cccccccc", "cccccccc")
+    repo = _repo(tmp_path)
+    root, first = _source(tmp_path, name="first.yaml")
+    _, second = _source(tmp_path, name="second.yaml")
+    onboard(str(repo), _request(root, first), _AUTHOR)
+    before = _git_state(repo)
+
+    with pytest.raises(DuplicateUid):
+        onboard(str(repo), _request(root, second), _AUTHOR)
+
+    assert _git_state(repo) == before
