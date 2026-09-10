@@ -20,15 +20,24 @@ from config_manager.io.preflight import CONFIG_LIST_NAME
 _SOURCES_DIR = "files"
 
 
-def place_source(repo: str, hostname: str, target: str, content: bytes) -> str:
-    """把 `content` 逐位元組放進 `files/<hostname>/<目標路徑編碼>`，回傳 repo 內的相對
-    來源路徑（那正是要填進 `FileEntry.source` 的值）。
+def source_relpath(hostname: str, target: str) -> str:
+    """`target` 的來源檔在 repo 內的相對路徑：`files/<hostname>/<目標路徑編碼>`。
+
+    只算路徑、不碰檔案，於是呼叫端可以在**還沒寫任何位元組之前**就取得這個值——納管
+    要先拿它組出條目、通過完整性檢查，確定不重複了才真的寫下去（#172）。
 
     目標路徑的 `/` 編碼成 `__`（D3）：一個機器上不同目錄的同名檔（`/opt/a/conf` 與
     `/etc/a/conf`）於是在 `files/<hostname>/` 底下不會互相覆蓋，而編碼後的名字仍看得出
     它原本從哪來。
     """
-    relative = os.path.join(_SOURCES_DIR, hostname, _encode(target))
+    return os.path.join(_SOURCES_DIR, hostname, _encode(target))
+
+
+def place_source(repo: str, hostname: str, target: str, content: bytes) -> str:
+    """把 `content` 逐位元組放進 `files/<hostname>/<目標路徑編碼>`，回傳 repo 內的相對
+    來源路徑（那正是要填進 `FileEntry.source` 的值，等同 `source_relpath`）。
+    """
+    relative = source_relpath(hostname, target)
     absolute = os.path.join(repo, relative)
     os.makedirs(os.path.dirname(absolute), exist_ok=True)
     replace_atomically(absolute, content)
