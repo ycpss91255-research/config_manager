@@ -26,12 +26,26 @@ services:
       # 來源 repo：唯一真實來源（ADR-00000002）。用具名 volume 而不是 bind
       # mount，因為它的生命週期屬於這套系統，不屬於主機上的那份簽出。
       - config_repo:/opt/config_manager/config-repo
-      # 目標位置所在的檔案系統。必須可讀寫——寫出就是往這裡寫——而且它是唯一
-      # 一個伸出容器自身世界之外的掛載。
-      - /opt/robot/config:/opt/robot/config
+      # 目標檔案系統，也是唯一一個伸出容器自身世界之外的掛載。**掛載是白名單的上界**
+      # （#146）：容器看不到的路徑，白名單允許也沒用。所以用同一個變數同時決定「掛什麼」
+      # 與「白名單放行什麼」，兩者因此永遠一致；不一致（白名單有、掛載沒有）會在 entrypoint
+      # 啟動時大聲失敗、指名是哪一條，而不是等第一次寫出才以指錯方向的訊息爆。
+      #
+      # 預設 /opt/robot/config 只是**範例**（機器人是部署場景之一）。實際部署以 CM_TARGET_ROOT
+      # （或 .env）指到這台機器上 config 真正所在的根目錄。多個根目錄的支援見 #15（可從介面
+      # 維護的白名單）；v0.2.0 這裡示範單一根目錄的接線。
+      - ${CM_TARGET_ROOT:-/opt/robot/config}:${CM_TARGET_ROOT:-/opt/robot/config}
     environment:
       CM_CONFIG_REPO: /opt/config_manager/config-repo
       CM_ROLE: backend
+      # 白名單根目錄：系統可以碰主機上的哪些目錄（§7.9 的安全邊界）。與上面的掛載同源，
+      # 所以掛得到才放行；沒設＝什麼都不放行（安全預設，不變式 4）。持久化、可從介面維護
+      # 的白名單見 #15；這裡是 v0.2.0 的環境變數接線。
+      CM_ALLOWED_ROOTS: ${CM_TARGET_ROOT:-/opt/robot/config}
+      # 這台機器在納管紀錄裡的正規名稱（#178）。納管當下讀一次寫進檔案、之後永不再讀，
+      # 所以要穩定。沒設就回 gethostname()——host 網路模式下那是穩定的主機名；bridge 下
+      # gethostname() 是每次重建都變的容器 ID，那種部署務必在這裡（或 .env）明寫。
+      CM_HOSTNAME: ${CM_HOSTNAME:-}
     # 是 config_manager.api.cli，不是 api.cli——見 Dockerfile 的 CMD（#90）。
     command: ["python", "-m", "config_manager.api.cli", "serve", "--host", "127.0.0.1", "--port", "8080"]
 

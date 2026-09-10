@@ -148,8 +148,23 @@ def test_refusal_of_a_non_regular_file_names_what_it_is(tmp_path):
 
 
 def test_local_hostname_is_not_empty():
-    # T22 只保證「讀到的是本機 hostname」；它在不同部署形態下穩不穩定屬部署決策（#178）。
+    # T22 只保證「讀到的是本機 hostname」；穩定性由 CM_HOSTNAME 提供（見下，#178）。
     assert local_hostname()
+
+
+def test_cm_hostname_overrides_and_is_stable_across_environments(monkeypatch):
+    # #178：CM_HOSTNAME 一設就用它——與網路模式、與 gethostname() 讀到什麼都無關，
+    # 所以「重跑不因環境改變而變動」（v0.2.0 檢查點 1）成立。
+    monkeypatch.setenv("CM_HOSTNAME", "amr01")
+
+    assert local_hostname() == "amr01"
+
+
+def test_local_hostname_falls_back_to_gethostname_when_unset(monkeypatch):
+    # 沒設（或空字串）就回 gethostname()——host 網路模式下那本來就是穩定的主機名。
+    monkeypatch.setenv("CM_HOSTNAME", "   ")
+
+    assert local_hostname() == socket.gethostname()
 
 
 def test_mode_is_reported_as_four_digit_octal(tmp_path):

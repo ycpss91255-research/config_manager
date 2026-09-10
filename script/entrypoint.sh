@@ -123,6 +123,7 @@ check_backend_preconditions() {
         "下一步：對它跑 'git init --initial-branch=main'，或檢查掛載路徑"
   fi
 
+  check_allowed_roots_visible
   check_config_list "${repo}"
 }
 
@@ -139,6 +140,26 @@ check_config_list() {
   if ! output="$(python -m config_manager.io.preflight "${repo}" 2>&1)"; then
     die "${output}"
   fi
+}
+
+# 掛載是白名單的上界（#146）：白名單允許的每個根目錄都必須在容器裡看得到，否則寫出會
+# 以「目標目錄無法寫入」失敗——訊息指向權限，真正的原因是掛載沒把它帶進來，是一則指錯
+# 方向的訊息（§0.4 三要素要防的）。在這裡逐條驗、看不到就大聲失敗並指名，而不是等到第
+# 一次寫出才在執行期發現。沒設 CM_ALLOWED_ROOTS = 什麼都不放行（安全預設），沒有根要驗。
+check_allowed_roots_visible() {
+  local roots="${CM_ALLOWED_ROOTS:-}"
+  [[ -n "${roots}" ]] || return 0
+
+  local root trimmed
+  # 逗號分隔、去前後空白，與 api/cli._allowed_roots 同一種切法。
+  while IFS= read -r root; do
+    trimmed="${root#"${root%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    [[ -n "${trimmed}" ]] || continue
+    [[ -d "${trimmed}" ]] || die "白名單允許的路徑在容器裡看不到：${trimmed}。" \
+      "下一步：把它掛進容器（compose 的 volumes），或從 CM_ALLOWED_ROOTS 移除；" \
+      "白名單只在掛載掛得到的範圍內有意義（#146）"
+  done < <(printf '%s\n' "${roots}" | tr ',' '\n')
 }
 
 main() {
