@@ -128,6 +128,51 @@ def test_the_new_entry_is_in_the_config_list(tmp_path):
     assert [e.uid for e in listed.files] == [entry.uid]
 
 
+# ── requires_privilege 在納管當下判定（#175 的 AC2）─────────────────────────
+
+
+def _fixed_identity(monkeypatch, user, groups, is_root):
+    # 服務執行身分在 test-tools（uid 501）與映像（root）不同，會讓「原始 owner 設不設得上」
+    # 的判定隨環境變。固定它，這條規格才能確定性地驗各種身分組合。
+    monkeypatch.setattr(
+        "config_manager.io.onboard.service_identity",
+        lambda: (user, frozenset(groups), is_root),
+    )
+
+
+def test_a_self_owned_source_needs_no_privilege(tmp_path):
+    # 來源檔就是測試自己（服務身分）建的：owner／group 都是自己 → 不需提權。
+    repo = _repo(tmp_path)
+    root, path = _source(tmp_path)
+
+    entry = onboard(str(repo), _request(root, path), _AUTHOR)
+
+    assert entry.requires_privilege is False
+
+
+def test_a_source_owned_by_someone_else_needs_privilege(tmp_path, monkeypatch):
+    # 非 root 服務無法把檔案 chown 給別的擁有者：原始 owner 不是服務自己 → 標需提權，
+    # 讓 apply 走提權路徑，而不是在寫出時才以 OwnershipRefused 失敗。
+    _fixed_identity(monkeypatch, "someone-else", ["other-group"], is_root=False)
+    repo = _repo(tmp_path)
+    root, path = _source(tmp_path)
+
+    entry = onboard(str(repo), _request(root, path), _AUTHOR)
+
+    assert entry.requires_privilege is True
+
+
+def test_a_root_service_never_needs_privilege(tmp_path, monkeypatch):
+    # root 什麼擁有者都設得上——即使原始 owner 不是它，也不需要提權。
+    _fixed_identity(monkeypatch, "someone-else", ["other-group"], is_root=True)
+    repo = _repo(tmp_path)
+    root, path = _source(tmp_path)
+
+    entry = onboard(str(repo), _request(root, path), _AUTHOR)
+
+    assert entry.requires_privilege is False
+
+
 def test_two_targets_that_flatten_alike_do_not_overwrite(tmp_path, monkeypatch):
     # #192 端到端：/managed/a/b 與 /managed/a__b 舊編碼會撞成同一檔名、第二次靜默覆蓋
     # 第一次存下的複本。兩個不同 uid，孤立出編碼這一項。

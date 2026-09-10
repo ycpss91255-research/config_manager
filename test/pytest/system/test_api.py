@@ -192,6 +192,27 @@ def test_importing_the_same_target_twice_is_refused(api, sources_root):
     assert exc.value.code == _CONFLICT
 
 
+@pytest.mark.skipif(
+    os.getuid() == 0,
+    reason="root 讀得穿 chmod 000；這條在非 root 的 test-tools 映像（uid 501）跑得到，"
+    "映像系統測試以 root 執行故無法佈置這個前提",
+)
+def test_import_an_unreadable_source_is_refused_not_500(api, sources_root):
+    # #175 AC4：檔案在、也到得了，但內容讀不出來（ContentUnreadable，不屬 SourceError 家族）
+    # 早先漏接成 500。應回可行動的 422。
+    _set_session(api)
+    unreadable = pathlib.Path(sources_root) / "unreadable.yaml"
+    unreadable.write_bytes(b"secret: 1\n")
+    unreadable.chmod(0o000)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(api, "/api/configs", {"source_path": str(unreadable), "format": "yaml"})
+        assert exc.value.code == _UNPROCESSABLE  # 422，不是 500
+        assert "讀不出來" in _detail(exc.value)
+    finally:
+        unreadable.chmod(0o644)  # 讓 tmp 目錄清理得掉
+
+
 def test_cli_import_goes_through_the_same_endpoint_as_the_page(api, sources_root):
     # ADR-00000009：CLI 納管走的是與畫面相同的 POST /api/configs。
     _set_session(api)

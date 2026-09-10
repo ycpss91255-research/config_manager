@@ -20,7 +20,7 @@ from config_manager.core.errors import ConfigListError
 from config_manager.core.models import FileEntry
 from config_manager.core.state import State
 from config_manager.io.browse import Entry, Listing, browse
-from config_manager.io.errors import BrowseError, SourceError
+from config_manager.io.errors import BrowseError, ContentUnreadable, SourceError
 from config_manager.io.onboard import OnboardRequest, onboard
 from config_manager.io.scan import scan
 
@@ -148,8 +148,10 @@ def _onboard_config(
     )
     try:
         entry = onboard(repo, request, identity.git_author)
-    except SourceError as error:
-        # 來源路徑的問題（白名單外、不是一般檔案、讀不到）：輸入形狀對、值不合法。
+    except (SourceError, ContentUnreadable) as error:
+        # 來源路徑的問題：白名單外、不是一般檔案、不存在、上層無 traverse（SourceError
+        # 家族），或檔案在、也到得了、但內容讀不出來（ContentUnreadable 不屬該家族，
+        # 早先漏接成 500，#175）。都是輸入形狀對、值不合法 → 422。
         raise HTTPException(status_code=422, detail=str(error)) from error
     except ConfigListError as error:
         # 與既有條目衝突（target／uid／source 重複）：與目前狀態相牴觸。
