@@ -6,9 +6,11 @@
 整合層：這裡真的碰檔案系統。
 """
 
+from itertools import product
+
 from config_manager.core.config_list import load
 from config_manager.io.digest import digest
-from config_manager.io.repo import place_source, write_config_list
+from config_manager.io.repo import place_source, source_relpath, write_config_list
 
 _LIST = """\
 list_version = 1
@@ -92,6 +94,20 @@ def test_targets_that_flatten_alike_get_distinct_paths(tmp_path):
     assert nested != flat
     assert (repo / nested).read_bytes() == b"nested\n"
     assert (repo / flat).read_bytes() == b"flat\n"
+
+
+def test_the_encoding_is_injective_over_canonical_paths():
+    # 窮舉守門：不是只有 /etc/a/b vs /etc/a__b 這一組會撞。用會與 `/`→`__` 混淆的段
+    # （含 _、__、a__b）組出正規絕對路徑（單一前導 /、段間單一 /），確認沒有任何兩條
+    # 不同路徑編成同一個 source 路徑。性質由 source_relpath 自己算，不在測試裡重算公式。
+    segments = ["a", "_", "a_", "_a", "a_a", "__", "a__b", "_5f"]
+    seen: dict[str, str] = {}
+    for count in range(1, 4):
+        for combo in product(segments, repeat=count):
+            target = "/" + "/".join(combo)
+            encoded = source_relpath("h", target)
+            assert encoded not in seen, f"{target!r} 與 {seen.get(encoded)!r} 都編成 {encoded!r}"
+            seen[encoded] = target
 
 
 def test_written_config_list_is_readable(tmp_path):
