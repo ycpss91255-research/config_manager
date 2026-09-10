@@ -8,18 +8,19 @@
    指向映像內已經起好的服務。那才是 PDF §3.6.1 軸 2 對 System 的定義：
    「整個建好的映像，端到端」。
 
-**第 1 點還沒有變成一個數字。** 覆蓋率的 `source` 目前只有 `core/`（`pyproject.toml`），
-所以 `api/` 仍然不出現在報告裡。搬過來解掉的是「規格不由 pytest 執行」這個結構障礙，
-不是量測範圍本身——後者是另一件工作，記在 `doc/TEST-PLAN.md`「已知的量測缺口」。
-把兩者說成同一件事，就是這個 repo 一直在抓的那個形狀。
+第 1 點現在算得進數字了：覆蓋率的 `source` 是整個 `src/config_manager`（`pyproject.toml`），
+`api/` 也在 `script/coverage_gate.sh` 的四層下限（各 85）之內。所以這一層的 `api/routes`
+與 `api/cli` 執行**既進得了覆蓋率工具的視野、也真的被擋著**——早先只解掉「規格不由 pytest
+執行」的結構障礙、量測範圍還沒接上的那個狀態（#97）已經過去了。
 
-兩者跑的是同一份規格，所以不會分歧；各自補上對方拿不到的東西——一個是（未來的）
-數字，一個是保真度。只在其中一種環境會壞的缺陷，正是跑兩次才抓得到而跑一次抓不到的。
+兩者跑的是同一份規格，所以不會分歧；各自補上對方拿不到的東西——一個是數字，一個是
+保真度。只在其中一種環境會壞的缺陷，正是跑兩次才抓得到而跑一次抓不到的。
 """
 
 import os
 import pathlib
 import socket
+import subprocess
 import threading
 import time
 import urllib.error
@@ -94,7 +95,31 @@ def repo(tmp_path_factory):
 
     path = tmp_path_factory.mktemp("config-repo")
     (path / "config-list.toml").write_text(_MINIMAL_LIST, encoding="utf-8")
+    # 納管會 git commit（映像那份由 entrypoint git-init 過），所以就地這份也要是 git repo，
+    # 且清單檔要先提交進去——不然 POST /api/configs 的第一步 record 就沒有 HEAD 可接。
+    subprocess.run(["git", "-C", str(path), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(path), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(path), "-c", "user.name=seed", "-c", "user.email=s@e.x",
+         "commit", "-q", "-m", "chore: 種下清單檔"],
+        check=True,
+    )
     return str(path)
+
+
+@pytest.fixture(scope="session")
+def sources_root(tmp_path_factory):
+    """納管與瀏覽的白名單根目錄——測試把候選來源檔放這裡（#185）。
+
+    對著建好的映像跑時用映像裡的 `CM_SYSTEM_SOURCES_ROOT`（Dockerfile 起服務時以
+    `CM_ALLOWED_ROOTS` 放行同一個路徑，服務與 pytest 在同一個容器、共用檔案系統）；
+    就地跑時是一個 session tmp 目錄，經 `api` 夾具餵給 `create_app` 的 allowed_roots。
+    """
+    external = os.environ.get("CM_SYSTEM_SOURCES_ROOT")
+    if external:
+        return external
+
+    return str(tmp_path_factory.mktemp("sources"))
 
 
 @pytest.fixture
@@ -146,7 +171,7 @@ def listing(repo):
 
 
 @pytest.fixture(scope="session")
-def api(repo):
+def api(repo, sources_root):
     """服務的位址。外部已經有一個就用它，否則就地起一個。"""
     external = os.environ.get("CM_SYSTEM_BASE_URL")
     if external:
@@ -155,7 +180,8 @@ def api(repo):
         return
 
     port = _free_port()
-    config = uvicorn.Config(create_app(repo), host="127.0.0.1", port=port, log_level="error")
+    app = create_app(repo, allowed_roots=(sources_root,))
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()

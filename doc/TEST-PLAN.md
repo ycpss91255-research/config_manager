@@ -667,10 +667,23 @@ GET 比較像疏漏而非刻意。追加記在這裡，讓 `routes.py` 的每一
 owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它，只在它更新前讓兩份
 清單對得起來（#122）。
 
+**`POST /api/configs`（納管）與 `GET /api/browse`（檔案瀏覽）於 #185 落地。** 兩者都**在
+§3.5.3 表上**——不是追加，是把表上既有的端點實作出來。納管收確認畫面已確認過的請求
+（來源路徑、確認過的 format、歧義確認），偵測（format／型別／歧義）不在這裡，那在確認畫面
+就做完了（#12 的 D4）；「畫面怎麼取得偵測結果」缺一支端點，另立 #195。瀏覽的白名單根目錄
+於 v0.2.0 以 `CM_ALLOWED_ROOTS` 環境變數供應（持久化、可從介面維護見 #15）。
+
+**結構化錯誤那一條的適用範圍。** 「檔案、行號、欄位、建議」是**驗證／解析**錯誤的要求
+（供編輯器就地標示，§3.5.3）——那走 `POST /api/validate` 與偵測端點（#195）。納管與瀏覽
+這兩支的失敗是**路徑／操作**層級（白名單外、不是目錄、與既有條目衝突），沒有行號欄位可
+指；它們回 `{detail}` 字串，而 detail 本身已是可行動的（欄位＋原因＋下一步），非純訊息。
+
 | 驗證的行為 |
 |---|
 | 每個端點的正常路徑回傳預期結構 |
 | 驗證失敗 → 結構化錯誤（檔案、行號、欄位、建議），**不是純字串** |
+| **納管（`POST /api/configs`）：成功回新條目（target 是原始位置、source 是 repo 內複本）；來源在白名單外→422、與既有條目 target／uid／source 衝突→409** |
+| **檔案瀏覽（`GET /api/browse?path=`）：列白名單內目錄的內容（名字＋種類 dir／file）；路徑在白名單外、或不是目錄→422** |
 | 進版端點：驗證失敗時**不產生變更紀錄也不寫出**（原子性） |
 | **進版寫出 N 份、第 k 份失敗 → 前 k-1 份已寫出的目標檔案還原為進版前內容、全部已產生的變更紀錄一併撤銷**，容器內最終狀態與進版前逐位元組相同（承接 T18 移出的批次原子性） |
 | 第二個編輯階段被拒，回覆含持有者姓名、email、開始時間 |
@@ -1117,12 +1130,13 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/preflight` | T15 | 已落地 |
 | `io/digest` | T20 | 已落地 |
 | `io/scan` | T21 | 已落地 |
-| `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言；`OnboardLeftBehind`（納管回滾失敗）在 `io/onboard` 的整合規格被斷言（#173） | 已落地 |
+| `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言；`OnboardLeftBehind`（納管回滾失敗）在 `io/onboard` 的整合規格被斷言（#173）；`BrowseError` 族（瀏覽白名單外／不是目錄）在 T9 的 `GET /api/browse` 被斷言（#185） | 已落地 |
 | `io/parsers` | T6 | 未落地（#17） |
 | `io/source` | T22（匯入時刻對外界的讀取，介面議定於 #177） | 已落地：路徑判定（realpath 後比對白名單、一般檔案檢查）與一次性讀取（#174）、讀取失敗的三種分類（不存在／讀不到／上層目錄無 traverse，#182）。`local_hostname` 的部署穩定性見 #178 |
 | `io/onboard` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔條目→T1（`load`）、匯入 commit→T7（`io/git.history`）（#12）——編排層，不算新值，同 `io/repo` 的處理。重複攔在寫入前（#172）與寫入失敗即整批回滾（#173）以注入失敗＋`git status` 觀察，回滾也失敗時丟 `OnboardLeftBehind` | 已落地（`onboard`） |
-| `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/session`、`GET /api/session` 與 CORS 中介層） |
-| `api/cli` | T10 | 已落地（`serve` 與 `list`） |
+| `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath 與列目錄——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185） | 已落地（`browse`） |
+| `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/browse`、`POST /api/session`、`GET /api/session` 與 CORS 中介層） |
+| `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 部分落地：身分（`author`）已落地；階段的 acquire／renew／release／sweep 未落地（#33） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |
 | `web/` | T11 | 已落地。執行通路於 #97 補上：`test/pytest/system/test_web.py`，Playwright 驅動 Chromium，行覆蓋率由 V8 自己算 |

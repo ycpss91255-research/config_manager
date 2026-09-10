@@ -115,6 +115,29 @@ class SourceAbsent(SourceError):
     """
 
 
+class BrowseError(Exception):
+    """檔案系統瀏覽失敗的基底（GET /api/browse，#185）。
+
+    自成一族：`SourceError` 講的是「讀一份要納管的檔案」，這一族講的是「在白名單內
+    列目錄、給使用者挑檔案」。同一道白名單邊界的兩個用途，處置不同。
+    """
+
+
+class BrowseOutsideRoots(BrowseError):
+    """要瀏覽的路徑經 realpath 解析後落在白名單之外。與 `SourceOutsideRoots` 是同一道
+    邊界的兩個時刻：那一個管納管的讀取，這一個管瀏覽的列舉。"""
+
+
+class BrowseNotADirectory(BrowseError):
+    """要瀏覽的路徑不是可列的目錄：是檔案、符號連結、不存在，或解析後最後一段被換成
+    符號連結（`O_NOFOLLOW` 開檔失敗）。browse 列的是目錄內容；指向檔案時要挑它、不是瀏覽它。"""
+
+
+class BrowseUnreadable(BrowseError):
+    """路徑在白名單內、也是目錄，但列不出來（權限等）。與「不是目錄」分開：後者是
+    形狀不對，這一則是碰得到卻讀不動。"""
+
+
 class SourceUnreachable(SourceError):
     """來源的某一層上層目錄沒有 traverse（`+x`）權限，去不到那個檔案。
 

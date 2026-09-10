@@ -16,6 +16,8 @@ import argparse
 import json
 import os
 import sys
+import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -51,6 +53,7 @@ class ServePlan:
     host: str
     port: int
     allowed_origins: tuple[str, ...]
+    allowed_roots: tuple[str, ...]
 
 
 def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
@@ -72,7 +75,19 @@ def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
         host=host,
         port=port,
         allowed_origins=_allowed_origins(environ),
+        allowed_roots=_allowed_roots(environ),
     )
+
+
+def _allowed_roots(environ: Mapping[str, str]) -> tuple[str, ...]:
+    """CM_ALLOWED_ROOTS 的逗號分隔清單——納管與檔案瀏覽的白名單根目錄。
+
+    未設定時回空 tuple：**什麼都不放行**。這個服務改得動機器上的檔案，白名單是安全
+    邊界（§7.9）——沒指定就該是「什麼都碰不到」，而不是「全部放行」（不變式 4：預設值
+    落向安全）。持久化、可從介面維護的白名單見 #15；這裡是 v0.2.0 的環境變數接線。
+    """
+    raw = environ.get("CM_ALLOWED_ROOTS", "")
+    return tuple(root.strip() for root in raw.split(",") if root.strip())
 
 
 def _allowed_origins(environ: Mapping[str, str]) -> tuple[str, ...]:
@@ -99,6 +114,17 @@ def _parser() -> argparse.ArgumentParser:
 
     listing = subcommands.add_parser("list", help="列出納管項目與狀態")
     listing.add_argument("--api", default=_DEFAULT_API, help=f"預設 {_DEFAULT_API}")
+
+    importing = subcommands.add_parser("import", help="納管一份 config 檔案")
+    importing.add_argument("--api", default=_DEFAULT_API, help=f"預設 {_DEFAULT_API}")
+    importing.add_argument("--source", required=True, help="要納管的來源檔案路徑")
+    _formats = "yaml/json/toml/ini/raw"
+    importing.add_argument("--format", required=True, help=f"確認過的 format（{_formats}）")
+    importing.add_argument("--note", default="", help="歧義確認結果，寫入 commit 內文（可省略）")
+
+    browsing = subcommands.add_parser("browse", help="列出白名單內某目錄的內容")
+    browsing.add_argument("--api", default=_DEFAULT_API, help=f"預設 {_DEFAULT_API}")
+    browsing.add_argument("--path", required=True, help="要列出的目錄（受白名單限制）")
     return parser
 
 
@@ -106,10 +132,12 @@ def main(argv: list[str]) -> int:
     """進入點。回傳結束碼。"""
     args = _parser().parse_args(argv[1:])
 
-    # 子命令是 required=True，所以走到這裡的只會是這兩個之一；沒有第三條分支可寫，
-    # 寫了也永遠不會執行。
     if args.command == "serve":
         return _serve(args.host, args.port)
+    if args.command == "import":
+        return _import(args.api, args.source, args.format, args.note)
+    if args.command == "browse":
+        return _browse(args.api, args.path)
     return _list(args.api)
 
 
@@ -141,6 +169,78 @@ def _list(api: str) -> int:
     return 0
 
 
+def _import(api: str, source: str, fmt: str, note: str) -> int:
+    """納管一份 config：POST 到與畫面相同的 /api/configs（ADR-00000009）。
+
+    偵測（format／歧義）是確認畫面的事；CLI 這一層要求 `--format` 明寫，與端點收
+    「已確認的值」對齊，不在 CLI 自己重做一套偵測。
+    """
+    payload = {"source_path": source, "format": fmt, "ambiguity_note": note}
+    request = urllib.request.Request(
+        f"{api}/api/configs",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+            entry = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        # 端點以結構化訊息回絕（白名單外、重複、未設身分）。把它的 detail 帶出來——
+        # 那是可行動的（欄位＋原因＋下一步），不是自己另編一句。
+        print(
+            f"config_manager: 納管失敗（{_http_detail(error)}）。下一步：依上面的原因修正後重試",
+            file=sys.stderr,
+        )
+        return 1
+    except (OSError, ValueError) as error:
+        print(
+            f"config_manager: 讀不到 {api}/api/configs（{error}）。"
+            f"下一步：確認 backend 已啟動，或以 --api 指定它的位址",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"已納管 {entry['ref']} ← {entry['target']}")
+    return 0
+
+
+def _browse(api: str, path: str) -> int:
+    """列出白名單內某目錄的內容：GET 與畫面相同的 /api/browse（ADR-00000009）。"""
+    query = urllib.parse.urlencode({"path": path})
+    try:
+        with urllib.request.urlopen(f"{api}/api/browse?{query}", timeout=_TIMEOUT) as response:
+            listing = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        print(
+            f"config_manager: 瀏覽失敗（{_http_detail(error)}）。下一步：依上面的原因修正後重試",
+            file=sys.stderr,
+        )
+        return 1
+    except (OSError, ValueError) as error:
+        print(
+            f"config_manager: 讀不到 {api}/api/browse（{error}）。"
+            f"下一步：確認 backend 已啟動，或以 --api 指定它的位址",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(listing["path"])
+    for entry in listing["entries"]:
+        # 目錄尾端加 /，一眼分得出可再進去的與可挑的。
+        suffix = "/" if entry["kind"] == "dir" else ""
+        print(f"  {entry['name']}{suffix}")
+    return 0
+
+
+def _http_detail(error: urllib.error.HTTPError) -> str:
+    """把 HTTPError 的 body 解出 detail 字串；解不出來就回原始狀態行。"""
+    try:
+        return str(json.loads(error.read().decode("utf-8"))["detail"])
+    except (OSError, ValueError, KeyError):
+        return f"HTTP {error.code}"
+
+
 def _serve(host: str, port: int) -> int:
     try:
         plan = serve_plan(host, port, os.environ)
@@ -149,7 +249,7 @@ def _serve(host: str, port: int) -> int:
         return 2
 
     uvicorn.run(
-        create_app(plan.repo, plan.allowed_origins),
+        create_app(plan.repo, plan.allowed_origins, plan.allowed_roots),
         host=plan.host,
         port=plan.port,
         log_level="warning",
