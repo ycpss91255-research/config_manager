@@ -47,6 +47,12 @@ def _post(api, path, payload):
         return json.loads(response.read().decode("utf-8"))
 
 
+def _detail(error):
+    # 422／409 的 body 是 {"detail": "..."}。斷言原因文字，才分得出「白名單外」與
+    # 「不是目錄」——只斷言狀態碼的話，任何一種 422 都會讓規格過（資安審查 #185）。
+    return json.loads(error.read().decode("utf-8"))["detail"]
+
+
 def _cli(*args):
     # 子行程不繼承 pytest 的 pythonpath 設定（那只作用在測試行程本身），所以自己
     # 供應 PYTHONPATH——與 runtime 映像的 ENV 是同一個值（Dockerfile 的 APP_ROOT/src）。
@@ -171,6 +177,7 @@ def test_import_a_source_outside_the_whitelist_is_refused(api, tmp_path):
         _post(api, "/api/configs", {"source_path": str(outside), "format": "yaml"})
 
     assert exc.value.code == _UNPROCESSABLE
+    assert "白名單之外" in _detail(exc.value)  # 被拒的原因是白名單，不是別種 422
 
 
 def test_importing_the_same_target_twice_is_refused(api, sources_root):
@@ -222,6 +229,25 @@ def test_browse_a_path_outside_the_whitelist_is_refused(api, tmp_path):
         _get(api, f"/api/browse?{query}")
 
     assert exc.value.code == _UNPROCESSABLE
+    assert "白名單之外" in _detail(exc.value)
+
+
+def test_browse_a_symlink_that_escapes_the_whitelist_is_refused(api, sources_root, tmp_path):
+    # io/browse 的整條 realpath 防線就是為了擋這個：白名單內放一個指向外面的符號連結，
+    # 解析後落在白名單外→拒絕。沒有這條，一個把 realpath 拿掉的迴歸會靜靜地放行（#185）。
+    escape = pathlib.Path(sources_root) / "escape"
+    escape.mkdir(exist_ok=True)
+    link = escape / "leak"
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(tmp_path)  # tmp_path 在白名單（sources_root）之外
+    query = urllib.parse.urlencode({"path": str(link)})
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(api, f"/api/browse?{query}")
+
+    assert exc.value.code == _UNPROCESSABLE
+    assert "白名單之外" in _detail(exc.value)
 
 
 def test_browse_a_file_rather_than_a_directory_is_refused(api, sources_root):
@@ -233,6 +259,7 @@ def test_browse_a_file_rather_than_a_directory_is_refused(api, sources_root):
         _get(api, f"/api/browse?{query}")
 
     assert exc.value.code == _UNPROCESSABLE
+    assert "不是可列的目錄" in _detail(exc.value)  # 原因是「不是目錄」，與「白名單外」分得開
 
 
 def test_cli_browse_goes_through_the_same_endpoint_as_the_page(api, sources_root):

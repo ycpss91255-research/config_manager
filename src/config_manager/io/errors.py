@@ -129,7 +129,8 @@ class BrowseOutsideRoots(BrowseError):
 
 
 class BrowseNotADirectory(BrowseError):
-    """要瀏覽的路徑不是目錄。browse 列的是目錄內容；指向檔案時要挑它、不是瀏覽它。"""
+    """要瀏覽的路徑不是可列的目錄：是檔案、符號連結、不存在，或解析後最後一段被換成
+    符號連結（`O_NOFOLLOW` 開檔失敗）。browse 列的是目錄內容；指向檔案時要挑它、不是瀏覽它。"""
 
 
 class BrowseUnreadable(BrowseError):
