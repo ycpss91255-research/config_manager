@@ -243,10 +243,24 @@ def test_onboarding_the_same_target_twice_is_refused(tmp_path, monkeypatch):
     assert _git_state(repo) == before
 
 
+def test_onboarding_does_not_sweep_unrelated_untracked_files(tmp_path):
+    # #173 AC4：repo 裡本來就有的、與這次納管無關的未追蹤檔（前一次失敗的殘留、或操作者
+    # 的暫存檔），不該被 import commit 收編。舊的 git add -A 會把它掃進來。
+    repo = _repo(tmp_path)
+    (repo / "leftover.txt").write_text("unrelated\n", encoding="utf-8")
+    root, path = _source(tmp_path)
+
+    onboard(str(repo), _request(root, path), _AUTHOR)
+
+    # 沒被收編 → 納管後它仍是未追蹤的（若被 commit 就會變成已追蹤、不再出現在 ?? 行）。
+    assert "?? leftover.txt" in _git_state(repo)[1]
+    assert (repo / "leftover.txt").read_text(encoding="utf-8") == "unrelated\n"
+
+
 def test_a_refused_duplicate_uid_leaves_the_repo_untouched(tmp_path, monkeypatch):
     # AC2／AC3：兩個不同 target 撞同一個 uid。第二筆的來源會被編碼成一個新檔名，
-    # 若在完整性檢查之前就寫下去，那就是一個沒人清的殘留檔——commit 後由下一次
-    # git add -A 默默收走（#172 的後果鏈）。攔截必須發生在任何寫入之前。
+    # 若在完整性檢查之前就寫下去，那就是一個沒人清的殘留檔（#172 的後果鏈）。
+    # 攔截必須發生在任何寫入之前。
     _fixed_uids(monkeypatch, "cccccccc", "cccccccc")
     repo = _repo(tmp_path)
     root, first = _source(tmp_path, name="first.yaml")

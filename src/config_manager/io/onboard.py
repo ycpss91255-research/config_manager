@@ -13,7 +13,9 @@
    （#181），target 或 uid 與既有條目重複就在這裡丟例外，此刻 repo 一個位元組都還沒動
 6. `place_source`（#186）＋ `write_config_list`——驗證過了才真的動 repo：放來源位元組、
    寫回清單檔
-7. `record`（T7）——`import(<uid>): <name>@<hostname>`，歧義確認放內文（D6）
+7. `stage` ＋ `record`（T7）——只 stage 這次動到的兩個路徑（**不用 `git add -A`**，否則
+   會掃進不相干的未追蹤殘留，#173），再記一筆 `import(<uid>): <name>@<hostname>`，
+   歧義確認放內文（D6）
 
 **過程不改變來源檔案內容**（#12 第一行）：寫進 repo 的是 `read_source` 讀到的那一份
 位元組，來源檔本身只被讀、不被寫。
@@ -22,10 +24,10 @@
 都還沒跑，清單檔與 repo 完全不被改動。這正是先前沒做到的——舊順序先 `place_source`
 再驗證，重複時已經留下一個殘留檔。
 
-**寫入步驟本身失敗的回滾不在這裡**（#173）：步驟 6、7 之間若失敗（磁碟滿、權限等），
-磁碟上仍會留下未提交的檔案，被下一次 `git add -A` 默默收走。那一類失敗的回滾是 #173
-的範圍，它以本模組存在為前提。驗證失敗（#172）與寫入失敗（#173）是兩件事：前者在動手
-之前擋下，後者是動手到一半才出事。
+**寫入步驟本身失敗的回滾尚未做**（#173 的其餘部分）：步驟 6、7 之間若失敗（磁碟滿、
+權限等），磁碟上仍會留下未提交的孤兒檔案。它不再被 `git add -A` 默默收走（步驟 7 已改成
+只 stage 這次動到的路徑），但它仍留在工作區。補上回滾是同一張 issue 的其餘驗收條件。
+驗證失敗（#172）與寫入失敗（#173）是兩件事：前者在動手之前擋下，後者是動手到一半才出事。
 
 **parse／型別推斷／歧義偵測不在這裡。** 那些在確認畫面（#14）就做完了：使用者看過
 偵測到的格式與歧義清單、確認後才呼叫 onboard，把確認過的 `fmt` 與 `ambiguity_note`
@@ -41,7 +43,7 @@ from dataclasses import dataclass
 from config_manager.core.config_list import dump, load
 from config_manager.core.identity import derive_name, new_uid
 from config_manager.core.models import FileEntry
-from config_manager.io.git import record
+from config_manager.io.git import record, stage
 from config_manager.io.preflight import CONFIG_LIST_NAME
 from config_manager.io.repo import place_source, source_relpath, write_config_list
 from config_manager.io.source import local_hostname, read_source
@@ -104,12 +106,14 @@ def onboard(repo: str, request: OnboardRequest, author: str) -> FileEntry:
     #    既有條目重複就在這裡丟例外，而此刻 repo 一個位元組都還沒動（#172 的 AC2）。
     new_list_text = _list_text_with(repo, entry)
 
-    # 5. 驗證過了才真的動 repo：先放來源位元組，再寫回清單檔。順序讓 record 的
-    #    git add -A 把兩者一起收進同一筆 commit。
+    # 5. 驗證過了才真的動 repo：先放來源位元組，再寫回清單檔。
     place_source(repo, hostname, target, source.content)
     write_config_list(repo, new_list_text)
 
-    # 6. 一筆 import commit。主旨是 <name>@<hostname>（設計 §2.3），歧義確認放內文（D6）。
+    # 6. 只 stage 這次動到的兩個路徑，再記一筆 import commit。**不用 git add -A**：那會把
+    #    repo 裡任何不相干的未追蹤檔（例如某次失敗納管的殘留）一起收編（#173 的 AC4）。
+    #    主旨是 <name>@<hostname>（設計 §2.3），歧義確認放內文（D6）。
+    stage(repo, relative, CONFIG_LIST_NAME)
     message = f"{name}@{hostname}"
     if request.ambiguity_note:
         message += f"\n\n{request.ambiguity_note}"
