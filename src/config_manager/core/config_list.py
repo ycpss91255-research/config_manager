@@ -12,6 +12,7 @@ from tomlkit import items
 
 from config_manager.core.errors import (
     DumpMismatch,
+    DuplicateSource,
     DuplicateTarget,
     DuplicateUid,
     InvalidFormat,
@@ -331,6 +332,7 @@ def _check_integrity(config_list: ConfigList) -> None:
     """跨條目的完整性檢查。硬錯誤丟具名例外，軟問題收進 warnings。"""
     seen_uid: dict[str, FileEntry] = {}
     seen_target: dict[str, FileEntry] = {}
+    seen_source: dict[str, FileEntry] = {}
     seen_name_host: dict[tuple[str, str], FileEntry] = {}
     for entry in config_list.files:
         if ".." in PurePosixPath(entry.target).parts:
@@ -363,6 +365,15 @@ def _check_integrity(config_list: ConfigList) -> None:
                 f"下一步：改掉其中一筆的目標位置——寫出順序會決定最終內容"
             )
         seen_target[entry.target] = entry
+
+        first_source = seen_source.get(entry.source)
+        if first_source is not None:
+            raise DuplicateSource(
+                f"來源複本重複：{first_source.ref} 與 {entry.ref} "
+                f"共用來源「{entry.source}」。"
+                f"下一步：改掉其中一筆的來源路徑——同一個複本被兩筆共用，動一個會牽到另一個"
+            )
+        seen_source[entry.source] = entry
 
         key = (entry.name, entry.hostname)
         first_pair = seen_name_host.get(key)
