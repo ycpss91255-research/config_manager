@@ -16,6 +16,7 @@ import pathlib
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import pytest
@@ -26,6 +27,8 @@ _TIMEOUT = 5
 # 422：輸入的形狀對、值不合法。端點刻意不用 400——那會把「你送錯格式」與
 # 「你送的值不行」折成同一個回覆。
 _UNPROCESSABLE = 422
+# 409：與目前狀態相牴觸（已有同一 target 的條目、或尚未設定身分）。
+_CONFLICT = 409
 
 
 def _get(api, path):
@@ -126,3 +129,118 @@ def test_cli_fails_loudly_when_the_backend_is_not_up():
 
     assert result.returncode != 0
     assert "讀不到" in result.stderr
+
+
+# ── POST /api/configs 納管、GET /api/browse（#185）──────────────────────────
+
+
+def _set_session(api):
+    # 納管要有作者。每則規格自己設，不靠「別則先設過」——那是順序相依（#153）。
+    _post(api, "/api/session", {"name": "陳小明", "email": "ming@example.com", "role": "developer"})
+
+
+def _write_source(sources_root, name, content=b"max_vel: 0.8\n"):
+    # 白名單內的一份來源檔。名字各則不同，避免共用 session repo 時互相撞到 target。
+    path = pathlib.Path(sources_root) / name
+    path.write_bytes(content)
+    return str(path)
+
+
+def test_import_onboards_a_file_and_it_shows_in_configs(api, sources_root):
+    _set_session(api)
+    source = _write_source(sources_root, "happy_nav2.yaml")
+
+    entry = _post(api, "/api/configs", {"source_path": source, "format": "yaml"})
+
+    # 回傳剛建立的條目：target 是原始磁碟位置，source 是 repo 內的複本。
+    assert entry["target"] == source
+    assert entry["format"] == "yaml"
+    assert entry["source"].startswith(f"files/{entry['hostname']}/")
+    # 隨後重新 GET /api/configs 就看得到它（走的是同一份掃描）。
+    refs = [row["ref"] for row in _get(api, "/api/configs")]
+    assert entry["ref"] in refs
+
+
+def test_import_a_source_outside_the_whitelist_is_refused(api, tmp_path):
+    _set_session(api)
+    # tmp_path 不在 sources_root（白名單）底下。
+    outside = tmp_path / "secret.yaml"
+    outside.write_bytes(b"stolen\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/configs", {"source_path": str(outside), "format": "yaml"})
+
+    assert exc.value.code == _UNPROCESSABLE
+
+
+def test_importing_the_same_target_twice_is_refused(api, sources_root):
+    _set_session(api)
+    source = _write_source(sources_root, "dup.yaml")
+    _post(api, "/api/configs", {"source_path": source, "format": "yaml"})
+
+    # 同一個 target 再納管一次：與既有條目衝突（409），不是輸入值不合法（422）。
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/configs", {"source_path": source, "format": "yaml"})
+
+    assert exc.value.code == _CONFLICT
+
+
+def test_cli_import_goes_through_the_same_endpoint_as_the_page(api, sources_root):
+    # ADR-00000009：CLI 納管走的是與畫面相同的 POST /api/configs。
+    _set_session(api)
+    source = _write_source(sources_root, "cli_import.yaml")
+
+    result = _cli("import", "--api", api, "--source", source, "--format", "yaml")
+
+    assert result.returncode == 0
+    assert "已納管" in result.stdout
+    # 真的納管了：它的 target 出現在清單裡（走同一支端點，不是 CLI 自己讀清單檔）。
+    targets = [row["target"] for row in _get(api, "/api/configs")]
+    assert source in targets
+
+
+def test_browse_lists_a_directory_within_the_whitelist(api, sources_root):
+    # 自己的子目錄，內容各則不同——不去列共用的 sources_root（別則也往那寫，會相依）。
+    base = pathlib.Path(sources_root) / "browse_here"
+    base.mkdir(exist_ok=True)
+    (base / "sub").mkdir(exist_ok=True)
+    (base / "conf.yaml").write_bytes(b"a: 1\n")
+
+    query = urllib.parse.urlencode({"path": str(base)})
+    listing = _get(api, f"/api/browse?{query}")
+
+    kinds = {entry["name"]: entry["kind"] for entry in listing["entries"]}
+    assert kinds["sub"] == "dir"
+    assert kinds["conf.yaml"] == "file"
+
+
+def test_browse_a_path_outside_the_whitelist_is_refused(api, tmp_path):
+    # tmp_path 不在 sources_root（白名單）底下。
+    query = urllib.parse.urlencode({"path": str(tmp_path)})
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(api, f"/api/browse?{query}")
+
+    assert exc.value.code == _UNPROCESSABLE
+
+
+def test_browse_a_file_rather_than_a_directory_is_refused(api, sources_root):
+    a_file = pathlib.Path(sources_root) / "not_a_dir.yaml"
+    a_file.write_bytes(b"x\n")
+    query = urllib.parse.urlencode({"path": str(a_file)})
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(api, f"/api/browse?{query}")
+
+    assert exc.value.code == _UNPROCESSABLE
+
+
+def test_cli_browse_goes_through_the_same_endpoint_as_the_page(api, sources_root):
+    base = pathlib.Path(sources_root) / "cli_browse"
+    base.mkdir(exist_ok=True)
+    (base / "picked.yaml").write_bytes(b"a: 1\n")
+
+    result = _cli("browse", "--api", api, "--path", str(base))
+
+    assert result.returncode == 0
+    assert "picked.yaml" in result.stdout

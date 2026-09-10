@@ -219,12 +219,14 @@ RUN CM_SYSTEM_IMAGE=1 bats --formatter tap /opt/system-bats | tee /tmp/system-ba
 # 檔案改名的話這一行的 --ignore 會失效，於是 test_web.py 會在這裡被收集、因為沒有
 # 瀏覽器而讓建置紅掉——大聲失敗，不是安靜地少跑一層。
 COPY test/pytest/system/ /opt/system/
-RUN mkdir -p /tmp/config-repo \
+RUN mkdir -p /tmp/config-repo /tmp/sources \
     && ( CM_CONFIG_REPO=/tmp/config-repo CM_ROLE=backend \
+         CM_ALLOWED_ROOTS=/tmp/sources \
          /entrypoint.sh python -m config_manager.api.cli serve \
            --host 127.0.0.1 --port 8080 & ) \
     && CM_SYSTEM_BASE_URL=http://127.0.0.1:8080 \
        CM_SYSTEM_CONFIG_REPO=/tmp/config-repo \
+       CM_SYSTEM_SOURCES_ROOT=/tmp/sources \
        pytest /opt/system -q --ignore=/opt/system/test_web.py
 
 ARG USER_NAME="user"

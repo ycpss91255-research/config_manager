@@ -10,6 +10,7 @@ config-repo、放行哪些來源、讀不到端點時的結束碼、清單怎麼
 同一個函式裡，而測試不會去跑 uvicorn.run，於是它們一起量不到。
 """
 
+import io
 import json
 import urllib.error
 
@@ -181,6 +182,81 @@ def test_list_names_the_address_it_could_not_read(monkeypatch, capsys):
     main(["config_manager", "list", "--api", "http://127.0.0.1:9"])
 
     assert "http://127.0.0.1:9/api/configs" in capsys.readouterr().err
+
+
+# ── import / browse 是 HTTP client：在同一行程呼叫並 mock urlopen，測「打對端點、
+# 呈現對」。子行程那版（system/test_api.py）證明真的走了 --api，但子行程的執行量不進
+# 覆蓋率，所以這些**決定與呈現**要在這裡就地跑（同 list 的處理，#97）。────────────
+
+
+def _http_error(code, detail):
+    return urllib.error.HTTPError(
+        "http://x/api",
+        code,
+        "refused",
+        {},
+        io.BytesIO(json.dumps({"detail": detail}).encode("utf-8")),
+    )
+
+
+def test_import_posts_the_source_to_the_configs_endpoint(answers, capsys):
+    # 把關的是位址與方法：自己另做一套的實作不會 POST 到 --api 指的 /api/configs。
+    called = answers({"ref": "nav2@amr01-abc", "target": "/etc/nav2.yaml"})
+
+    code = main(
+        ["config_manager", "import", "--api", "http://amr01:8080",
+         "--source", "/etc/nav2.yaml", "--format", "yaml"]
+    )
+
+    assert code == 0
+    assert called[0].full_url == "http://amr01:8080/api/configs"
+    assert called[0].method == "POST"
+    assert "已納管" in capsys.readouterr().out
+
+
+def test_import_relays_the_endpoint_reason_and_fails_nonzero(monkeypatch, capsys):
+    # 端點以結構化訊息回絕（白名單外／重複／未設身分）：把它的原因帶出來，非零結束。
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda request, timeout=None: (_ for _ in ()).throw(_http_error(422, "來源在白名單外")),
+    )
+
+    code = main(
+        ["config_manager", "import", "--api", "http://x",
+         "--source", "/outside.yaml", "--format", "yaml"]
+    )
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "來源在白名單外" in err
+    assert "下一步：" in err
+
+
+def test_browse_goes_to_the_browse_endpoint_of_the_named_api(answers):
+    called = answers({"path": "/srv", "entries": []})
+
+    main(["config_manager", "browse", "--api", "http://amr01:8080", "--path", "/srv"])
+
+    assert called[0].startswith("http://amr01:8080/api/browse?")
+    assert "path=%2Fsrv" in called[0]
+
+
+def test_browse_lists_the_entries_marking_directories(answers, capsys):
+    answers(
+        {
+            "path": "/srv",
+            "entries": [
+                {"name": "sub", "kind": "dir", "path": "/srv/sub"},
+                {"name": "a.yaml", "kind": "file", "path": "/srv/a.yaml"},
+            ],
+        }
+    )
+
+    main(["config_manager", "browse", "--path", "/srv"])
+
+    out = capsys.readouterr().out
+    assert "sub/" in out  # 目錄尾端加 /
+    assert "a.yaml" in out
 
 
 def _lines(capsys):
