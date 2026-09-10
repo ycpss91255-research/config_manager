@@ -9,6 +9,7 @@ from config_manager.core.config_list import dump, load
 from config_manager.core.models import Permissions
 from config_manager.core.errors import (
     DumpMismatch,
+    DuplicateSource,
     DuplicateTarget,
     DuplicateUid,
     InvalidFormat,
@@ -136,6 +137,45 @@ groups   = []
     assert "navigation-params@amr01-mfz3k9q1" in message
     assert "docker-daemon@amr01-mfz3k9r7" in message
     assert "/opt/shared.yaml" in message
+
+
+def test_duplicate_source_raises_named_exception_identifying_both_entries():
+    # 兩筆指向同一個 repo 內來源檔。它們的複本其實是同一份，動一個會牽到另一個，是靜默
+    # bug（#192，不變式 2）。編碼單射讓納管不會產生它；手改的清單檔仍可能有，要擋。
+    text = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/amr01/shared.yaml"
+target   = "/opt/a.yaml"
+format   = "yaml"
+groups   = []
+
+[[files]]
+uid      = "mfz3k9r7"
+name     = "docker-daemon"
+hostname = "amr01"
+source   = "files/amr01/shared.yaml"
+target   = "/opt/b.yaml"
+format   = "yaml"
+groups   = []
+"""
+
+    with pytest.raises(DuplicateSource) as exc:
+        load(text)
+
+    message = str(exc.value)
+    assert "navigation-params@amr01-mfz3k9q1" in message
+    assert "docker-daemon@amr01-mfz3k9r7" in message
+    assert "files/amr01/shared.yaml" in message
 
 
 def test_target_containing_dotdot_raises_named_exception():

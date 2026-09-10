@@ -112,7 +112,10 @@ def test_the_entry_records_the_target_as_the_original_path(tmp_path):
     entry = onboard(str(repo), _request(root, path), _AUTHOR)
 
     assert entry.target == str(path)
-    assert entry.source == f"files/{entry.hostname}/{str(path).lstrip('/').replace('/', '__')}"
+    # source 是 repo 內的複本、放在 hostname 底下，不是 target 本身（接反的守門）。
+    # 確切的編碼檔名由 io/repo 的規格擋著；這裡只確認沒對調。
+    assert entry.source.startswith(f"files/{entry.hostname}/")
+    assert entry.source != entry.target
 
 
 def test_the_new_entry_is_in_the_config_list(tmp_path):
@@ -123,6 +126,25 @@ def test_the_new_entry_is_in_the_config_list(tmp_path):
 
     listed = load((repo / CONFIG_LIST_NAME).read_text(encoding="utf-8"))
     assert [e.uid for e in listed.files] == [entry.uid]
+
+
+def test_two_targets_that_flatten_alike_do_not_overwrite(tmp_path, monkeypatch):
+    # #192 端到端：/managed/a/b 與 /managed/a__b 舊編碼會撞成同一檔名、第二次靜默覆蓋
+    # 第一次存下的複本。兩個不同 uid，孤立出編碼這一項。
+    _fixed_uids(monkeypatch, "aaaaaaaa", "bbbbbbbb")
+    repo = _repo(tmp_path)
+    root = tmp_path / "managed"
+    root.mkdir()
+    (root / "a").mkdir()
+    (root / "a" / "b").write_bytes(b"nested\n")
+    (root / "a__b").write_bytes(b"flat\n")
+
+    e1 = onboard(str(repo), _request(root, root / "a" / "b"), _AUTHOR)
+    e2 = onboard(str(repo), _request(root, root / "a__b"), _AUTHOR)
+
+    assert e1.source != e2.source
+    assert (repo / e1.source).read_bytes() == b"nested\n"
+    assert (repo / e2.source).read_bytes() == b"flat\n"
 
 
 def test_name_is_derived_from_the_target_path(tmp_path):

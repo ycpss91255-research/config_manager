@@ -21,6 +21,14 @@ class DuplicateTarget(ConfigListError):
     """兩筆條目寫到同一個目標位置。寫出順序決定最終結果，是靜默 bug。"""
 
 
+class DuplicateSource(ConfigListError):
+    """兩筆條目指向同一個 repo 內來源檔。複本其實是同一份，動一個會牽到另一個。
+
+    編碼單射（#192）讓納管不會產生這種狀態，但手改的清單檔仍可能有——與 target 唯一
+    是同一種危害的兩個面向：target 是「寫去哪」，source 是「複本存哪」，兩者都不該重號。
+    """
+
+
 class TargetEscape(ConfigListError):
     """目標路徑含 .. 路徑段，可逃逸到預期目錄外。"""
 
