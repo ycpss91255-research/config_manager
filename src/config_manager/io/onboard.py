@@ -13,7 +13,9 @@
    （#181），target 或 uid 與既有條目重複就在這裡丟例外，此刻 repo 一個位元組都還沒動
 6. `place_source`（#186）＋ `write_config_list`——驗證過了才真的動 repo：放來源位元組、
    寫回清單檔
-7. `record`（T7）——`import(<uid>): <name>@<hostname>`，歧義確認放內文（D6）
+7. `stage` ＋ `record`（T7）——只 stage 這次動到的兩個路徑（**不用 `git add -A`**，否則
+   會掃進不相干的未追蹤殘留，#173），再記一筆 `import(<uid>): <name>@<hostname>`，
+   歧義確認放內文（D6）
 
 **過程不改變來源檔案內容**（#12 第一行）：寫進 repo 的是 `read_source` 讀到的那一份
 位元組，來源檔本身只被讀、不被寫。
@@ -22,10 +24,16 @@
 都還沒跑，清單檔與 repo 完全不被改動。這正是先前沒做到的——舊順序先 `place_source`
 再驗證，重複時已經留下一個殘留檔。
 
-**寫入步驟本身失敗的回滾不在這裡**（#173）：步驟 6、7 之間若失敗（磁碟滿、權限等），
-磁碟上仍會留下未提交的檔案，被下一次 `git add -A` 默默收走。那一類失敗的回滾是 #173
-的範圍，它以本模組存在為前提。驗證失敗（#172）與寫入失敗（#173）是兩件事：前者在動手
-之前擋下，後者是動手到一半才出事。
+**寫入步驟失敗即整批回滾**（#173）：步驟 6、7 是一個整體。中途任一步失敗（磁碟滿、
+權限、commit 被 hook 擋等），onboard 把已做的還原（unstage、清單檔還原成原本的位元組、
+放進去的來源檔清掉），repo 回到納管前：無殘留檔、清單檔未改、無 commit。回滾本身也失敗
+時**大聲失敗**（`OnboardLeftBehind`）並指名殘留了什麼，不靜默——留在 repo 裡的孤兒來源檔
+會被下一次不相干的 commit 收走，那是不變式 2 禁止的形狀。
+
+失敗模式（甲）「清單檔寫成功、來源檔沒複製」在這個順序下不可能發生：步驟 6 一律先放來源
+位元組、再寫清單檔，清單檔永遠不會領先於來源檔。會發生的都是（乙）形狀——來源檔放好了，
+之後的清單檔或 commit 才失敗，那正是回滾要收拾的。驗證失敗（#172）與寫入失敗（#173）
+是兩件事：前者在動手之前擋下，後者是動手到一半才出事、要靠回滾。
 
 **parse／型別推斷／歧義偵測不在這裡。** 那些在確認畫面（#14）就做完了：使用者看過
 偵測到的格式與歧義清單、確認後才呼叫 onboard，把確認過的 `fmt` 與 `ambiguity_note`
@@ -36,12 +44,15 @@ from __future__ import annotations
 
 import datetime
 import os
+import subprocess
 from dataclasses import dataclass
 
 from config_manager.core.config_list import dump, load
 from config_manager.core.identity import derive_name, new_uid
 from config_manager.core.models import FileEntry
-from config_manager.io.git import record
+from config_manager.io.atomic import replace_atomically
+from config_manager.io.errors import OnboardLeftBehind
+from config_manager.io.git import record, stage, unstage
 from config_manager.io.preflight import CONFIG_LIST_NAME
 from config_manager.io.repo import place_source, source_relpath, write_config_list
 from config_manager.io.source import local_hostname, read_source
@@ -61,19 +72,94 @@ class OnboardRequest:
     ambiguity_note: str = ""
 
 
-def _list_text_with(repo: str, entry: FileEntry) -> str:
-    """算出「把 entry 併進去之後」的清單檔文字，但**不寫回**。
+@dataclass(frozen=True)
+class _WritePreState:
+    """納管動 repo 之前的現場，回滾時據以還原。"""
+
+    list_text: str
+    source_existed: bool
+    source_bytes: bytes | None
+    dir_existed: bool
+
+    @classmethod
+    def capture(cls, repo: str, relative: str, list_text: str) -> _WritePreState:
+        """在寫入之前拍下現場：清單檔原文、來源檔在不在（在的話連內容一起）。"""
+        absolute = os.path.join(repo, relative)
+        existed = os.path.isfile(absolute)
+        return cls(
+            list_text=list_text,
+            source_existed=existed,
+            source_bytes=_read_bytes(absolute) if existed else None,
+            dir_existed=os.path.isdir(os.path.dirname(absolute)),
+        )
+
+
+def _read_bytes(path: str) -> bytes:
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def _read_list(repo: str) -> str:
+    """讀 repo 的清單檔原文。"""
+    with open(os.path.join(repo, CONFIG_LIST_NAME), encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _list_text_with(original: str, entry: FileEntry) -> str:
+    """算出「把 entry 併進 `original` 之後」的清單檔文字，但**不寫回**。
 
     dump 以原檔文字為底，排版與註解原樣保留，而它在產生任何輸出**之前**先做完整性檢查
-    （#181）——format 非法、target 或 uid 與既有條目重複，都在這裡丟具名例外。把這一步
-    與實際寫入分開，onboard 才能先驗證、確定不重複了，再開始動 repo（#172）。
+    （#181）——format 非法、target 或 uid 與既有條目重複，都在這裡丟具名例外。純函式：
+    收原文、回新文，不碰檔案，onboard 才能先驗證、確定不重複了，再開始動 repo（#172）。
     """
-    list_path = os.path.join(repo, CONFIG_LIST_NAME)
-    with open(list_path, encoding="utf-8") as handle:
-        original = handle.read()
     current = load(original)
     updated = current.model_copy(update={"files": [*current.files, entry]})
     return dump(updated, original)
+
+
+def _import_message(name: str, hostname: str, ambiguity_note: str) -> str:
+    """import commit 的訊息：主旨 `<name>@<hostname>`，有歧義確認就接在內文。"""
+    message = f"{name}@{hostname}"
+    if ambiguity_note:
+        message += f"\n\n{ambiguity_note}"
+    return message
+
+
+def _rollback(repo: str, relative: str, before: _WritePreState, failure: BaseException) -> None:
+    """把 repo 還原成 `before` 的現場。任一步還原不了就記下，最後大聲失敗（#173）。
+
+    不蓋掉 `failure`（`__cause__` 指向它），但也不讓孤兒殘留悄悄留著。索引先退回 HEAD，
+    工作區的還原才不被殘留的暫存狀態干擾。空目錄不特別清：git 本來就忽略空目錄，`無殘留
+    檔案` 這條驗收條件講的是檔案。
+    """
+    absolute = os.path.join(repo, relative)
+    leftover: list[str] = []
+
+    try:
+        unstage(repo, relative, CONFIG_LIST_NAME)
+    except (OSError, subprocess.CalledProcessError) as error:
+        leftover.append(f"索引（{error}）")
+
+    try:
+        write_config_list(repo, before.list_text)
+    except OSError as error:
+        leftover.append(f"{CONFIG_LIST_NAME}（{error}）")
+
+    try:
+        if before.source_existed:
+            replace_atomically(absolute, before.source_bytes or b"")
+        elif os.path.lexists(absolute):
+            os.remove(absolute)
+    except OSError as error:
+        leftover.append(f"{relative}（{error}）")
+
+    if leftover:
+        raise OnboardLeftBehind(
+            f"納管中途失敗後回滾未竟，殘留：{'；'.join(leftover)}。"
+            f"原本的失敗：{failure}。"
+            f"下一步：先照原本的失敗處理，再手動清掉上列殘留——"
+            f"留著的話，孤兒來源檔會被下一次不相干的 commit 收走。"
+        ) from failure
 
 
 def onboard(repo: str, request: OnboardRequest, author: str) -> FileEntry:
@@ -102,17 +188,19 @@ def onboard(repo: str, request: OnboardRequest, author: str) -> FileEntry:
 
     # 4. 先驗證再寫。_list_text_with 在產生任何輸出之前做完整性檢查——target 或 uid 與
     #    既有條目重複就在這裡丟例外，而此刻 repo 一個位元組都還沒動（#172 的 AC2）。
-    new_list_text = _list_text_with(repo, entry)
+    original_list = _read_list(repo)
+    new_list_text = _list_text_with(original_list, entry)
 
-    # 5. 驗證過了才真的動 repo：先放來源位元組，再寫回清單檔。順序讓 record 的
-    #    git add -A 把兩者一起收進同一筆 commit。
-    place_source(repo, hostname, target, source.content)
-    write_config_list(repo, new_list_text)
-
-    # 6. 一筆 import commit。主旨是 <name>@<hostname>（設計 §2.3），歧義確認放內文（D6）。
-    message = f"{name}@{hostname}"
-    if request.ambiguity_note:
-        message += f"\n\n{request.ambiguity_note}"
-    record(repo, uid, "import", message, author)
+    # 5. 寫入是一個整批：先拍下現場，再放來源位元組、寫回清單檔、stage、記一筆 import
+    #    commit。中途任一步失敗就回滾到納管前的狀態（#173）。回滾也失敗時大聲失敗。
+    before = _WritePreState.capture(repo, relative, original_list)
+    try:
+        place_source(repo, hostname, target, source.content)
+        write_config_list(repo, new_list_text)
+        stage(repo, relative, CONFIG_LIST_NAME)
+        record(repo, uid, "import", _import_message(name, hostname, request.ambiguity_note), author)
+    except BaseException as failure:
+        _rollback(repo, relative, before, failure)
+        raise
 
     return entry

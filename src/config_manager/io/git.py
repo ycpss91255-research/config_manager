@@ -49,8 +49,31 @@ def _split_author(author: str) -> tuple[str, str]:
     return name.strip(), email.rstrip(">").strip()
 
 
+def stage(repo: str, *paths: str) -> None:
+    """把指定的路徑加入索引（`git add -- <paths>`）。
+
+    只 stage 明確點名的路徑，不用 `git add -A`：後者會把工作區裡**任何**未追蹤檔案一起
+    收進來，包括與這次變更不相干的殘留——例如某次失敗的納管留下的孤兒來源檔，會被下一筆
+    不相干的 commit 默默收編（#173）。一筆 commit 該只含這次真的動到的東西。
+    """
+    _git(repo, "add", "--", *paths)
+
+
+def unstage(repo: str, *paths: str) -> None:
+    """把指定路徑的索引狀態還原到 HEAD（`git reset -q -- <paths>`）。
+
+    納管中途失敗要回滾時用（#173）：`stage` 已跑過的話，索引裡有這次的暫存變更；把它們
+    退回 HEAD，工作區的還原才不會被殘留的索引狀態干擾。點名路徑，不動索引裡的其他東西。
+    """
+    _git(repo, "reset", "-q", "--", *paths)
+
+
 def record(repo: str, uid: str, kind: str, message: str, author: str) -> None:
-    """把工作區目前的狀態記成一筆變更。
+    """把**已 staged** 的變更記成一筆 commit。
+
+    staging 是呼叫端的事（見 `stage`）：record 不再自己 `git add -A`，於是 commit 只含
+    呼叫端明確 stage 的路徑，不會掃進不相干的殘留（#173）。沒有任何 staged 變更時 git
+    的 commit 會失敗——那是對的，一筆什麼都沒動的變更紀錄不該存在。
 
     `message` 是完整的 commit 訊息：第一段（第一個空行之前）是主旨，之後是內文。主旨
     進 `<kind>(<uid>): <說明>`，內文原樣進 commit body、透過 `history()` 的 `Change.body`
@@ -65,7 +88,6 @@ def record(repo: str, uid: str, kind: str, message: str, author: str) -> None:
 
     subject, _, body = message.partition("\n\n")
     name, email = _split_author(author)
-    _git(repo, "add", "-A")
     # 第二個 -m 就是 commit 內文；git 以一個空行把它與主旨隔開。沒有內文就不加。
     parts = ["-m", f"{kind}({uid}): {subject}"]
     if body:
@@ -122,5 +144,7 @@ def revert(repo: str, uid: str, version: str, source: str, author: str) -> None:
 
     source 由呼叫端給——uid 對應到哪個來源檔是清單檔的知識，io 層不該自己推斷。
     """
+    # checkout <version> -- <source> 會同時更新工作區與索引，也就是說 source 已被 stage；
+    # record 只提交已 staged 的內容，所以這裡不需要再 stage 一次。
     _git(repo, "checkout", version, "--", source)
     record(repo, uid, "revert", f"退回 {version[:7]}", author)

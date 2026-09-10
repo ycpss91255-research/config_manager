@@ -45,9 +45,9 @@ TOML
 }
 
 @test "掛載非空但沒有 .git 會失敗，不自動初始化" {
-  # 這不是首次啟動——那裡有沒人審過的檔案。#86 之後 io/git.record 的第一步是
-  # git add -A，自動 git init 等於把它們默默收編進第一次提交，而掛錯路徑會
-  # 因此看起來像啟動成功（不變式 2 禁止的靜默成功）。
+  # 這不是首次啟動——那裡有沒人審過的檔案。自動 git init 等於把一個不屬於我們的
+  # 目錄當成 config-repo 收下，而掛錯路徑會因此看起來像啟動成功（不變式 2 禁止的
+  # 靜默成功）。
   printf 'not ours\n' >"${WORK}/stray.txt"
 
   CM_CONFIG_REPO="${WORK}" run "${ENTRYPOINT}" true
@@ -88,8 +88,8 @@ sys.exit(0 if config_list.files == [] else 1)
 }
 
 @test "種下的清單檔已被提交，不是留在工作區未追蹤" {
-  # 留成未追蹤檔的話，io/git.record 的第一次 git add -A 才會把它掃進某一筆
-  # 使用者變更裡，那筆紀錄就說了謊——它宣稱的改動不是它真正含的東西。
+  # 留成未追蹤檔的話，第一次納管會把它折進那筆 import commit，那筆紀錄就說了謊
+  # ——它宣稱的改動不是它真正含的東西。
   mkdir -p "${WORK}/repo"
 
   CM_CONFIG_REPO="${WORK}/repo" run "${ENTRYPOINT}" true

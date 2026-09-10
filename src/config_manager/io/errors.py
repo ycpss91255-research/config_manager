@@ -29,6 +29,16 @@ class TemporaryLeftBehind(WriterError):
     """
 
 
+class OnboardLeftBehind(Exception):
+    """納管中途失敗後，回滾自己也失敗了，repo 沒能回到納管前的狀態。
+
+    與 `TemporaryLeftBehind` 是同一種形狀的兩個場景：那一個是原子寫出的暫存檔清不掉，
+    這一個是納管三個寫入動作中途失敗、回滾清不乾淨。兩者都**同時說出**原本的失敗與
+    清理的失敗，`__cause__` 指向原本的失敗——清理失敗不該蓋掉真正的錯誤，但留在 repo
+    裡的孤兒來源檔也不該沒有人知道（#173）。訊息指名殘留了什麼。
+    """
+
+
 class ChangeError(Exception):
     """變更紀錄失敗的基底。"""
 

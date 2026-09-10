@@ -427,10 +427,15 @@ dump(資料, 原樣資訊) -> text
 ### T7 — 變更紀錄
 
 ```
-record(uid, 類型, 訊息, 作者) / history(uid, 類型過濾) / revert(uid, 版本)
+stage(路徑…) / record(uid, 類型, 訊息, 作者) / history(uid, 類型過濾) / revert(uid, 版本)
 ```
 
 `訊息` 是完整的 commit 訊息：第一段是主旨，可接一個空行再加內文（git 的慣例）。
+
+**staging 與提交分開（#173）：** `record` **只提交已 staged 的內容**，不再自己 `git add -A`
+——後者會把工作區裡任何未追蹤檔（例如某次失敗納管的孤兒來源檔）一起收進 commit。stage
+由呼叫端負責、只點名這次動到的路徑（`revert` 例外：`git checkout … -- <source>` 已同時
+更新索引，等於 stage 過了）。
 
 | 驗證的行為 |
 |---|
@@ -441,6 +446,9 @@ record(uid, 類型, 訊息, 作者) / history(uid, 類型過濾) / revert(uid, �
 | 退版後歷史仍含全部先前紀錄（**未被截斷**） |
 | 退版產生新紀錄而非移動指標 |
 | **退版至版本 V 後，該 uid 在來源 repo 的內容等於 V 版當時內容**（以 `history()`／既有讀取介面驗證，非 `git log`） |
+
+「commit 只含 stage 的路徑、不掃進不相干的未追蹤檔」這條行為，在納管的實際情境下觀察
+（`io/onboard`：repo 裡先放一個不相干的未追蹤檔，納管後它仍未被追蹤，#173 的 AC4）。
 
 **測試方式**：對真實的臨時 git repo 操作，透過本測試介面驗證（`history()`），
 **不直接跑 `git log` 檢查**——那是繞過介面驗證（反模式）。
@@ -496,7 +504,7 @@ preflight(環境) -> 通過 | 失敗(原因)
 
 **空與非空要分開，因為它們是不同的狀況（#69）。** 空目錄是首次啟動的合法狀態：
 volume 掛上了，還沒有人初始化過它。非空卻沒有 `.git` 則不是首次啟動——那裡有沒人審過的
-檔案，而 `io/git.record` 的第一步是 `git add -A`，自動初始化等於把它們默默收編進第一次提交。
+檔案，自動初始化等於把一個不屬於我們的目錄當成 config-repo 收下（此後它被當成唯一真實來源）。
 掛錯路徑會因此看起來像啟動成功。
 
 「掛錯到一個**空**目錄」從容器內部與真正的首次啟動無法區分，這是事實。處置是把**解析後的
@@ -1109,10 +1117,10 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/preflight` | T15 | 已落地 |
 | `io/digest` | T20 | 已落地 |
 | `io/scan` | T21 | 已落地 |
-| `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言 | 已落地 |
+| `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言；`OnboardLeftBehind`（納管回滾失敗）在 `io/onboard` 的整合規格被斷言（#173） | 已落地 |
 | `io/parsers` | T6 | 未落地（#17） |
 | `io/source` | T22（匯入時刻對外界的讀取，介面議定於 #177） | 已落地：路徑判定（realpath 後比對白名單、一般檔案檢查）與一次性讀取（#174）、讀取失敗的三種分類（不存在／讀不到／上層目錄無 traverse，#182）。`local_hostname` 的部署穩定性見 #178 |
-| `io/onboard` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔條目→T1（`load`）、匯入 commit→T7（`io/git.history`）（#12）——編排層，不算新值，同 `io/repo` 的處理 | 已落地（`onboard`） |
+| `io/onboard` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔條目→T1（`load`）、匯入 commit→T7（`io/git.history`）（#12）——編排層，不算新值，同 `io/repo` 的處理。重複攔在寫入前（#172）與寫入失敗即整批回滾（#173）以注入失敗＋`git status` 觀察，回滾也失敗時丟 `OnboardLeftBehind` | 已落地（`onboard`） |
 | `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/session`、`GET /api/session` 與 CORS 中介層） |
 | `api/cli` | T10 | 已落地（`serve` 與 `list`） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 部分落地：身分（`author`）已落地；階段的 acquire／renew／release／sweep 未落地（#33） |
