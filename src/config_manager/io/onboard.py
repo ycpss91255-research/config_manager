@@ -20,6 +20,13 @@
 **過程不改變來源檔案內容**（#12 第一行）：寫進 repo 的是 `read_source` 讀到的那一份
 位元組，來源檔本身只被讀、不被寫。
 
+**原始 owner／group／mode 一律記進 `permissions`**（#175 的 AC3）：即使剛好等於
+`defaults.permissions` 也寫——每筆是原始權限的忠實快照，不因日後有人改 `defaults` 而
+靜默改變已納管檔案的套用權限。**`requires_privilege` 在這裡判定**（#175 的 AC2）：納管
+是系統唯一一次讀到原始 owner／group 的時刻（不變式 8），`_requires_privilege` 據此決定
+——原始 owner／group 不是服務執行身分（`io/source.service_identity`）設得上的就標記為真。
+真正的 sudoers 提權**寫出**是 v0.10.0（apply 端點尚未接線），這裡只決定並記下。
+
 **重複的 target／uid 攔在寫入之前**（#172）：步驟 5 的完整性檢查失敗時，步驟 6、7
 都還沒跑，清單檔與 repo 完全不被改動。這正是先前沒做到的——舊順序先 `place_source`
 再驗證，重複時已經留下一個殘留檔。
@@ -49,13 +56,13 @@ from dataclasses import dataclass
 
 from config_manager.core.config_list import dump, load
 from config_manager.core.identity import derive_name, new_uid
-from config_manager.core.models import FileEntry
+from config_manager.core.models import FileEntry, Permissions
 from config_manager.io.atomic import replace_atomically
 from config_manager.io.errors import OnboardLeftBehind
 from config_manager.io.git import record, stage, unstage
 from config_manager.io.preflight import CONFIG_LIST_NAME
 from config_manager.io.repo import place_source, source_relpath, write_config_list
-from config_manager.io.source import local_hostname, read_source
+from config_manager.io.source import local_hostname, read_source, service_identity
 
 
 @dataclass(frozen=True)
@@ -115,6 +122,22 @@ def _list_text_with(original: str, entry: FileEntry) -> str:
     current = load(original)
     updated = current.model_copy(update={"files": [*current.files, entry]})
     return dump(updated, original)
+
+
+def _requires_privilege(
+    permissions: Permissions, identity: tuple[str, frozenset[str], bool]
+) -> bool:
+    """服務要把目標寫成這份 owner／group，需不需要提權（#175）。
+
+    納管是系統唯一一次讀到原始 owner／group 的時刻（不變式 8），所以在這裡判定並記下，
+    v0.10.0 的 sudoers 提權寫出才有依據、不必日後重讀。root 什麼都設得了 → 不需要；非
+    root 只有在「owner 就是服務自己、group 是服務所屬之一」時才設得上，其餘一律標記需
+    提權——保守地標，讓 apply 走提權路徑，而不是在寫出時才以 OwnershipRefused 失敗。
+    """
+    user, groups, is_root = identity
+    if is_root:
+        return False
+    return not (permissions.owner == user and permissions.group in groups)
 
 
 def _import_message(name: str, hostname: str, ambiguity_note: str) -> str:
@@ -184,6 +207,7 @@ def onboard(repo: str, request: OnboardRequest, author: str) -> FileEntry:
         target=target,
         format=request.fmt,
         permissions=source.permissions,
+        requires_privilege=_requires_privilege(source.permissions, service_identity()),
     )
 
     # 4. 先驗證再寫。_list_text_with 在產生任何輸出之前做完整性檢查——target 或 uid 與

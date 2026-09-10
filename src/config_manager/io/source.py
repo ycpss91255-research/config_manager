@@ -70,9 +70,12 @@ def read_source(path: str, allowed_roots: Iterable[str]) -> Source:
     - `SourceOutsideRoots` —— 解析後落在白名單之外，**一個位元組都沒讀**
     - `SourceNotRegularFile` —— 目錄、裝置、socket、斷掉的連結
     - `SourcePathUnstable` —— 解析或開檔期間路徑被改動（競速），這次匯入不成立
-    - `ContentUnreadable` —— 是一般檔案但讀不出來（權限）
+    - `SourceAbsent` —— 來源不存在（與「讀不到」分開）
+    - `SourceUnreachable` —— 上層某層目錄沒有 traverse（`+x`）權限，去不到
+    - `ContentUnreadable` —— 是一般檔案、也到得了，但內容讀不出來（權限）
 
-    「不存在／讀不到／上層目錄無 traverse 權限」的進一步細分屬 #175。
+    「不存在／讀不到／上層目錄無 traverse」這三種的細分已於 #182／#184 落地（見
+    `_classify_open_failure`）。
     """
     # 先固定下來：allowed_roots 可能是一次性的可迭代物，而判定與訊息都要用到它。
     roots = tuple(allowed_roots)
@@ -116,6 +119,24 @@ def local_hostname() -> str:
     ——容器在 bridge 網路下讀到的是每次重建都變的容器 ID（#178）。
     """
     return socket.gethostname()
+
+
+def service_identity() -> tuple[str, frozenset[str], bool]:
+    """服務的**有效**執行身分：(使用者名稱, 可設定的群組名稱集合, 是不是 root)。
+
+    納管判定 `requires_privilege` 時拿它跟來源檔的 owner／group 比（#175）：非 root 的
+    服務 apply 時無法把檔案 chown 給別的擁有者（POSIX：改 owner 要 root），也只能把
+    group 設成自己設得上的群組。
+
+    用**有效** uid／gid 而非真實的：新建檔取用建立者的 euid，chown／chgrp 的權限由有效
+    （fs）身分決定，不是真實 uid（#175 的資安審查）。群組能設的是 egid ＋ 附屬群組——
+    真實 gid 若既非 egid 也不在附屬群組裡其實設不上，所以不放進來（否則會少標一筆該
+    提權的，那是危險的方向）。名稱查不到時回數字形式（同 `_owner_name`／`_group_name`，
+    容器裡常沒有 passwd 項目）。
+    """
+    euid = os.geteuid()
+    gids = {os.getegid(), *os.getgroups()}
+    return _owner_name(euid), frozenset(_group_name(gid) for gid in gids), euid == 0
 
 
 def _resolve(path: str) -> str:
