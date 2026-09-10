@@ -1112,6 +1112,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言 | 已落地 |
 | `io/parsers` | T6 | 未落地（#17） |
 | `io/source` | T22（匯入時刻對外界的讀取，介面議定於 #177） | 已落地：路徑判定（realpath 後比對白名單、一般檔案檢查）與一次性讀取（#174）、讀取失敗的三種分類（不存在／讀不到／上層目錄無 traverse，#182）。`local_hostname` 的部署穩定性見 #178 |
+| `io/onboard` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔條目→T1（`load`）、匯入 commit→T7（`io/git.history`）（#12）——編排層，不算新值，同 `io/repo` 的處理 | 已落地（`onboard`） |
 | `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/session`、`GET /api/session` 與 CORS 中介層） |
 | `api/cli` | T10 | 已落地（`serve` 與 `list`） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 部分落地：身分（`author`）已落地；階段的 acquire／renew／release／sweep 未落地（#33） |
