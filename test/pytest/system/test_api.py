@@ -180,6 +180,19 @@ def test_import_a_source_outside_the_whitelist_is_refused(api, tmp_path):
     assert "白名單之外" in _detail(exc.value)  # 被拒的原因是白名單，不是別種 422
 
 
+def test_import_with_an_unknown_format_is_refused_as_a_bad_value(api, sources_root):
+    # format 不是允許值是「送錯值」（422），不是「與既有狀態衝突」（409）——InvalidFormat
+    # 雖屬 ConfigListError，端點特別先接它映 422（#175 的資安審查）。
+    _set_session(api)
+    source = _write_source(sources_root, "badfmt.yaml")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/configs", {"source_path": source, "format": "notaformat"})
+
+    assert exc.value.code == _UNPROCESSABLE
+    assert "format" in _detail(exc.value)
+
+
 def test_importing_the_same_target_twice_is_refused(api, sources_root):
     _set_session(api)
     source = _write_source(sources_root, "dup.yaml")

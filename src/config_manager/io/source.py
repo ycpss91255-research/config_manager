@@ -122,16 +122,21 @@ def local_hostname() -> str:
 
 
 def service_identity() -> tuple[str, frozenset[str], bool]:
-    """服務的執行身分：(使用者名稱, 所屬群組名稱集合, 是不是 root)。
+    """服務的**有效**執行身分：(使用者名稱, 可設定的群組名稱集合, 是不是 root)。
 
     納管判定 `requires_privilege` 時拿它跟來源檔的 owner／group 比（#175）：非 root 的
     服務 apply 時無法把檔案 chown 給別的擁有者（POSIX：改 owner 要 root），也只能把
-    group 設成自己所屬的群組。名稱查不到時回數字形式（同 `_owner_name`／`_group_name`，
+    group 設成自己設得上的群組。
+
+    用**有效** uid／gid 而非真實的：新建檔取用建立者的 euid，chown／chgrp 的權限由有效
+    （fs）身分決定，不是真實 uid（#175 的資安審查）。群組能設的是 egid ＋ 附屬群組——
+    真實 gid 若既非 egid 也不在附屬群組裡其實設不上，所以不放進來（否則會少標一筆該
+    提權的，那是危險的方向）。名稱查不到時回數字形式（同 `_owner_name`／`_group_name`，
     容器裡常沒有 passwd 項目）。
     """
-    uid = os.getuid()
-    gids = {os.getgid(), os.getegid(), *os.getgroups()}
-    return _owner_name(uid), frozenset(_group_name(gid) for gid in gids), uid == 0
+    euid = os.geteuid()
+    gids = {os.getegid(), *os.getgroups()}
+    return _owner_name(euid), frozenset(_group_name(gid) for gid in gids), euid == 0
 
 
 def _resolve(path: str) -> str:

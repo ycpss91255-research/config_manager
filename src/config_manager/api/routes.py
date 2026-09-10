@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from config_manager.api.errors import InvalidAuthor
 from config_manager.api.session import USER, Identity, author
-from config_manager.core.errors import ConfigListError
+from config_manager.core.errors import ConfigListError, InvalidFormat, NameUnderivable
 from config_manager.core.models import FileEntry
 from config_manager.core.state import State
 from config_manager.io.browse import Entry, Listing, browse
@@ -148,10 +148,11 @@ def _onboard_config(
     )
     try:
         entry = onboard(repo, request, identity.git_author)
-    except (SourceError, ContentUnreadable) as error:
-        # 來源路徑的問題：白名單外、不是一般檔案、不存在、上層無 traverse（SourceError
-        # 家族），或檔案在、也到得了、但內容讀不出來（ContentUnreadable 不屬該家族，
-        # 早先漏接成 500，#175）。都是輸入形狀對、值不合法 → 422。
+    except (SourceError, ContentUnreadable, NameUnderivable, InvalidFormat) as error:
+        # 送進來的值不合法 → 422：來源路徑的問題（白名單外、不是一般檔案、不存在、上層無
+        # traverse 的 SourceError 家族；或檔案在、讀不出來的 ContentUnreadable，不屬該家族、
+        # 早先漏成 500）、目標路徑推不出名稱（NameUnderivable）、format 不是允許值
+        # （InvalidFormat 雖屬 ConfigListError，但那是**送錯值**不是衝突，先接、映 422）。
         raise HTTPException(status_code=422, detail=str(error)) from error
     except ConfigListError as error:
         # 與既有條目衝突（target／uid／source 重複）：與目前狀態相牴觸。
