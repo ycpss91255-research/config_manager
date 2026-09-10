@@ -156,9 +156,13 @@ check_allowed_roots_visible() {
     trimmed="${root#"${root%%[![:space:]]*}"}"
     trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
     [[ -n "${trimmed}" ]] || continue
+    # `[[ -d ]]` 失敗有兩種：路徑沒掛進來（ENOENT），或某層上層目錄對服務執行身分沒有
+    # traverse（+x）權限（EACCES）——bash 把兩者都收成 false，分不出來。所以訊息把兩個
+    # 可能的成因都講出來，而不是只說「去掛載」，否則掛好了卻卡在權限的人會被指錯方向
+    # （§0.4；io/source._blocking_parent 在讀取時能分得更細）。
     [[ -d "${trimmed}" ]] || die "白名單允許的路徑在容器裡看不到：${trimmed}。" \
-      "下一步：把它掛進容器（compose 的 volumes），或從 CM_ALLOWED_ROOTS 移除；" \
-      "白名單只在掛載掛得到的範圍內有意義（#146）"
+      "下一步：把它掛進容器（compose 的 volumes）、給它某層上層目錄對服務執行身分加上" \
+      "traverse（+x）權限、或從 CM_ALLOWED_ROOTS 移除；白名單只在掛載掛得到的範圍內有意義（#146）"
   done < <(printf '%s\n' "${roots}" | tr ',' '\n')
 }
 

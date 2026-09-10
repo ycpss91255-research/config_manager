@@ -18,6 +18,7 @@ import pytest
 
 from config_manager.io.errors import (
     ContentUnreadable,
+    HostnameInvalid,
     SourceAbsent,
     SourceNotRegularFile,
     SourceOutsideRoots,
@@ -165,6 +166,25 @@ def test_local_hostname_falls_back_to_gethostname_when_unset(monkeypatch):
     monkeypatch.setenv("CM_HOSTNAME", "   ")
 
     assert local_hostname() == socket.gethostname()
+
+
+@pytest.mark.parametrize(
+    "bad", ["..", "../etc", "/etc", "a/b", "amr01\ndocker-daemon", "has space"]
+)
+def test_a_hostname_that_would_escape_the_path_or_subject_is_refused(monkeypatch, bad):
+    # CM_HOSTNAME 會流進 files/<hostname>/ 與 commit 主旨；含 / .. 或控制字元的值會逃出邊界
+    # 或重塑主旨。不安全就大聲失敗，不悄悄清洗（#178 資安審查）。
+    monkeypatch.setenv("CM_HOSTNAME", bad)
+
+    with pytest.raises(HostnameInvalid):
+        local_hostname()
+
+
+def test_a_normal_hostname_override_is_accepted(monkeypatch):
+    # 正常的機器名（FQDN、含連字號）照過。
+    monkeypatch.setenv("CM_HOSTNAME", "amr01.fleet.local")
+
+    assert local_hostname() == "amr01.fleet.local"
 
 
 def test_mode_is_reported_as_four_digit_octal(tmp_path):

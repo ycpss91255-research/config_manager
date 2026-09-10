@@ -29,6 +29,7 @@ import errno
 import grp
 import os
 import pwd
+import re
 import socket
 import stat
 from collections.abc import Iterable
@@ -38,12 +39,17 @@ from config_manager.core.models import Permissions
 from config_manager.core.whitelist import decide
 from config_manager.io.errors import (
     ContentUnreadable,
+    HostnameInvalid,
     SourceAbsent,
     SourceNotRegularFile,
     SourceOutsideRoots,
     SourcePathUnstable,
     SourceUnreachable,
 )
+
+# 安全的 hostname 段：字母數字加 . _ -（涵蓋 FQDN 與容器 ID）。用來擋住會逃出
+# `files/<hostname>/` 或重塑 commit 主旨的值——`/`、控制字元、空白都不match（#178）。
+_SAFE_HOSTNAME = re.compile(r"[A-Za-z0-9._-]+")
 
 _CHUNK = 65536
 
@@ -130,7 +136,17 @@ def local_hostname() -> str:
     比例。空字串當作沒設（`.strip()` 後為空）。
     """
     override = os.environ.get("CM_HOSTNAME", "").strip()
-    return override or socket.gethostname()
+    hostname = override or socket.gethostname()
+    # hostname 會流進 `files/<hostname>/` 的路徑段與 commit 主旨 `<name>@<hostname>`。含 `/`、
+    # `.`／`..`、或控制字元（換行）的值會逃出 `files/` 邊界或重塑主旨。gethostname() 本就安全，
+    # 會出事的是部署者手打的 CM_HOSTNAME——不安全就大聲失敗，不悄悄清洗（#178 資安審查）。
+    if hostname in (".", "..") or not _SAFE_HOSTNAME.fullmatch(hostname):
+        raise HostnameInvalid(
+            f"hostname 不是安全的名稱：「{hostname}」。它會被寫進 files/<hostname>/ 的路徑與"
+            f"變更紀錄的主旨，只允許字母數字與 . _ -。"
+            f"下一步：把 CM_HOSTNAME 設成這台機器的正規名稱（例如 amr01），不要含 / 或空白"
+        )
+    return hostname
 
 
 def service_identity() -> tuple[str, frozenset[str], bool]:
