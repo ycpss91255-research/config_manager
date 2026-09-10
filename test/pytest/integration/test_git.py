@@ -98,3 +98,36 @@ def test_revert_puts_back_the_content_of_that_version(tmp_path):
     revert(str(repo), "mfz3k9q1", first, "nav2.yaml", AUTHOR)
 
     assert (repo / "nav2.yaml").read_text() == "max_vel: 0.8\n"
+
+
+# ── commit 內文（T7 加行為，#12 的 D6）───────────────────────────────────────
+
+
+def test_a_recorded_change_carries_its_body_in_history(tmp_path):
+    # 納管把歧義值的確認紀錄寫進 commit body（D6：主旨已被 <name>@<hostname> 占滿）。
+    # 內文有換行，history 必須整段取回，不被逐行解析打散。
+    repo = _repo(tmp_path)
+    (repo / "daemon.json").write_text("{}\n")
+    body = "歧義值確認：\n- 第 3 行「no」判定為字串\n- 第 7 行「0755」判定為字串"
+
+    record(str(repo), "mfz3k9q1", "import", f"docker-daemon@amr01\n\n{body}", AUTHOR)
+
+    assert history(str(repo), "mfz3k9q1")[0].body == body
+
+
+def test_a_change_without_a_body_has_an_empty_body(tmp_path):
+    repo = _repo(tmp_path)
+    (repo / "nav2.yaml").write_text("max_vel: 0.8\n")
+
+    record(str(repo), "mfz3k9q1", "cfg", "調整 max_vel", AUTHOR)
+
+    assert history(str(repo), "mfz3k9q1")[0].body == ""
+
+
+def test_the_body_does_not_leak_into_the_summary(tmp_path):
+    repo = _repo(tmp_path)
+    (repo / "daemon.json").write_text("{}\n")
+
+    record(str(repo), "mfz3k9q1", "import", "docker-daemon@amr01\n\n附註一行", AUTHOR)
+
+    assert history(str(repo), "mfz3k9q1")[0].summary == "docker-daemon@amr01"

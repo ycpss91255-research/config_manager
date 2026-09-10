@@ -18,6 +18,7 @@ KINDS = ("import", "cfg", "revert", "adopt", "meta", "unmanage")
 
 _SUBJECT = re.compile(r"^(?P<kind>[a-z]+)\((?P<uid>[^)]+)\): (?P<summary>.*)$")
 _UNIT = "\x1f"
+_RECORD = "\x1e"
 
 
 class Change(NamedTuple):
@@ -28,6 +29,7 @@ class Change(NamedTuple):
     uid: str
     summary: str
     author: str
+    body: str = ""
 
 
 def _git(repo: str, *args: str) -> str:
@@ -47,16 +49,27 @@ def _split_author(author: str) -> tuple[str, str]:
     return name.strip(), email.rstrip(">").strip()
 
 
-def record(repo: str, uid: str, kind: str, summary: str, author: str) -> None:
-    """把工作區目前的狀態記成一筆變更。"""
+def record(repo: str, uid: str, kind: str, message: str, author: str) -> None:
+    """把工作區目前的狀態記成一筆變更。
+
+    `message` 是完整的 commit 訊息：第一段（第一個空行之前）是主旨，之後是內文。主旨
+    進 `<kind>(<uid>): <說明>`，內文原樣進 commit body、透過 `history()` 的 `Change.body`
+    取回。納管把歧義值的確認放內文——主旨已被 `<name>@<hostname>` 占滿（設計 §2.3），
+    而確認清單可能有好幾行（#12 的 D6）。沒有內文時（大多數變更）就只有主旨。
+    """
     if kind not in KINDS:
         raise UnknownKind(
             f"不是允許的變更類型：{kind}。允許的是 {'／'.join(KINDS)}。"
             f"下一步：改用其中一個；介面上顯示的行為描述由上層對應，不進 commit 訊息。"
         )
 
+    subject, _, body = message.partition("\n\n")
     name, email = _split_author(author)
     _git(repo, "add", "-A")
+    # 第二個 -m 就是 commit 內文；git 以一個空行把它與主旨隔開。沒有內文就不加。
+    parts = ["-m", f"{kind}({uid}): {subject}"]
+    if body:
+        parts += ["-m", body]
     _git(
         repo,
         "-c",
@@ -65,19 +78,23 @@ def record(repo: str, uid: str, kind: str, summary: str, author: str) -> None:
         f"user.email={email}",
         "commit",
         "-q",
-        "-m",
-        f"{kind}({uid}): {summary}",
+        *parts,
     )
 
 
 def history(repo: str, uid: str, kind: str | None = None) -> list[Change]:
     """某個 uid 的變更紀錄，最新的在前。給了類型就只回那個類型。"""
-    output = _git(repo, "log", f"--format=%H{_UNIT}%s{_UNIT}%an <%ae>")
+    # 以記錄分隔符 %x1e 切 commit，而不是逐行切：commit 內文（%b）有換行，逐行解析
+    # 會把一筆拆成好幾筆。%b 放在最後，它裡面的換行於是不影響前面的欄位。
+    fmt = f"%H{_UNIT}%s{_UNIT}%an <%ae>{_UNIT}%b{_RECORD}"
+    output = _git(repo, "log", f"--format={fmt}")
     changes: list[Change] = []
-    for line in output.splitlines():
-        if not line:
+    for raw in output.split(_RECORD):
+        # git 在每筆之間補一個換行；剝掉它才不會把換行算進內文的頭尾。
+        entry = raw.strip("\n")
+        if not entry:
             continue
-        sha, subject, author = line.split(_UNIT)
+        sha, subject, author, body = entry.split(_UNIT)
         matched = _SUBJECT.match(subject)
         # 不符格式的（例如 repo 的初始 commit）不是變更紀錄，略過。
         if matched is None or matched["uid"] != uid:
@@ -91,6 +108,7 @@ def history(repo: str, uid: str, kind: str | None = None) -> list[Change]:
                 uid=matched["uid"],
                 summary=matched["summary"],
                 author=author,
+                body=body,
             )
         )
     return changes
