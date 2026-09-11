@@ -56,3 +56,31 @@ class ConfigList(BaseModel):
     def warnings(self) -> list[str]:
         """載入期收集的警示（警示與錯誤的分界見 CONTEXT）。不參與寫回。"""
         return self._warnings
+
+
+class AllowedRoot(BaseModel):
+    """白名單設定檔（§7.9）裡的一個根：一個路徑前綴，加上誰在何時加入的。
+
+    `added_by`／`added_at` 選填：由介面新增與 entrypoint 種子時明寫，但手動最小化
+    的種子檔可只列 `prefix`。`prefix` 的字面檢查（絕對、無 `..`）在 allowed_roots
+    載入時先行（T23），realpath 正規化留給 I/O 層。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    prefix: str
+    added_by: str = ""
+    added_at: str = ""
+
+
+class AllowedRoots(BaseModel):
+    """持久化、可從介面維護的白名單（§7.9，#202）。
+
+    entrypoint 首次啟動從 `CM_ALLOWED_ROOTS` 種下，之後以檔為準、可增可減。
+    約束（版本、prefix 唯一與字面合法）在 T23 載入時被驗證。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    roots_version: int
+    roots: list[AllowedRoot] = []
