@@ -40,11 +40,12 @@ from config_manager.io.errors import (
     BrowseOutsideRoots,
     BrowseUnreadable,
     ContentUnreadable,
+    HostnameInvalid,
     SourceError,
 )
 from config_manager.io.onboard import OnboardRequest, onboard
 from config_manager.io.scan import scan
-from config_manager.io.source import Source, read_source
+from config_manager.io.source import Source, local_hostname, read_source
 
 
 class SessionInput(BaseModel):
@@ -217,6 +218,10 @@ def _onboard_config(
     except ConfigListError as error:
         # 與既有條目衝突（target／uid／source 重複）：與目前狀態相牴觸。
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except HostnameInvalid as error:
+        # CM_HOSTNAME 設成不安全值：部署層的錯（非請求端能修），大聲失敗成帶訊息的 500，
+        # 不是先前那樣漏接成裸 500（#14 盤點發現）。inspect 也做同樣的映射。
+        raise HTTPException(status_code=500, detail=str(error)) from error
     return _as_entry(entry)
 
 
@@ -291,6 +296,14 @@ def _inspect(roots: tuple[str, ...], payload: InspectInput) -> dict[str, object]
     錯誤才拒絕。錯誤一律結構化（`{message, file, line}`，行號供編輯器就地標示，§3.5.3）——
     這正是 #185 把結構化錯誤延到 #195 的那一塊。
     """
+    # 納管當下會用的 hostname，讓確認畫面在按下納管前就能核對機器身分（AC5，#14）。
+    # CM_HOSTNAME 設成不安全值是部署層的錯，非請求端能修——大聲失敗成帶訊息的 500，
+    # 不是靜默把身分清洗掉，也不是裸 500（不變式 2）。
+    try:
+        hostname = local_hostname()
+    except HostnameInvalid as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
     source = _read_for_inspect(roots, payload.source_path)
     text = _decode_for_inspect(source.content, payload)
     try:
@@ -321,6 +334,7 @@ def _inspect(roots: tuple[str, ...], payload: InspectInput) -> dict[str, object]
         "ambiguities": ambiguities,
         "types": types,
         "permissions": _as_permissions(source.permissions),
+        "hostname": hostname,
     }
 
 
