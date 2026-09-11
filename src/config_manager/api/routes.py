@@ -16,13 +16,22 @@ from pydantic import BaseModel
 
 from config_manager.api.errors import InvalidAuthor
 from config_manager.api.session import USER, Identity, author
-from config_manager.core.errors import ConfigListError, InvalidFormat, NameUnderivable
-from config_manager.core.models import FileEntry
+from config_manager.core.errors import (
+    ConfigListError,
+    InvalidFormat,
+    NameUnderivable,
+    SyntaxParse,
+    UnsupportedFormat,
+)
+from config_manager.core.inference import Ambiguity, find_ambiguous, infer_types
+from config_manager.core.models import FileEntry, Permissions
+from config_manager.core.parse import Parsed, parse
 from config_manager.core.state import State
 from config_manager.io.browse import Entry, Listing, browse
 from config_manager.io.errors import BrowseError, ContentUnreadable, SourceError
 from config_manager.io.onboard import OnboardRequest, onboard
 from config_manager.io.scan import scan
+from config_manager.io.source import Source, read_source
 
 
 class SessionInput(BaseModel):
@@ -43,6 +52,17 @@ class ConfigInput(BaseModel):
     source_path: str
     format: str
     ambiguity_note: str = ""
+
+
+class InspectInput(BaseModel):
+    """偵測請求的主體：候選檔案路徑 + 候選 format（#195）。
+
+    `format` 由呼叫端提供（前端可從副檔名預填為建議、使用者可改），伺服器不自己猜——core
+    沒有格式偵測器，不變式 8 也禁止副檔名成為持續權威。端點用它 parse、列歧義、算摘要。
+    """
+
+    source_path: str
+    format: str
 
 # 前端是另一個容器、另一個 port（設計文件 §3.1：瀏覽器分別連 frontend 與
 # backend），所以頁面對 API 的請求是跨來源的。
@@ -123,6 +143,11 @@ def create_app(
         """檔案系統瀏覽，受白名單限制（設計文件 §3.5.3）。供納管畫面挑檔案用。"""
         return _browse_filesystem(roots, path)
 
+    @app.post("/api/inspect")
+    def inspect_source(payload: InspectInput) -> dict[str, object]:
+        """偵測候選檔案（§3.5.3 追加，#195）。供納管確認畫面顯示偵測結果。"""
+        return _inspect(roots, payload)
+
     return app
 
 
@@ -168,6 +193,87 @@ def _browse_filesystem(roots: tuple[str, ...], path: str) -> dict[str, object]:
         # 白名單外、不是目錄、讀不出來：輸入的路徑值不合法。
         raise HTTPException(status_code=422, detail=str(error)) from error
     return _as_listing(listing)
+
+
+def _inspect(roots: tuple[str, ...], payload: InspectInput) -> dict[str, object]:
+    """偵測候選檔案的邏輯：讀來源（白名單）→ 以呼叫端給的 format 解析 → 列歧義、算摘要。
+
+    format 由呼叫端提供，伺服器不猜（#195）。歧義**不拒絕**、列在回應（yaml 才會有）；語法
+    錯誤才拒絕。錯誤一律結構化（`{message, file, line}`，行號供編輯器就地標示，§3.5.3）——
+    這正是 #185 把結構化錯誤延到 #195 的那一塊。
+    """
+    source = _read_for_inspect(roots, payload.source_path)
+    text = _decode_for_inspect(source.content, payload)
+    parsed = _parse_for_inspect(text, payload)
+
+    types = infer_types(parsed.document)
+    return {
+        "format": payload.format,
+        "field_count": len(types),
+        "ambiguities": [_as_ambiguity(a) for a in find_ambiguous(text, payload.format)],
+        "types": types,
+        "permissions": _as_permissions(source.permissions),
+    }
+
+
+def _read_for_inspect(roots: tuple[str, ...], source_path: str) -> Source:
+    try:
+        return read_source(source_path, roots)
+    except (SourceError, ContentUnreadable) as error:
+        raise HTTPException(
+            status_code=422, detail=_inspect_error(source_path, str(error), None)
+        ) from error
+
+
+def _decode_for_inspect(content: bytes, payload: InspectInput) -> str:
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=_inspect_error(
+                payload.source_path,
+                f"來源不是 UTF-8 文字，無法以 {payload.format} 解析。"
+                f"下一步：確認它是文字檔，或改用 raw 格式（只版控、不解析）",
+                None,
+            ),
+        ) from error
+
+
+def _parse_for_inspect(text: str, payload: InspectInput) -> Parsed:
+    try:
+        return parse(text, payload.format)
+    except SyntaxParse as error:
+        # 語法錯誤直接拒絕，帶行號供編輯器就地標示（§3.5.3）。
+        raise HTTPException(
+            status_code=422, detail=_inspect_error(payload.source_path, str(error), error.line)
+        ) from error
+    except UnsupportedFormat as error:
+        raise HTTPException(
+            status_code=422, detail=_inspect_error(payload.source_path, str(error), None)
+        ) from error
+
+
+def _inspect_error(file: str, message: str, line: int | None) -> dict[str, object]:
+    """結構化錯誤（§3.5.3：檔案、行號、修正建議）。修正建議在 message 的「下一步」。"""
+    return {"message": message, "file": file, "line": line}
+
+
+def _as_ambiguity(ambiguity: Ambiguity) -> dict[str, object]:
+    """一筆歧義：行號、原樣的值、可能的讀法（`readings` 是 tuple → 轉成 list 給 JSON）。"""
+    return {
+        "line": ambiguity.line,
+        "value": ambiguity.value,
+        "readings": list(ambiguity.readings),
+    }
+
+
+def _as_permissions(permissions: Permissions) -> dict[str, str]:
+    return {
+        "owner": permissions.owner,
+        "group": permissions.group,
+        "mode": permissions.mode,
+    }
 
 
 def _as_session(identity: Identity) -> dict[str, str]:

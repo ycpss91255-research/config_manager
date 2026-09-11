@@ -305,3 +305,85 @@ def test_cli_browse_goes_through_the_same_endpoint_as_the_page(api, sources_root
 
     assert result.returncode == 0
     assert "picked.yaml" in result.stdout
+
+
+# ── POST /api/inspect 偵測（#195）──────────────────────────────────────────
+
+
+def test_inspect_returns_format_ambiguities_and_summary(api, sources_root):
+    source = _write_source(sources_root, "detect.yaml", b"enabled: no\nmax_vel: 0.8\n")
+
+    result = _post(api, "/api/inspect", {"source_path": source, "format": "yaml"})
+
+    assert result["format"] == "yaml"
+    assert result["field_count"] == len(result["types"])
+    assert "max_vel" in result["types"]
+    # 「no」是 YAML 的歧義寫法：列出、指名行號與原樣的值（不自動修正）。
+    lines = {a["value"]: a["line"] for a in result["ambiguities"]}
+    assert lines["no"] == 1
+    assert result["ambiguities"][0]["readings"]  # 有給可能的讀法
+    # 原始權限一併帶回（§5.1 一行摘要的第三項）。
+    assert result["permissions"]["mode"]
+
+
+def test_inspect_a_non_yaml_format_has_no_ambiguities(api, sources_root):
+    # find_ambiguous 只有 yaml 會回非空；json/toml/ini/raw 一律空。
+    source = _write_source(sources_root, "detect.json", b'{"a": 1}\n')
+
+    result = _post(api, "/api/inspect", {"source_path": source, "format": "json"})
+
+    assert result["ambiguities"] == []
+
+
+def test_inspect_a_syntax_error_is_a_structured_422_with_a_line(api, sources_root):
+    # 語法錯誤直接拒絕，結構化 422 帶 file 與 line（供編輯器就地標示，§3.5.3）。
+    source = _write_source(sources_root, "broken.yaml", b"a: [1, 2\nb: 3\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/inspect", {"source_path": source, "format": "yaml"})
+
+    assert exc.value.code == _UNPROCESSABLE
+    detail = _detail(exc.value)
+    assert detail["file"] == source
+    assert isinstance(detail["line"], int)
+
+
+def test_inspect_a_source_outside_the_whitelist_is_refused(api, tmp_path):
+    outside = tmp_path / "secret.yaml"
+    outside.write_bytes(b"a: 1\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/inspect", {"source_path": str(outside), "format": "yaml"})
+
+    assert exc.value.code == _UNPROCESSABLE
+    assert "白名單之外" in _detail(exc.value)["message"]
+
+
+def test_inspect_a_non_utf8_source_is_refused(api, sources_root):
+    # 二進位／非 UTF-8 的檔案不是文字，無法以文字格式解析 → 結構化 422（不是 500）。
+    source = _write_source(sources_root, "binary.yaml", b"\xff\xfe\x00 not utf-8\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/inspect", {"source_path": source, "format": "yaml"})
+
+    assert exc.value.code == _UNPROCESSABLE
+    assert "UTF-8" in _detail(exc.value)["message"]
+
+
+def test_inspect_an_unknown_format_is_refused(api, sources_root):
+    source = _write_source(sources_root, "inspect_badfmt.yaml", b"a: 1\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/inspect", {"source_path": source, "format": "notaformat"})
+
+    assert exc.value.code == _UNPROCESSABLE
+
+
+def test_cli_inspect_goes_through_the_same_endpoint_as_the_page(api, sources_root):
+    source = _write_source(sources_root, "cli_inspect.yaml", b"enabled: no\n")
+
+    result = _cli("inspect", "--api", api, "--source", source, "--format", "yaml")
+
+    assert result.returncode == 0
+    assert "format：yaml" in result.stdout
+    assert "no" in result.stdout  # 歧義列出來了

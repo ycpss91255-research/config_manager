@@ -277,5 +277,49 @@ def test_browse_lists_the_entries_marking_directories(answers, capsys):
     assert "a.yaml" in out
 
 
+def test_inspect_posts_the_source_and_shows_the_summary(answers, capsys):
+    called = answers(
+        {
+            "format": "yaml",
+            "field_count": 2,
+            "ambiguities": [{"line": 1, "value": "no", "readings": ["布林", "字串"]}],
+            "types": {"a": "bool", "b": "int"},
+            "permissions": {"owner": "root", "group": "root", "mode": "0644"},
+        }
+    )
+
+    code = main(
+        ["config_manager", "inspect", "--api", "http://amr01:8080",
+         "--source", "/etc/x.yaml", "--format", "yaml"]
+    )
+
+    assert code == 0
+    assert called[0].full_url == "http://amr01:8080/api/inspect"
+    assert called[0].method == "POST"
+    out = capsys.readouterr().out
+    assert "format：yaml" in out
+    assert "no" in out  # 歧義印出來了
+
+
+def test_inspect_relays_a_structured_error_with_its_line(monkeypatch, capsys):
+    # 偵測端點的 detail 是 {message, file, line}——CLI 要挑出訊息與行號，不是印一坨 dict。
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda request, timeout=None: (_ for _ in ()).throw(
+            _http_error(422, {"message": "語法錯誤", "file": "/etc/x.yaml", "line": 3})
+        ),
+    )
+
+    code = main(
+        ["config_manager", "inspect", "--api", "http://x",
+         "--source", "/etc/x.yaml", "--format", "yaml"]
+    )
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "語法錯誤" in err
+    assert "第 3 行" in err
+
+
 def _lines(capsys):
     return [line for line in capsys.readouterr().out.splitlines() if line]
