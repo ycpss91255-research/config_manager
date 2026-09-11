@@ -12,6 +12,7 @@ from config_manager.core.errors import (
     DuplicatePrefix,
     InvalidPrefix,
     RootsDumpMismatch,
+    RootsMalformed,
     RootsUnknownField,
 )
 from config_manager.core.models import AllowedRoot, AllowedRoots
@@ -104,6 +105,20 @@ warnings = "injected"
     assert "第 5 行" in message
 
 
+def test_roots_as_a_scalar_is_rejected_with_a_named_exception():
+    # `roots = 5` 是合法 TOML 但不是 [[roots]] 形狀。先前會在 pydantic 驗型別之前迭代它、
+    # 丟 raw TypeError 逃過具名錯誤契約；現在以 RootsMalformed 在 load 一開始就擋下。
+    with pytest.raises(RootsMalformed):
+        load("roots_version = 1\nroots = 5\n")
+
+
+def test_roots_as_an_inline_array_is_rejected_with_a_named_exception():
+    # inline 陣列（`roots = [{...}]`）load 接受得了、dump 卻只吃 [[roots]] 的 AoT——
+    # 形狀不對稱會讓第一次從介面新增就崩。以 RootsMalformed 在 load 擋下，兩邊一致。
+    with pytest.raises(RootsMalformed):
+        load('roots_version = 1\nroots = [{prefix = "/a"}]\n')
+
+
 def test_dumping_an_unchanged_file_is_byte_for_byte_identical():
     # 設定檔本身也要原樣保留：未改動寫回，逐位元組相同。
     text = """\
@@ -145,6 +160,9 @@ added_at = "2026-09-11T08:00:00Z"
     # 既有根連同它的行內註解逐字保留，且排在新根之前。
     assert "# 主要 config 目錄" in result
     assert result.index("/opt/robot/config") < result.index("/etc/robot")
+    # 頂層註解與既有根的引號樣式、對齊空白也逐字保留（不只順序）。
+    assert "# 白名單根目錄（§7.9）" in result
+    assert 'prefix   = "/opt/robot/config"' in result
     # 新根出現且帶 added_by／added_at。
     assert "Bob" in result
     assert "2026-09-12T09:00:00Z" in result

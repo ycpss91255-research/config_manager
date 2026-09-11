@@ -10,6 +10,7 @@ ParseError、pydantic 的 ValidationError、core 的 AllowedRootsError），不�
 """
 
 import os
+from subprocess import CalledProcessError
 
 from pydantic import ValidationError
 from tomlkit.exceptions import ParseError
@@ -19,11 +20,12 @@ from config_manager.core.errors import AllowedRootsError
 from config_manager.core.models import AllowedRoot, AllowedRoots
 from config_manager.io.atomic import replace_atomically
 from config_manager.io.errors import (
+    AllowedRootLeftBehind,
     AllowedRootsMissing,
     AllowedRootsUnparsable,
     AllowedRootUnreachable,
 )
-from config_manager.io.git import commit, stage
+from config_manager.io.git import commit, stage, unstage
 
 ALLOWED_ROOTS_NAME = "allowed-roots.toml"
 
@@ -86,8 +88,21 @@ def add_allowed_root(repo: str, prefix: str, added_by: str, added_at: str) -> No
     )
 
     replace_atomically(path, dump(current, original).encode("utf-8"))
-    stage(repo, ALLOWED_ROOTS_NAME)
-    commit(repo, f"白名單納入根目錄 {resolved}", added_by)
+    try:
+        stage(repo, ALLOWED_ROOTS_NAME)
+        commit(repo, f"白名單納入根目錄 {resolved}", added_by)
+    except CalledProcessError as failure:
+        # 白名單一被寫入該根就立即生效（每次請求從檔讀）；commit 沒成，就把設定檔還原到
+        # 新增前，白名單不被靜默擴張而沒有 git 稽核（比照 onboard #173）。
+        try:
+            replace_atomically(path, original.encode("utf-8"))
+            unstage(repo, ALLOWED_ROOTS_NAME)
+        except (OSError, CalledProcessError) as cleanup:
+            raise AllowedRootLeftBehind(
+                f"新增白名單根 {resolved} 失敗後，回滾 {path} 也失敗了（{cleanup}）；"
+                f"該根可能已生效卻未提交。下一步：手動檢視並還原 {path}"
+            ) from failure
+        raise
 
 
 def _read(path: str) -> str:

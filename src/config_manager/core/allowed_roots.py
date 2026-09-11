@@ -14,6 +14,7 @@ from config_manager.core.errors import (
     DuplicatePrefix,
     InvalidPrefix,
     RootsDumpMismatch,
+    RootsMalformed,
     RootsUnknownField,
 )
 from config_manager.core.models import AllowedRoot, AllowedRoots
@@ -28,10 +29,25 @@ _ROOT_KEYS = {"prefix", "added_by", "added_at"}
 def load(text: str) -> AllowedRoots:
     """把白名單設定檔的原始文字解析為已驗證的資料模型。"""
     doc = tomlkit.parse(text)
+    _check_roots_shape(doc)
     _check_unknown_fields(doc, text)
     allowed = AllowedRoots.model_validate(doc.unwrap())
     _check_integrity(allowed)
     return allowed
+
+
+def _check_roots_shape(doc: "tomlkit.TOMLDocument") -> None:
+    """`roots` 若存在，必須是 `[[roots]]` 表格串列（AoT）。
+
+    在迭代 `roots`（`_check_unknown_fields`）與轉模型之前先擋下純量、inline 陣列等形狀：
+    那些會讓迭代丟出 raw TypeError／AttributeError、逃過具名錯誤契約，dump 也只吃 AoT。
+    """
+    roots = doc.get("roots")
+    if roots is not None and not isinstance(roots, items.AoT):
+        raise RootsMalformed(
+            "白名單設定檔 allowed-roots.toml 的 roots 要以 [[roots]] 表格串列書寫。"
+            "下一步：把每個根寫成一段 [[roots]]，不要用 inline 陣列或其他型別"
+        )
 
 
 def dump(allowed: AllowedRoots, original: str) -> str:

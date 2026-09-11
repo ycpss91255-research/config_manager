@@ -79,10 +79,30 @@ seed_config_list() {
   printf 'entrypoint: 已在 %s 種下一份空的 config 清單檔\n' "${list}"
 }
 
+check_allowed_roots_seedable() {
+  # 種檔前先驗每個根不含會破壞 TOML basic string 的字元（" 或反斜線）。種檔是手刻 printf，
+  # 不像 API 路徑走過 tomlkit 的跳脫——含這些字元的根會產出無法解析的 allowed-roots.toml，
+  # 讓 preflight 以「白名單設定檔無法解析」死掉、把矛頭指向這份機器自動生成的檔，而真正該
+  # 修的是 CM_ALLOWED_ROOTS（§0.4 的指錯方向）。在這裡大聲失敗、指名是哪個根與哪個變數。
+  local root trimmed
+  while IFS= read -r root; do
+    trimmed="${root#"${root%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    [[ -n "${trimmed}" ]] || continue
+    case "${trimmed}" in
+      *'"'* | *'\'*)
+        die "CM_ALLOWED_ROOTS 的根「${trimmed}」含 \" 或反斜線，寫不成合法的白名單設定檔。" \
+          "下一步：從 CM_ALLOWED_ROOTS 移除或修正這個路徑——config 目錄的路徑不該含這些字元"
+        ;;
+    esac
+  done < <(printf '%s\n' "${CM_ALLOWED_ROOTS:-}" | tr ',' '\n')
+}
+
 _emit_allowed_roots() {
   # 把 CM_ALLOWED_ROOTS 種成一份白名單設定檔（§7.9, #202）：逗號分隔、去前後空白，
   # 與 check_allowed_roots_visible／api.cli._allowed_roots 同一種切法。每個根記下部署來源
   # 與種下的時間；CM_ALLOWED_ROOTS 空的話就一個根都不放（什麼都不放行，落向安全，不變式 4）。
+  # 前綴的特殊字元已由 check_allowed_roots_seedable 先擋下，這裡只負責輸出。
   local now root trimmed
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'roots_version = 1\n'
@@ -103,6 +123,8 @@ seed_allowed_roots() {
   # 以檔為準（#202）：已經有一份就不動它——之後的增減都經由介面寫這份檔。升級既有部署時
   # 這份檔還不存在，所以這裡是 seed-if-missing、每次啟動都跑，而不是只在首次 git init 時。
   [[ -f "${file}" ]] && return 0
+
+  check_allowed_roots_seedable
 
   if ! output="$({ _emit_allowed_roots >"${file}"; } 2>&1)"; then
     die "寫不出初始的白名單設定檔 ${file}：" \

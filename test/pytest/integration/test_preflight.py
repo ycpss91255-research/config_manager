@@ -10,6 +10,7 @@ import pytest
 
 from config_manager.io import preflight as preflight_module
 from config_manager.io.errors import (
+    AllowedRootsMissing,
     AllowedRootsUnparsable,
     ConfigListMissing,
     ConfigListUnparsable,
@@ -158,6 +159,17 @@ def test_undeployed_target_is_not_a_preflight_failure(tmp_path):
     _write_roots(tmp_path, _MINIMAL_ROOTS)
 
     preflight(str(tmp_path))
+
+
+def test_missing_allowed_roots_raises_named_exception(tmp_path):
+    # 清單檔在、白名單設定檔不在。種子後不該發生（entrypoint 已種），所以是有人刪了它或
+    # 掛錯路徑——啟動時具名失敗、指名該路徑，而不是等第一次瀏覽才在請求裡爆。
+    _write_list(tmp_path, _MINIMAL_LIST)
+
+    with pytest.raises(AllowedRootsMissing) as exc:
+        preflight(str(tmp_path))
+
+    assert "allowed-roots.toml" in str(exc.value)
 
 
 def test_unparsable_allowed_roots_raises_named_exception(tmp_path):

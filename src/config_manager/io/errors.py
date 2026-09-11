@@ -150,6 +150,16 @@ class HostnameInvalid(Exception):
     """
 
 
+class AllowedRootLeftBehind(Exception):
+    """白名單新增中途失敗後，回滾（把設定檔還原到新增前）自己也失敗了。
+
+    與 `OnboardLeftBehind`／`TemporaryLeftBehind` 是同一種形狀（#173）：`add_allowed_root`
+    先原子寫入設定檔、再 stage＋commit。白名單的判定讀的是**工作區檔案**（每次請求從檔讀），
+    所以檔案一被寫入該根就立即生效——若隨後 commit 失敗，白名單已被擴張卻沒有 git 稽核，
+    故要回滾。這一則是回滾（重寫回原內容）也失敗的場景：**同時說出**原本的失敗與清理的失敗，
+    `__cause__` 指向原本的失敗。訊息指名殘留了什麼。"""
+
+
 class BrowseError(Exception):
     """檔案系統瀏覽失敗的基底（GET /api/browse，#185）。
 

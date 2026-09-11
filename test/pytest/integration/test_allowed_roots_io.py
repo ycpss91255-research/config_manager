@@ -11,12 +11,14 @@ import subprocess
 import pytest
 
 from config_manager.core.errors import InvalidPrefix
+from config_manager.io import allowed_roots as allowed_roots_module
 from config_manager.io.allowed_roots import (
     add_allowed_root,
     read_allowed_roots,
     root_prefixes,
 )
 from config_manager.io.errors import (
+    AllowedRootLeftBehind,
     AllowedRootUnreachable,
     AllowedRootsMissing,
     AllowedRootsUnparsable,
@@ -116,6 +118,49 @@ def test_adding_a_root_commits_the_change_leaving_the_tree_clean(tmp_path):
     # 追加自己提交了：工作區乾淨，最新一筆 commit 由新增者署名。
     assert _git(repo, "status", "--porcelain") == ""
     assert "劉宇盈" in _git(repo, "log", "-1", "--format=%an <%ae>")
+
+
+def test_a_failed_commit_rolls_the_file_back_so_the_whitelist_is_not_silently_widened(
+    tmp_path, monkeypatch
+):
+    # 白名單每次請求從檔讀，所以檔案一被寫入該根就生效。commit 沒成時要把設定檔還原到
+    # 新增前，否則白名單被靜默擴張卻沒有 git 稽核（比照 onboard #173）。
+    repo = _repo(tmp_path)
+    newdir = tmp_path / "etc-robot"
+    newdir.mkdir()
+
+    def boom(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, ["git", "commit"])
+
+    monkeypatch.setattr(allowed_roots_module, "commit", boom)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        add_allowed_root(str(repo), str(newdir), AUTHOR, "2026-09-12T09:00:00Z")
+
+    # 回滾了：該根不在白名單裡，工作區也乾淨（沒有留下未提交的擴張）。
+    assert str(newdir) not in [root.prefix for root in read_allowed_roots(str(repo)).roots]
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_when_rollback_itself_fails_it_raises_left_behind_naming_the_file(
+    tmp_path, monkeypatch
+):
+    # 回滾（還原設定檔）也失敗的場景：同時說出原本的失敗與清理的失敗，指名殘留了什麼
+    # （比照 onboard 的 OnboardLeftBehind，#173）。
+    repo = _repo(tmp_path)
+    newdir = tmp_path / "etc-robot"
+    newdir.mkdir()
+
+    def boom(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, ["git"])
+
+    monkeypatch.setattr(allowed_roots_module, "commit", boom)
+    monkeypatch.setattr(allowed_roots_module, "unstage", boom)  # 回滾的清理也失敗
+
+    with pytest.raises(AllowedRootLeftBehind) as exc:
+        add_allowed_root(str(repo), str(newdir), AUTHOR, "2026-09-12T09:00:00Z")
+
+    assert "allowed-roots.toml" in str(exc.value)
 
 
 def test_a_relative_prefix_is_refused(tmp_path):

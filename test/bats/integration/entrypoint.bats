@@ -121,6 +121,20 @@ sys.exit(0 if [r.prefix for r in allowed.roots] == ['${WORK}/targets'] else 1)
   [ "${status}" -eq 0 ]
 }
 
+@test "CM_ALLOWED_ROOTS 的根含破壞 TOML 的字元時，種子在寫檔前就失敗並指名該變數（#202）" {
+  # 種檔是手刻 printf、不像 API 走 tomlkit 跳脫，含 " 或反斜線的根會產出無法解析的檔，
+  # 讓 preflight 以「檔案壞了」死掉、指錯方向。改在種檔前擋下、指向真正該修的 CM_ALLOWED_ROOTS。
+  # 用一個名字真的含引號的目錄（先過 #146 的可見性檢查），才驗得到種子這道守門。
+  local baddir="${WORK}/has\"quote"
+  mkdir -p "${WORK}/repo" "${baddir}"
+
+  CM_CONFIG_REPO="${WORK}/repo" CM_ALLOWED_ROOTS="${baddir}" run "${ENTRYPOINT}" true
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"CM_ALLOWED_ROOTS"* ]]
+  # 沒有留下半種的檔——種子在寫出前就擋下。
+  [ ! -f "${WORK}/repo/allowed-roots.toml" ]
+}
+
 @test "已存在的白名單設定檔不被種子覆蓋（以檔為準，#202）" {
   # 以檔為準：一旦有了這份檔，重啟不因 CM_ALLOWED_ROOTS 改變而動它——介面加的根不該
   # 被下一次啟動的種子抹掉。CM_ALLOWED_ROOTS 指向一個真實可見的目錄（否則會先卡在

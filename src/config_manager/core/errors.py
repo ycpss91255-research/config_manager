@@ -76,6 +76,16 @@ class RootsUnknownField(AllowedRootsError):
     """白名單設定檔含無法辨識的欄位。格式錯誤須大聲失敗、指名行號，防止由設定檔注入。"""
 
 
+class RootsMalformed(AllowedRootsError):
+    """白名單設定檔的 `roots` 不是 `[[roots]]` 表格串列：是純量、inline 陣列，或其他型別。
+
+    `roots = 5`、`roots = "x"`、`roots = [{{prefix="/a"}}]` 都是**合法 TOML**，但不是本檔要的
+    形狀。先前 `_check_unknown_fields` 會在 pydantic 驗型別之前就迭代它、丟出 raw
+    TypeError／AttributeError，逃過「結構驗證交給 pydantic、讀取層認得 load 的失敗詞彙」
+    的契約（讓 bug 冒成 500 或未攔的 traceback）；dump 也只吃 AoT。故在 load 一開始就以
+    具名例外擋下這種形狀，訊息指引改用 `[[roots]]` 書寫。"""
+
+
 class RootsDumpMismatch(AllowedRootsError):
     """dump 拿到的原樣資訊無法以 prefix 對回白名單根：有一筆缺 prefix，或兩筆共用 prefix。
 

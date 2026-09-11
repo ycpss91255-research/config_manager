@@ -22,6 +22,7 @@ import urllib.request
 import pytest
 
 import config_manager
+from config_manager.core.allowed_roots import load as load_allowed_roots
 
 _TIMEOUT = 5
 # 422：輸入的形狀對、值不合法。端點刻意不用 400——那會把「你送錯格式」與
@@ -422,6 +423,35 @@ def test_a_developer_can_add_a_root_to_the_whitelist(api, tmp_path):
     assert str(new_root) in result["prefixes"]
 
 
+def test_adding_a_root_records_the_session_identity_and_a_server_timestamp(api, repo, tmp_path):
+    # 是誰加的取自 session 身分（不由請求自報，否則紀錄可造假）、何時加的由伺服器蓋時間。
+    # 端點只回前綴清單，who／when 記在設定檔裡，故讀回檔案驗證（用 core.load，不自己解析）。
+    _post(api, "/api/session", {"name": "林工程", "email": "lin@example.com", "role": "developer"})
+    recorded = tmp_path / "recorded_root"
+    recorded.mkdir()
+
+    _post(api, "/api/allowed-roots", {"prefix": str(recorded)})
+
+    text = pathlib.Path(repo, "allowed-roots.toml").read_text(encoding="utf-8")
+    added = next(r for r in load_allowed_roots(text).roots if r.prefix == str(recorded))
+    assert added.added_by == "林工程 <lin@example.com>"
+    assert added.added_at  # 伺服器蓋了時間戳，非空
+
+
+def test_adding_a_root_already_in_the_whitelist_is_a_conflict(api, tmp_path):
+    # 重複新增（存的是 realpath，尾斜線／symlink 都會解析到同一個）→ 與現狀衝突 409，
+    # 不是裸 500。core 的訊息已可行動（指出是哪兩筆）。
+    _set_session(api)  # developer
+    dup = tmp_path / "dup_root"
+    dup.mkdir()
+    _post(api, "/api/allowed-roots", {"prefix": str(dup)})  # 第一次成功
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/allowed-roots", {"prefix": str(dup)})  # 第二次衝突
+
+    assert exc.value.code == _CONFLICT
+
+
 def test_a_normal_user_cannot_add_a_root(api, tmp_path):
     # 白名單維護僅開發者可用（§7.9、W2）：一般使用者被拒，角色不夠是 403。
     _post(api, "/api/session", {"name": "王小美", "email": "mei@example.com", "role": "user"})
@@ -463,3 +493,5 @@ def test_adding_a_root_that_is_not_there_is_a_structured_422(api, tmp_path):
         _post(api, "/api/allowed-roots", {"prefix": str(ghost)})
 
     assert exc.value.code == _UNPROCESSABLE
+    # 只斷言狀態碼分不出「到不了」與別種 422（本檔自訂標準）——斷言被拒原因。
+    assert "到不了" in _detail(exc.value)

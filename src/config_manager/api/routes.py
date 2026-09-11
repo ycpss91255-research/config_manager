@@ -20,6 +20,7 @@ from config_manager.api.errors import InvalidAuthor
 from config_manager.api.session import DEVELOPER, USER, Identity, author
 from config_manager.core.errors import (
     ConfigListError,
+    DuplicatePrefix,
     InvalidFormat,
     InvalidPrefix,
     NameUnderivable,
@@ -232,6 +233,10 @@ def _add_allowed_root(
     except (InvalidPrefix, AllowedRootUnreachable) as error:
         # 送進來的前綴不合法（相對／含 ..）或指向到不了的目錄：輸入的值有問題 → 422。
         raise HTTPException(status_code=422, detail=str(error)) from error
+    except DuplicatePrefix as error:
+        # 白名單已含這個前綴（存的是 realpath，尾斜線／symlink 都會解析到同一個）：與現狀
+        # 衝突 → 409（同 _onboard_config 對重複條目的處置）。core 的訊息已指出是哪兩筆。
+        raise HTTPException(status_code=409, detail=str(error)) from error
     return {"prefixes": list(root_prefixes(repo))}
 
 
