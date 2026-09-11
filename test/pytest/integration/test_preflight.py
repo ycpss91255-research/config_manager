@@ -10,6 +10,7 @@ import pytest
 
 from config_manager.io import preflight as preflight_module
 from config_manager.io.errors import (
+    AllowedRootsUnparsable,
     ConfigListMissing,
     ConfigListUnparsable,
     SourceMissing,
@@ -54,6 +55,14 @@ def _write_source(repo, relative):
     path.write_text("max_vel_x: 0.8\n", encoding="utf-8")
 
 
+# entrypoint 種下的最小白名單設定檔（§7.9, #202）：preflight 一併驗它可解析。
+_MINIMAL_ROOTS = "roots_version = 1\n"
+
+
+def _write_roots(repo, text):
+    (repo / "allowed-roots.toml").write_text(text, encoding="utf-8")
+
+
 def test_missing_config_list_raises_named_exception_naming_the_path(tmp_path):
     # repo 在，清單檔不在。這不是首次啟動——首次啟動時 entrypoint 已經種下它了
     # ——所以是有人刪了它或掛錯路徑（不變式 2：大聲失敗）。
@@ -76,6 +85,7 @@ def test_unparsable_config_list_raises_named_exception_with_the_parse_error(tmp_
 def test_minimal_config_list_with_no_entries_passes(tmp_path):
     # 什麼都還沒納管是合法狀態，不是故障——entrypoint 種下的就是這份檔案。
     _write_list(tmp_path, _MINIMAL_LIST)
+    _write_roots(tmp_path, _MINIMAL_ROOTS)
 
     preflight(str(tmp_path))
 
@@ -145,5 +155,18 @@ def test_undeployed_target_is_not_a_preflight_failure(tmp_path):
     # 不是故障；因為目標不存在就拒絕啟動，等於讓系統無法完成第一次 apply。
     _write_list(tmp_path, _ONE_ENTRY)
     _write_source(tmp_path, "files/amr01/nav2_params.yaml")
+    _write_roots(tmp_path, _MINIMAL_ROOTS)
 
     preflight(str(tmp_path))
+
+
+def test_unparsable_allowed_roots_raises_named_exception(tmp_path):
+    # 白名單設定檔可解析也是啟動前置檢查的一環（§7.9, #202）：清單檔沒問題，
+    # 但白名單設定檔壞掉時仍要在啟動時具名失敗，而不是等第一次瀏覽才爆。
+    _write_list(tmp_path, _MINIMAL_LIST)
+    _write_roots(tmp_path, "roots_version = [unclosed\n")
+
+    with pytest.raises(AllowedRootsUnparsable) as exc:
+        preflight(str(tmp_path))
+
+    assert "allowed-roots.toml" in str(exc.value)
