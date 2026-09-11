@@ -8,6 +8,7 @@ app 由 create_app(repo) 產生而非模組層的全域物件：config-repo 的�
 不同的 repo（ADR-00000011 的同一個理由：輸入從參數進來）。
 """
 
+import json
 from collections.abc import Iterable
 
 from fastapi import FastAPI, HTTPException
@@ -20,8 +21,8 @@ from config_manager.core.errors import (
     ConfigListError,
     InvalidFormat,
     NameUnderivable,
+    ParseError,
     SyntaxParse,
-    UnsupportedFormat,
 )
 from config_manager.core.inference import Ambiguity, find_ambiguous, infer_types
 from config_manager.core.models import FileEntry, Permissions
@@ -204,13 +205,32 @@ def _inspect(roots: tuple[str, ...], payload: InspectInput) -> dict[str, object]
     """
     source = _read_for_inspect(roots, payload.source_path)
     text = _decode_for_inspect(source.content, payload)
-    parsed = _parse_for_inspect(text, payload)
+    try:
+        parsed = _parse_for_inspect(text, payload)
+        # json 的 Parsed.document 是**原文字串**（為了逐位元組 round-trip，ADR-00000029），
+        # 型別推斷要的是資料結構，所以 json 這裡再 load 一次拿結構；其餘格式（yaml／toml／
+        # ini）的 document 本就是結構，raw 沒有結構（不解析）。少了這一步，json 一律回
+        # field_count=0／types={}，在確認畫面上是一個靜默的假訊號（#195 資安審查）。
+        data = json.loads(text) if parsed.fmt == "json" else parsed.document
+        types = infer_types(data)
+        ambiguities = [_as_ambiguity(a) for a in find_ambiguous(text, payload.format)]
+    except RecursionError as error:
+        # 刻意構造的深層巢狀會讓 parse／infer_types 遞迴爆掉。擋成結構化 422，不讓它變成
+        # 一個裸 500——這些偵測工作先前在 try 之外（#195 資安審查）。
+        raise HTTPException(
+            status_code=422,
+            detail=_inspect_error(
+                payload.source_path,
+                "檔案巢狀太深，無法分析。下一步：確認它不是刻意構造的深層巢狀，"
+                "或改用 raw 格式（只版控、不解析）",
+                None,
+            ),
+        ) from error
 
-    types = infer_types(parsed.document)
     return {
         "format": payload.format,
         "field_count": len(types),
-        "ambiguities": [_as_ambiguity(a) for a in find_ambiguous(text, payload.format)],
+        "ambiguities": ambiguities,
         "types": types,
         "permissions": _as_permissions(source.permissions),
     }
@@ -248,7 +268,9 @@ def _parse_for_inspect(text: str, payload: InspectInput) -> Parsed:
         raise HTTPException(
             status_code=422, detail=_inspect_error(payload.source_path, str(error), error.line)
         ) from error
-    except UnsupportedFormat as error:
+    except ParseError as error:
+        # format 非允許值（UnsupportedFormat）或其他解析錯誤——接基底 ParseError，不綁死在
+        # 個別葉子型別，才不會有哪一種解析錯誤漏成 500（#195 資安審查）。
         raise HTTPException(
             status_code=422, detail=_inspect_error(payload.source_path, str(error), None)
         ) from error

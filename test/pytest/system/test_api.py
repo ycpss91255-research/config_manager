@@ -326,13 +326,30 @@ def test_inspect_returns_format_ambiguities_and_summary(api, sources_root):
     assert result["permissions"]["mode"]
 
 
-def test_inspect_a_non_yaml_format_has_no_ambiguities(api, sources_root):
-    # find_ambiguous 只有 yaml 會回非空；json/toml/ini/raw 一律空。
-    source = _write_source(sources_root, "detect.json", b'{"a": 1}\n')
+def test_inspect_json_has_no_ambiguities_but_real_field_types(api, sources_root):
+    # find_ambiguous 只有 yaml 會回非空；json 一律空。但型別／欄位數仍要是真的——json 的
+    # Parsed.document 是原文（round-trip），若直接餵 infer_types 會一律回 0（#195 資安審查）。
+    source = _write_source(sources_root, "detect.json", b'{"a": 1, "b": "x"}\n')
 
     result = _post(api, "/api/inspect", {"source_path": source, "format": "json"})
 
     assert result["ambiguities"] == []
+    assert result["types"]["a"] == "int"
+    assert result["types"]["b"] == "string"
+    # 欄位數是真的（json 不再一律回 0）：與 types 一致，而 types 至少有 a、b 兩個欄位。
+    assert result["field_count"] == len(result["types"])
+    assert {"a", "b"} <= set(result["types"])
+
+
+def test_inspect_a_pathologically_nested_file_is_refused_not_500(api, sources_root):
+    # 刻意的深層巢狀會讓 parse／infer_types 遞迴爆掉 → 結構化 422，不是裸 500（#195 資安審查）。
+    depth = 5000
+    source = _write_source(sources_root, "deep.json", b"[" * depth + b"]" * depth)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/inspect", {"source_path": source, "format": "json"})
+
+    assert exc.value.code == _UNPROCESSABLE
 
 
 def test_inspect_a_syntax_error_is_a_structured_422_with_a_line(api, sources_root):
