@@ -125,6 +125,11 @@ def _parser() -> argparse.ArgumentParser:
     browsing = subcommands.add_parser("browse", help="列出白名單內某目錄的內容")
     browsing.add_argument("--api", default=_DEFAULT_API, help=f"預設 {_DEFAULT_API}")
     browsing.add_argument("--path", required=True, help="要列出的目錄（受白名單限制）")
+
+    inspecting = subcommands.add_parser("inspect", help="偵測候選檔案：格式、歧義、摘要")
+    inspecting.add_argument("--api", default=_DEFAULT_API, help=f"預設 {_DEFAULT_API}")
+    inspecting.add_argument("--source", required=True, help="要偵測的來源檔案路徑")
+    inspecting.add_argument("--format", required=True, help=f"候選 format（{_formats}）")
     return parser
 
 
@@ -138,6 +143,8 @@ def main(argv: list[str]) -> int:
         return _import(args.api, args.source, args.format, args.note)
     if args.command == "browse":
         return _browse(args.api, args.path)
+    if args.command == "inspect":
+        return _inspect(args.api, args.source, args.format)
     return _list(args.api)
 
 
@@ -233,12 +240,63 @@ def _browse(api: str, path: str) -> int:
     return 0
 
 
-def _http_detail(error: urllib.error.HTTPError) -> str:
-    """把 HTTPError 的 body 解出 detail 字串；解不出來就回原始狀態行。"""
+def _inspect(api: str, source: str, fmt: str) -> int:
+    """偵測候選檔案：POST 與畫面相同的 /api/inspect（ADR-00000009）。
+
+    format 由呼叫端明寫（`--format`），與端點「收候選 format、不自己猜」一致；印出格式、
+    欄位數、原始權限與歧義清單，供人先看過再決定要不要納管。
+    """
+    payload = {"source_path": source, "format": fmt}
+    request = urllib.request.Request(
+        f"{api}/api/inspect",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
     try:
-        return str(json.loads(error.read().decode("utf-8"))["detail"])
+        with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        print(
+            f"config_manager: 偵測失敗（{_http_detail(error)}）。下一步：依上面的原因修正後重試",
+            file=sys.stderr,
+        )
+        return 1
+    except (OSError, ValueError) as error:
+        print(
+            f"config_manager: 讀不到 {api}/api/inspect（{error}）。"
+            f"下一步：確認 backend 已啟動，或以 --api 指定它的位址",
+            file=sys.stderr,
+        )
+        return 1
+
+    perms = result["permissions"]
+    print(f"format：{result['format']}　欄位數：{result['field_count']}")
+    print(f"原始權限：{perms['owner']}:{perms['group']} {perms['mode']}")
+    if result["ambiguities"]:
+        print("歧義（確認後以 import --note 帶進去）：")
+        for item in result["ambiguities"]:
+            print(f"  第 {item['line']} 行「{item['value']}」：{' / '.join(item['readings'])}")
+    else:
+        print("沒有歧義。")
+    return 0
+
+
+def _http_detail(error: urllib.error.HTTPError) -> str:
+    """把 HTTPError 的 body 解出可讀訊息；解不出來就回原始狀態行。
+
+    偵測端點的 detail 是結構化物件 `{message, file, line}`（#195），其餘端點是字串——兩種
+    都挑出人看的那一段。
+    """
+    try:
+        detail = json.loads(error.read().decode("utf-8"))["detail"]
     except (OSError, ValueError, KeyError):
         return f"HTTP {error.code}"
+    if isinstance(detail, dict):
+        message = detail.get("message", detail)
+        line = detail.get("line")
+        return f"{message}（第 {line} 行）" if line else str(message)
+    return str(detail)
 
 
 def _serve(host: str, port: int) -> int:
