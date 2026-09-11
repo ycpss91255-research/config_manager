@@ -33,6 +33,7 @@ import http.server
 import json
 import pathlib
 import socket
+import subprocess
 import threading
 import time
 import urllib.error
@@ -97,11 +98,37 @@ def site():
 
 
 @pytest.fixture
-def repo(tmp_path):
-    """一份空的 config-repo。條目由 `listing` 夾具逐則寫進去。"""
+def browse_root(tmp_path):
+    """白名單根（目標檔案系統的一段），與 config-repo 分開。browse 測試在這底下建目錄樹。"""
+    root = tmp_path / "targets"
+    root.mkdir()
+    return root
+
+
+@pytest.fixture
+def repo(tmp_path, browse_root):
+    """一份 config-repo（git repo），白名單種了 browse_root。條目由 `listing` 逐則寫進去。
+
+    比照系統測試與 entrypoint：白名單以 `<repo>/allowed-roots.toml` 為準（#202），就地起
+    服務沒有 entrypoint 種它，故這裡種好；git init＋提交，讓 browse 的「加入白名單」
+    （會 commit）與任何寫入操作有 HEAD 可接。
+    """
     (tmp_path / "files").mkdir()
     (tmp_path / "deployed").mkdir()
     (tmp_path / "config-list.toml").write_text(_LIST_HEADER, encoding="utf-8")
+    (tmp_path / "allowed-roots.toml").write_text(
+        "roots_version = 1\n\n[[roots]]\n"
+        f'prefix = "{browse_root}"\n'
+        'added_by = "seed"\nadded_at = "2026-01-01T00:00:00Z"\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "-c", "user.name=seed", "-c", "user.email=s@e.x",
+         "commit", "-q", "-m", "chore: 種子"],
+        check=True,
+    )
     return tmp_path
 
 
@@ -424,7 +451,190 @@ def test_the_header_says_who_is_looking_and_in_which_role(open_page, api):
     assert page.inner_text("[data-testid='current-role']") == f"{_NAME}・一般使用者"
 
 
+# ── W7 檔案瀏覽（#13）────────────────────────────────────────────────────────
+
+
+def test_opening_the_browser_lists_the_whitelist_roots(open_page, browse_root):
+    page = _open_browser(open_page())
+
+    # 根清單由 GET /api/allowed-roots 非同步填入——等它出現再讀，不然讀到空的。
+    page.wait_for_selector("[data-testid^='browse-root-']")
+    roots = page.eval_on_selector_all(
+        "[data-testid='browse-roots'] [data-testid^='browse-root-']",
+        "ns => ns.map(n => n.dataset.path)",
+    )
+    assert str(browse_root) in roots
+
+
+def test_picking_a_root_lists_its_directory_contents(open_page, browse_root):
+    (browse_root / "params").mkdir()
+    (browse_root / "nav.yaml").write_text("a: 1\n", encoding="utf-8")
+    page = _open_browser(open_page())
+
+    page.click(f"[data-testid='browse-root-{browse_root}']")
+    page.wait_for_selector("[data-testid='browse-list']")
+
+    listed = _browse_entries(page)
+    assert listed == {"params": "dir", "nav.yaml": "file"}  # 依名字排序、種類正確
+
+
+def test_clicking_a_folder_descends_and_updates_the_breadcrumb(open_page, browse_root):
+    (browse_root / "params").mkdir()
+    (browse_root / "params" / "deep.yaml").write_text("d: 1\n", encoding="utf-8")
+    page = _open_browser(open_page())
+    page.click(f"[data-testid='browse-root-{browse_root}']")
+    page.wait_for_selector("[data-testid='browse-entry-params']")
+
+    page.click("[data-testid='browse-entry-params']")
+    page.wait_for_selector("[data-testid='browse-entry-deep.yaml']")
+
+    # 下鑽到 params 的內容，麵包屑多了 params 這一段。
+    assert _browse_entries(page) == {"deep.yaml": "file"}
+    segments = page.eval_on_selector_all(
+        "[data-testid='breadcrumb'] [data-path]", "ns => ns.map(n => n.dataset.path)"
+    )
+    assert str(browse_root / "params") in segments
+
+
+def test_clicking_a_breadcrumb_segment_goes_back_up(open_page, browse_root):
+    (browse_root / "params").mkdir()
+    (browse_root / "params" / "deep.yaml").write_text("d: 1\n", encoding="utf-8")
+    (browse_root / "nav.yaml").write_text("a: 1\n", encoding="utf-8")
+    page = _open_browser(open_page())
+    page.click(f"[data-testid='browse-root-{browse_root}']")
+    page.wait_for_selector("[data-testid='browse-entry-params']")
+    page.click("[data-testid='browse-entry-params']")
+    page.wait_for_selector("[data-testid='browse-entry-deep.yaml']")
+
+    # 點麵包屑上的根那一段 → 回到根的內容。
+    page.click(f"[data-testid='breadcrumb'] [data-path='{browse_root}']")
+    page.wait_for_selector("[data-testid='browse-entry-nav.yaml']")
+
+    assert _browse_entries(page) == {"params": "dir", "nav.yaml": "file"}
+
+
+def test_a_manual_absolute_path_browses_that_directory(open_page, browse_root):
+    (browse_root / "params").mkdir()
+    (browse_root / "params" / "deep.yaml").write_text("d: 1\n", encoding="utf-8")
+    page = _open_browser(open_page())
+
+    page.fill("[data-testid='browse-path-input']", str(browse_root / "params"))
+    page.click("text=前往")
+    page.wait_for_selector("[data-testid='browse-entry-deep.yaml']")
+
+    assert _browse_entries(page) == {"deep.yaml": "file"}
+
+
+def test_clicking_a_file_selects_it(open_page, browse_root):
+    (browse_root / "nav.yaml").write_text("a: 1\n", encoding="utf-8")
+    page = _open_browser(open_page())
+    page.click(f"[data-testid='browse-root-{browse_root}']")
+    page.wait_for_selector("[data-testid='browse-entry-nav.yaml']")
+
+    page.click("[data-testid='browse-entry-nav.yaml']")
+    page.wait_for_selector("[data-testid='browse-selection']")
+
+    assert str(browse_root / "nav.yaml") in page.inner_text("[data-testid='browse-selection']")
+
+
+def test_a_general_user_sees_the_reason_and_the_allowed_range_not_an_add_entry(
+    open_page, browse_root, tmp_path
+):
+    # 一般使用者手動打一個白名單外的路徑 → 看到原因與唯讀允許範圍，但沒有加入白名單入口。
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    page = _open_browser(open_page())  # 一般使用者
+
+    page.fill("[data-testid='browse-path-input']", str(outside))
+    page.get_by_role("button", name="前往").click()
+    page.wait_for_selector("[data-testid='browse-rejected']")
+
+    rejected = page.locator("[data-testid='browse-rejected']")
+    assert rejected.get_attribute("data-kind") == "outside_roots"
+    assert "白名單之外" in page.inner_text("[data-testid='browse-rejected']")
+    assert page.get_by_role("button", name="加入白名單").count() == 0
+    assert page.is_visible("[data-testid='allowed-range']")
+
+
+def test_a_developer_sees_an_add_to_whitelist_entry_prefilled_with_the_rejected_path(
+    open_page, browse_root, tmp_path
+):
+    outside = tmp_path / "outside_dev"
+    outside.mkdir()
+    page = _open_browser_as_developer(open_page())
+
+    page.fill("[data-testid='browse-path-input']", str(outside))
+    page.get_by_role("button", name="前往").click()
+    page.wait_for_selector("[data-testid='whitelist-prefix-input']")
+
+    assert page.get_by_role("button", name="加入白名單").count() == 1
+    assert page.input_value("[data-testid='whitelist-prefix-input']") == str(outside)
+
+
+def test_a_developer_adds_the_rejected_path_then_browsing_it_succeeds(
+    open_page, browse_root, tmp_path
+):
+    # AC2 的完整迴路：白名單外被拒 → 開發者加入 → 同一畫面重跑瀏覽、現在列得出內容。
+    outside = tmp_path / "onboarded"
+    outside.mkdir()
+    (outside / "cfg.yaml").write_text("a: 1\n", encoding="utf-8")
+    page = _open_browser_as_developer(open_page())
+    page.fill("[data-testid='browse-path-input']", str(outside))
+    page.get_by_role("button", name="前往").click()
+    page.wait_for_selector("[data-testid='whitelist-prefix-input']")
+
+    page.get_by_role("button", name="加入白名單").click()
+
+    page.wait_for_selector("[data-testid='browse-entry-cfg.yaml']")
+    assert _browse_entries(page) == {"cfg.yaml": "file"}
+
+
+def test_a_non_directory_rejection_offers_no_add_entry_even_to_a_developer(
+    open_page, browse_root
+):
+    # 白名單內、但指向檔案（不是目錄）→ not_a_directory；加白名單無濟於事，
+    # 即使開發者也沒有入口。
+    (browse_root / "afile.yaml").write_text("a: 1\n", encoding="utf-8")
+    page = _open_browser_as_developer(open_page())
+
+    page.fill("[data-testid='browse-path-input']", str(browse_root / "afile.yaml"))
+    page.get_by_role("button", name="前往").click()
+    page.wait_for_selector("[data-testid='browse-rejected']")
+
+    rejected = page.locator("[data-testid='browse-rejected']")
+    assert rejected.get_attribute("data-kind") == "not_a_directory"
+    assert page.get_by_role("button", name="加入白名單").count() == 0
+
+
 # ── 小工具 ──────────────────────────────────────────────────────────────────
+
+
+def _open_browser(page):
+    """進入身分（一般使用者足以瀏覽）→ 點「納管」開檔案瀏覽 view。
+
+    以角色＋名稱選按鈕，不用 `text=納管`：空清單提示「還沒有納管任何 config」也含「納管」，
+    子字串選取會撞到兩個元素（strict mode）。
+    """
+    _fill_identity(page)
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    page.get_by_role("button", name="納管").click()
+    page.wait_for_selector("[data-testid='browse']", state="visible")
+    return page
+
+
+def _open_browser_as_developer(page):
+    """以開發者身分進入再開瀏覽（拒絕情境要驗開發者的加入白名單入口）。"""
+    page.click("[data-testid='role-toggle'] button[data-role='developer']")
+    return _open_browser(page)
+
+
+def _browse_entries(page) -> dict:
+    """目前目錄清單的 {名字: 種類}。"""
+    pairs = page.eval_on_selector_all(
+        "[data-testid='browse-list'] [data-testid^='browse-entry-']",
+        "ns => ns.map(n => [n.dataset.name, n.dataset.kind])",
+    )
+    return {name: kind for name, kind in pairs}
 
 
 def _fill_identity(page, name: str = _NAME) -> None:

@@ -165,6 +165,54 @@
     font-size: 13px;
   }
   .who { color: var(--muted); font-size: 13px; }
+
+  /* W7 檔案瀏覽 */
+  #browse { padding: 16px 20px 40px; }
+  .browse-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .breadcrumb {
+    display: flex; flex-wrap: wrap; gap: 2px; align-items: baseline;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px;
+  }
+  .breadcrumb button {
+    border: none; background: none; padding: 2px 4px; color: var(--fg);
+    cursor: pointer; font: inherit;
+  }
+  .breadcrumb button:hover { text-decoration: underline; }
+  .breadcrumb .sep { color: var(--muted); }
+  .browse-path {
+    flex: none; min-width: 260px; font: inherit; padding: 6px 10px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg);
+  }
+  .browse-hint { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
+  .browse-hint:empty { display: none; }
+  .browse-roots, .browse-list {
+    list-style: none; margin: 0 0 14px; padding: 0;
+    border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+  }
+  .browse-roots:empty, .browse-list:empty { display: none; }
+  .browse-roots li, .browse-list li {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer;
+  }
+  .browse-roots li + li, .browse-list li + li { border-top: 1px solid var(--line); }
+  .browse-roots li:hover, .browse-list li:hover { background: var(--panel); }
+  .browse-name { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; }
+  .browse-list li[data-kind="dir"] .browse-name { font-weight: 600; }
+  .browse-list .kind { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .browse-selection { font-size: 13px; color: var(--in-sync); font-weight: 600; }
+  .browse-rejected {
+    padding: 14px 16px; border: 1px solid var(--drift); border-radius: 8px;
+    background: var(--panel); color: var(--drift);
+  }
+  .browse-rejected .msg { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .browse-rejected .add-row { display: flex; gap: 8px; margin-top: 12px; }
+  .browse-rejected input {
+    flex: 1; font: inherit; padding: 6px 10px; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--bg); color: var(--fg);
+  }
+  .allowed-range {
+    margin: 10px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
 </style>
 </head>
 <body>
@@ -201,12 +249,31 @@
   <input type="search" data-testid="search-input" placeholder="搜尋" aria-label="搜尋">
   <span class="grow"></span>
   <span class="who" data-testid="current-role"></span>
+  <button type="button" data-testid="open-browse">納管</button>
   <button type="button" data-testid="rescan">檢查差異</button>
 </header>
 
 <main hidden>
   <div id="tree" data-testid="config-tree"></div>
 </main>
+
+<!-- W7 檔案瀏覽（#13）：受白名單限制的瀏覽，供納管時選定路徑。獨立整頁 view，
+     從工具列「納管」開啟。元素的 data-testid 與可見文字依 UI-ELEMENTS.md 的 W7。 -->
+<section id="browse" data-testid="browse" hidden>
+  <div class="browse-bar">
+    <button type="button" class="browse-back">返回</button>
+    <nav data-testid="breadcrumb" class="breadcrumb"></nav>
+    <span class="grow"></span>
+    <input type="text" data-testid="browse-path-input" class="browse-path"
+           placeholder="貼上或輸入絕對路徑…" aria-label="絕對路徑">
+    <button type="button" class="browse-go">前往</button>
+  </div>
+  <p class="browse-hint" data-testid="browse-hint"></p>
+  <ul data-testid="browse-roots" class="browse-roots"></ul>
+  <ul data-testid="browse-list" class="browse-list"></ul>
+  <p class="browse-selection" data-testid="browse-selection" hidden></p>
+  <div class="browse-rejected" data-testid="browse-rejected" hidden></div>
+</section>
 
 <script>
 // 狀態的中文說法取自 CONTEXT.md，不在這裡另造。「未納管」不會出現在這份清單裡
@@ -369,10 +436,15 @@ function showIdentityForm() {
   listView.hidden = true;
 }
 
+// 目前身分。browse 的拒絕 UX 依角色分流（開發者才有加入白名單入口），返回也靠它。
+let currentIdentity = null;
+
 function showList(identity) {
+  currentIdentity = identity;
   identityForm.hidden = true;
   header.hidden = false;
   listView.hidden = false;
+  browseView.hidden = true;
   currentRole.textContent = `${identity.name}・${ROLE_TEXT[identity.role] || identity.role}`;
   load();
 }
@@ -406,6 +478,199 @@ identityForm.addEventListener("submit", async (event) => {
     identityError.textContent = `送不出去：${error && error.message ? error.message : error}`;
     identityError.hidden = false;
   }
+});
+
+// ── W7 檔案瀏覽（#13）─────────────────────────────────────────────────────────
+// 受白名單限制的瀏覽，供納管時選定路徑。獨立整頁 view，從工具列「納管」開啟。
+// 白名單根為起點（GET /api/allowed-roots）；下鑽用後端回應的每個 entry.path，不在前端
+// 拼路徑；麵包屑與目前位置用回應的 path（realpath）。拒絕依 kind＋角色分流（只有
+// outside_roots 給開發者「加入白名單」入口，一般使用者看唯讀允許範圍）。
+const browseView = document.querySelector("[data-testid='browse']");
+const browseRootsEl = document.querySelector("[data-testid='browse-roots']");
+const browseListEl = document.querySelector("[data-testid='browse-list']");
+const breadcrumbEl = document.querySelector("[data-testid='breadcrumb']");
+const browsePathInput = document.querySelector("[data-testid='browse-path-input']");
+const browseSelectionEl = document.querySelector("[data-testid='browse-selection']");
+const browseRejectedEl = document.querySelector("[data-testid='browse-rejected']");
+const browseHintEl = document.querySelector("[data-testid='browse-hint']");
+
+let whitelistRoots = [];
+
+function showBrowse() {
+  identityForm.hidden = true;
+  header.hidden = true;
+  listView.hidden = true;
+  browseView.hidden = false;
+  loadBrowseRoots();
+}
+
+async function loadBrowseRoots() {
+  breadcrumbEl.replaceChildren();
+  browseListEl.replaceChildren();
+  browseSelectionEl.hidden = true;
+  browseRejectedEl.hidden = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/allowed-roots`);
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    whitelistRoots = (await response.json()).prefixes;
+    browseRootsEl.replaceChildren(...whitelistRoots.map((prefix) =>
+      element("li", { "data-testid": `browse-root-${prefix}`, "data-path": prefix }, [
+        element("span", { class: "browse-name", text: prefix }),
+      ])
+    ));
+    browseHintEl.textContent = whitelistRoots.length
+      ? "挑一個允許瀏覽的根開始，或在上方貼一個絕對路徑。"
+      : "白名單目前是空的。";
+  } catch (error) {
+    browseHintEl.textContent = `讀不到白名單：${error && error.message ? error.message : error}`;
+  }
+}
+
+async function browseTo(path) {
+  browseRejectedEl.hidden = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/browse?path=${encodeURIComponent(path)}`);
+    const payload = await response.json();
+    if (!response.ok) {
+      renderBrowseRejection(payload.detail, path);
+      return;
+    }
+    // 進入某目錄後，起點根清單讓位給內容。
+    browseRootsEl.replaceChildren();
+    browseHintEl.textContent = "";
+    renderBreadcrumb(payload.path);
+    renderBrowseEntries(payload.entries);
+  } catch (error) {
+    browseHintEl.textContent = `瀏覽失敗：${error && error.message ? error.message : error}`;
+  }
+}
+
+function renderBrowseEntries(entries) {
+  browseListEl.replaceChildren(...entries.map((entry) =>
+    element("li", {
+      "data-testid": `browse-entry-${entry.name}`,
+      "data-kind": entry.kind,
+      "data-name": entry.name,
+      "data-path": entry.path,
+    }, [
+      element("span", { class: "browse-name", text: entry.name }),
+      element("span", { class: "kind", text: entry.kind === "dir" ? "目錄" : "檔案" }),
+    ])
+  ));
+}
+
+function renderBreadcrumb(path) {
+  // 夾在白名單根為界：找出含這條路徑的根，只從根往下顯示（上溯不越過根）。
+  const root = whitelistRoots.find((r) => path === r || path.startsWith(`${r}/`));
+  const nodes = [];
+  const pushSegment = (label, target) => {
+    if (nodes.length) nodes.push(element("span", { class: "sep", text: "›" }));
+    const seg = element("button", { type: "button", "data-path": target, text: label });
+    seg.addEventListener("click", () => browseTo(target));
+    nodes.push(seg);
+  };
+  if (root) {
+    pushSegment(root, root);
+    let acc = root;
+    for (const part of path.slice(root.length).split("/").filter(Boolean)) {
+      acc += `/${part}`;
+      pushSegment(part, acc);
+    }
+  } else {
+    // 手動路徑落在任何已知根之外（少見；通常會先被拒）——退回顯示完整路徑各段。
+    let acc = "";
+    for (const part of path.split("/").filter(Boolean)) {
+      acc += `/${part}`;
+      pushSegment(part, acc);
+    }
+  }
+  breadcrumbEl.replaceChildren(...nodes);
+}
+
+function selectBrowseFile(path) {
+  browseSelectionEl.textContent = `已選：${path}`;
+  browseSelectionEl.hidden = false;
+}
+
+function renderBrowseRejection(detail, attempted) {
+  // detail 是 {kind, message}（#13）。原樣顯示 message（含下一步，不改寫）；依 kind＋角色
+  // 決定：只有 outside_roots 給加入白名單入口，開發者可加、一般使用者看唯讀允許範圍。
+  const kind = detail && detail.kind;
+  const message = (detail && detail.message) || String(detail);
+  browseListEl.replaceChildren();
+  const children = [
+    element("strong", { text: "無法瀏覽這個路徑。" }),
+    element("p", { class: "msg", text: message }),
+  ];
+  if (kind === "outside_roots") {
+    if (currentIdentity && currentIdentity.role === "developer") {
+      const prefixInput = element("input", {
+        type: "text",
+        "data-testid": "whitelist-prefix-input",
+      });
+      prefixInput.value = attempted;  // 預填被拒的路徑，可編輯
+      const addButton = element("button", { type: "button", text: "加入白名單" });
+      addButton.addEventListener("click", () => addToWhitelist(prefixInput.value));
+      children.push(element("div", { class: "add-row" }, [prefixInput, addButton]));
+    } else {
+      children.push(element("p", {
+        text: "請開發者代為加入白名單。目前允許瀏覽的範圍：",
+      }));
+      children.push(element("ul", {
+        class: "allowed-range", "data-testid": "allowed-range",
+      }, whitelistRoots.map((prefix) => element("li", { text: prefix }))));
+    }
+  }
+  browseRejectedEl.replaceChildren(...children);
+  browseRejectedEl.setAttribute("data-kind", kind || "browse_error");
+  browseRejectedEl.hidden = false;
+}
+
+async function addToWhitelist(prefix) {
+  const showAddError = (text) => {
+    const slot = browseRejectedEl.querySelector(".msg");
+    if (slot) slot.textContent = text;
+  };
+  try {
+    const response = await fetch(`${API_BASE}/api/allowed-roots`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prefix }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      // 端點的訊息已可行動（含下一步），原樣顯示，不改寫（不變式 2）。
+      const text = typeof payload.detail === "string"
+        ? payload.detail
+        : (payload.detail && payload.detail.message) || `${response.status}`;
+      showAddError(text);
+      return;
+    }
+    whitelistRoots = payload.prefixes;
+    browseRejectedEl.hidden = true;
+    browseTo(prefix);  // 重跑被拒的瀏覽——該路徑現在在白名單內了
+  } catch (error) {
+    showAddError(`送不出去：${error && error.message ? error.message : error}`);
+  }
+}
+
+browseRootsEl.addEventListener("click", (event) => {
+  const li = event.target.closest("li[data-path]");
+  if (li) browseTo(li.dataset.path);
+});
+
+browseListEl.addEventListener("click", (event) => {
+  const li = event.target.closest("li[data-testid^='browse-entry-']");
+  if (!li) return;
+  if (li.dataset.kind === "dir") browseTo(li.dataset.path);
+  else selectBrowseFile(li.dataset.path);
+});
+
+document.querySelector("[data-testid='open-browse']").addEventListener("click", showBrowse);
+browseView.querySelector(".browse-back").addEventListener("click", () => showList(currentIdentity));
+browseView.querySelector(".browse-go").addEventListener("click", () => {
+  const path = browsePathInput.value.trim();
+  if (path) browseTo(path);
 });
 
 // 已經輸入過身分就直接進清單（重新整理不必再填一次）。
