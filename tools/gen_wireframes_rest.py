@@ -213,4 +213,53 @@ d.txt(62, 486, "一般使用者：此處改顯示唯讀允許範圍與「請開�
 d.verify("w7_browse")
 d.save(f"{OUT}/w7_browse.svg")
 
+# ============================================================
+# WF7 — 納管確認（W8，#14）：偵測結果供確認 → 寫入
+# ============================================================
+d = D(880, 560)
+chrome(d, 30, 20, 820, 520, "納管確認　/opt/robot/config/nav2_params.yaml")
+
+# 格式選擇 + hostname 預覽
+d.txt(46, 74, "格式", fs=10, col=GREY, bold=True)
+d.p.append('<rect x="90" y="60" width="140" height="30" rx="3" fill="#fbfcfd" '
+           'stroke="#c3cbd2" stroke-width="1.2"/>')
+d.txt(102, 79, "yaml  ▾", fs=10.5, col=DARK, mono=True)
+d.txt(250, 79, "將以 hostname＝amr01 納管", fs=10.5, col="#1e6f3a", bold=True)
+d.txt(250, 96, "原始權限　root:root 0644", fs=9.5, col=GREY, mono=True)
+
+# 型別樹（可折疊：容器為節點、葉為葉）
+d.p.append('<rect x="46" y="118" width="470" height="290" rx="3" fill="#ffffff" '
+           'stroke="#c3cbd2" stroke-width="1.2"/>')
+d.p.append('<rect x="46" y="118" width="470" height="26" fill="#eceff1"/>')
+d.txt(60, 136, "解析型別（共 6 個欄位）", fs=10, col=DARK, bold=True)
+_tree = [("  ▾ ros__parameters", "dict"), ("      use_sim_time", "bool"),
+         ("      max_vel_x", "float"), ("      ▾ plugins[]", "list"),
+         ("          plugins[]", "string"), ("      robot_radius", "float")]
+for _i, (_label, _ty) in enumerate(_tree):
+    _yy = 156 + _i * 40
+    d.txt(60, _yy + 6, _label, fs=10.5, col=DARK, mono=True)
+    pill(d, 430, _yy - 8, _ty, "#7f8c9a", w=72, h=18)
+
+# 歧義清單（yaml；逐條 ack）
+d.p.append('<rect x="532" y="118" width="286" height="290" rx="3" fill="#fdf9f2" '
+           'stroke="#e0a458" stroke-width="1.2"/>')
+d.p.append('<rect x="532" y="118" width="286" height="26" fill="#f6ead3"/>')
+d.txt(546, 136, "歧義（確認後才可寫入）", fs=10, col="#8a5a12", bold=True)
+_amb = [("第 3 行「no」", "布林 false／字串 no"), ("第 7 行「08」", "八進位／十進位／字串")]
+for _i, (_head, _read) in enumerate(_amb):
+    _yy = 158 + _i * 62
+    d.p.append(f'<rect x="548" y="{_yy}" width="16" height="16" rx="3" '
+               f'fill="#ffffff" stroke="#c3cbd2" stroke-width="1.2"/>')
+    d.txt(576, _yy + 13, _head, fs=10, col="#7b5a1c", mono=True, bold=True)
+    d.txt(576, _yy + 30, _read, fs=9, col="#8a6a2c")
+d.txt(548, 300, "全部勾選後「確認寫入」才會啟用", fs=8.5, col="#8a5a12")
+
+# 底部按鈕
+btn(d, 46, 430, 96, 34, "取消", primary=False)
+btn(d, 636, 430, 182, 34, "確認寫入")
+d.txt(46, 486, "納管後回到清單，新項目出現在左側樹、原檔不動。", fs=9, col=GREY)
+
+d.verify("w8_onboard")
+d.save(f"{OUT}/w8_onboard.svg")
+
 print("wireframes done")
