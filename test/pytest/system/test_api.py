@@ -266,7 +266,10 @@ def test_browse_a_path_outside_the_whitelist_is_refused(api, tmp_path):
         _get(api, f"/api/browse?{query}")
 
     assert exc.value.code == _UNPROCESSABLE
-    assert "白名單之外" in _detail(exc.value)
+    # detail 帶機器可讀的 kind，讓前端依原因＋角色分流（不靠比對中文字串，#13）。
+    detail = _detail(exc.value)
+    assert detail["kind"] == "outside_roots"
+    assert "白名單之外" in detail["message"]
 
 
 def test_browse_a_symlink_that_escapes_the_whitelist_is_refused(api, sources_root, tmp_path):
@@ -284,7 +287,9 @@ def test_browse_a_symlink_that_escapes_the_whitelist_is_refused(api, sources_roo
         _get(api, f"/api/browse?{query}")
 
     assert exc.value.code == _UNPROCESSABLE
-    assert "白名單之外" in _detail(exc.value)
+    detail = _detail(exc.value)
+    assert detail["kind"] == "outside_roots"
+    assert "白名單之外" in detail["message"]
 
 
 def test_browse_a_file_rather_than_a_directory_is_refused(api, sources_root):
@@ -296,7 +301,10 @@ def test_browse_a_file_rather_than_a_directory_is_refused(api, sources_root):
         _get(api, f"/api/browse?{query}")
 
     assert exc.value.code == _UNPROCESSABLE
-    assert "不是可列的目錄" in _detail(exc.value)  # 原因是「不是目錄」，與「白名單外」分得開
+    # 原因是「不是目錄」，kind 與「白名單外」分得開——前端據此不顯示加白名單入口。
+    detail = _detail(exc.value)
+    assert detail["kind"] == "not_a_directory"
+    assert "不是可列的目錄" in detail["message"]
 
 
 def test_cli_browse_goes_through_the_same_endpoint_as_the_page(api, sources_root):
@@ -410,6 +418,14 @@ def test_cli_inspect_goes_through_the_same_endpoint_as_the_page(api, sources_roo
 
 
 # ── POST /api/allowed-roots 白名單維護（#202）──────────────────────────────────
+
+
+def test_get_allowed_roots_lists_the_whitelist_prefixes(api, sources_root):
+    # 讀白名單根：browse 的起點、與一般使用者「檢視允許範圍」都靠它。唯讀、無角色門檻。
+    result = _get(api, "/api/allowed-roots")
+
+    assert isinstance(result["prefixes"], list)
+    assert sources_root in result["prefixes"]  # api 夾具種進去的那個根
 
 
 def test_a_developer_can_add_a_root_to_the_whitelist(api, tmp_path):
