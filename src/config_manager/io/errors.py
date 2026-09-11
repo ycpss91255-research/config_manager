@@ -63,6 +63,31 @@ class SourceMissing(PreflightError):
     """清單檔某條目引用的來源內容不在 repo 裡。只查來源側——目標未部署是合法狀態。"""
 
 
+class AllowedRootsMissing(PreflightError):
+    """config-repo 裡沒有白名單設定檔（allowed-roots.toml，§7.9 / #202）。
+
+    entrypoint 首次啟動已從 `CM_ALLOWED_ROOTS` 種下它，故此處必為異常：有人刪了它，
+    或掛錯路徑。與 `ConfigListMissing` 同構——那一則是清單檔，這一則是白名單設定檔。
+    """
+
+
+class AllowedRootsUnparsable(PreflightError):
+    """白名單設定檔存在但讀不出來：TOML 語法錯誤，或內容不符白名單設定檔規格。
+
+    與 `ConfigListUnparsable` 同構。preflight 認得 `core.allowed_roots.load` 的失敗詞彙
+    （tomlkit 的 ParseError、pydantic 的 ValidationError、core 的 AllowedRootsError）。
+    """
+
+
+class AllowedRootUnreachable(Exception):
+    """要加入白名單的前綴指向一個到不了的目錄：不存在、不是目錄，或上層無法穿越。
+
+    不併進 `PreflightError`（那一族是啟動時）也不併進白名單設定檔的載入錯誤（那一族是
+    「檔案內容有問題」）：這一則的來源是**新增當下**使用者挑的那個前綴，處置是改前綴
+    （不變式 2：大聲失敗、指名是哪個前綴）。與 `ContentUnreadable` 同樣獨立成一則。
+    """
+
+
 class ContentUnreadable(Exception):
     """路徑存在但內容讀不出來。與「不存在」分開：後者是未部署，是合法狀態。"""
 
@@ -123,6 +148,16 @@ class HostnameInvalid(Exception):
     的結果本就是安全的 hostname；會出事的是部署者手打的 `CM_HOSTNAME`——寧可大聲失敗，不
     悄悄把機器身分清洗成別的東西（不變式 2）。
     """
+
+
+class AllowedRootLeftBehind(Exception):
+    """白名單新增中途失敗後，回滾（把設定檔還原到新增前）自己也失敗了。
+
+    與 `OnboardLeftBehind`／`TemporaryLeftBehind` 是同一種形狀（#173）：`add_allowed_root`
+    先原子寫入設定檔、再 stage＋commit。白名單的判定讀的是**工作區檔案**（每次請求從檔讀），
+    所以檔案一被寫入該根就立即生效——若隨後 commit 失敗，白名單已被擴張卻沒有 git 稽核，
+    故要回滾。這一則是回滾（重寫回原內容）也失敗的場景：**同時說出**原本的失敗與清理的失敗，
+    `__cause__` 指向原本的失敗。訊息指名殘留了什麼。"""
 
 
 class BrowseError(Exception):

@@ -97,6 +97,61 @@ sys.exit(0 if config_list.files == [] else 1)
   [ -z "$(git -C "${WORK}/repo" status --porcelain)" ]
 }
 
+@test "首次啟動從 CM_ALLOWED_ROOTS 種下白名單設定檔，並提交（#202）" {
+  # allowed-roots.toml 是持久化白名單（§7.9）：entrypoint 首次啟動從 CM_ALLOWED_ROOTS
+  # 種一份，之後以檔為準、由介面增減。沒有種子的話「白名單設定檔不存在 → preflight 失敗」
+  # 會讓升級到這版的既有部署起不來。
+  mkdir -p "${WORK}/repo" "${WORK}/targets"
+
+  CM_CONFIG_REPO="${WORK}/repo" CM_ALLOWED_ROOTS="${WORK}/targets" \
+    run "${ENTRYPOINT}" true
+  [ "${status}" -eq 0 ]
+  [ -f "${WORK}/repo/allowed-roots.toml" ]
+  # 已提交、不留在工作區未追蹤（同清單檔種子的理由）。
+  [ -z "$(git -C "${WORK}/repo" status --porcelain)" ]
+
+  # 種下的前綴由 core 的 load 判定合法，不由這支規格自己重寫一套 TOML 檢查；
+  # 且要含 CM_ALLOWED_ROOTS 給的那個根。
+  run python -c "
+import sys
+from config_manager.core.allowed_roots import load
+allowed = load(open('${WORK}/repo/allowed-roots.toml', encoding='utf-8').read())
+sys.exit(0 if [r.prefix for r in allowed.roots] == ['${WORK}/targets'] else 1)
+"
+  [ "${status}" -eq 0 ]
+}
+
+@test "CM_ALLOWED_ROOTS 的根含破壞 TOML 的字元時，種子在寫檔前就失敗並指名該變數（#202）" {
+  # 種檔是手刻 printf、不像 API 走 tomlkit 跳脫，含 " 或反斜線的根會產出無法解析的檔，
+  # 讓 preflight 以「檔案壞了」死掉、指錯方向。改在種檔前擋下、指向真正該修的 CM_ALLOWED_ROOTS。
+  # 用一個名字真的含引號的目錄（先過 #146 的可見性檢查），才驗得到種子這道守門。
+  local baddir="${WORK}/has\"quote"
+  mkdir -p "${WORK}/repo" "${baddir}"
+
+  CM_CONFIG_REPO="${WORK}/repo" CM_ALLOWED_ROOTS="${baddir}" run "${ENTRYPOINT}" true
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"CM_ALLOWED_ROOTS"* ]]
+  # 沒有留下半種的檔——種子在寫出前就擋下。
+  [ ! -f "${WORK}/repo/allowed-roots.toml" ]
+}
+
+@test "已存在的白名單設定檔不被種子覆蓋（以檔為準，#202）" {
+  # 以檔為準：一旦有了這份檔，重啟不因 CM_ALLOWED_ROOTS 改變而動它——介面加的根不該
+  # 被下一次啟動的種子抹掉。CM_ALLOWED_ROOTS 指向一個真實可見的目錄（否則會先卡在
+  # #146 的可見性檢查），驗種子沒有把它塞進既有檔。
+  git init --quiet --initial-branch=main "${WORK}"
+  write_minimal_list "${WORK}"
+  mkdir -p "${WORK}/targets"
+  printf 'roots_version = 1\n\n[[roots]]\nprefix = "/opt/kept"\nadded_by = "介面"\nadded_at = "2026-01-01T00:00:00Z"\n' \
+    >"${WORK}/allowed-roots.toml"
+
+  CM_CONFIG_REPO="${WORK}" CM_ALLOWED_ROOTS="${WORK}/targets" run "${ENTRYPOINT}" true
+  [ "${status}" -eq 0 ]
+  # 既有內容原封不動，種子沒有把 CM_ALLOWED_ROOTS 的根塞進來。
+  [[ "$(cat "${WORK}/allowed-roots.toml")" == *"/opt/kept"* ]]
+  [[ "$(cat "${WORK}/allowed-roots.toml")" != *"targets"* ]]
+}
+
 @test "已是有效 git repo 且清單檔就緒時直接繼續，不重新初始化" {
   git init --quiet --initial-branch=main "${WORK}"
   write_minimal_list "${WORK}"

@@ -628,6 +628,46 @@ realpath 解析後的白名單判定、原始權限的讀取、本機 hostname �
 
 ---
 
+### T23 — 白名單設定檔載入與寫回
+
+> 本 repo 在設計文件 §3.7.2（`T1`–`T18`）之外新增，來由 `#202`。
+
+```
+load(text) -> AllowedRoots | 具名例外
+dump(AllowedRoots, 原樣資訊) -> text
+```
+
+`allowed-roots.toml` 是持久化、可從介面維護的白名單（§7.9）：entrypoint 首次啟動從
+`CM_ALLOWED_ROOTS` 種下，之後以檔為準、可增可減（#202）。這一層是**純解析與序列化**，
+不讀磁碟——讀檔與 preflight 在 io（T15），realpath 正規化與可見性也在 io（realpath 是
+I/O，比照 T4 把連結解析留給 I/O 層）。
+
+| 驗證的行為 | 為何在這裡測 |
+|---|---|
+| 合法設定檔可載入，每個根的 `prefix`／`added_by`／`added_at` 值正確 | 基本契約 |
+| **`roots` 不是 `[[roots]]` 表格串列（純量、inline 陣列等）→ 具名例外** | 不變式 2；這種形狀合法 TOML 但會讓迭代丟 raw TypeError／逃過契約，dump 也只吃 AoT——在 load 一開始就擋下，兩邊一致 |
+| `prefix` 重複 → 具名例外，訊息指出是哪兩筆 | 不變式 2（白名單有重複前綴是靜默的設定錯誤） |
+| `prefix` 非絕對路徑、或含 `..` → 具名例外（**字面比對**，realpath 留給 io） | 逃逸防護（比照 T4／T5 的字面檢查） |
+| **無法辨識的欄位 → 具名例外，指出欄位與行號**（防止由設定檔注入內部欄位） | 不變式 2（比照 T1 §110） |
+| **寫回未改動的設定檔，輸出與輸入逐位元組相同** | 設定檔本身也要原樣保留 |
+| **新增一個根後寫回，既有根的註解、順序、引號樣式不變**，新根帶 `added_by`／`added_at` | 不變式 2（原樣保留；tomlkit 把註解掛在前一筆，比照 T1 §113） |
+| **原樣資訊本身不是合法設定檔（缺 `prefix`、`prefix` 重複）→ 具名例外** | 不變式 2；dump 以 `prefix` 定位，定位不了會刪錯或漏改（`original` 是獨立參數，沒有東西保證它經過 `load`，比照 T1 §120）|
+
+**結構驗證交給 pydantic，比照 T1。** `roots_version` 必填且為整數、每個根必有 `prefix`、
+欄位型別——這些由 pydantic 的模型驗證負責、丟其 `ValidationError`，`io/preflight` 認得
+這套失敗詞彙（與清單檔的 `load` 同一個處置）。這裡的具名例外只給**完整性與逃逸**檢查
+（重複、字面逃逸、未知欄位），與 T1 的分工一致。**不測** pydantic 本身。
+
+**為什麼既有介面觀察不到。** T1 的 `load`／`dump` 綁死 `ConfigList`，且 §T1（第 125-127
+行）明訂「T1 處理清單檔本身」、與被管理的 config 分離以利定位「哪個壞了」——
+`allowed-roots.toml` 是另一個檔、另一套 schema（`prefix`／`added_by`／`added_at`），混進
+T1 會讓 `load()` 回兩種型別、介面變模糊。T4 是 `decide(rules, path)` 的純字面比對，不解析
+檔案。T15 的 `preflight` 讀檔並驗，是 I/O 層，不是這裡的 parse／serialize 契約。
+
+**不測**：TOML 語法本身（那是 parser 的責任）。
+
+---
+
 ## 介面層
 
 ### T9 — HTTP 端點
@@ -677,8 +717,15 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 **`POST /api/configs`（納管）與 `GET /api/browse`（檔案瀏覽）於 #185 落地。** 兩者都**在
 §3.5.3 表上**——不是追加，是把表上既有的端點實作出來。納管收確認畫面已確認過的請求
 （來源路徑、確認過的 format、歧義確認），偵測（format／型別／歧義）不在這裡，那在確認畫面
-就做完了（#12 的 D4）；「畫面怎麼取得偵測結果」缺一支端點，另立 #195。瀏覽的白名單根目錄
-於 v0.2.0 以 `CM_ALLOWED_ROOTS` 環境變數供應（持久化、可從介面維護見 #15）。
+就做完了（#12 的 D4）；「畫面怎麼取得偵測結果」缺一支端點，另立 #195。納管與瀏覽的白名單
+根目錄以 `<repo>/allowed-roots.toml` 為準、**每次請求從檔讀**（#202）；`CM_ALLOWED_ROOTS`
+退化成 entrypoint 首次啟動的種子來源。從介面維護的「移除／檢視」見 #15。
+
+**`POST /api/allowed-roots`（白名單維護）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，
+比照 GET /api/session／#122）。#13 的開發者拒絕入口要能直接把一個路徑前綴加進白名單，故先
+落地「新增」這一支：僅開發者可用，`added_by`／`added_at` 由 session 與伺服器決定（不由請求
+自報，否則紀錄上的人可造假）。**新增每次請求從檔讀而非啟動時凍結**，所以加完不必重啟即生效
+——移除、移除時的受影響項目確認、以及「誰／何時」的檢視畫面留在 #15。
 
 **`POST /api/inspect`（偵測）於 #195 落地，是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，
 比照 GET /api/session／#122）。納管的確認畫面（#14）要顯示「偵測到的 format＋歧義清單＋摘要」
@@ -701,6 +748,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **納管（`POST /api/configs`）：成功回新條目（target 是原始位置、source 是 repo 內複本）；來源在白名單外→422、與既有條目 target／uid／source 衝突→409** |
 | **檔案瀏覽（`GET /api/browse?path=`）：列白名單內目錄的內容（名字＋種類 dir／file）；路徑在白名單外、或不是目錄→422** |
 | **偵測（`POST /api/inspect`）：收候選 `{source_path, format}`，回 format／欄位數／歧義（行號／值／讀法，yaml 才非空）／型別／原始權限；語法錯誤→結構化 422（含 file、line），歧義不拒絕而是列出；白名單外／不是檔案／讀不到／format 非允許值→422** |
+| **白名單維護（`POST /api/allowed-roots`）：僅開發者可加一個前綴，`added_by` 取自 session、`added_at` 由伺服器蓋時間，回更新後的前綴清單、含剛加的；未設身分→409、一般使用者→403；相對／含 `..` 前綴或指向到不了的目錄→422；新增後同一個服務即刻生效、不必重啟（#202）** |
 | 進版端點：驗證失敗時**不產生變更紀錄也不寫出**（原子性） |
 | **進版寫出 N 份、第 k 份失敗 → 前 k-1 份已寫出的目標檔案還原為進版前內容、全部已產生的變更紀錄一併撤銷**，容器內最終狀態與進版前逐位元組相同（承接 T18 移出的批次原子性） |
 | 第二個編輯階段被拒，回覆含持有者姓名、email、開始時間 |
@@ -1128,7 +1176,9 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | 模組 | 測試介面 | 狀態 |
 |---|---|---|
 | `core/config_list` | T1（結構）＋ T15（來源存在性） | 已落地 |
-| `core/errors` | T1——各具名例外於載入／寫回時逐一被斷言 | 已落地 |
+| `core/allowed_roots` | T23（白名單設定檔的載入與寫回） | 已落地（#202） |
+| `core/toml_support` | T1／T23——未知欄位攔截與行號定位的共用工具，行為在清單檔（T1）與白名單設定檔（T23）各自被斷言（#202） | 已落地（#202） |
+| `core/errors` | T1／T23——各具名例外於載入／寫回時逐一被斷言 | 已落地 |
 | `core/state` | T2 | 已落地 |
 | `core/identity` | T5 | 已落地 |
 | `core/index` | T14 | 已落地 |
@@ -1152,6 +1202,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/source` | T22（匯入時刻對外界的讀取，介面議定於 #177） | 已落地：路徑判定（realpath 後比對白名單、一般檔案檢查）與一次性讀取（#174）、讀取失敗的三種分類（不存在／讀不到／上層目錄無 traverse，#182）。`local_hostname` 的部署穩定性見 #178 |
 | `io/onboard` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔條目→T1（`load`）、匯入 commit→T7（`io/git.history`）（#12）——編排層，不算新值，同 `io/repo` 的處理。重複攔在寫入前（#172）與寫入失敗即整批回滾（#173）以注入失敗＋`git status` 觀察，回滾也失敗時丟 `OnboardLeftBehind` | 已落地（`onboard`） |
 | `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath 與列目錄——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185） | 已落地（`browse`） |
+| `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202） | 已落地（`read_allowed_roots`／`add_allowed_root`） |
 | `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session` 與 CORS 中介層） |
 | `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 部分落地：身分（`author`）已落地；階段的 acquire／renew／release／sweep 未落地（#33） |
@@ -1203,7 +1254,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | 偏離偵測 | T2 | T6 → T8 | T9 → T11 | A3 |
 | 偏離處置 | T3（納入路徑必經） | T7 → T8 | T9 → T11 | A3 |
 | 解除納管 | T1 → T14 | T7 | T9 → T11 | — |
-| 白名單維護 | T4、T17 | T1 | T9 → T11 | A1 |
+| 白名單維護 | T4、T17、T23 | T1、T15 | T9 → T11 | A1 |
 | 屬性與群組 | T16、T17 | T1 → T7 | T9 → T11 | A6 |
 | 型別指定 | T12、T3、T17 | T7 | T9 → T11 | A6 |
 | 角色切換 | T17 | — | T11 | A6 |

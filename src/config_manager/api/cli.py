@@ -53,7 +53,6 @@ class ServePlan:
     host: str
     port: int
     allowed_origins: tuple[str, ...]
-    allowed_roots: tuple[str, ...]
 
 
 def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
@@ -75,19 +74,7 @@ def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
         host=host,
         port=port,
         allowed_origins=_allowed_origins(environ),
-        allowed_roots=_allowed_roots(environ),
     )
-
-
-def _allowed_roots(environ: Mapping[str, str]) -> tuple[str, ...]:
-    """CM_ALLOWED_ROOTS 的逗號分隔清單——納管與檔案瀏覽的白名單根目錄。
-
-    未設定時回空 tuple：**什麼都不放行**。這個服務改得動機器上的檔案，白名單是安全
-    邊界（§7.9）——沒指定就該是「什麼都碰不到」，而不是「全部放行」（不變式 4：預設值
-    落向安全）。持久化、可從介面維護的白名單見 #15；這裡是 v0.2.0 的環境變數接線。
-    """
-    raw = environ.get("CM_ALLOWED_ROOTS", "")
-    return tuple(root.strip() for root in raw.split(",") if root.strip())
 
 
 def _allowed_origins(environ: Mapping[str, str]) -> tuple[str, ...]:
@@ -307,7 +294,7 @@ def _serve(host: str, port: int) -> int:
         return 2
 
     uvicorn.run(
-        create_app(plan.repo, plan.allowed_origins, plan.allowed_roots),
+        create_app(plan.repo, plan.allowed_origins),
         host=plan.host,
         port=plan.port,
         log_level="warning",

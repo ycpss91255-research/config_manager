@@ -26,6 +26,7 @@ from tomlkit.exceptions import ParseError
 from config_manager.core.config_list import load
 from config_manager.core.errors import ConfigListError
 from config_manager.core.models import ConfigList
+from config_manager.io.allowed_roots import read_allowed_roots
 from config_manager.io.errors import (
     ConfigListMissing,
     ConfigListUnparsable,
@@ -43,6 +44,9 @@ def preflight(repo: str) -> None:
     """檢查 config-repo 可用。通過則正常返回，失敗則丟具名例外。"""
     config_list = read_config_list(repo)
     _check_sources_exist(repo, config_list)
+    # 白名單設定檔缺失或不可解析同樣在啟動時攔下（§7.9, #202）：entrypoint 已種下它，
+    # 讀不出來就是壞了——寧可啟動時具名失敗，也不要等第一次瀏覽才在請求裡爆。
+    read_allowed_roots(repo)
 
 
 def read_config_list(repo: str) -> ConfigList:

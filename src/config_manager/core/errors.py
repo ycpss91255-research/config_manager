@@ -52,6 +52,50 @@ class DumpMismatch(ConfigListError):
     """
 
 
+class AllowedRootsError(Exception):
+    """白名單設定檔（allowed-roots.toml，§7.9 / #202）完整性錯誤的基底。
+
+    不併進 `ConfigListError`：那一族講的是「清單檔（config-list.toml）的內容有問題」，
+    這一族講的是「白名單**設定檔**的內容有問題」——兩者是不同的檔、不同的 schema，
+    處置也不同（前者改清單檔，後者改白名單）。與 T1／T23 的介面分工一致。
+    """
+
+
+class DuplicatePrefix(AllowedRootsError):
+    """兩筆白名單根共用同一個路徑前綴。重複前綴是靜默的設定錯誤，訊息指出是哪兩筆。"""
+
+
+class InvalidPrefix(AllowedRootsError):
+    """白名單根的前綴不是合法的絕對路徑：不以 / 開頭，或含 .. 路徑段。
+
+    字面比對即擋下（比照 T4／T5）；realpath 正規化與可見性留給 I/O 層（realpath 是 I/O）。
+    """
+
+
+class RootsUnknownField(AllowedRootsError):
+    """白名單設定檔含無法辨識的欄位。格式錯誤須大聲失敗、指名行號，防止由設定檔注入。"""
+
+
+class RootsMalformed(AllowedRootsError):
+    """白名單設定檔的 `roots` 不是 `[[roots]]` 表格串列：是純量、inline 陣列，或其他型別。
+
+    `roots = 5`、`roots = "x"`、`roots = [{{prefix="/a"}}]` 都是**合法 TOML**，但不是本檔要的
+    形狀。先前 `_check_unknown_fields` 會在 pydantic 驗型別之前就迭代它、丟出 raw
+    TypeError／AttributeError，逃過「結構驗證交給 pydantic、讀取層認得 load 的失敗詞彙」
+    的契約（讓 bug 冒成 500 或未攔的 traceback）；dump 也只吃 AoT。故在 load 一開始就以
+    具名例外擋下這種形狀，訊息指引改用 `[[roots]]` 書寫。"""
+
+
+class RootsDumpMismatch(AllowedRootsError):
+    """dump 拿到的原樣資訊無法以 prefix 對回白名單根：有一筆缺 prefix，或兩筆共用 prefix。
+
+    與 `DumpMismatch` 是同一種形狀的兩個檔：那一個以 uid 定位清單檔條目，這一個以 prefix
+    定位白名單根（白名單根沒有 uid，prefix 就是它的識別碼）。對不回去就會刪錯或漏改，
+    兩者都是靜默丟資料。`load` 擋得住，但 dump 的原樣資訊是獨立參數，沒有東西保證它
+    經過 `load`。
+    """
+
+
 class UnknownScope(Exception):
     """搜尋範圍不在允許集合內。
 

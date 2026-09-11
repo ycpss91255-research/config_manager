@@ -3,9 +3,7 @@
 純邏輯，不做 I/O（ADR-00000011）：load/dump 收字串、不讀磁碟。
 """
 
-import re
 from pathlib import PurePosixPath
-from collections.abc import Iterable
 
 import tomlkit
 from tomlkit import items
@@ -20,6 +18,7 @@ from config_manager.core.errors import (
     UnknownField,
 )
 from config_manager.core.models import ConfigList, FileEntry, Permissions
+from config_manager.core.toml_support import reject_unknown
 
 # tomlkit 容器 body 的一項：沒有鍵的是空白與註解，有鍵的是真正的值。
 _BodyItem = tuple[items.Key | None, items.Item]
@@ -97,45 +96,28 @@ def dump(config_list: ConfigList, original: str) -> str:
     return tomlkit.dumps(doc)
 
 
-def _find_line(text: str, key: str) -> int | None:
-    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
-    for lineno, line in enumerate(text.splitlines(), 1):
-        if pattern.match(line):
-            return lineno
-    return None
-
-
-def _reject_unknown(
-    keys: Iterable[str], allowed: set[str], text: str, where: str
-) -> None:
-    for key in keys:
-        if key not in allowed:
-            line = _find_line(text, key)
-            loc = f"第 {line} 行" if line is not None else where
-            raise UnknownField(
-                f"無法辨識的欄位「{key}」（{loc}）；{where} 不接受此欄位。"
-                f"下一步：刪掉該欄位，或改成 {where} 接受的欄位名"
-            )
-
-
 def _check_unknown_fields(doc: "tomlkit.TOMLDocument", text: str) -> None:
     """在轉為資料模型前，對照鍵集攔下未知欄位並指名行號（PDF §329）。"""
-    _reject_unknown(doc.keys(), _TOP_KEYS, text, "清單檔頂層")
+    reject_unknown(doc.keys(), _TOP_KEYS, text, "清單檔頂層", UnknownField)
 
     defaults = doc.get("defaults")
     if defaults is not None:
-        _reject_unknown(defaults.keys(), _DEFAULTS_KEYS, text, "defaults")
+        reject_unknown(defaults.keys(), _DEFAULTS_KEYS, text, "defaults", UnknownField)
         perms = defaults.get("permissions")
         if perms is not None:
-            _reject_unknown(perms.keys(), _PERM_KEYS, text, "defaults.permissions")
+            reject_unknown(
+                perms.keys(), _PERM_KEYS, text, "defaults.permissions", UnknownField
+            )
 
     files = doc.get("files")
     if files is not None:
         for entry in files:
-            _reject_unknown(entry.keys(), _ENTRY_KEYS, text, "檔案條目")
+            reject_unknown(entry.keys(), _ENTRY_KEYS, text, "檔案條目", UnknownField)
             eperm = entry.get("permissions")
             if eperm is not None and hasattr(eperm, "keys"):
-                _reject_unknown(eperm.keys(), _PERM_KEYS, text, "條目的 permissions")
+                reject_unknown(
+                    eperm.keys(), _PERM_KEYS, text, "條目的 permissions", UnknownField
+                )
 
 
 def _take_trailing_items(body: list[_BodyItem], stop: int) -> list[_BodyItem]:

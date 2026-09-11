@@ -111,24 +111,6 @@ def test_serve_plan_falls_back_to_the_safe_default_origins_when_none_are_named()
     assert plan.allowed_origins == DEFAULT_ORIGINS
 
 
-def test_serve_plan_takes_the_allowed_roots_from_the_environment():
-    # 白名單根目錄的接線：CM_ALLOWED_ROOTS → allowed_roots，逗號分隔、前後空白不算數。
-    plan = serve_plan(
-        "127.0.0.1",
-        8080,
-        {"CM_CONFIG_REPO": "/srv/r", "CM_ALLOWED_ROOTS": " /srv/a , /srv/b "},
-    )
-
-    assert plan.allowed_roots == ("/srv/a", "/srv/b")
-
-
-def test_serve_plan_allows_no_roots_when_none_are_named():
-    # 白名單是安全邊界：沒指定就**什麼都不放行**，不是全部放行（不變式 4）。
-    plan = serve_plan("127.0.0.1", 8080, {"CM_CONFIG_REPO": "/srv/r"})
-
-    assert plan.allowed_roots == ()
-
-
 def test_serve_hands_the_planned_address_to_the_server(monkeypatch):
     # 「決定要跑什麼」與「真的跑起來」拆開之後，這一則證明兩者仍然接得上。
     started: dict[str, object] = {}

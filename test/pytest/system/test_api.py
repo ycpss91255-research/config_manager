@@ -22,6 +22,7 @@ import urllib.request
 import pytest
 
 import config_manager
+from config_manager.core.allowed_roots import load as load_allowed_roots
 
 _TIMEOUT = 5
 # 422：輸入的形狀對、值不合法。端點刻意不用 400——那會把「你送錯格式」與
@@ -29,6 +30,8 @@ _TIMEOUT = 5
 _UNPROCESSABLE = 422
 # 409：與目前狀態相牴觸（已有同一 target 的條目、或尚未設定身分）。
 _CONFLICT = 409
+# 403：身分設了、但角色不夠（白名單維護僅開發者，#202）。
+_FORBIDDEN = 403
 
 
 def _get(api, path):
@@ -404,3 +407,91 @@ def test_cli_inspect_goes_through_the_same_endpoint_as_the_page(api, sources_roo
     assert result.returncode == 0
     assert "format：yaml" in result.stdout
     assert "no" in result.stdout  # 歧義列出來了
+
+
+# ── POST /api/allowed-roots 白名單維護（#202）──────────────────────────────────
+
+
+def test_a_developer_can_add_a_root_to_the_whitelist(api, tmp_path):
+    # 開發者把一個真實可見的目錄加進白名單，回傳更新後的前綴清單、含剛加的那個。
+    _set_session(api)  # developer
+    new_root = tmp_path / "added_root"
+    new_root.mkdir()
+
+    result = _post(api, "/api/allowed-roots", {"prefix": str(new_root)})
+
+    assert str(new_root) in result["prefixes"]
+
+
+def test_adding_a_root_records_the_session_identity_and_a_server_timestamp(api, repo, tmp_path):
+    # 是誰加的取自 session 身分（不由請求自報，否則紀錄可造假）、何時加的由伺服器蓋時間。
+    # 端點只回前綴清單，who／when 記在設定檔裡，故讀回檔案驗證（用 core.load，不自己解析）。
+    _post(api, "/api/session", {"name": "林工程", "email": "lin@example.com", "role": "developer"})
+    recorded = tmp_path / "recorded_root"
+    recorded.mkdir()
+
+    _post(api, "/api/allowed-roots", {"prefix": str(recorded)})
+
+    text = pathlib.Path(repo, "allowed-roots.toml").read_text(encoding="utf-8")
+    added = next(r for r in load_allowed_roots(text).roots if r.prefix == str(recorded))
+    assert added.added_by == "林工程 <lin@example.com>"
+    assert added.added_at  # 伺服器蓋了時間戳，非空
+
+
+def test_adding_a_root_already_in_the_whitelist_is_a_conflict(api, tmp_path):
+    # 重複新增（存的是 realpath，尾斜線／symlink 都會解析到同一個）→ 與現狀衝突 409，
+    # 不是裸 500。core 的訊息已可行動（指出是哪兩筆）。
+    _set_session(api)  # developer
+    dup = tmp_path / "dup_root"
+    dup.mkdir()
+    _post(api, "/api/allowed-roots", {"prefix": str(dup)})  # 第一次成功
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/allowed-roots", {"prefix": str(dup)})  # 第二次衝突
+
+    assert exc.value.code == _CONFLICT
+
+
+def test_a_normal_user_cannot_add_a_root(api, tmp_path):
+    # 白名單維護僅開發者可用（§7.9、W2）：一般使用者被拒，角色不夠是 403。
+    _post(api, "/api/session", {"name": "王小美", "email": "mei@example.com", "role": "user"})
+    new_root = tmp_path / "user_root"
+    new_root.mkdir()
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/allowed-roots", {"prefix": str(new_root)})
+
+    assert exc.value.code == _FORBIDDEN
+
+
+def test_a_root_added_through_the_api_takes_effect_immediately(api, tmp_path):
+    # AC9 的核心：新增的根不必重啟就生效——加之前瀏覽被拒，加之後同一個服務就瀏覽得進去。
+    _set_session(api)  # developer
+    fresh = tmp_path / "fresh_root"
+    fresh.mkdir()
+    (fresh / "a_file.yaml").write_text("k: 1\n", encoding="utf-8")
+    query = urllib.parse.urlencode({"path": str(fresh)})
+
+    # 加之前：白名單外 → 422。
+    with pytest.raises(urllib.error.HTTPError) as before:
+        _get(api, f"/api/browse?{query}")
+    assert before.value.code == _UNPROCESSABLE
+
+    _post(api, "/api/allowed-roots", {"prefix": str(fresh)})
+
+    # 加之後：同一個服務、不重啟，就瀏覽得進去了。
+    listing = _get(api, f"/api/browse?{query}")
+    assert [entry["name"] for entry in listing["entries"]] == ["a_file.yaml"]
+
+
+def test_adding_a_root_that_is_not_there_is_a_structured_422(api, tmp_path):
+    # 指向不存在的目錄 → 422（AllowedRootUnreachable），不是 500。
+    _set_session(api)  # developer
+    ghost = tmp_path / "does-not-exist"
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/allowed-roots", {"prefix": str(ghost)})
+
+    assert exc.value.code == _UNPROCESSABLE
+    # 只斷言狀態碼分不出「到不了」與別種 422（本檔自訂標準）——斷言被拒原因。
+    assert "到不了" in _detail(exc.value)
