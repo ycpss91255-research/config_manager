@@ -10,13 +10,15 @@ from collections.abc import Iterable
 from pathlib import PurePosixPath
 
 import tomlkit
+from tomlkit import items
 
 from config_manager.core.errors import (
     DuplicatePrefix,
     InvalidPrefix,
+    RootsDumpMismatch,
     RootsUnknownField,
 )
-from config_manager.core.models import AllowedRoots
+from config_manager.core.models import AllowedRoot, AllowedRoots
 
 # 白名單設定檔的允許鍵集。結構驗證（必填、型別）交給 pydantic；這裡只擋未知欄位、
 # 指名行號（防止由設定檔注入內部欄位，比照 config_list）。
@@ -31,6 +33,60 @@ def load(text: str) -> AllowedRoots:
     allowed = AllowedRoots.model_validate(doc.unwrap())
     _check_integrity(allowed)
     return allowed
+
+
+def dump(allowed: AllowedRoots, original: str) -> str:
+    """把白名單設定檔寫回文字，保留原樣（註解、順序、引號樣式）。
+
+    原樣資訊為原始檔文字；以 tomlkit 重新解析後在其上**追加**模型裡有、而原文沒有的根，
+    未觸動的部分逐位元組保留。範圍只到追加（#202）——移除與改動是 #15。
+
+    **寫出之前先自我驗證**，與 `load` 同一組完整性檢查（比照 config_list #181）：檢查不
+    通過時丟具名例外，且不產生輸出。原樣資訊以 `prefix` 定位既有根（白名單根沒有 uid，
+    prefix 就是識別碼）；有一筆缺 prefix 或兩筆共用 prefix 時丟 `RootsDumpMismatch`。
+    """
+    _check_integrity(allowed)
+
+    doc = tomlkit.parse(original)
+    roots = doc.get("roots")
+    if roots is None:
+        roots = tomlkit.aot()
+        doc["roots"] = roots
+
+    existing = _index_by_prefix(roots)
+    for root in allowed.roots:
+        if root.prefix not in existing:
+            roots.append(_root_to_table(root))
+
+    return tomlkit.dumps(doc)
+
+
+def _index_by_prefix(roots: "items.AoT") -> dict[str, int]:
+    index: dict[str, int] = {}
+    for position, table in enumerate(roots.body):
+        prefix = table.get("prefix")
+        if prefix is None:
+            raise RootsDumpMismatch(
+                f"原樣資訊第 {position + 1} 筆白名單根缺 prefix，無法以 prefix 定位。"
+                "下一步：補上該筆的 prefix，或改用一份合法的白名單設定檔"
+            )
+        if prefix in index:
+            raise RootsDumpMismatch(
+                f"原樣資訊的前綴「{prefix}」重複，dump 以 prefix 定位就對不回去。"
+                "下一步：先移除重複，或改用一份合法的白名單設定檔"
+            )
+        index[prefix] = position
+    return index
+
+
+def _root_to_table(root: AllowedRoot) -> items.Table:
+    table = tomlkit.table()
+    table["prefix"] = root.prefix
+    if root.added_by:
+        table["added_by"] = root.added_by
+    if root.added_at:
+        table["added_at"] = root.added_at
+    return table
 
 
 def _find_line(text: str, key: str) -> int | None:

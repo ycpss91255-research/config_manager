@@ -7,12 +7,14 @@ allowed-roots.toml 是 §7.9 持久化、可從介面維護的白名單（#202�
 
 import pytest
 
-from config_manager.core.allowed_roots import load
+from config_manager.core.allowed_roots import dump, load
 from config_manager.core.errors import (
     DuplicatePrefix,
     InvalidPrefix,
+    RootsDumpMismatch,
     RootsUnknownField,
 )
+from config_manager.core.models import AllowedRoot, AllowedRoots
 
 
 def test_valid_allowed_roots_file_loads_with_correct_field_values():
@@ -100,3 +102,87 @@ warnings = "injected"
     message = str(caught.value)
     assert "warnings" in message
     assert "第 5 行" in message
+
+
+def test_dumping_an_unchanged_file_is_byte_for_byte_identical():
+    # 設定檔本身也要原樣保留：未改動寫回，逐位元組相同。
+    text = """\
+# 白名單根目錄（§7.9）
+roots_version = 1
+
+[[roots]]
+prefix   = "/opt/robot/config"  # 主要 config 目錄
+added_by = "Alice"
+added_at = "2026-09-11T08:00:00Z"
+"""
+
+    assert dump(load(text), text) == text
+
+
+def test_appending_a_root_keeps_existing_roots_verbatim_and_adds_the_new_one():
+    # 新增一個根後寫回：既有根的註解／順序／引號樣式不變，新根帶 added_by／added_at。
+    original = """\
+# 白名單根目錄（§7.9）
+roots_version = 1
+
+[[roots]]
+prefix   = "/opt/robot/config"  # 主要 config 目錄
+added_by = "Alice"
+added_at = "2026-09-11T08:00:00Z"
+"""
+
+    allowed = load(original)
+    allowed.roots.append(
+        AllowedRoot(
+            prefix="/etc/robot",
+            added_by="Bob",
+            added_at="2026-09-12T09:00:00Z",
+        )
+    )
+
+    result = dump(allowed, original)
+
+    # 既有根連同它的行內註解逐字保留，且排在新根之前。
+    assert "# 主要 config 目錄" in result
+    assert result.index("/opt/robot/config") < result.index("/etc/robot")
+    # 新根出現且帶 added_by／added_at。
+    assert "Bob" in result
+    assert "2026-09-12T09:00:00Z" in result
+    # 重新載入回來，兩個根都在、順序保留。
+    assert [root.prefix for root in load(result).roots] == [
+        "/opt/robot/config",
+        "/etc/robot",
+    ]
+
+
+def test_dump_rejects_original_whose_roots_share_a_prefix():
+    # 原樣資訊本身不是合法設定檔（兩筆共用 prefix），dump 以 prefix 定位就對不回去。
+    bad_original = """\
+roots_version = 1
+
+[[roots]]
+prefix = "/opt/robot/config"
+
+[[roots]]
+prefix = "/opt/robot/config"
+"""
+    allowed = AllowedRoots(
+        roots_version=1, roots=[AllowedRoot(prefix="/opt/robot/config")]
+    )
+
+    with pytest.raises(RootsDumpMismatch):
+        dump(allowed, bad_original)
+
+
+def test_dump_rejects_original_with_a_root_missing_its_prefix():
+    # 原樣資訊有一筆缺 prefix，dump 無法以 prefix 定位它。
+    bad_original = """\
+roots_version = 1
+
+[[roots]]
+added_by = "Alice"
+"""
+    allowed = AllowedRoots(roots_version=1, roots=[])
+
+    with pytest.raises(RootsDumpMismatch):
+        dump(allowed, bad_original)
