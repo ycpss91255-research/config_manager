@@ -44,6 +44,7 @@ from config_manager.io.errors import (
     SourceNotRegularFile,
     SourceOutsideRoots,
     SourcePathUnstable,
+    SourceTooLarge,
     SourceUnreachable,
 )
 
@@ -52,6 +53,11 @@ from config_manager.io.errors import (
 _SAFE_HOSTNAME = re.compile(r"[A-Za-z0-9._-]+")
 
 _CHUNK = 65536
+
+# 來源檔大小上限（#200）。config 檔案本就小；10 MiB 已遠比任何真實 config 寬鬆，但擋得住
+# 用超大檔把記憶體吃光的 DoS。呼叫端可用 `max_bytes` 覆寫（例如測試給一個小值）；持久化的
+# 環境變數接線（CM_MAX_SOURCE_BYTES）之後要的話再加。
+MAX_SOURCE_BYTES = 10 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -68,8 +74,13 @@ class Source:
     resolved_path: str
 
 
-def read_source(path: str, allowed_roots: Iterable[str]) -> Source:
+def read_source(
+    path: str, allowed_roots: Iterable[str], max_bytes: int = MAX_SOURCE_BYTES
+) -> Source:
     """讀一份要被納管的來源檔。
+
+    `max_bytes` 是大小上限（#200）：`fstat` 的 `st_size` 超過就在**讀取之前**丟
+    `SourceTooLarge`，一個位元組都不讀進來——白名單內放一個超大檔不該能把記憶體吃光。
 
     失敗一律是具名例外，呼叫端據以分辨：
 
@@ -78,6 +89,7 @@ def read_source(path: str, allowed_roots: Iterable[str]) -> Source:
     - `SourcePathUnstable` —— 解析或開檔期間路徑被改動（競速），這次匯入不成立
     - `SourceAbsent` —— 來源不存在（與「讀不到」分開）
     - `SourceUnreachable` —— 上層某層目錄沒有 traverse（`+x`）權限，去不到
+    - `SourceTooLarge` —— 比 `max_bytes` 大，不整個讀進記憶體（#200）
     - `ContentUnreadable` —— 是一般檔案、也到得了，但內容讀不出來（權限）
 
     「不存在／讀不到／上層目錄無 traverse」這三種的細分已於 #182／#184 落地（見
@@ -107,7 +119,13 @@ def read_source(path: str, allowed_roots: Iterable[str]) -> Source:
                 f"來源不是一般檔案（{kind}）：{path} → {resolved}。"
                 f"下一步：納管的對象是一份 config 檔案本身，改指向那個檔案"
             )
-        content = _read_all(descriptor, path, resolved)
+        # 讀之前先擋大小：st_size 來自剛才的 fstat，超過就一個位元組都不讀（#200）。
+        if info.st_size > max_bytes:
+            raise SourceTooLarge(
+                f"來源檔太大（{info.st_size} 位元組，上限 {max_bytes}）：{path} → {resolved}。"
+                f"下一步：確認指到的是一份 config 檔案而不是資料檔／日誌；config 本就不該這麼大"
+            )
+        content = _read_all(descriptor, path, resolved, max_bytes)
     finally:
         os.close(descriptor)
 
@@ -263,19 +281,30 @@ def _ancestors(path: str) -> list[str]:
     return list(reversed(chain))
 
 
-def _read_all(descriptor: int, path: str, resolved: str) -> bytes:
-    """把整個 fd 讀完。
+def _read_all(descriptor: int, path: str, resolved: str, max_bytes: int) -> bytes:
+    """把整個 fd 讀完，但不超過 `max_bytes`。
 
     只讀這一次：解析要文字、複製要位元組、算雜湊也要位元組，對同一個活著的檔案
     分三趟讀，三趟之間內容可以變，那樣「兩邊 sha256 相同」證明的就不是同一份東西
     （T22）。這裡讀進來的這一份就是後續全部步驟共用的那一份。
+
+    `max_bytes` 的邊界在 `st_size` 檢查之外再守一道（#200）：檔案若在 fstat 與讀取之間被
+    撐大，讀到超過上限就丟 `SourceTooLarge`，而不是無上限地一路讀進記憶體。
     """
     blocks: list[bytes] = []
+    total = 0
     try:
         while True:
             block = os.read(descriptor, _CHUNK)
             if not block:
                 return b"".join(blocks)
+            total += len(block)
+            if total > max_bytes:
+                raise SourceTooLarge(
+                    f"來源檔在讀取途中超過上限（已讀 {total} 位元組，上限 {max_bytes}）："
+                    f"{path} → {resolved}。下一步：確認沒有其他程序正在把它撐大，且指到的是"
+                    f"一份 config 檔案"
+                )
             blocks.append(block)
     except OSError as error:
         raise ContentUnreadable(

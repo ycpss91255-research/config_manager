@@ -148,6 +148,15 @@ class BrowseUnreadable(BrowseError):
     形狀不對，這一則是碰得到卻讀不動。"""
 
 
+class SourceTooLarge(SourceError):
+    """來源檔比允許的上限還大——不把它整個讀進記憶體（#200）。
+
+    白名單內放一個超大檔就能讓讀取它的操作把記憶體吃光。以 `fstat` 的 `st_size` 在**讀取
+    之前**擋下，訊息指名路徑與上限；config 檔案本就不該有那麼大。與白名單外分開：那一則
+    是「不該碰」，這一則是「碰得到但太大」。
+    """
+
+
 class SourceUnreachable(SourceError):
     """來源的某一層上層目錄沒有 traverse（`+x`）權限，去不到那個檔案。
 

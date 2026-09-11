@@ -23,6 +23,7 @@ from config_manager.io.errors import (
     SourceNotRegularFile,
     SourceOutsideRoots,
     SourcePathUnstable,
+    SourceTooLarge,
     SourceUnreachable,
 )
 from config_manager.io.source import local_hostname, read_source
@@ -146,6 +147,31 @@ def test_refusal_of_a_non_regular_file_names_what_it_is(tmp_path):
     with pytest.raises(SourceNotRegularFile) as caught:
         read_source(str(folder), [str(inside)])
     assert "目錄" in str(caught.value)
+
+
+def test_a_source_larger_than_the_limit_is_refused_before_reading(tmp_path):
+    # #200：超過上限的來源檔在讀取之前（以 st_size）被擋下，不整個讀進記憶體。用一個小的
+    # max_bytes 觸發，不必真的造一個 10 MiB 檔。
+    inside, _ = _inside_and_outside(tmp_path)
+    big = inside / "big.yaml"
+    big.write_bytes(b"x" * 100)
+
+    with pytest.raises(SourceTooLarge) as caught:
+        read_source(str(big), [str(inside)], max_bytes=10)
+
+    # 訊息指名路徑與上限（§0.4 三要素）。
+    assert "10" in str(caught.value)
+    assert str(big) in str(caught.value)
+
+
+def test_a_source_within_the_limit_reads_normally(tmp_path):
+    inside, _ = _inside_and_outside(tmp_path)
+    small = inside / "small.yaml"
+    small.write_bytes(b"max_vel: 0.8\n")
+
+    source = read_source(str(small), [str(inside)], max_bytes=1024)
+
+    assert source.content == b"max_vel: 0.8\n"
 
 
 def test_local_hostname_is_not_empty():
