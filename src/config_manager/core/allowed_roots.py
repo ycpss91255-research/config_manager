@@ -5,8 +5,6 @@ io（T15），realpath 正規化與可見性也在 io（realpath 是 I/O，比�
 I/O 層）。與 config_list（T1，清單檔本身）分開：那是另一個檔、另一套 schema。
 """
 
-import re
-from collections.abc import Iterable
 from pathlib import PurePosixPath
 
 import tomlkit
@@ -19,6 +17,7 @@ from config_manager.core.errors import (
     RootsUnknownField,
 )
 from config_manager.core.models import AllowedRoot, AllowedRoots
+from config_manager.core.toml_support import reject_unknown
 
 # 白名單設定檔的允許鍵集。結構驗證（必填、型別）交給 pydantic；這裡只擋未知欄位、
 # 指名行號（防止由設定檔注入內部欄位，比照 config_list）。
@@ -89,34 +88,13 @@ def _root_to_table(root: AllowedRoot) -> items.Table:
     return table
 
 
-def _find_line(text: str, key: str) -> int | None:
-    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
-    for lineno, line in enumerate(text.splitlines(), 1):
-        if pattern.match(line):
-            return lineno
-    return None
-
-
-def _reject_unknown(
-    keys: Iterable[str], allowed: set[str], text: str, where: str
-) -> None:
-    for key in keys:
-        if key not in allowed:
-            line = _find_line(text, key)
-            loc = f"第 {line} 行" if line is not None else where
-            raise RootsUnknownField(
-                f"無法辨識的欄位「{key}」（{loc}）；{where} 不接受此欄位。"
-                f"下一步：刪掉該欄位，或改成 {where} 接受的欄位名"
-            )
-
-
 def _check_unknown_fields(doc: "tomlkit.TOMLDocument", text: str) -> None:
     """在轉為資料模型前，對照鍵集攔下未知欄位並指名行號。"""
-    _reject_unknown(doc.keys(), _TOP_KEYS, text, "白名單設定檔頂層")
+    reject_unknown(doc.keys(), _TOP_KEYS, text, "白名單設定檔頂層", RootsUnknownField)
     roots = doc.get("roots")
     if roots is not None:
         for root in roots:
-            _reject_unknown(root.keys(), _ROOT_KEYS, text, "白名單根條目")
+            reject_unknown(root.keys(), _ROOT_KEYS, text, "白名單根條目", RootsUnknownField)
 
 
 def _check_prefix(prefix: str) -> None:

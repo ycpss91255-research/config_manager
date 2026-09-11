@@ -155,6 +155,18 @@ added_at = "2026-09-11T08:00:00Z"
     ]
 
 
+def test_appending_the_first_root_to_a_file_with_no_roots_yet():
+    # 種子可產生一份還沒有任何根的白名單檔；加入第一個根時要能建立 roots 區段。
+    original = "roots_version = 1\n"
+
+    allowed = load(original)
+    allowed.roots.append(AllowedRoot(prefix="/opt/robot/config", added_by="Alice"))
+
+    result = dump(allowed, original)
+
+    assert [root.prefix for root in load(result).roots] == ["/opt/robot/config"]
+
+
 def test_dump_rejects_original_whose_roots_share_a_prefix():
     # 原樣資訊本身不是合法設定檔（兩筆共用 prefix），dump 以 prefix 定位就對不回去。
     bad_original = """\
