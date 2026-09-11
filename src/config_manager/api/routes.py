@@ -10,16 +10,18 @@ app 由 create_app(repo) 產生而非模組層的全域物件：config-repo 的�
 
 import json
 from collections.abc import Iterable
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from config_manager.api.errors import InvalidAuthor
-from config_manager.api.session import USER, Identity, author
+from config_manager.api.session import DEVELOPER, USER, Identity, author
 from config_manager.core.errors import (
     ConfigListError,
     InvalidFormat,
+    InvalidPrefix,
     NameUnderivable,
     ParseError,
     SyntaxParse,
@@ -28,8 +30,14 @@ from config_manager.core.inference import Ambiguity, find_ambiguous, infer_types
 from config_manager.core.models import FileEntry, Permissions
 from config_manager.core.parse import Parsed, parse
 from config_manager.core.state import State
+from config_manager.io.allowed_roots import add_allowed_root, root_prefixes
 from config_manager.io.browse import Entry, Listing, browse
-from config_manager.io.errors import BrowseError, ContentUnreadable, SourceError
+from config_manager.io.errors import (
+    AllowedRootUnreachable,
+    BrowseError,
+    ContentUnreadable,
+    SourceError,
+)
 from config_manager.io.onboard import OnboardRequest, onboard
 from config_manager.io.scan import scan
 from config_manager.io.source import Source, read_source
@@ -65,6 +73,16 @@ class InspectInput(BaseModel):
     source_path: str
     format: str
 
+
+class AllowedRootInput(BaseModel):
+    """把一個路徑前綴加進白名單的請求主體（§7.9, #202）。
+
+    只收 `prefix`：是誰加的由 session 身分決定（不由請求自報，否則紀錄上的人可造假），
+    何時加的由伺服器蓋時間。
+    """
+
+    prefix: str
+
 # 前端是另一個容器、另一個 port（設計文件 §3.1：瀏覽器分別連 frontend 與
 # backend），所以頁面對 API 的請求是跨來源的。
 #
@@ -79,15 +97,13 @@ DEFAULT_ORIGINS = ("http://127.0.0.1:8081", "http://localhost:8081")
 def create_app(
     repo: str,
     allowed_origins: Iterable[str] = DEFAULT_ORIGINS,
-    allowed_roots: Iterable[str] = (),
 ) -> FastAPI:
     """建立服務於 repo 這份 config-repo 的 app。
 
-    `allowed_roots` 是納管與檔案瀏覽的白名單——系統可以碰主機上的哪些目錄（§7.9 的安全
-    邊界）。預設是空的（什麼都不放行，落向安全，不變式 4）；部署以 `CM_ALLOWED_ROOTS`
-    指定（見 `api/cli.serve_plan`）。持久化、可從介面維護的白名單見 #15。
+    納管與檔案瀏覽的白名單（系統可以碰主機上的哪些目錄，§7.9 的安全邊界）是
+    `<repo>/allowed-roots.toml`（#202），**每次請求從檔讀**——從介面新增的根要立即生效、
+    不必重啟。entrypoint 首次啟動從 `CM_ALLOWED_ROOTS` 種下那份檔（`io/allowed_roots`）。
     """
-    roots = tuple(allowed_roots)
     app = FastAPI(title="config_manager", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
     app.add_middleware(
@@ -137,17 +153,22 @@ def create_app(
     @app.post("/api/configs")
     def onboard_config(payload: ConfigInput) -> dict[str, object]:
         """納管新檔案（設計文件 §3.5.3）。"""
-        return _onboard_config(repo, roots, held, payload)
+        return _onboard_config(repo, root_prefixes(repo), held, payload)
 
     @app.get("/api/browse")
     def browse_filesystem(path: str) -> dict[str, object]:
         """檔案系統瀏覽，受白名單限制（設計文件 §3.5.3）。供納管畫面挑檔案用。"""
-        return _browse_filesystem(roots, path)
+        return _browse_filesystem(root_prefixes(repo), path)
 
     @app.post("/api/inspect")
     def inspect_source(payload: InspectInput) -> dict[str, object]:
         """偵測候選檔案（§3.5.3 追加，#195）。供納管確認畫面顯示偵測結果。"""
-        return _inspect(roots, payload)
+        return _inspect(root_prefixes(repo), payload)
+
+    @app.post("/api/allowed-roots")
+    def add_root(payload: AllowedRootInput) -> dict[str, object]:
+        """把一個路徑前綴加進白名單（§7.9, #202）。僅開發者可用；記下是誰、何時加的。"""
+        return _add_allowed_root(repo, held, payload)
 
     return app
 
@@ -184,6 +205,34 @@ def _onboard_config(
         # 與既有條目衝突（target／uid／source 重複）：與目前狀態相牴觸。
         raise HTTPException(status_code=409, detail=str(error)) from error
     return _as_entry(entry)
+
+
+def _add_allowed_root(
+    repo: str, held: dict[str, Identity], payload: AllowedRootInput
+) -> dict[str, object]:
+    """把 `payload.prefix` 加進白名單。僅開發者可用；`added_by` 取自 session、`added_at` 由
+    伺服器蓋時間（抽成模組層函式，同 `_onboard_config`：端點的 closure 只負責接線）。"""
+    identity = held.get("identity")
+    if identity is None:
+        # 加白名單會產生一筆提交，需要作者。沒有身分就無從署名——先設身分。
+        raise HTTPException(
+            status_code=409,
+            detail="尚未設定身分，無法維護白名單。下一步：先 POST /api/session 設定姓名與 email",
+        )
+    if identity.role != DEVELOPER:
+        # 白名單維護僅開發者可用（§7.9、W2）——一般使用者連這個能力都不該有。
+        raise HTTPException(
+            status_code=403,
+            detail="只有開發者能維護白名單。下一步：以開發者身分進入，或請開發者代為加入",
+        )
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        add_allowed_root(repo, payload.prefix, identity.git_author, now)
+    except (InvalidPrefix, AllowedRootUnreachable) as error:
+        # 送進來的前綴不合法（相對／含 ..）或指向到不了的目錄：輸入的值有問題 → 422。
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {"prefixes": list(root_prefixes(repo))}
 
 
 def _browse_filesystem(roots: tuple[str, ...], path: str) -> dict[str, object]:

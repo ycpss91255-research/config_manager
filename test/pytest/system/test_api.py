@@ -29,6 +29,8 @@ _TIMEOUT = 5
 _UNPROCESSABLE = 422
 # 409：與目前狀態相牴觸（已有同一 target 的條目、或尚未設定身分）。
 _CONFLICT = 409
+# 403：身分設了、但角色不夠（白名單維護僅開發者，#202）。
+_FORBIDDEN = 403
 
 
 def _get(api, path):
@@ -404,3 +406,60 @@ def test_cli_inspect_goes_through_the_same_endpoint_as_the_page(api, sources_roo
     assert result.returncode == 0
     assert "format：yaml" in result.stdout
     assert "no" in result.stdout  # 歧義列出來了
+
+
+# ── POST /api/allowed-roots 白名單維護（#202）──────────────────────────────────
+
+
+def test_a_developer_can_add_a_root_to_the_whitelist(api, tmp_path):
+    # 開發者把一個真實可見的目錄加進白名單，回傳更新後的前綴清單、含剛加的那個。
+    _set_session(api)  # developer
+    new_root = tmp_path / "added_root"
+    new_root.mkdir()
+
+    result = _post(api, "/api/allowed-roots", {"prefix": str(new_root)})
+
+    assert str(new_root) in result["prefixes"]
+
+
+def test_a_normal_user_cannot_add_a_root(api, tmp_path):
+    # 白名單維護僅開發者可用（§7.9、W2）：一般使用者被拒，角色不夠是 403。
+    _post(api, "/api/session", {"name": "王小美", "email": "mei@example.com", "role": "user"})
+    new_root = tmp_path / "user_root"
+    new_root.mkdir()
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/allowed-roots", {"prefix": str(new_root)})
+
+    assert exc.value.code == _FORBIDDEN
+
+
+def test_a_root_added_through_the_api_takes_effect_immediately(api, tmp_path):
+    # AC9 的核心：新增的根不必重啟就生效——加之前瀏覽被拒，加之後同一個服務就瀏覽得進去。
+    _set_session(api)  # developer
+    fresh = tmp_path / "fresh_root"
+    fresh.mkdir()
+    (fresh / "a_file.yaml").write_text("k: 1\n", encoding="utf-8")
+    query = urllib.parse.urlencode({"path": str(fresh)})
+
+    # 加之前：白名單外 → 422。
+    with pytest.raises(urllib.error.HTTPError) as before:
+        _get(api, f"/api/browse?{query}")
+    assert before.value.code == _UNPROCESSABLE
+
+    _post(api, "/api/allowed-roots", {"prefix": str(fresh)})
+
+    # 加之後：同一個服務、不重啟，就瀏覽得進去了。
+    listing = _get(api, f"/api/browse?{query}")
+    assert [entry["name"] for entry in listing["entries"]] == ["a_file.yaml"]
+
+
+def test_adding_a_root_that_is_not_there_is_a_structured_422(api, tmp_path):
+    # 指向不存在的目錄 → 422（AllowedRootUnreachable），不是 500。
+    _set_session(api)  # developer
+    ghost = tmp_path / "does-not-exist"
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/allowed-roots", {"prefix": str(ghost)})
+
+    assert exc.value.code == _UNPROCESSABLE

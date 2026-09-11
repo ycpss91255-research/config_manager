@@ -170,6 +170,24 @@ def listing(repo):
     return _write
 
 
+def _seed_allowed_roots(repo, root):
+    """把 root 種進 <repo>/allowed-roots.toml 並提交（就地起服務用；#202）。"""
+    text = (
+        "roots_version = 1\n\n[[roots]]\n"
+        f'prefix = "{root}"\n'
+        'added_by = "seed"\n'
+        'added_at = "2026-01-01T00:00:00Z"\n'
+    )
+    with open(os.path.join(repo, "allowed-roots.toml"), "w", encoding="utf-8") as handle:
+        handle.write(text)
+    subprocess.run(["git", "-C", repo, "add", "allowed-roots.toml"], check=True)
+    subprocess.run(
+        ["git", "-C", repo, "-c", "user.name=seed", "-c", "user.email=s@e.x",
+         "commit", "-q", "-m", "chore: 種下白名單設定檔"],
+        check=True,
+    )
+
+
 @pytest.fixture(scope="session")
 def api(repo, sources_root):
     """服務的位址。外部已經有一個就用它，否則就地起一個。"""
@@ -180,7 +198,11 @@ def api(repo, sources_root):
         return
 
     port = _free_port()
-    app = create_app(repo, allowed_roots=(sources_root,))
+    # 白名單以 <repo>/allowed-roots.toml 為準（#202），每次請求從檔讀。就地起服務沒有
+    # entrypoint 種它，所以這裡把 sources_root 種進去並提交（映像那份由 entrypoint 從
+    # CM_ALLOWED_ROOTS 種）。
+    _seed_allowed_roots(repo, sources_root)
+    app = create_app(repo)
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
