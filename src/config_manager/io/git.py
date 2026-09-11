@@ -86,12 +86,34 @@ def record(repo: str, uid: str, kind: str, message: str, author: str) -> None:
             f"下一步：改用其中一個；介面上顯示的行為描述由上層對應，不進 commit 訊息。"
         )
 
+    _do_commit(repo, author, _message_parts(message, f"{kind}({uid}): "))
+
+
+def commit(repo: str, message: str, author: str) -> None:
+    """把**已 staged** 的變更記成一筆**不掛在某個 config 條目上**的一般 commit。
+
+    與 `record` 分開：record 是 T7 的變更紀錄，主旨進 `<kind>(<uid>): …`、供 `history()`
+    以 uid／kind 取回；這一支動的是不屬於任何 config 條目的檔案——白名單設定檔的維護
+    （allowed-roots.toml，#202）就是這種：它沒有 uid、也不是四種變更類型之一。staging
+    仍是呼叫端的事（見 `stage`），commit 只含明確 stage 的路徑。`message` 的第一段是主旨、
+    之後是內文，與 record 同一個切法。
+    """
+    _do_commit(repo, author, _message_parts(message))
+
+
+def _message_parts(message: str, subject_prefix: str = "") -> list[str]:
+    """把 `message` 切成 git 的 `-m 主旨 [-m 內文]`。第一個空行之前是主旨。"""
     subject, _, body = message.partition("\n\n")
-    name, email = _split_author(author)
     # 第二個 -m 就是 commit 內文；git 以一個空行把它與主旨隔開。沒有內文就不加。
-    parts = ["-m", f"{kind}({uid}): {subject}"]
+    parts = ["-m", f"{subject_prefix}{subject}"]
     if body:
         parts += ["-m", body]
+    return parts
+
+
+def _do_commit(repo: str, author: str, parts: list[str]) -> None:
+    """以 `author`（`姓名 <email>`）為署名跑 `git commit`，commit 訊息為 `parts`。"""
+    name, email = _split_author(author)
     _git(
         repo,
         "-c",

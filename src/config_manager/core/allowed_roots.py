@@ -97,7 +97,7 @@ def _check_unknown_fields(doc: "tomlkit.TOMLDocument", text: str) -> None:
             reject_unknown(root.keys(), _ROOT_KEYS, text, "白名單根條目", RootsUnknownField)
 
 
-def _check_prefix(prefix: str) -> None:
+def check_prefix(prefix: str) -> None:
     """前綴的字面檢查：絕對路徑、不含 .. 逃逸（realpath 留給 io）。"""
     if not prefix.startswith("/"):
         raise InvalidPrefix(
@@ -115,7 +115,7 @@ def _check_integrity(allowed: AllowedRoots) -> None:
     """prefix 唯一與字面合法（重複前綴是靜默的設定錯誤，訊息指出是哪兩筆）。"""
     seen: dict[str, int] = {}
     for index, root in enumerate(allowed.roots):
-        _check_prefix(root.prefix)
+        check_prefix(root.prefix)
         if root.prefix in seen:
             first = seen[root.prefix] + 1
             raise DuplicatePrefix(
