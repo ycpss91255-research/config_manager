@@ -163,4 +163,54 @@ d.txt(46, 360, "兩種處置皆會產生", fs=9.5, col=GREY)
 d.txt(46, 374, "commit 紀錄", fs=9.5, col=GREY)
 d.save(f"{OUT}/w5_drift.svg")
 
+# ============================================================
+# WF6 — 檔案瀏覽（W7，#13）：瀏覽白名單內目錄選檔 + 白名單外拒絕（開發者版）
+# ============================================================
+d = D(880, 540)
+chrome(d, 30, 20, 820, 500, "檔案瀏覽　選定要納管的檔案")
+
+# 工具列：返回、麵包屑、手動絕對路徑輸入 + 前往
+btn(d, 46, 60, 72, 30, "返回", primary=False, fs=10)
+d.txt(132, 80, "/opt/robot/config  ›  navigation", fs=10.5, col=DARK, mono=True, bold=True)
+d.p.append('<rect x="470" y="60" width="288" height="30" rx="3" fill="#fbfcfd" '
+           'stroke="#c3cbd2" stroke-width="1.2"/>')
+d.txt(480, 79, "貼上或輸入絕對路徑…", fs=10, col="#a8b2ba", mono=True)
+btn(d, 766, 60, 68, 30, "前往", fs=10)
+
+d.txt(46, 116, "允許瀏覽的根：/opt/robot/config", fs=9, col=GREY)
+
+# 目錄清單（dir 可下鑽、file 可選取；第 3 列示意選取中）
+d.p.append('<rect x="46" y="128" width="788" height="194" rx="3" fill="#ffffff" '
+           'stroke="#c3cbd2" stroke-width="1.2"/>')
+_rows = [("\U0001F4C1 amr01/", "dir"), ("\U0001F4C1 params/", "dir"),
+         ("\U0001F4C4 nav2_params.yaml", "file"), ("\U0001F4C4 lidar.yaml", "file"),
+         ("\U0001F4C4 costmap.yaml", "file")]
+for _i, (_label, _kind) in enumerate(_rows):
+    _yy = 130 + _i * 38
+    if _i == 2:
+        d.p.append(f'<rect x="47" y="{_yy+1}" width="786" height="36" fill="#eaf3fb"/>')
+    d.txt(64, _yy + 24, _label, fs=11, col=DARK, mono=True)
+    d.txt(792, _yy + 24, "選取" if _kind == "file" else "往下鑽",
+          fs=9, col="#2c3e50", a="middle", bold=True)
+
+d.txt(46, 344, "已選：/opt/robot/config/nav2_params.yaml", fs=10, col="#1e6f3a", bold=True)
+
+# 拒絕橫幅（outside_roots，開發者版：可編輯的加入白名單入口）
+d.p.append('<rect x="46" y="368" width="788" height="130" rx="3" fill="#fdf6f5" '
+           'stroke="#c0392b" stroke-width="1.2"/>')
+pill(d, 62, 384, "白名單外", "#c0392b", w=78)
+d.txt(154, 397, "瀏覽路徑落在白名單之外：/etc/robot",
+      fs=10.5, col="#7b241c", bold=True)
+d.txt(62, 421, "下一步：把該位置納入白名單，或改瀏覽允許範圍內的目錄",
+      fs=9.5, col="#7b241c")
+d.p.append('<rect x="62" y="438" width="558" height="30" rx="3" fill="#fbfcfd" '
+           'stroke="#c3cbd2" stroke-width="1.2"/>')
+d.txt(72, 457, "/etc/robot", fs=10, col=DARK, mono=True)
+btn(d, 634, 438, 182, 30, "加入白名單（開發者）", fs=9.5)
+d.txt(62, 486, "一般使用者：此處改顯示唯讀允許範圍與「請開發者代為加入」",
+      fs=8.5, col=GREY)
+
+d.verify("w7_browse")
+d.save(f"{OUT}/w7_browse.svg")
+
 print("wireframes done")

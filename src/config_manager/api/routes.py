@@ -36,6 +36,9 @@ from config_manager.io.browse import Entry, Listing, browse
 from config_manager.io.errors import (
     AllowedRootUnreachable,
     BrowseError,
+    BrowseNotADirectory,
+    BrowseOutsideRoots,
+    BrowseUnreadable,
     ContentUnreadable,
     SourceError,
 )
@@ -166,6 +169,15 @@ def create_app(
         """偵測候選檔案（§3.5.3 追加，#195）。供納管確認畫面顯示偵測結果。"""
         return _inspect(root_prefixes(repo), payload)
 
+    @app.get("/api/allowed-roots")
+    def list_allowed_roots() -> dict[str, object]:
+        """列出目前白名單的根前綴（§7.9, #13）。browse 的起點與「檢視允許範圍」都讀它。
+
+        唯讀、無角色門檻——看白名單允許哪些目錄，兩種角色都該做得到。誰／何時加入的
+        檢視與移除是完整管理面板（#15）。
+        """
+        return {"prefixes": list(root_prefixes(repo))}
+
     @app.post("/api/allowed-roots")
     def add_root(payload: AllowedRootInput) -> dict[str, object]:
         """把一個路徑前綴加進白名單（§7.9, #202）。僅開發者可用；記下是誰、何時加的。"""
@@ -240,13 +252,35 @@ def _add_allowed_root(
     return {"prefixes": list(root_prefixes(repo))}
 
 
+_BROWSE_KINDS: tuple[tuple[type[BrowseError], str], ...] = (
+    (BrowseOutsideRoots, "outside_roots"),
+    (BrowseNotADirectory, "not_a_directory"),
+    (BrowseUnreadable, "unreadable"),
+)
+
+
+def _browse_kind(error: BrowseError) -> str:
+    """把 browse 的具名例外對應成機器可讀的原因碼，供前端依原因＋角色分流（#13）。"""
+    for kind_type, kind in _BROWSE_KINDS:
+        if isinstance(error, kind_type):
+            return kind
+    return "browse_error"
+
+
 def _browse_filesystem(roots: tuple[str, ...], path: str) -> dict[str, object]:
     """檔案系統瀏覽的邏輯（同 `_onboard_config`：抽出來讓 `create_app` 保持簡單）。"""
     try:
         listing = browse(path, roots)
     except BrowseError as error:
-        # 白名單外、不是目錄、讀不出來：輸入的路徑值不合法。
-        raise HTTPException(status_code=422, detail=str(error)) from error
+        # 白名單外、不是目錄、讀不出來：輸入的路徑值不合法。detail 帶 kind 讓前端分辨
+        # 原因（只有 outside_roots 給加白名單入口），message 是原樣可行動訊息（含下一步）；
+        # resolved／suggested 讓「加入白名單」預填解析後的目錄，而非使用者打的原字串（#13）。
+        detail: dict[str, object] = {"kind": _browse_kind(error), "message": str(error)}
+        if error.resolved is not None:
+            detail["resolved"] = error.resolved
+        if error.suggested is not None:
+            detail["suggested"] = error.suggested
+        raise HTTPException(status_code=422, detail=detail) from error
     return _as_listing(listing)
 
 

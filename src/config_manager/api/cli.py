@@ -272,8 +272,9 @@ def _inspect(api: str, source: str, fmt: str) -> int:
 def _http_detail(error: urllib.error.HTTPError) -> str:
     """把 HTTPError 的 body 解出可讀訊息；解不出來就回原始狀態行。
 
-    偵測端點的 detail 是結構化物件 `{message, file, line}`（#195），其餘端點是字串——兩種
-    都挑出人看的那一段。
+    有些端點的 detail 是結構化物件、有些是字串，這裡兩種都挑出人看的那一段（取 `message`）：
+    偵測端點回 `{message, file, line}`（#195），檔案瀏覽的拒絕回 `{kind, message, ...}`（#13），
+    納管／白名單維護等回字串。
     """
     try:
         detail = json.loads(error.read().decode("utf-8"))["detail"]
