@@ -652,6 +652,86 @@ def test_returning_from_the_browser_shows_the_list_again(open_page):
     assert page.is_hidden("[data-testid='browse']")
 
 
+# ── W8 納管確認（#14）────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "name, content, fmt",
+    [
+        ("nav.yaml", "max_vel_x: 0.8\n", "yaml"),
+        ("conf.json", '{"a": 1}\n', "json"),
+        ("app.toml", "k = 1\n", "toml"),
+        ("s.ini", "[sec]\nk = 1\n", "ini"),
+    ],
+)
+def test_onboarding_a_config_of_each_format_shows_it_in_the_list(
+    open_page, browse_root, name, content, fmt
+):
+    # AC1：從介面納管至少三種格式的真實 config，納管後出現在左側樹。
+    (browse_root / name).write_text(content, encoding="utf-8")
+    page = _open_confirm(open_page(), browse_root, name)
+
+    assert page.input_value("[data-testid='onboard-format']") == fmt  # 副檔名預填的建議
+    page.get_by_role("button", name="確認寫入").click()
+
+    stem = name.rsplit(".", 1)[0]
+    # 納管後回清單、新條目出現在左側樹（名字由目標路徑推導：<根名>-<檔名>）。
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    page.wait_for_selector(f"text={browse_root.name}-{stem}")
+
+
+def test_the_confirm_screen_shows_each_value_type(open_page, browse_root):
+    # AC3：顯示每個值的解析型別供確認（可折疊樹，葉節點帶正確 data-type）。
+    (browse_root / "types.json").write_text('{"a": 1, "b": "x"}\n', encoding="utf-8")
+    page = _open_confirm(open_page(), browse_root, "types.json")
+
+    assert page.get_attribute("[data-testid='onboard-type-a']", "data-type") == "int"
+    assert page.get_attribute("[data-testid='onboard-type-b']", "data-type") == "string"
+
+
+def test_ambiguous_yaml_gates_the_submit_until_each_is_acked(open_page, browse_root):
+    # AC4：歧義以清單呈現（指名值與行號），逐條確認後才可寫入。
+    (browse_root / "amb.yaml").write_text("enabled: no\nmode: 08\n", encoding="utf-8")
+    page = _open_confirm(open_page(), browse_root, "amb.yaml")
+    submit = page.get_by_role("button", name="確認寫入")
+
+    assert submit.is_disabled()  # 有未確認的歧義
+    assert "no" in page.inner_text("[data-testid='onboard-ambiguity-1']")  # 指名值與行號
+    page.check("[data-testid='onboard-ambiguity-ack-1']")
+    assert submit.is_disabled()  # 還有一個未勾
+    page.check("[data-testid='onboard-ambiguity-ack-2']")
+    assert submit.is_enabled()  # 全部確認後才解鎖
+
+
+def test_the_confirm_screen_previews_the_hostname(open_page, browse_root):
+    # AC5：納管前預覽 hostname（核對機器身分）。
+    (browse_root / "h.yaml").write_text("a: 1\n", encoding="utf-8")
+    page = _open_confirm(open_page(), browse_root, "h.yaml")
+
+    assert page.inner_text("[data-testid='onboard-hostname']").strip()  # 非空、含 hostname
+
+
+def test_an_onboarded_entry_survives_a_reload(open_page, browse_root):
+    # AC5：hostname 寫進檔案、重開不變——落盤凍結，reload 後同一條目仍在。
+    (browse_root / "persist.yaml").write_text("a: 1\n", encoding="utf-8")
+    page = _open_confirm(open_page(), browse_root, "persist.yaml")
+    page.get_by_role("button", name="確認寫入").click()
+    page.wait_for_selector(f"text={browse_root.name}-persist")
+
+    page.reload()
+
+    page.wait_for_selector(f"text={browse_root.name}-persist")
+
+
+def test_raw_format_shows_version_only_not_zero_fields(open_page, browse_root):
+    # raw 不解析——確認畫面說「只版控、不解析」，不顯示「0 個欄位」假訊號。
+    (browse_root / "blob.raw").write_text("anything\n", encoding="utf-8")
+    page = _open_confirm(open_page(), browse_root, "blob.raw")
+
+    assert page.input_value("[data-testid='onboard-format']") == "raw"
+    assert "只版控" in page.inner_text("[data-testid='onboard-summary']")
+
+
 # ── 小工具 ──────────────────────────────────────────────────────────────────
 
 
@@ -672,6 +752,20 @@ def _open_browser_as_developer(page):
     """以開發者身分進入再開瀏覽（拒絕情境要驗開發者的加入白名單入口）。"""
     page.click("[data-testid='role-toggle'] button[data-role='developer']")
     return _open_browser(page)
+
+
+def _open_confirm(page, browse_root, name):
+    """開瀏覽 → 選 browse_root 底下的 name 檔 → 「檢視並納管」→ 到 W8 確認畫面。"""
+    _open_browser(page)
+    page.click(f"[data-testid='browse-root-{browse_root}']")
+    page.wait_for_selector(f"[data-testid='browse-entry-{name}']")
+    page.click(f"[data-testid='browse-entry-{name}']")
+    page.get_by_role("button", name="檢視並納管").click()
+    page.wait_for_selector("[data-testid='onboard-confirm']", state="visible")
+    # 等 inspect 非同步回來、確認畫面填好——hostname 一定會被填（成功時），是「偵測完成」的訊號；
+    # 不等的話讀 hostname／summary 會讀到還沒填的空字串。
+    page.wait_for_selector("text=將以 hostname")
+    return page
 
 
 def _browse_entries(page) -> list:

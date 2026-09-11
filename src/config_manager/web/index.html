@@ -213,6 +213,49 @@
     margin: 10px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px;
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
   }
+
+  /* W8 納管確認 */
+  #onboard-confirm { padding: 16px 20px 40px; }
+  .onboard-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .onboard-path {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px;
+    color: var(--muted); overflow-wrap: anywhere;
+  }
+  .onboard-fmt-label { font-size: 12px; color: var(--muted); }
+  .onboard-format {
+    font: inherit; margin-left: 6px; padding: 5px 8px; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--bg); color: var(--fg);
+  }
+  .onboard-meta { display: flex; gap: 20px; margin: 0 0 6px; font-size: 13px; }
+  .onboard-hostname { color: var(--in-sync); font-weight: 600; }
+  .onboard-permissions { color: var(--muted); font-family: ui-monospace, Menlo, monospace; }
+  .onboard-summary { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  .onboard-summary:empty { display: none; }
+  .onboard-cols { display: flex; gap: 16px; align-items: flex-start; }
+  .onboard-types {
+    flex: 1; list-style: none; margin: 0; padding: 0;
+    border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+  }
+  .onboard-types:empty { display: none; }
+  .onboard-types li {
+    padding: 6px 12px; display: flex; align-items: baseline; gap: 8px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px;
+  }
+  .onboard-types li + li { border-top: 1px solid var(--line); }
+  .onboard-types li[data-container="true"] { cursor: pointer; font-weight: 600; }
+  .onboard-types li.is-collapsed-child { display: none; }
+  .onboard-types .type { margin-left: auto; color: var(--muted); font-size: 12px; }
+  .onboard-ambiguities { flex: none; width: 300px; }
+  .onboard-ambiguities:empty { display: none; }
+  .onboard-ambiguity {
+    border: 1px solid var(--drift); border-radius: 8px; padding: 10px 12px;
+    margin-bottom: 8px; background: var(--panel);
+  }
+  .onboard-ambiguity label { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
+  .onboard-ambiguity .readings { color: var(--muted); font-size: 12px; margin: 4px 0 0 22px; }
+  .onboard-actions { margin-top: 16px; }
+  .onboard-start { margin-top: 10px; font-weight: 600; }
+  .onboard-submit:disabled { opacity: .5; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -272,7 +315,40 @@
   <ul data-testid="browse-roots" class="browse-roots"></ul>
   <ul data-testid="browse-list" class="browse-list"></ul>
   <p class="browse-selection" data-testid="browse-selection" hidden></p>
+  <button type="button" class="onboard-start" data-testid="onboard-start" hidden>檢視並納管</button>
   <div class="browse-rejected" data-testid="browse-rejected" hidden></div>
+</section>
+
+<!-- W8 納管確認（#14）：偵測結果供確認 → 寫入。從 W7 選檔後進入。
+     元素的 data-testid 與可見文字依 UI-ELEMENTS.md 的 W8。 -->
+<section id="onboard-confirm" data-testid="onboard-confirm" hidden>
+  <div class="onboard-bar">
+    <button type="button" class="onboard-cancel">取消</button>
+    <span class="onboard-path" data-testid="onboard-path"></span>
+    <span class="grow"></span>
+    <label class="onboard-fmt-label">格式
+      <select data-testid="onboard-format" class="onboard-format">
+        <option value="yaml">yaml</option>
+        <option value="json">json</option>
+        <option value="toml">toml</option>
+        <option value="ini">ini</option>
+        <option value="raw">raw</option>
+      </select>
+    </label>
+  </div>
+  <p class="onboard-meta">
+    <span data-testid="onboard-hostname" class="onboard-hostname"></span>
+    <span data-testid="onboard-permissions" class="onboard-permissions"></span>
+  </p>
+  <p class="onboard-summary" data-testid="onboard-summary"></p>
+  <div class="onboard-cols">
+    <ul data-testid="onboard-types" class="onboard-types"></ul>
+    <div data-testid="onboard-ambiguities" class="onboard-ambiguities"></div>
+  </div>
+  <div class="onboard-error notice error" data-testid="onboard-error" hidden></div>
+  <div class="onboard-actions">
+    <button type="button" class="onboard-submit" data-testid="onboard-submit" disabled>確認寫入</button>
+  </div>
 </section>
 
 <script>
@@ -445,6 +521,7 @@ function showList(identity) {
   header.hidden = false;
   listView.hidden = false;
   browseView.hidden = true;
+  confirmView.hidden = true;
   currentRole.textContent = `${identity.name}・${ROLE_TEXT[identity.role] || identity.role}`;
   load();
 }
@@ -530,6 +607,8 @@ async function browseTo(path) {
   browseRejectedEl.hidden = true;
   // 換目錄就清掉「已選」——選取屬於某個目錄，離開它之後那個殘留會與目前位置不一致（#13）。
   browseSelectionEl.hidden = true;
+  onboardStartEl.hidden = true;
+  selectedSourcePath = null;
   try {
     const response = await fetch(`${API_BASE}/api/browse?path=${encodeURIComponent(path)}`);
     const payload = await response.json();
@@ -588,8 +667,10 @@ function renderBreadcrumb(path) {
 }
 
 function selectBrowseFile(path) {
+  selectedSourcePath = path;
   browseSelectionEl.textContent = `已選：${path}`;
   browseSelectionEl.hidden = false;
+  onboardStartEl.hidden = false;  // 選了檔才出現「檢視並納管」（進 W8 確認）
 }
 
 function renderBrowseRejection(detail, attempted) {
@@ -674,6 +755,197 @@ browseView.querySelector(".browse-go").addEventListener("click", () => {
   const path = browsePathInput.value.trim();
   if (path) browseTo(path);
 });
+
+// ── W8 納管確認（#14）───────────────────────────────────────────────────────
+// 選檔（W7）→「檢視並納管」→ POST /api/inspect → 顯示格式／型別／歧義／權限／hostname
+// 供確認 → 逐條確認歧義後 → POST /api/configs 寫入 → 回清單。型別只顯示不可編輯（編輯是
+// W3／#16）。hostname 只顯示、不由前端送（後端納管當下決定並凍結，不變式 8）。
+let selectedSourcePath = null;
+let currentAmbiguities = [];
+
+const onboardStartEl = document.querySelector("[data-testid='onboard-start']");
+const confirmView = document.querySelector("[data-testid='onboard-confirm']");
+const onboardPathEl = document.querySelector("[data-testid='onboard-path']");
+const onboardFormatEl = document.querySelector("[data-testid='onboard-format']");
+const onboardHostnameEl = document.querySelector("[data-testid='onboard-hostname']");
+const onboardPermsEl = document.querySelector("[data-testid='onboard-permissions']");
+const onboardSummaryEl = document.querySelector("[data-testid='onboard-summary']");
+const onboardTypesEl = document.querySelector("[data-testid='onboard-types']");
+const onboardAmbiguitiesEl = document.querySelector("[data-testid='onboard-ambiguities']");
+const onboardErrorEl = document.querySelector("[data-testid='onboard-error']");
+const onboardSubmitEl = document.querySelector("[data-testid='onboard-submit']");
+
+// 副檔名只當**建議**（不變式 8：副檔名不是持續權威，使用者可改、確認後才明寫進清單檔）。
+const FORMAT_BY_EXT = { yaml: "yaml", yml: "yaml", json: "json", toml: "toml", ini: "ini" };
+const TYPE_TEXT = {
+  bool: "布林", int: "整數", float: "浮點數", string: "字串",
+  dict: "物件", list: "陣列", null: "null", unknown: "未知",
+};
+
+function guessFormat(path) {
+  const ext = path.split(".").pop().toLowerCase();
+  return FORMAT_BY_EXT[ext] || "raw";
+}
+
+function showConfirm() {
+  identityForm.hidden = true;
+  header.hidden = true;
+  listView.hidden = true;
+  browseView.hidden = true;
+  confirmView.hidden = false;
+}
+
+function openConfirm(path) {
+  onboardPathEl.textContent = path;
+  onboardFormatEl.value = guessFormat(path);
+  showConfirm();
+  runInspect();
+}
+
+async function runInspect() {
+  onboardErrorEl.hidden = true;
+  onboardSubmitEl.disabled = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/inspect`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        source_path: onboardPathEl.textContent,
+        format: onboardFormatEl.value,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      renderOnboardError(payload.detail);
+      return;
+    }
+    renderInspect(payload);
+  } catch (error) {
+    renderOnboardError(String(error && error.message ? error.message : error));
+  }
+}
+
+function renderInspect(payload) {
+  onboardHostnameEl.textContent = `將以 hostname＝${payload.hostname} 納管`;
+  const permissions = payload.permissions;
+  onboardPermsEl.textContent =
+    `原始權限 ${permissions.owner}:${permissions.group} ${permissions.mode}`;
+  // raw 不解析——說明語意，不顯示「0 個欄位」這種假訊號（#195 資安審查的同一類）。
+  onboardSummaryEl.textContent = payload.format === "raw"
+    ? "raw：只版控、不解析，因此沒有欄位、型別或歧義。"
+    : `偵測到 ${payload.field_count} 個欄位。`;
+  renderTypeTree(payload.types);
+  renderAmbiguities(payload.ambiguities);
+  refreshSubmitState();
+}
+
+function renderTypeTree(types) {
+  // 後端回的 types 已含容器（dict／list）與葉，鍵為前序走訪的欄位路徑（. 相接、[] 標元素）。
+  onboardTypesEl.replaceChildren(...Object.keys(types).map((path) => {
+    const type = types[path];
+    const depth = (path.match(/\.|\[\]/g) || []).length;
+    const leaf = path.split(".").pop();
+    const node = element("li", {
+      "data-testid": `onboard-type-${path}`,
+      "data-name": path,
+      "data-type": type,
+    }, [
+      element("span", { text: `${"　".repeat(depth)}${leaf}` }),
+      element("span", { class: "type", text: TYPE_TEXT[type] || type }),
+    ]);
+    if (type === "dict" || type === "list") node.setAttribute("data-container", "true");
+    return node;
+  }));
+}
+
+function renderAmbiguities(ambiguities) {
+  currentAmbiguities = ambiguities;
+  onboardAmbiguitiesEl.replaceChildren(...ambiguities.map((ambiguity) => {
+    const ack = element("input", {
+      type: "checkbox",
+      "data-testid": `onboard-ambiguity-ack-${ambiguity.line}`,
+    });
+    ack.addEventListener("change", refreshSubmitState);
+    return element("div", {
+      class: "onboard-ambiguity",
+      "data-testid": `onboard-ambiguity-${ambiguity.line}`,
+    }, [
+      element("label", {}, [
+        ack,
+        element("span", { text: `第 ${ambiguity.line} 行「${ambiguity.value}」` }),
+      ]),
+      element("p", { class: "readings", text: ambiguity.readings.join("；") }),
+    ]);
+  }));
+}
+
+function refreshSubmitState() {
+  // 每個歧義都要勾了才解鎖「確認寫入」（AC4：確認後才繼續）。無歧義時 every 回 true。
+  const acks = [...onboardAmbiguitiesEl.querySelectorAll("input[type='checkbox']")];
+  onboardSubmitEl.disabled = !acks.every((box) => box.checked);
+}
+
+function renderOnboardError(detail) {
+  // detail 三形狀：字串（onboard）、{message,file,line}（inspect）、list（FastAPI 驗證）。
+  let message;
+  if (typeof detail === "string") {
+    message = detail;
+  } else if (Array.isArray(detail)) {
+    message = detail.map((item) => item.msg || JSON.stringify(item)).join("；");
+  } else if (detail && detail.message) {
+    message = detail.line ? `${detail.message}（第 ${detail.line} 行）` : detail.message;
+  } else {
+    message = String(detail);
+  }
+  onboardErrorEl.textContent = message;
+  onboardErrorEl.hidden = false;
+  onboardSubmitEl.disabled = true;
+}
+
+async function submitOnboard() {
+  // 歧義確認彙整進 commit 內文，供日後追溯當時怎麼確認的（onboard 原樣寫入、不解析）。
+  const note = currentAmbiguities
+    .map((ambiguity) => `第 ${ambiguity.line} 行「${ambiguity.value}」已確認`)
+    .join("；");
+  onboardErrorEl.hidden = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/configs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        source_path: onboardPathEl.textContent,
+        format: onboardFormatEl.value,
+        ambiguity_note: note,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      renderOnboardError(payload.detail);
+      return;
+    }
+    showList(currentIdentity);  // 回清單；load() 會重掃，新條目就出現在左側樹
+  } catch (error) {
+    renderOnboardError(String(error && error.message ? error.message : error));
+  }
+}
+
+onboardStartEl.addEventListener("click", () => {
+  if (selectedSourcePath) openConfirm(selectedSourcePath);
+});
+onboardFormatEl.addEventListener("change", runInspect);
+onboardSubmitEl.addEventListener("click", submitOnboard);
+onboardTypesEl.addEventListener("click", (event) => {
+  const container = event.target.closest("li[data-container='true']");
+  if (!container) return;
+  const prefix = container.dataset.name;
+  for (const node of onboardTypesEl.querySelectorAll("li")) {
+    const name = node.dataset.name;
+    if (name !== prefix && (name.startsWith(`${prefix}.`) || name.startsWith(`${prefix}[`))) {
+      node.classList.toggle("is-collapsed-child");
+    }
+  }
+});
+confirmView.querySelector(".onboard-cancel").addEventListener("click", showBrowse);
 
 // 已經輸入過身分就直接進清單（重新整理不必再填一次）。
 (async function start() {
