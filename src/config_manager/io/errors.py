@@ -165,7 +165,18 @@ class BrowseError(Exception):
 
     自成一族：`SourceError` 講的是「讀一份要納管的檔案」，這一族講的是「在白名單內
     列目錄、給使用者挑檔案」。同一道白名單邊界的兩個用途，處置不同。
+
+    帶 `resolved`（解析後的絕對路徑）與 `suggested`（被拒時建議加進白名單的目錄前綴，
+    是被拒目標的目錄 realpath、目標為檔案則取父目錄）供 api 層放進**結構化** detail——前端
+    的「加入白名單」預填要的是解析後的目錄，不是使用者打的原字串（#13）。訊息仍含它們的
+    人讀版本，這兩個屬性只是把同一份事實結構化，讓前端不必去 parse 中文訊息。
     """
+
+    def __init__(self, message: str, resolved: str | None = None,
+                 suggested: str | None = None) -> None:
+        super().__init__(message)
+        self.resolved = resolved
+        self.suggested = suggested
 
 
 class BrowseOutsideRoots(BrowseError):

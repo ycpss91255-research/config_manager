@@ -253,9 +253,11 @@ def test_browse_lists_a_directory_within_the_whitelist(api, sources_root):
     query = urllib.parse.urlencode({"path": str(base)})
     listing = _get(api, f"/api/browse?{query}")
 
+    names = [entry["name"] for entry in listing["entries"]]
     kinds = {entry["name"]: entry["kind"] for entry in listing["entries"]}
     assert kinds["sub"] == "dir"
     assert kinds["conf.yaml"] == "file"
+    assert names == sorted(names)  # 依名字排序是契約——dict 比對驗不到，明確斷言順序
 
 
 def test_browse_a_path_outside_the_whitelist_is_refused(api, tmp_path):
@@ -270,6 +272,10 @@ def test_browse_a_path_outside_the_whitelist_is_refused(api, tmp_path):
     detail = _detail(exc.value)
     assert detail["kind"] == "outside_roots"
     assert "白名單之外" in detail["message"]
+    # 也帶解析後路徑與建議加入的目錄前綴（tmp_path 是目錄 → suggested 即其 realpath），
+    # 讓前端「加入白名單」預填解析後的目錄、而非使用者打的原字串。
+    assert detail["resolved"] == os.path.realpath(str(tmp_path))
+    assert detail["suggested"] == os.path.realpath(str(tmp_path))
 
 
 def test_browse_a_symlink_that_escapes_the_whitelist_is_refused(api, sources_root, tmp_path):

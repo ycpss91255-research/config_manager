@@ -174,6 +174,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 進入瀏覽 | W2 工具列文字「納管」 | 開啟檔案瀏覽 view（#14 之後接上完整納管流程） |
 | 瀏覽 view | `data-testid="browse"` | 整頁容器；開啟時隱藏清單、顯示自己 |
 | 返回 | 文字「返回」 | 關閉瀏覽、回到清單 |
+| 提示 | `data-testid="browse-hint"` | 承載可見提示與非同步載入錯誤（「挑一個允許瀏覽的根開始…」「白名單目前是空的。」「讀不到白名單：…」）；空時隱藏 |
 | 起點根清單 | `data-testid="browse-roots"` | 剛開啟時列出白名單根（`GET /api/allowed-roots`）供挑選起點 |
 | 根項目 | `data-testid="browse-root-<前綴>"` | 單擊從該根開始瀏覽 |
 | 手動路徑輸入 | `data-testid="browse-path-input"` | 開發者可貼／打一個絕對路徑當瀏覽目標——**這是走到白名單外、觸發加入白名單的途徑** |

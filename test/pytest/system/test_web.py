@@ -474,8 +474,8 @@ def test_picking_a_root_lists_its_directory_contents(open_page, browse_root):
     page.click(f"[data-testid='browse-root-{browse_root}']")
     page.wait_for_selector("[data-testid='browse-list']")
 
-    listed = _browse_entries(page)
-    assert listed == {"params": "dir", "nav.yaml": "file"}  # 依名字排序、種類正確
+    # list（非 dict）比對，順序即後端排序：nav.yaml 在 params 之前。
+    assert _browse_entries(page) == [["nav.yaml", "file"], ["params", "dir"]]
 
 
 def test_clicking_a_folder_descends_and_updates_the_breadcrumb(open_page, browse_root):
@@ -489,11 +489,14 @@ def test_clicking_a_folder_descends_and_updates_the_breadcrumb(open_page, browse
     page.wait_for_selector("[data-testid='browse-entry-deep.yaml']")
 
     # 下鑽到 params 的內容，麵包屑多了 params 這一段。
-    assert _browse_entries(page) == {"deep.yaml": "file"}
+    assert _browse_entries(page) == [["deep.yaml", "file"]]
     segments = page.eval_on_selector_all(
         "[data-testid='breadcrumb'] [data-path]", "ns => ns.map(n => n.dataset.path)"
     )
+    # 夾在白名單根為界：第一段就是根本身，且沒有任何段是根的嚴格上層（不讓人點到根之上）。
+    assert segments[0] == str(browse_root)
     assert str(browse_root / "params") in segments
+    assert all(seg == str(browse_root) or seg.startswith(f"{browse_root}/") for seg in segments)
 
 
 def test_clicking_a_breadcrumb_segment_goes_back_up(open_page, browse_root):
@@ -510,7 +513,7 @@ def test_clicking_a_breadcrumb_segment_goes_back_up(open_page, browse_root):
     page.click(f"[data-testid='breadcrumb'] [data-path='{browse_root}']")
     page.wait_for_selector("[data-testid='browse-entry-nav.yaml']")
 
-    assert _browse_entries(page) == {"params": "dir", "nav.yaml": "file"}
+    assert _browse_entries(page) == [["nav.yaml", "file"], ["params", "dir"]]
 
 
 def test_a_manual_absolute_path_browses_that_directory(open_page, browse_root):
@@ -522,7 +525,7 @@ def test_a_manual_absolute_path_browses_that_directory(open_page, browse_root):
     page.click("text=前往")
     page.wait_for_selector("[data-testid='browse-entry-deep.yaml']")
 
-    assert _browse_entries(page) == {"deep.yaml": "file"}
+    assert _browse_entries(page) == [["deep.yaml", "file"]]
 
 
 def test_clicking_a_file_selects_it(open_page, browse_root):
@@ -586,7 +589,7 @@ def test_a_developer_adds_the_rejected_path_then_browsing_it_succeeds(
     page.get_by_role("button", name="加入白名單").click()
 
     page.wait_for_selector("[data-testid='browse-entry-cfg.yaml']")
-    assert _browse_entries(page) == {"cfg.yaml": "file"}
+    assert _browse_entries(page) == [["cfg.yaml", "file"]]
 
 
 def test_a_non_directory_rejection_offers_no_add_entry_even_to_a_developer(
@@ -604,6 +607,49 @@ def test_a_non_directory_rejection_offers_no_add_entry_even_to_a_developer(
     rejected = page.locator("[data-testid='browse-rejected']")
     assert rejected.get_attribute("data-kind") == "not_a_directory"
     assert page.get_by_role("button", name="加入白名單").count() == 0
+
+
+def test_the_add_entry_prefills_the_parent_directory_for_a_rejected_file(
+    open_page, browse_root, tmp_path
+):
+    # 開發者手動打一個白名單外的**檔案**路徑 → 加入白名單入口預填該檔的父目錄，不是檔案本身
+    # （白名單根必須是目錄；填檔案會被後端擋）。驗 suggested「檔案則取父目錄」這條契約。
+    outside_file = tmp_path / "loose.yaml"
+    outside_file.write_text("a: 1\n", encoding="utf-8")
+    page = _open_browser_as_developer(open_page())
+
+    page.fill("[data-testid='browse-path-input']", str(outside_file))
+    page.get_by_role("button", name="前往").click()
+    page.wait_for_selector("[data-testid='whitelist-prefix-input']")
+
+    assert page.input_value("[data-testid='whitelist-prefix-input']") == str(tmp_path)
+
+
+def test_navigating_to_another_directory_clears_a_previous_file_selection(open_page, browse_root):
+    # 選取屬於某個目錄；離開它之後那個「已選」殘留會與目前位置不一致（#13 審查）。
+    (browse_root / "params").mkdir()
+    (browse_root / "params" / "inner.yaml").write_text("i: 1\n", encoding="utf-8")
+    (browse_root / "nav.yaml").write_text("a: 1\n", encoding="utf-8")
+    page = _open_browser(open_page())
+    page.click(f"[data-testid='browse-root-{browse_root}']")
+    page.wait_for_selector("[data-testid='browse-entry-nav.yaml']")
+    page.click("[data-testid='browse-entry-nav.yaml']")
+    page.wait_for_selector("[data-testid='browse-selection']")
+
+    page.click("[data-testid='browse-entry-params']")
+    page.wait_for_selector("[data-testid='browse-entry-inner.yaml']")
+
+    assert page.is_hidden("[data-testid='browse-selection']")
+
+
+def test_returning_from_the_browser_shows_the_list_again(open_page):
+    # W7「返回：關閉瀏覽、回到清單」——往返的另一半，不能只驗開啟。
+    page = _open_browser(open_page())
+
+    page.get_by_role("button", name="返回").click()
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+
+    assert page.is_hidden("[data-testid='browse']")
 
 
 # ── 小工具 ──────────────────────────────────────────────────────────────────
@@ -628,13 +674,13 @@ def _open_browser_as_developer(page):
     return _open_browser(page)
 
 
-def _browse_entries(page) -> dict:
-    """目前目錄清單的 {名字: 種類}。"""
-    pairs = page.eval_on_selector_all(
+def _browse_entries(page) -> list:
+    """目前目錄清單的 [[名字, 種類], …]，**依 DOM 順序**——後端依名字排序，回 list（不是
+    dict）才驗得到排序這條契約（dict 比對忽略順序）。"""
+    return page.eval_on_selector_all(
         "[data-testid='browse-list'] [data-testid^='browse-entry-']",
         "ns => ns.map(n => [n.dataset.name, n.dataset.kind])",
     )
-    return {name: kind for name, kind in pairs}
 
 
 def _fill_identity(page, name: str = _NAME) -> None:

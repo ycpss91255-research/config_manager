@@ -58,11 +58,17 @@ def read_allowed_roots(repo: str) -> AllowedRoots:
 
 
 def root_prefixes(repo: str) -> tuple[str, ...]:
-    """白名單的前綴清單——browse／onboard／source 每次請求以這個取，不必自己解析檔案。
+    """白名單的前綴清單（**realpath 正規化後**）——browse／onboard／source 每次請求以這個取。
 
     每次請求都讀檔（而非啟動時凍結一份）：從介面新增的根要**立即生效、不必重啟**（#202）。
+
+    正規化（realpath）的理由：entrypoint 把 `CM_ALLOWED_ROOTS` 逐字種進檔案（可能帶尾斜線、
+    或在 symlink 掛載下字面值 != realpath，如 macOS 的 /tmp→/private/tmp）；而 browse 回給前端的
+    路徑一律是 realpath。兩邊不一致會讓前端「麵包屑夾在根為界」的判定落空、把根以上的祖先也
+    當成可點（#13 的資安審查）。在這裡統一成 realpath，前端拿到的根與 browse 的路徑就對得起來。
+    後端 browse 本就對根與路徑各自 realpath 再比對，故這裡正規化是冪等的、不改變放行範圍。
     """
-    return tuple(root.prefix for root in read_allowed_roots(repo).roots)
+    return tuple(os.path.realpath(root.prefix) for root in read_allowed_roots(repo).roots)
 
 
 def add_allowed_root(repo: str, prefix: str, added_by: str, added_at: str) -> None:

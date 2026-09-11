@@ -273,11 +273,14 @@ def _browse_filesystem(roots: tuple[str, ...], path: str) -> dict[str, object]:
         listing = browse(path, roots)
     except BrowseError as error:
         # 白名單外、不是目錄、讀不出來：輸入的路徑值不合法。detail 帶 kind 讓前端分辨
-        # 原因（只有 outside_roots 給加白名單入口），message 是原樣可行動訊息（含下一步）。
-        raise HTTPException(
-            status_code=422,
-            detail={"kind": _browse_kind(error), "message": str(error)},
-        ) from error
+        # 原因（只有 outside_roots 給加白名單入口），message 是原樣可行動訊息（含下一步）；
+        # resolved／suggested 讓「加入白名單」預填解析後的目錄，而非使用者打的原字串（#13）。
+        detail: dict[str, object] = {"kind": _browse_kind(error), "message": str(error)}
+        if error.resolved is not None:
+            detail["resolved"] = error.resolved
+        if error.suggested is not None:
+            detail["suggested"] = error.suggested
+        raise HTTPException(status_code=422, detail=detail) from error
     return _as_listing(listing)
 
 

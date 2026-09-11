@@ -68,10 +68,16 @@ def browse(path: str, allowed_roots: Iterable[str]) -> Listing:
     # 白名單的根自己也要解析（同 io/source）：同一個問題的兩道檢查不該給出不同答案。
     if not decide(tuple(os.path.realpath(root) for root in roots), resolved).allowed:
         covered = "、".join(roots) if roots else "（目前是空的）"
+        # 建議加進白名單的前綴：被拒目標的目錄 realpath；目標是檔案（或不存在）則取父目錄
+        # ——白名單根必須是目錄（add_allowed_root 會擋非目錄），前端的「加入白名單」預填要的
+        # 是這個解析後的目錄，不是使用者打的原字串（#13）。
+        suggested = resolved if os.path.isdir(resolved) else os.path.dirname(resolved)
         raise BrowseOutsideRoots(
             f"瀏覽路徑落在白名單之外：{path} → {resolved}；目前涵蓋：{covered}。"
             f"下一步：確認這條路徑或其中一段不是指向白名單外的符號連結，"
-            f"或把該位置納入白名單"
+            f"或把該位置納入白名單",
+            resolved=resolved,
+            suggested=suggested,
         )
 
     descriptor = _open_directory(path, resolved)
@@ -94,13 +100,15 @@ def _open_directory(path: str, resolved: str) -> int:
         if error.errno in (errno.EACCES, errno.EPERM):
             raise BrowseUnreadable(
                 f"目錄讀不出來：{path} → {resolved}（{error.strerror}）。"
-                f"下一步：確認執行服務的身分對這個目錄有讀取與 traverse 權限"
+                f"下一步：確認執行服務的身分對這個目錄有讀取與 traverse 權限",
+                resolved=resolved,
             ) from error
         # ENOTDIR（不是目錄）、ELOOP（最後一段是符號連結，或解析後被抽換）、ENOENT
         # （不存在）都歸這裡：browse 列的是白名單內一個實實在在的目錄。
         raise BrowseNotADirectory(
             f"瀏覽的對象不是可列的目錄：{path} → {resolved}（{error.strerror}）。"
-            f"下一步：指向白名單內一個真正的目錄，或直接把這個檔案拿去納管"
+            f"下一步：指向白名單內一個真正的目錄，或直接把這個檔案拿去納管",
+            resolved=resolved,
         ) from error
 
 
@@ -112,7 +120,8 @@ def _entries(descriptor: int, resolved: str) -> tuple[Entry, ...]:
     except OSError as error:
         raise BrowseUnreadable(
             f"目錄讀不出來：{resolved}（{error.strerror}）。"
-            f"下一步：確認執行服務的身分對這個目錄有讀取權限"
+            f"下一步：確認執行服務的身分對這個目錄有讀取權限",
+            resolved=resolved,
         ) from error
 
     items.sort(key=lambda pair: pair[0])

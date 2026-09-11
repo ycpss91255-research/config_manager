@@ -528,6 +528,8 @@ async function loadBrowseRoots() {
 
 async function browseTo(path) {
   browseRejectedEl.hidden = true;
+  // 換目錄就清掉「已選」——選取屬於某個目錄，離開它之後那個殘留會與目前位置不一致（#13）。
+  browseSelectionEl.hidden = true;
   try {
     const response = await fetch(`${API_BASE}/api/browse?path=${encodeURIComponent(path)}`);
     const payload = await response.json();
@@ -577,12 +579,10 @@ function renderBreadcrumb(path) {
       pushSegment(part, acc);
     }
   } else {
-    // 手動路徑落在任何已知根之外（少見；通常會先被拒）——退回顯示完整路徑各段。
-    let acc = "";
-    for (const part of path.split("/").filter(Boolean)) {
-      acc += `/${part}`;
-      pushSegment(part, acc);
-    }
+    // 路徑不在任何已知根底下——不該發生（root_prefixes 與 payload.path 都已 realpath 正規化，
+    // 成功瀏覽的路徑必在某根之下）。防禦性地只顯示路徑、**不做可點的祖先**，免得在根不相符時
+    // 讓人點到白名單根之上（#13 資安審查）。
+    nodes.push(element("span", { class: "sep", text: path }));
   }
   breadcrumbEl.replaceChildren(...nodes);
 }
@@ -608,7 +608,9 @@ function renderBrowseRejection(detail, attempted) {
         type: "text",
         "data-testid": "whitelist-prefix-input",
       });
-      prefixInput.value = attempted;  // 預填被拒的路徑，可編輯
+      // 預填後端建議的目錄前綴（被拒目標的 realpath，檔案則取父目錄），退回 resolved／原字串；
+      // 白名單根必須是目錄，用原字串會在目標是檔案或有 symlink 時加入失敗（#13）。可編輯。
+      prefixInput.value = detail.suggested || detail.resolved || attempted;
       const addButton = element("button", { type: "button", text: "加入白名單" });
       addButton.addEventListener("click", () => addToWhitelist(prefixInput.value));
       children.push(element("div", { class: "add-row" }, [prefixInput, addButton]));
