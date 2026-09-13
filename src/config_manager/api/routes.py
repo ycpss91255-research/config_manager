@@ -205,7 +205,7 @@ def _onboard_config(
         source_path=payload.source_path,
         fmt=payload.format,
         allowed_roots=roots,
-        ambiguity_note=payload.ambiguity_note,
+        ambiguity_note=_clean_note(payload.ambiguity_note),
     )
     try:
         entry = onboard(repo, request, identity.git_author)
@@ -223,6 +223,24 @@ def _onboard_config(
         # 不是先前那樣漏接成裸 500（#14 盤點發現）。inspect 也做同樣的映射。
         raise HTTPException(status_code=500, detail=str(error)) from error
     return _as_entry(entry)
+
+
+# ord < 32 是 C0 控制字元（含 io/git 的 \x1e／\x1f 分隔符）；保留可見字元與換行、tab。
+_FIRST_PRINTABLE_ORD = 32
+
+
+def _clean_note(note: str) -> str:
+    """去掉 ambiguity_note 裡的控制字元（保留換行與 tab）。
+
+    它會進 commit 內文，而 io/git 的 history() 以 \\x1e／\\x1f 當紀錄／欄位分隔符解析——含這些
+    字元會把整庫的變更紀錄解析切壞（#14 審查的縱深防禦）。前端產的 note 本不含控制字元，這一道
+    是擋直打端點的 client（curl、被改的前端）。
+    """
+    return "".join(
+        character
+        for character in note
+        if character in "\n\t" or ord(character) >= _FIRST_PRINTABLE_ORD
+    )
 
 
 def _add_allowed_root(

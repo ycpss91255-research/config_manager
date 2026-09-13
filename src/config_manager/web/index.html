@@ -577,6 +577,11 @@ function showBrowse() {
   identityForm.hidden = true;
   header.hidden = true;
   listView.hidden = true;
+  // 從 W8 取消回來時要藏起確認 view——否則兩個整頁 view 疊著，殘留的「確認寫入」還能送舊
+  // 路徑（#14 審查）。並清掉可能殘留的選檔狀態（loadBrowseRoots 會重載根、清列表與麵包屑）。
+  confirmView.hidden = true;
+  selectedSourcePath = null;
+  onboardStartEl.hidden = true;
   browseView.hidden = false;
   loadBrowseRoots();
 }
@@ -762,6 +767,9 @@ browseView.querySelector(".browse-go").addEventListener("click", () => {
 // W3／#16）。hostname 只顯示、不由前端送（後端納管當下決定並凍結，不變式 8）。
 let selectedSourcePath = null;
 let currentAmbiguities = [];
+// 每次偵測遞增；回應回來時若世代已變（使用者又換了格式、發了新偵測），丟棄這個過時回應
+// ——否則晚到的舊回應會覆寫成與當前格式不符的型別/歧義，甚至以較少的歧義繞過確認閘門（#14 審查）。
+let inspectGeneration = 0;
 
 const onboardStartEl = document.querySelector("[data-testid='onboard-start']");
 const confirmView = document.querySelector("[data-testid='onboard-confirm']");
@@ -803,6 +811,7 @@ function openConfirm(path) {
 }
 
 async function runInspect() {
+  const generation = ++inspectGeneration;
   onboardErrorEl.hidden = true;
   onboardSubmitEl.disabled = true;
   try {
@@ -815,12 +824,14 @@ async function runInspect() {
       }),
     });
     const payload = await response.json();
+    if (generation !== inspectGeneration) return;  // 有更新的偵測開始了，這個回應過時、丟棄
     if (!response.ok) {
       renderOnboardError(payload.detail);
       return;
     }
     renderInspect(payload);
   } catch (error) {
+    if (generation !== inspectGeneration) return;
     renderOnboardError(String(error && error.message ? error.message : error));
   }
 }
@@ -893,7 +904,8 @@ function renderOnboardError(detail) {
   } else if (Array.isArray(detail)) {
     message = detail.map((item) => item.msg || JSON.stringify(item)).join("；");
   } else if (detail && detail.message) {
-    message = detail.line ? `${detail.message}（第 ${detail.line} 行）` : detail.message;
+    // 只顯示 message：inspect 的語法錯誤訊息本身已內嵌「（第 N 行）」，前端不再補一次（#14 審查）。
+    message = detail.message;
   } else {
     message = String(detail);
   }
@@ -937,12 +949,18 @@ onboardSubmitEl.addEventListener("click", submitOnboard);
 onboardTypesEl.addEventListener("click", (event) => {
   const container = event.target.closest("li[data-container='true']");
   if (!container) return;
-  const prefix = container.dataset.name;
+  // 折疊狀態記在容器自己身上（data-collapsed），再依「任一祖先折疊了嗎」重算每個節點的可見性
+  // ——不用 toggle 逐一翻子節點：巢狀時「先折內層再折外層」會把已折疊的深層子節點翻回來（#14 審查）。
+  container.dataset.collapsed = container.dataset.collapsed === "true" ? "false" : "true";
+  const collapsed = [...onboardTypesEl.querySelectorAll("li[data-container='true']")]
+    .filter((node) => node.dataset.collapsed === "true")
+    .map((node) => node.dataset.name);
   for (const node of onboardTypesEl.querySelectorAll("li")) {
     const name = node.dataset.name;
-    if (name !== prefix && (name.startsWith(`${prefix}.`) || name.startsWith(`${prefix}[`))) {
-      node.classList.toggle("is-collapsed-child");
-    }
+    const hidden = collapsed.some(
+      (prefix) => name !== prefix && (name.startsWith(`${prefix}.`) || name.startsWith(`${prefix}[`))
+    );
+    node.classList.toggle("is-collapsed-child", hidden);
   }
 });
 confirmView.querySelector(".onboard-cancel").addEventListener("click", showBrowse);

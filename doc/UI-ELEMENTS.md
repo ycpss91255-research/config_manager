@@ -209,8 +209,9 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 
 | 元素 | 選取器 | 行為 |
 |---|---|---|
-| 進入確認 | W7 選檔後文字「檢視並納管」 | 對選定的檔 `POST /api/inspect`，切到確認 view |
+| 進入確認 | W7 選檔後文字「檢視並納管」（`data-testid="onboard-start"`） | 對選定的檔 `POST /api/inspect`，切到確認 view |
 | 確認 view | `data-testid="onboard-confirm"` | 整頁容器；開啟時隱藏瀏覽 |
+| 來源路徑 | `data-testid="onboard-path"` | 承載選定的來源路徑（`source_path`），送給 inspect／configs |
 | 格式選擇 | `data-testid="onboard-format"` | 下拉（yaml／json／toml／ini／raw）；預填副檔名的**建議**、使用者可改，改則重新偵測（不變式 8：副檔名不是持續權威） |
 | hostname 預覽 | `data-testid="onboard-hostname"` | 「將以 hostname＝<X> 納管」——inspect 回應帶的、納管當下會寫進條目的機器身分（AC5 核對） |
 | 權限 | `data-testid="onboard-permissions"` | 原始 owner:group mode |
@@ -220,7 +221,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 歧義清單 | `data-testid="onboard-ambiguities"` | `yaml` 才非空；每筆指名值、行號與可能讀法（AC4） |
 | 歧義項 | `data-testid="onboard-ambiguity-<行號>"` | 顯示 value／line／readings |
 | 歧義確認 | 項內 `data-testid="onboard-ambiguity-ack-<行號>"` | 勾選框；**全部歧義勾完前「確認納管」停用**（確認後才繼續，AC4） |
-| 確認納管 | 文字「確認寫入」 | 有未勾的歧義時停用；`POST /api/configs`（source_path／format／ambiguity_note＝逐條確認的彙整），成功回 W2 清單、新條目出現在左側樹 |
+| 確認納管 | 文字「確認寫入」（`data-testid="onboard-submit"`） | 有未勾的歧義時停用；`POST /api/configs`（source_path／format／ambiguity_note＝逐條確認的彙整），成功回 W2 清單、新條目出現在左側樹 |
 | 取消 | 文字「取消」 | 回到 W7 瀏覽（不寫入） |
 | 錯誤 | `data-testid="onboard-error"` | inspect／onboard 的錯誤**原樣**顯示（inspect 的語法錯誤帶行號就地標示；容忍結構化 `{message,file,line}`、純字串、與 FastAPI 驗證 list 三形狀） |
 
