@@ -40,11 +40,12 @@ from config_manager.io.errors import (
     BrowseOutsideRoots,
     BrowseUnreadable,
     ContentUnreadable,
+    HostnameInvalid,
     SourceError,
 )
 from config_manager.io.onboard import OnboardRequest, onboard
 from config_manager.io.scan import scan
-from config_manager.io.source import Source, read_source
+from config_manager.io.source import Source, local_hostname, read_source
 
 
 class SessionInput(BaseModel):
@@ -204,7 +205,7 @@ def _onboard_config(
         source_path=payload.source_path,
         fmt=payload.format,
         allowed_roots=roots,
-        ambiguity_note=payload.ambiguity_note,
+        ambiguity_note=_clean_note(payload.ambiguity_note),
     )
     try:
         entry = onboard(repo, request, identity.git_author)
@@ -217,7 +218,29 @@ def _onboard_config(
     except ConfigListError as error:
         # 與既有條目衝突（target／uid／source 重複）：與目前狀態相牴觸。
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except HostnameInvalid as error:
+        # CM_HOSTNAME 設成不安全值：部署層的錯（非請求端能修），大聲失敗成帶訊息的 500，
+        # 不是先前那樣漏接成裸 500（#14 盤點發現）。inspect 也做同樣的映射。
+        raise HTTPException(status_code=500, detail=str(error)) from error
     return _as_entry(entry)
+
+
+# ord < 32 是 C0 控制字元（含 io/git 的 \x1e／\x1f 分隔符）；保留可見字元與換行、tab。
+_FIRST_PRINTABLE_ORD = 32
+
+
+def _clean_note(note: str) -> str:
+    """去掉 ambiguity_note 裡的控制字元（保留換行與 tab）。
+
+    它會進 commit 內文，而 io/git 的 history() 以 \\x1e／\\x1f 當紀錄／欄位分隔符解析——含這些
+    字元會把整庫的變更紀錄解析切壞（#14 審查的縱深防禦）。前端產的 note 本不含控制字元，這一道
+    是擋直打端點的 client（curl、被改的前端）。
+    """
+    return "".join(
+        character
+        for character in note
+        if character in "\n\t" or ord(character) >= _FIRST_PRINTABLE_ORD
+    )
 
 
 def _add_allowed_root(
@@ -291,6 +314,14 @@ def _inspect(roots: tuple[str, ...], payload: InspectInput) -> dict[str, object]
     錯誤才拒絕。錯誤一律結構化（`{message, file, line}`，行號供編輯器就地標示，§3.5.3）——
     這正是 #185 把結構化錯誤延到 #195 的那一塊。
     """
+    # 納管當下會用的 hostname，讓確認畫面在按下納管前就能核對機器身分（AC5，#14）。
+    # CM_HOSTNAME 設成不安全值是部署層的錯，非請求端能修——大聲失敗成帶訊息的 500，
+    # 不是靜默把身分清洗掉，也不是裸 500（不變式 2）。
+    try:
+        hostname = local_hostname()
+    except HostnameInvalid as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
     source = _read_for_inspect(roots, payload.source_path)
     text = _decode_for_inspect(source.content, payload)
     try:
@@ -321,6 +352,7 @@ def _inspect(roots: tuple[str, ...], payload: InspectInput) -> dict[str, object]
         "ambiguities": ambiguities,
         "types": types,
         "permissions": _as_permissions(source.permissions),
+        "hostname": hostname,
     }
 
 

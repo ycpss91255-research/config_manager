@@ -32,6 +32,8 @@ _UNPROCESSABLE = 422
 _CONFLICT = 409
 # 403：身分設了、但角色不夠（白名單維護僅開發者，#202）。
 _FORBIDDEN = 403
+# 500：伺服器層的錯（如 CM_HOSTNAME 部署誤設）——帶可行動訊息，不是裸 500。
+_SERVER_ERROR = 500
 
 
 def _get(api, path):
@@ -341,6 +343,66 @@ def test_inspect_returns_format_ambiguities_and_summary(api, sources_root):
     assert result["ambiguities"][0]["readings"]  # 有給可能的讀法
     # 原始權限一併帶回（§5.1 一行摘要的第三項）。
     assert result["permissions"]["mode"]
+
+
+def test_inspect_previews_the_hostname_onboarding_will_use(api, sources_root):
+    # 確認畫面要在納管前預覽 hostname（AC5：核對機器身分）。hostname 由後端決定
+    # （CM_HOSTNAME 或 gethostname），納管當下寫進條目與 files/<hostname>/ 路徑。
+    source = _write_source(sources_root, "hostname_preview.yaml", b"a: 1\n")
+
+    result = _post(api, "/api/inspect", {"source_path": source, "format": "yaml"})
+
+    assert isinstance(result["hostname"], str) and result["hostname"]
+
+
+def test_inspect_unsafe_hostname_is_a_500_with_a_message(api, sources_root, monkeypatch):
+    # CM_HOSTNAME 設成不安全值（含 /）→ HostnameInvalid。先前 onboard／inspect 都漏接成裸
+    # 500；現在映成帶可行動訊息的 500（指名 CM_HOSTNAME）。就地測才控得了伺服器的 env。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("外部映像的 CM_HOSTNAME 由映像決定，就地起服務才控得了 env")
+    monkeypatch.setenv("CM_HOSTNAME", "bad/host")
+    source = _write_source(sources_root, "unsafe_host.yaml", b"a: 1\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/inspect", {"source_path": source, "format": "yaml"})
+
+    assert exc.value.code == _SERVER_ERROR
+    assert "CM_HOSTNAME" in _detail(exc.value)  # 帶可行動訊息，不是裸 500
+
+
+def test_onboard_unsafe_hostname_is_a_500_with_a_message(api, sources_root, monkeypatch):
+    # TEST-PLAN 宣稱「inspect 與 onboard 皆然」——onboard 那半也要有測試釘住（#14 審查）。
+    # UI 流程靠 inspect 先擋，但 POST /api/configs 對任何 client 開放，防禦碼不能無測試而腐化。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("外部映像的 CM_HOSTNAME 由映像決定，就地起服務才控得了 env")
+    _set_session(api)
+    monkeypatch.setenv("CM_HOSTNAME", "bad/host")
+    source = _write_source(sources_root, "onboard_badhost.yaml", b"a: 1\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/configs", {"source_path": source, "format": "yaml"})
+
+    assert exc.value.code == _SERVER_ERROR
+    assert "CM_HOSTNAME" in _detail(exc.value)
+
+
+def test_onboard_strips_control_chars_from_the_ambiguity_note(api, sources_root, repo):
+    # ambiguity_note 進 commit 內文，io/git.history 以 \x1e/\x1f 當分隔符解析——含這些字元會把整庫
+    # 變更紀錄切壞。端點在寫入前去掉控制字元（保留內容），#14 審查的縱深防禦。就地讀 git log 驗。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地讀 config-repo 的 git log 驗 commit 內文")
+    _set_session(api)
+    source = _write_source(sources_root, "note_clean.yaml", b"enabled: no\n")
+
+    _post(api, "/api/configs",
+          {"source_path": source, "format": "yaml", "ambiguity_note": "a\x1eb\x1fc"})
+
+    body = subprocess.run(
+        ["git", "-C", repo, "log", "-1", "--format=%B"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert "\x1e" not in body and "\x1f" not in body  # 分隔控制字元被去掉
+    assert "abc" in body  # 內容保留、只去掉控制字元
 
 
 def test_inspect_json_has_no_ambiguities_but_real_field_types(api, sources_root):
