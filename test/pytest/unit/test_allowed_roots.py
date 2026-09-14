@@ -185,6 +185,62 @@ def test_appending_the_first_root_to_a_file_with_no_roots_yet():
     assert [root.prefix for root in load(result).roots] == ["/opt/robot/config"]
 
 
+def test_dumping_a_model_missing_a_root_removes_it_from_the_file():
+    # 移除（#15）：模型裡少了某個根 → dump 從原文刪掉對應的 [[roots]]，其餘保留原樣。
+    original = """\
+# 白名單根目錄（§7.9）
+roots_version = 1
+
+[[roots]]
+prefix   = "/opt/robot/config"  # 主要
+added_by = "Alice"
+
+[[roots]]
+prefix   = "/etc/robot"
+added_by = "Bob"
+"""
+
+    allowed = load(original)
+    allowed.roots = [root for root in allowed.roots if root.prefix != "/etc/robot"]
+    result = dump(allowed, original)
+
+    assert [root.prefix for root in load(result).roots] == ["/opt/robot/config"]
+    assert "/etc/robot" not in result and "Bob" not in result  # 被移除的根連同其欄位消失
+    assert "# 白名單根目錄（§7.9）" in result  # 頂層註解保留
+    assert 'prefix   = "/opt/robot/config"  # 主要' in result  # 其餘根逐字保留
+
+
+def test_removing_the_first_root_keeps_the_top_comment_and_the_survivor_verbatim():
+    # 移除首筆的邊界：頂層註解與空白掛在第一個 [[roots]] 前面，天真的 del 會把它們
+    # 一起刪掉。移除第一筆後，頂層註解仍在，倖存的第二筆連同其行內註解逐字保留。
+    original = """\
+# 白名單根目錄（§7.9）
+roots_version = 1
+
+[[roots]]
+prefix   = "/opt/robot/config"  # 主要
+added_by = "Alice"
+
+[[roots]]
+prefix   = "/etc/robot"  # 次要
+added_by = "Bob"
+"""
+
+    allowed = load(original)
+    allowed.roots = [root for root in allowed.roots if root.prefix != "/opt/robot/config"]
+    result = dump(allowed, original)
+
+    # 期望值：把第一筆 [[roots]] 連同其區塊整段切掉，其餘逐位元組不動（獨立於實作推導）。
+    assert result == """\
+# 白名單根目錄（§7.9）
+roots_version = 1
+
+[[roots]]
+prefix   = "/etc/robot"  # 次要
+added_by = "Bob"
+"""
+
+
 def test_dump_rejects_original_whose_roots_share_a_prefix():
     # 原樣資訊本身不是合法設定檔（兩筆共用 prefix），dump 以 prefix 定位就對不回去。
     bad_original = """\
