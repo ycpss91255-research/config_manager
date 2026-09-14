@@ -34,6 +34,8 @@ _CONFLICT = 409
 _FORBIDDEN = 403
 # 500：伺服器層的錯（如 CM_HOSTNAME 部署誤設）——帶可行動訊息，不是裸 500。
 _SERVER_ERROR = 500
+# 404：要移除的白名單前綴不在檔裡（#15）——定位不到，不是衝突也不是輸入格式錯。
+_NOT_FOUND = 404
 
 
 def _get(api, path):
@@ -47,6 +49,17 @@ def _post(api, path, payload):
         data=json.dumps(payload).encode("utf-8"),
         headers={"content-type": "application/json"},
         method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _delete(api, path, payload):
+    request = urllib.request.Request(
+        f"{api}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"content-type": "application/json"},
+        method="DELETE",
     )
     with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -597,3 +610,81 @@ def test_adding_a_root_that_is_not_there_is_a_structured_422(api, tmp_path):
     assert exc.value.code == _UNPROCESSABLE
     # 只斷言狀態碼分不出「到不了」與別種 422（本檔自訂標準）——斷言被拒原因。
     assert "到不了" in _detail(exc.value)
+
+
+# ── GET 檢視擴充 + DELETE /api/allowed-roots 白名單維護（#15）──────────────────
+
+
+def test_get_allowed_roots_also_lists_who_and_when_per_root(api, sources_root):
+    # #15 檢視面板要顯示每個根是誰、何時加的。GET 加法式擴充：保留 prefixes（不破壞 #13 的
+    # browse 消費），新增 roots——每筆帶原樣 prefix（移除用識別碼）、resolved（realpath，顯示
+    # 用）、added_by、added_at。
+    result = _get(api, "/api/allowed-roots")
+
+    assert "prefixes" in result  # #13 的欄位還在（加法式，不破壞既有消費）
+    seed = next(root for root in result["roots"] if root["resolved"] == sources_root)
+    assert (seed["added_by"], seed["added_at"]) == ("seed", "2026-01-01T00:00:00Z")
+
+
+def test_a_developer_removes_a_root_after_confirming(api, tmp_path):
+    # 帶 confirmed 才真刪；刪後回更新的清單、不再含它。
+    _set_session(api)  # developer
+    doomed = tmp_path / "doomed_root"
+    doomed.mkdir()
+    _post(api, "/api/allowed-roots", {"prefix": str(doomed)})
+
+    result = _delete(api, "/api/allowed-roots", {"prefix": str(doomed), "confirmed": True})
+
+    assert str(doomed) not in result["prefixes"]
+
+
+def test_removing_a_root_unconfirmed_lists_the_affected_items_and_conflicts(api, repo, listing):
+    # AC3：移除時若有受影響的納管項目，列出並要求確認、不靜默移除。未帶 confirmed → 回受影響
+    # 清單 + 409。受影響＝清單檔中 target（realpath）落在被移除前綴（realpath）底下的條目。
+    listing("a")  # 納管項目 a，target 在 <repo>/deployed/a.yaml
+    _set_session(api)  # developer
+    deployed = str(pathlib.Path(repo) / "deployed")
+    _post(api, "/api/allowed-roots", {"prefix": deployed})  # 把 <repo>/deployed 加成一個根
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _delete(api, "/api/allowed-roots", {"prefix": deployed, "confirmed": False})
+
+    assert exc.value.code == _CONFLICT
+    affected = _detail(exc.value)["affected"]
+    assert any("a.yaml" in item["target"] for item in affected)
+    assert any(item["ref"].startswith("a@") for item in affected)
+
+
+def test_a_normal_user_cannot_remove_a_root(api, tmp_path):
+    # 白名單維護僅開發者可用（§7.9、W2）：一般使用者被拒，角色不夠是 403。
+    _set_session(api)  # developer 先加一個根
+    protected = tmp_path / "protected_root"
+    protected.mkdir()
+    _post(api, "/api/allowed-roots", {"prefix": str(protected)})
+    _post(api, "/api/session", {"name": "王小美", "email": "mei@example.com", "role": "user"})
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _delete(api, "/api/allowed-roots", {"prefix": str(protected), "confirmed": True})
+
+    assert exc.value.code == _FORBIDDEN
+
+
+def test_removing_a_prefix_that_is_not_in_the_whitelist_is_not_found(api):
+    # 以檔案原樣 prefix 定位；定位不到就 404（不是衝突、不是輸入格式錯），不靜默成 no-op。
+    _set_session(api)  # developer
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _delete(api, "/api/allowed-roots", {"prefix": "/opt/nowhere-root", "confirmed": True})
+
+    assert exc.value.code == _NOT_FOUND
+
+
+def test_removing_an_unknown_prefix_unconfirmed_is_404_not_a_confirm_dialog(api):
+    # 未確認 + 不存在的前綴：要 404，不是回一個「0 個受影響、請確認」的誤導對話框
+    # （拼錯的前綴看起來像真的要刪某個東西）。以檔案原樣 prefix 定位，定位不到就大聲失敗。
+    _set_session(api)  # developer
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _delete(api, "/api/allowed-roots", {"prefix": "/opt/typo-root", "confirmed": False})
+
+    assert exc.value.code == _NOT_FOUND
