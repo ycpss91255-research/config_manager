@@ -172,6 +172,24 @@ def test_import_onboards_a_file_and_it_shows_in_configs(api, sources_root):
     assert entry["ref"] in refs
 
 
+def test_the_import_commit_author_is_the_session_identity(api, sources_root, repo):
+    # #114（#6 的第四條驗收條件）：輸入的身分成為變更紀錄的作者，不只是畫面右上角那行字。
+    # 就地讀 config-repo 的 git log，驗這次納管產生的 commit 作者＝當前 session 身分（端到端
+    # 接線：session → identity.git_author → onboard → io.git.record → commit）。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地讀 config-repo 的 git log 驗 commit 作者")
+    _post(api, "/api/session", {"name": "林巡檢", "email": "lin@example.com", "role": "developer"})
+    source = _write_source(sources_root, "authored_by_lin.yaml")
+
+    _post(api, "/api/configs", {"source_path": source, "format": "yaml"})
+
+    author = subprocess.run(
+        ["git", "-C", repo, "log", "-1", "--format=%an <%ae>"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert author == "林巡檢 <lin@example.com>"
+
+
 def test_import_a_source_outside_the_whitelist_is_refused(api, tmp_path):
     _set_session(api)
     # tmp_path 不在 sources_root（白名單）底下。
