@@ -170,6 +170,33 @@ def _write_source(sources_root, name, content=b"max_vel: 0.8\n"):
     return str(path)
 
 
+_CONFIG_LIST_HEADER = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+"""
+
+
+def _write_config_list(repo, *entries):
+    # 就地寫一份指名 target 的清單檔（比照 listing 夾具的整份覆寫），供受影響計算的測試安排
+    # 「落在某前綴底下／不落在」的條目。entries：一串 (uid, name, target)。target 可任意絕對
+    # 路徑（受影響計算的 read_config_list 不驗來源存在），但同時備妥來源檔——scan（/api/configs）
+    # 對缺失來源會失敗，驗「條目仍在」時要讀得到。
+    root = pathlib.Path(repo)
+    (root / "files").mkdir(exist_ok=True)
+    body = _CONFIG_LIST_HEADER
+    for uid, name, target in entries:
+        (root / "files" / f"{name}.yaml").write_text(f"{name}: 1\n", encoding="utf-8")
+        body += (
+            f'\n[[files]]\nuid = "{uid}"\nname = "{name}"\nhostname = "amr01"\n'
+            f'source = "files/{name}.yaml"\ntarget = "{target}"\nformat = "yaml"\ngroups = []\n'
+        )
+    (root / "config-list.toml").write_text(body, encoding="utf-8")
+
+
 def test_import_onboards_a_file_and_it_shows_in_configs(api, sources_root):
     _set_session(api)
     source = _write_source(sources_root, "happy_nav2.yaml")
@@ -670,3 +697,73 @@ def test_removing_an_unknown_prefix_unconfirmed_is_404_not_a_confirm_dialog(api)
         _delete(api, "/api/allowed-roots", {"prefix": "/opt/typo-root", "confirmed": False})
 
     assert exc.value.code == _NOT_FOUND
+
+
+def test_confirmed_removal_deletes_despite_affected_items_which_stay_onboarded(api, repo, tmp_path):
+    # AC3 的另一半：受影響清單是資訊性、不連動解除納管。帶 confirmed 就算底下有納管項目也照樣
+    # 移除，且那些項目仍在（target 是絕對路徑、apply 不靠白名單）。少了這條，把「資訊性」誤讀成
+    # 「阻擋性」（有受影響就一律 409）的回歸會靜默通過。
+    root = tmp_path / "confirm_root"
+    root.mkdir()
+    _write_config_list(repo, ("mfz3k9qd", "underroot", str(root / "deployed.yaml")))
+    _set_session(api)  # developer
+    _post(api, "/api/allowed-roots", {"prefix": str(root)})
+
+    # 未確認：先回受影響清單（含 underroot）＋409，不靜默移除。
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _delete(api, "/api/allowed-roots", {"prefix": str(root), "confirmed": False})
+    assert exc.value.code == _CONFLICT
+    assert any(item["ref"].startswith("underroot@") for item in _detail(exc.value)["affected"])
+
+    # 帶 confirmed：儘管底下有受影響項目仍真刪。
+    result = _delete(api, "/api/allowed-roots", {"prefix": str(root), "confirmed": True})
+    assert str(root) not in result["prefixes"]
+    # 受影響的納管項目仍在——移除白名單根不連動解除納管。
+    assert any(row["name"] == "underroot" for row in _get(api, "/api/configs"))
+
+
+def test_affected_list_excludes_entries_outside_the_removed_prefix(api, repo, tmp_path):
+    # 受影響＝target 落在被移除前綴底下的條目。單看「有沒有含到該筆」不夠——decide 過度涵蓋
+    # （漏掉前綴比對、回傳全部）也會讓 any 斷言通過。放一筆落在前綴外的條目，釘住它不被誤列。
+    scope_root = tmp_path / "scope_root"
+    scope_root.mkdir()
+    _write_config_list(
+        repo,
+        ("mfz3k9qi", "inside", str(scope_root / "in.yaml")),
+        ("mfz3k9qo", "outside", str(tmp_path / "outside.yaml")),
+    )
+    _set_session(api)  # developer
+    _post(api, "/api/allowed-roots", {"prefix": str(scope_root)})
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _delete(api, "/api/allowed-roots", {"prefix": str(scope_root), "confirmed": False})
+
+    refs = [item["ref"] for item in _detail(exc.value)["affected"]]
+    assert any(ref.startswith("inside@") for ref in refs)  # 前綴內的被列出
+    assert not any(ref.startswith("outside@") for ref in refs)  # 前綴外的不被誤列
+
+
+def test_get_roots_resolves_symlink_prefixes_for_display_keeping_the_stored_prefix(
+    api, repo, tmp_path
+):
+    # resolved 是 realpath（顯示用）、prefix 是檔案原樣（移除識別碼）。對一個以 symlink 字面值存入
+    # 的根，兩者不同：交換它們（忘了 realpath、或 prefix 誤存 realpath）會讓 symlink 根顯示錯誤、
+    # 或識別碼變 realpath 而對不回檔案原樣、刪不掉。現有測試的 prefix 與 resolved 恆等，抓不到對調。
+    real = tmp_path / "real_target"
+    real.mkdir()
+    link = tmp_path / "link_alias"
+    link.symlink_to(real)
+    roots_path = pathlib.Path(repo, "allowed-roots.toml")
+    original = roots_path.read_text(encoding="utf-8")
+    roots_path.write_text(
+        original + f'\n[[roots]]\nprefix = "{link}"\n'
+        'added_by = "seed"\nadded_at = "2026-01-01T00:00:00Z"\n',
+        encoding="utf-8",
+    )
+    try:
+        roots = _get(api, "/api/allowed-roots")["roots"]
+        entry = next(r for r in roots if r["prefix"] == str(link))
+        assert entry["resolved"] == str(real)  # realpath 解析後（顯示用）
+        assert entry["prefix"] == str(link)  # 檔案原樣（移除識別碼），與 resolved 不同
+    finally:
+        roots_path.write_text(original, encoding="utf-8")  # 還原共享 session repo 的白名單
