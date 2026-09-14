@@ -10,11 +10,12 @@ import subprocess
 
 import pytest
 
-from config_manager.core.errors import InvalidPrefix
+from config_manager.core.errors import InvalidPrefix, PrefixNotFound
 from config_manager.io import allowed_roots as allowed_roots_module
 from config_manager.io.allowed_roots import (
     add_allowed_root,
     read_allowed_roots,
+    remove_allowed_root,
     root_prefixes,
 )
 from config_manager.io.errors import (
@@ -199,3 +200,74 @@ def test_a_symlinked_prefix_is_stored_as_its_realpath(tmp_path):
     prefixes = [root.prefix for root in read_allowed_roots(str(repo)).roots]
     assert str(real) in prefixes
     assert str(link) not in prefixes
+
+
+def test_removing_a_root_deletes_it_and_leaves_the_others(tmp_path):
+    # 白名單維護要能減根（#15）。以檔案原樣儲存的 prefix 定位（種子字面值），刪掉那一筆、
+    # 其餘保留。
+    repo = _repo(tmp_path)
+    newdir = tmp_path / "etc-robot"
+    newdir.mkdir()
+    add_allowed_root(str(repo), str(newdir), AUTHOR, "2026-09-12T09:00:00Z")
+
+    remove_allowed_root(str(repo), "/opt/robot/config", AUTHOR)
+
+    assert [root.prefix for root in read_allowed_roots(str(repo)).roots] == [str(newdir)]
+
+
+def test_removing_a_root_commits_the_change_leaving_the_tree_clean(tmp_path):
+    repo = _repo(tmp_path)
+
+    remove_allowed_root(str(repo), "/opt/robot/config", AUTHOR)
+
+    # 移除自己提交了：工作區乾淨，最新一筆 commit 由移除者署名。
+    assert _git(repo, "status", "--porcelain") == ""
+    assert "劉宇盈" in _git(repo, "log", "-1", "--format=%an <%ae>")
+
+
+def test_removing_a_prefix_that_is_not_in_the_file_raises_prefix_not_found(tmp_path):
+    # 移除以檔案原樣 prefix 定位；定位不到就大聲失敗、指名（不變式 2），不靜默成 no-op。
+    repo = _repo(tmp_path)
+
+    with pytest.raises(PrefixNotFound) as exc:
+        remove_allowed_root(str(repo), "/opt/robot/nope", AUTHOR)
+
+    assert "/opt/robot/nope" in str(exc.value)
+
+
+def test_a_failed_commit_rolls_the_removal_back_so_the_whitelist_is_not_silently_shrunk(
+    tmp_path, monkeypatch
+):
+    # 白名單每次請求從檔讀，檔一改就生效。移除的 commit 沒成時要把設定檔還原到移除前，
+    # 否則白名單被靜默縮減卻沒有 git 稽核（與新增的回滾對稱）。
+    repo = _repo(tmp_path)
+
+    def boom(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, ["git", "commit"])
+
+    monkeypatch.setattr(allowed_roots_module, "commit", boom)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        remove_allowed_root(str(repo), "/opt/robot/config", AUTHOR)
+
+    # 回滾了：該根仍在白名單裡，工作區也乾淨（沒有留下未提交的縮減）。
+    assert "/opt/robot/config" in [root.prefix for root in read_allowed_roots(str(repo)).roots]
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_when_removal_rollback_itself_fails_it_raises_left_behind_naming_the_file(
+    tmp_path, monkeypatch
+):
+    # 回滾也失敗的場景：同時說出原本的失敗與清理的失敗，指名殘留了什麼（比照新增）。
+    repo = _repo(tmp_path)
+
+    def boom(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, ["git"])
+
+    monkeypatch.setattr(allowed_roots_module, "commit", boom)
+    monkeypatch.setattr(allowed_roots_module, "unstage", boom)  # 回滾的清理也失敗
+
+    with pytest.raises(AllowedRootLeftBehind) as exc:
+        remove_allowed_root(str(repo), "/opt/robot/config", AUTHOR)
+
+    assert "allowed-roots.toml" in str(exc.value)
