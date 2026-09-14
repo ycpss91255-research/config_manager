@@ -632,7 +632,9 @@ def test_get_allowed_roots_also_lists_who_and_when_per_root(api, sources_root):
 
     assert "prefixes" in result  # #13 的欄位還在（加法式，不破壞既有消費）
     seed = next(root for root in result["roots"] if root["resolved"] == sources_root)
-    assert (seed["added_by"], seed["added_at"]) == ("seed", "2026-01-01T00:00:00Z")
+    # 誰／何時都被列出且非空——不寫死值：本機夾具種 "seed"／固定時間，映像由 entrypoint 種
+    # "部署設定 (CM_ALLOWED_ROOTS)"／蓋當下時間（`CM_SYSTEM_BASE_URL` 對外部映像跑時）。
+    assert seed["added_by"] and seed["added_at"]
 
 
 def test_a_developer_removes_a_root_after_confirming(api, tmp_path):
