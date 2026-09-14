@@ -653,6 +653,7 @@ I/O，比照 T4 把連結解析留給 I/O 層）。
 | **無法辨識的欄位 → 具名例外，指出欄位與行號**（防止由設定檔注入內部欄位） | 不變式 2（比照 T1 §110） |
 | **寫回未改動的設定檔，輸出與輸入逐位元組相同** | 設定檔本身也要原樣保留 |
 | **新增一個根後寫回，既有根的註解、順序、引號樣式不變**，新根帶 `added_by`／`added_at` | 不變式 2（原樣保留；tomlkit 把註解掛在前一筆，比照 T1 §113） |
+| **模型裡少了某個根 → 寫回時刪掉對應的 `[[roots]]`，其餘逐位元組保留**（含刪首筆時頂層註解不受影響） | 白名單維護要能減根（#15）；反向刪掉「原文有、模型沒有」的表格，比照 config_list 的移除 |
 | **原樣資訊本身不是合法設定檔（缺 `prefix`、`prefix` 重複）→ 具名例外** | 不變式 2；dump 以 `prefix` 定位，定位不了會刪錯或漏改（`original` 是獨立參數，沒有東西保證它經過 `load`，比照 T1 §120）|
 
 **結構驗證交給 pydantic，比照 T1。** `roots_version` 必填且為整數、每個根必有 `prefix`、
@@ -750,9 +751,10 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **納管（`POST /api/configs`）：成功回新條目（target 是原始位置、source 是 repo 內複本）；來源在白名單外→422、與既有條目 target／uid／source 衝突→409** |
 | **納管產生的變更紀錄，其作者＝當前 session 身分**（身分真的到達 git、隨之而變，不只顯示在畫面；就地讀 config-repo 的 git log 驗，#114／#6 第四條 AC） |
 | **檔案瀏覽（`GET /api/browse?path=`）：列白名單內目錄的內容（名字＋種類 dir／file）；路徑在白名單外、或不是目錄→422，detail 為結構化 `{kind, message}`，kind∈outside_roots／not_a_directory／unreadable 讓前端依原因分流（#13）** |
-| **讀白名單（`GET /api/allowed-roots`）：回 `{prefixes:[…]}`（解析後的根前綴清單）；唯讀、無角色門檻——browse 起點與檢視允許範圍用（#13）** |
+| **讀白名單（`GET /api/allowed-roots`）：回 `{prefixes:[…]}`（解析後的根前綴清單）；唯讀、無角色門檻——browse 起點與檢視允許範圍用（#13）；加法式擴充 `roots:[{prefix（原樣，移除識別碼）, resolved（realpath，顯示）, added_by, added_at}]` 供檢視面板列誰／何時（#15）** |
 | **偵測（`POST /api/inspect`）：收候選 `{source_path, format}`，回 format／欄位數／歧義（行號／值／讀法，yaml 才非空）／型別／原始權限／**納管當下會用的 hostname**（供確認畫面在納管前核對機器身分，#14）；語法錯誤→結構化 422（含 file、line），歧義不拒絕而是列出；白名單外／不是檔案／讀不到／format 非允許值→422；`CM_HOSTNAME` 不安全→帶訊息的 500（inspect 與 onboard 皆然，不再漏接成裸 500）** |
 | **白名單維護（`POST /api/allowed-roots`）：僅開發者可加一個前綴，`added_by` 取自 session、`added_at` 由伺服器蓋時間，回更新後的前綴清單、含剛加的；未設身分→409、一般使用者→403；相對／含 `..` 前綴或指向到不了的目錄→422；新增後同一個服務即刻生效、不必重啟（#202）** |
+| **白名單維護（`DELETE /api/allowed-roots`，body `{prefix, confirmed}`）：僅開發者（403）、需身分（409）；以檔案原樣 prefix 定位、定位不到→404；未帶 confirmed 先回受影響納管項目清單（`{kind:"confirm_required", affected:[{ref, target}], message}`）＋409，帶 confirmed 才真刪、回更新後的清單；受影響＝清單檔中 target（realpath）落在被移除前綴（realpath）底下的條目，資訊性、不連動解除納管（#15）** |
 | 進版端點：驗證失敗時**不產生變更紀錄也不寫出**（原子性） |
 | **進版寫出 N 份、第 k 份失敗 → 前 k-1 份已寫出的目標檔案還原為進版前內容、全部已產生的變更紀錄一併撤銷**，容器內最終狀態與進版前逐位元組相同（承接 T18 移出的批次原子性） |
 | 第二個編輯階段被拒，回覆含持有者姓名、email、開始時間 |
@@ -1224,8 +1226,8 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/source` | T22（匯入時刻對外界的讀取，介面議定於 #177） | 已落地：路徑判定（realpath 後比對白名單、一般檔案檢查）與一次性讀取（#174）、讀取失敗的三種分類（不存在／讀不到／上層目錄無 traverse，#182）。`local_hostname` 的部署穩定性見 #178 |
 | `io/onboard` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔條目→T1（`load`）、匯入 commit→T7（`io/git.history`）（#12）——編排層，不算新值，同 `io/repo` 的處理。**匯入紀錄的作者＝傳入的身分、隨之而變**（以 `history()` 的 `Change.author` 驗、不同身分各對各的紀錄，#114）。重複攔在寫入前（#172）與寫入失敗即整批回滾（#173）以注入失敗＋`git status` 觀察，回滾也失敗時丟 `OnboardLeftBehind` | 已落地（`onboard`） |
 | `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath 與列目錄——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185） | 已落地（`browse`） |
-| `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202） | 已落地（`read_allowed_roots`／`add_allowed_root`） |
-| `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session` 與 CORS 中介層） |
+| `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202）；移除以檔案原樣 prefix 定位、找不到丟 `PrefixNotFound`、commit 失敗回滾同樣以真實 fs＋git 斷言（#15） | 已落地（`read_allowed_roots`／`add_allowed_root`／`remove_allowed_root`） |
+| `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots` 與 CORS 中介層） |
 | `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 部分落地：身分（`author`）已落地；階段的 acquire／renew／release／sweep 未落地（#33） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |
