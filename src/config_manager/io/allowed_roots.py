@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from tomlkit.exceptions import ParseError
 
 from config_manager.core.allowed_roots import check_prefix, dump, load
-from config_manager.core.errors import AllowedRootsError
+from config_manager.core.errors import AllowedRootsError, PrefixNotFound
 from config_manager.core.models import AllowedRoot, AllowedRoots
 from config_manager.io.atomic import replace_atomically
 from config_manager.io.errors import (
@@ -93,20 +93,59 @@ def add_allowed_root(repo: str, prefix: str, added_by: str, added_at: str) -> No
         AllowedRoot(prefix=resolved, added_by=added_by, added_at=added_at)
     )
 
-    replace_atomically(path, dump(current, original).encode("utf-8"))
+    _write_roots_and_commit(repo, dump(current, original), original,
+                            f"白名單納入根目錄 {resolved}", added_by)
+
+
+def remove_allowed_root(repo: str, prefix: str, removed_by: str) -> None:
+    """把 `prefix` 從白名單設定檔移除並提交。`removed_by` 是 `姓名 <email>`（同時作為署名）。
+
+    以**檔案原樣儲存的 prefix** 定位（core.dump 也以原樣定位）：從介面新增的根存的是
+    realpath、種子的根存的是字面值，兩者都以「檔裡長什麼樣」為識別碼——不能先 realpath
+    再比，否則種子字面值對不回去、刪不掉（靜默 bug）。定位不到丟 `PrefixNotFound`。
+
+    移除以 core.dump 保留其餘原樣，原子寫回後以一筆一般 commit 記下；commit 沒成就把設定檔
+    還原到移除前（白名單每次請求從檔讀，檔一改就生效，回滾避免靜默縮減而無稽核，比照新增）。
+    """
+    path = os.path.join(repo, ALLOWED_ROOTS_NAME)
+    current = read_allowed_roots(repo)
+    kept = [root for root in current.roots if root.prefix != prefix]
+    if len(kept) == len(current.roots):
+        raise PrefixNotFound(
+            f"要移除的前綴不在白名單設定檔裡：{prefix}。"
+            "下一步：以檢視清單列出的原樣前綴為準，確認拼寫與尾斜線"
+        )
+
+    original = _read(path)
+    current.roots = kept
+
+    _write_roots_and_commit(repo, dump(current, original), original,
+                            f"白名單移除根目錄 {prefix}", removed_by)
+
+
+def _write_roots_and_commit(
+    repo: str, new_text: str, original: str, subject: str, author: str
+) -> None:
+    """原子寫回 new_text 並以一筆一般 commit（subject／author 署名）記下；commit 沒成就把
+    設定檔還原到 original。
+
+    白名單一被寫入就立即生效（每次請求從檔讀）；commit 沒成時回滾，白名單不被靜默增減而
+    沒有 git 稽核（比照 onboard #173）。回滾本身也失敗時丟 `AllowedRootLeftBehind`，同時
+    說出原本的失敗與清理的失敗、指名殘留了什麼。新增與移除共用這條寫回路徑。
+    """
+    path = os.path.join(repo, ALLOWED_ROOTS_NAME)
+    replace_atomically(path, new_text.encode("utf-8"))
     try:
         stage(repo, ALLOWED_ROOTS_NAME)
-        commit(repo, f"白名單納入根目錄 {resolved}", added_by)
+        commit(repo, subject, author)
     except CalledProcessError as failure:
-        # 白名單一被寫入該根就立即生效（每次請求從檔讀）；commit 沒成，就把設定檔還原到
-        # 新增前，白名單不被靜默擴張而沒有 git 稽核（比照 onboard #173）。
         try:
             replace_atomically(path, original.encode("utf-8"))
             unstage(repo, ALLOWED_ROOTS_NAME)
         except (OSError, CalledProcessError) as cleanup:
             raise AllowedRootLeftBehind(
-                f"新增白名單根 {resolved} 失敗後，回滾 {path} 也失敗了（{cleanup}）；"
-                f"該根可能已生效卻未提交。下一步：手動檢視並還原 {path}"
+                f"「{subject}」失敗後，回滾 {path} 也失敗了（{cleanup}）；"
+                f"該變更可能已生效卻未提交。下一步：手動檢視並還原 {path}"
             ) from failure
         raise
 

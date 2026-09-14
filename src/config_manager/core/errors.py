@@ -110,6 +110,15 @@ class RootsMalformed(AllowedRootsError):
     具名例外擋下這種形狀，訊息指引改用 `[[roots]]` 書寫。"""
 
 
+class PrefixNotFound(AllowedRootsError):
+    """要移除的前綴不在白名單設定檔裡。移除以「檔案原樣儲存的 prefix」定位（dump 也以原樣
+    定位）；定位不到不是靜默 no-op，而是大聲失敗、指名（不變式 2），api 對應 404。
+
+    與 `RootsDumpMismatch` 不同：那一則是原樣資訊本身對不回模型（缺 prefix／重複），是
+    設定檔壞掉；這一則是原樣資訊合法、只是不含呼叫端指名要刪的那個前綴。
+    """
+
+
 class RootsDumpMismatch(AllowedRootsError):
     """dump 拿到的原樣資訊無法以 prefix 對回白名單根：有一筆缺 prefix，或兩筆共用 prefix。
 
