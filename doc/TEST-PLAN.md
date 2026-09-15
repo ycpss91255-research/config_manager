@@ -913,6 +913,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | `script/lint_paths.sh` | `test/bats/unit/lint_paths.bats` |
 | `script/lint_portability.sh` | `test/bats/unit/lint_portability.bats` |
 | `script/lint_messages.sh` | `test/bats/unit/lint_messages.bats` |
+| `script/lint_exceptions.sh` | `test/bats/unit/lint_exceptions.bats` |
 | `script/lint_coverage_audit.sh` | `test/bats/unit/lint_coverage_audit.bats` |
 | `script/lint_derived.sh` | `test/bats/unit/lint_derived.bats` |
 | `script/check_file.sh` | `test/bats/unit/check_file.bats` |
@@ -1138,29 +1139,32 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 
 | §0.4 要求 | 檢查工具 | 狀態 |
 |---|---|---|
-| 1. 不得捕捉後僅 `pass` 或僅 `log.debug` | `E722`／`BLE001`（＋ pylint 同名檢查） | **部分涵蓋**（#112） |
+| 1. 不得捕捉後僅 `pass` 或僅 `log.debug` | `E722`／`BLE001`（＋ pylint 同名檢查）＋ `script/lint_exceptions.sh` | 已涵蓋（#112） |
 | 2. 錯誤訊息須含三要素 | `script/lint_messages.sh` | 已涵蓋 |
 | 3. 不得將驗證失敗轉為警告後繼續 | 無 | **未涵蓋**，理由見下 |
 
-第 1 條的涵蓋邊界來自實測——在檢查映像裡逐個形狀跑過 ruff 與 pylint，不是憑印象：
+第 1 條的涵蓋邊界來自實測——在檢查映像裡逐個形狀跑過 ruff 與 pylint，不是憑印象。
+`ruff`／`pylint` 擋住前兩列（bare 與 `Exception`），其餘三列先前沒有工具看得到，現由
+`script/lint_exceptions.sh`（一次 AST 走訪）補上（#112）：
 
 | 寫法 | 被誰擋下 |
 |---|---|
 | `except:`（不論 handler 內容） | `E722` ＋ pylint `bare-except` |
 | `except Exception:` ／ `BaseException:`（不論內容） | `BLE001` ＋ pylint `broad-exception-caught` |
-| `except ValueError: pass`（單一 handler） | 只有 `SIM105` |
-| `except ValueError: log.debug(...)` | **無** |
-| `contextlib.suppress(ValueError)` | **無** |
-| 兩個 handler，兩個都 `pass` | **無** |
+| `except ValueError: pass`（單一 handler） | `SIM105` ＋ **`lint_exceptions`** |
+| `except ValueError: log.debug(...)` | **`lint_exceptions`** |
+| `contextlib.suppress(ValueError)` | **`lint_exceptions`** |
+| 兩個 handler，兩個都 `pass` | **`lint_exceptions`**（`SIM105` 只認單一 handler） |
 
 `SIM105` 不算這條規範的執行者：它的修法是改寫成 `contextlib.suppress(...)`——同一個
-吞錯誤，換一個拼法，而改寫之後就再也沒有工具看得到它。把它當成「第 1 條有在檢查」，
-正是這個 repo 抓過七次的那個形狀。
+吞錯誤，換一個拼法，而改寫之後 `SIM105` 就再也看不到它；`lint_exceptions` 連 `suppress`
+一起擋，補上這個缺口。把 `SIM105` 當成「第 1 條有在檢查」，正是這個 repo 抓過七次的那個形狀。
 
-所以 §0.4 第 1 條**指名的那個形狀**（捕捉具名例外之後只 `pass` 或只 `log.debug`）
-目前沒有任何工具擋得住。**這一條不是「難以自動化」**：語法形狀清楚，一次 AST 走訪
-就判得出來。它是**還沒做**，記在 #112。真正做不到的是同一條的後半句「捕捉即代表有
-處理策略」——handler 裡有東西不代表那是策略——那半句留給 code review，刻意如此。
+`lint_exceptions` 只補 `ruff`／`pylint` 的缺口——**具名**例外之後只 `pass` 或只 `.debug(...)`、
+以及 `contextlib.suppress(...)`；bare 與 `Exception`／`BaseException` 仍由那兩支擋，不重覆。
+真正做不到的是同一條的後半句「捕捉即代表有處理策略」——`except X: return None` 在語法上與
+真的處置無從分辨——那半句留給 code review，刻意如此。規格見 `test/bats/unit/lint_exceptions.bats`
+（四種形狀各先紅、逐條突變檢查、對現有 `src/` 零誤報）。
 
 **第 3 條未涵蓋，理由是它判的不是語法而是層級意圖。** 同一段「記下警告然後繼續」的
 程式碼，在第 3 層是設計（不變式 4 明列「第 3 層可 override，需填理由」），在第 1、2 層
@@ -1232,6 +1236,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/lint_checkpoints.sh` | T19 | 已落地（CI job，不由 `test.sh` 執行） |
 | `script/lint_test_interfaces.sh` | T19（新測試介面不得與其第一批測試同一個 commit，#144） | 已落地（規則 A 由 `test.sh` 執行，規則 B 是 CI job） |
 | `script/lint_messages.sh` | T19 | 已落地 |
+| `script/lint_exceptions.sh` | T19（§0.4 第 1 條：捕捉具名例外後只吞掉，#112） | 已落地 |
 | `script/lint_coverage_audit.sh` | T19（這張表自己立的規則，表與樹對不起來就停下，#117） | 已落地 |
 | `script/lint_derived.sh` | T19（文件不得抄一份可推導的東西，#98） | 已落地 |
 | `script/check_file.sh` | T19（單檔檢查的派工規則） | 已落地 |
