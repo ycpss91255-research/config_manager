@@ -57,8 +57,8 @@ readonly ACCEPTANCE="${CM_RELEASE_ACCEPTANCE:-${REPO_ROOT}/script/acceptance.sh}
 
 usage() {
   cat <<'USAGE'
-Usage: script/release.sh <tag>
-       script/release.sh --next <milestone>
+用法：script/release.sh <tag>
+      script/release.sh --next <milestone>
 
   <tag>        vX.Y.Z-rcN（候選）或 vX.Y.Z（正式）
   <milestone>  對照表裡的一個 id，例如 v0.1.0

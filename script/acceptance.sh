@@ -58,7 +58,7 @@ readonly ROOT="${CM_ACCEPTANCE_ROOT:-${REPO_ROOT}}"
 
 usage() {
   cat <<'USAGE'
-Usage: script/acceptance.sh <milestone>
+用法：script/acceptance.sh <milestone>
 
   <milestone>  對照表裡的一個 id，例如 v0.1.0、v0.5.0、core-flow
 
