@@ -33,6 +33,18 @@ class TargetEscape(ConfigListError):
     """目標路徑含 .. 路徑段，可逃逸到預期目錄外。"""
 
 
+class SourceEscape(ConfigListError):
+    """來源路徑逃出 config repo：是絕對路徑，或含 .. 路徑段。
+
+    `source` 是 repo 內複本的相對路徑（`files/<hostname>/…`，納管時由 io 放置）。它之後以
+    `os.path.join(repo, source)` 被 preflight／scan／讀取端使用——絕對的 source 會讓
+    `os.path.join` 丟掉 repo、含 `..` 會往上跳層，兩者都指到 repo 外。手改的清單檔即可藉此讀
+    repo 外任意檔（掃描把它當受管來源比對、apply 把它寫到 target），打破「config repo 是唯一
+    真實來源」。與 `target` 的 `..` 檢查對稱——字面逃逸這一關屬 core（realpath 的 within-repo
+    解析仍留在 io）。
+    """
+
+
 class InvalidFormat(ConfigListError):
     """format 非允許值。format 明寫、不由副檔名推斷。"""
 

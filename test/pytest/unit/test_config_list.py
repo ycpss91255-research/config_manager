@@ -13,6 +13,7 @@ from config_manager.core.errors import (
     DuplicateTarget,
     DuplicateUid,
     InvalidFormat,
+    SourceEscape,
     TargetEscape,
     UnknownField,
 )
@@ -204,6 +205,59 @@ groups   = []
     message = str(exc.value)
     assert "navigation-params" in message
     assert "/opt/robot/../../etc/evil.yaml" in message
+
+
+def test_source_that_is_an_absolute_path_raises_named_exception():
+    # source 是 repo 內複本的相對路徑（files/<hostname>/…）。絕對路徑會讓 os.path.join(repo, source)
+    # 丟掉 repo、指到 repo 外任意檔——手改的清單檔即可讀 repo 外檔案（#214 一批；與 target 的 ..
+    # 檢查對稱，source 先前漏擋）。字面檢查屬 core（realpath 留給 io）。
+    text = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "/etc/passwd"
+target   = "/opt/robot/nav2.yaml"
+format   = "yaml"
+groups   = []
+"""
+
+    with pytest.raises(SourceEscape) as exc:
+        load(text)
+
+    assert "navigation-params" in str(exc.value)
+    assert "/etc/passwd" in str(exc.value)
+
+
+def test_source_containing_dotdot_raises_named_exception():
+    # 含 .. 的相對來源同樣逃出 repo（os.path.join 往上跳層）。
+    text = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/../../../etc/passwd"
+target   = "/opt/robot/nav2.yaml"
+format   = "yaml"
+groups   = []
+"""
+
+    with pytest.raises(SourceEscape):
+        load(text)
 
 
 def test_disallowed_format_raises_named_exception():
