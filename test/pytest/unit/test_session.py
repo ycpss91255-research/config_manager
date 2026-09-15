@@ -56,6 +56,13 @@ def test_newline_in_email_raises():
         author("陳小明", "ming@example.com\nSigned-off-by: 別人 <x@y>", USER)
 
 
+def test_record_separator_in_name_raises():
+    # \x1f／\x1e 是 io/git.history() 切變更紀錄欄位用的分隔符；混進 author 會讓整庫帳本
+    # 讀不出來（ValueError）。在身分輸入這一關就擋下，不等到 commit 才失敗。#212。
+    with pytest.raises(InvalidAuthor):
+        author("陳小\x1f明", "ming@example.com", USER)
+
+
 def test_unknown_role_raises_named_exception_listing_the_allowed_values():
     with pytest.raises(InvalidAuthor) as exc:
         author("陳小明", "ming@example.com", "admin")

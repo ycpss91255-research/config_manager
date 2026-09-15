@@ -19,8 +19,9 @@ DEVELOPER = "developer"
 ROLES = (USER, DEVELOPER)
 
 # git 的作者字串是 `姓名 <email>`。這三個字元會拆散它：角括號讓作者變成另一個人，
-# 換行讓後面的內容變成 commit 訊息的另一行。
-_FORBIDDEN = ("<", ">", "\n", "\r")
+# `<`／`>` 破壞 git 的作者字串；換行讓後面的內容變成另一行。`\x1f`／`\x1e` 是 io/git.history()
+# 切變更紀錄欄位／分筆用的分隔符——混進作者會讓整庫帳本讀不出來（#212），在輸入這關就擋下。
+_FORBIDDEN = ("<", ">", "\n", "\r", "\x1f", "\x1e")
 
 
 class Identity(NamedTuple):
