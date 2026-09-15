@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from config_manager.io.errors import UnknownKind
+from config_manager.io.errors import RecordFieldUnsafe, UnknownKind
 from config_manager.io.git import history, record, revert, stage
 
 AUTHOR = "劉宇盈 <yy@example.invalid>"
@@ -46,6 +46,48 @@ def test_a_recorded_change_is_found_in_history_with_its_author(tmp_path):
         "調整 max_vel 至 0.8",
         AUTHOR,
     )
+
+
+def test_history_does_not_crash_on_a_commit_whose_field_contains_the_separator(tmp_path):
+    # history() 以 \x1f 切欄位，是整庫唯一的帳本讀取路徑。若某筆 commit 的欄位含字面 \x1f
+    # （被改的 client、raw git、或被納管檔名注入），天真的 split 會切出 >4 段而崩**整庫**，
+    # 不只該筆。以 raw git 造一筆有毒 subject，再造一筆正常紀錄，斷言 history() 不崩、正常那筆
+    # 讀得出來（有毒那筆略過而非炸掉）。#212。
+    repo = _repo(tmp_path)
+    (repo / "poison.yaml").write_text("x: 1\n")
+    subprocess.run(["git", "-C", str(repo), "add", "poison.yaml"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo),
+         "-c", "user.name=seed", "-c", "user.email=s@e.x",
+         "commit", "-q", "-m", "import(mfz3k9q1): na\x1fme@host"],
+        check=True,
+    )
+    (repo / "good.yaml").write_text("y: 2\n")
+    stage(str(repo), "good.yaml")
+    record(str(repo), "mfz3k9q2", "cfg", "正常一筆", AUTHOR)
+
+    assert [entry.uid for entry in history(str(repo), "mfz3k9q2")] == ["mfz3k9q2"]
+
+
+def test_record_refuses_a_subject_that_would_break_the_ledger(tmp_path):
+    # 分隔符 \x1f／\x1e 進了主旨會讓 history() 解析錯位。寫入前大聲失敗、指名（不變式 2），
+    # 不清洗——比照 hostname 的處置。被納管檔名含 \x1f 時，name→主旨的注入就擋在這裡。#212。
+    repo = _repo(tmp_path)
+    (repo / "nav2.yaml").write_text("k: 1\n")
+    stage(str(repo), "nav2.yaml")
+
+    with pytest.raises(RecordFieldUnsafe):
+        record(str(repo), "mfz3k9q1", "import", "na\x1fme@host", AUTHOR)
+
+
+def test_record_refuses_an_author_that_would_break_the_ledger(tmp_path):
+    # author 進 %an <%ae>，同樣是 history() 的一個欄位；含 \x1f 一樣讓整庫讀不出來。#212。
+    repo = _repo(tmp_path)
+    (repo / "nav2.yaml").write_text("k: 1\n")
+    stage(str(repo), "nav2.yaml")
+
+    with pytest.raises(RecordFieldUnsafe):
+        record(str(repo), "mfz3k9q1", "cfg", "正常主旨", "劉宇盈\x1f <yy@example.invalid>")
 
 
 def test_a_kind_outside_the_allowed_set_is_refused(tmp_path):
