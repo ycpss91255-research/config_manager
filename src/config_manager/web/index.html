@@ -372,6 +372,9 @@ const UNGROUPED = "ungrouped";
 const tree = document.querySelector("[data-testid='config-tree']");
 const search = document.querySelector("[data-testid='search-input']");
 let rows = [];
+// 非 null 表示上次載入失敗。render() 綁在搜尋輸入上、每次無條件從 rows 重畫；少了這個
+// 旗標，在錯誤態打字就會把 load-error 靜默蓋成空清單或過期清單（不變式 2：大聲失敗）。
+let loadError = null;
 
 function groupsOf(row) {
   return row.groups && row.groups.length ? row.groups : [UNGROUPED];
@@ -426,6 +429,19 @@ function rowNode(row) {
 }
 
 function render() {
+  if (loadError !== null) {
+    // 載入失敗是黏性的：重畫 load-error，不讀 rows。否則搜尋輸入一觸發 render 就把錯誤
+    // 蓋成空清單／過期清單，而「讀不到」與「沒有」該做的處置完全不同（不變式 2）。
+    tree.replaceChildren(element("div", {
+      class: "notice error",
+      "data-testid": "load-error",
+    }, [
+      element("strong", { text: "讀不到 config 清單。" }),
+      element("pre", { text: loadError }),
+    ]));
+    return;
+  }
+
   const visible = rows.filter((row) => matches(row, search.value.trim()));
   tree.replaceChildren();
 
@@ -463,17 +479,13 @@ async function load() {
     const response = await fetch(`${API_BASE}/api/configs`);
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     rows = await response.json();
+    loadError = null;
     render();
   } catch (error) {
-    // 大聲失敗（不變式 2）：說出是什麼壞了，不是顯示一份空清單假裝沒事——
-    // 空清單與「讀不到清單」看起來一樣，而那兩件事該做的處置完全不同。
-    tree.replaceChildren(element("div", {
-      class: "notice error",
-      "data-testid": "load-error",
-    }, [
-      element("strong", { text: "讀不到 config 清單。" }),
-      element("pre", { text: String(error && error.message ? error.message : error) }),
-    ]));
+    // 大聲失敗（不變式 2）：說出是什麼壞了，不是顯示一份空清單假裝沒事——空清單與「讀不到
+    // 清單」看起來一樣，而那兩件事該做的處置完全不同。旗標讓錯誤黏住，經 render 重畫（見上）。
+    loadError = String(error && error.message ? error.message : error);
+    render();
   }
 }
 
@@ -810,10 +822,23 @@ function openConfirm(path) {
   runInspect();
 }
 
+function clearInspectResults() {
+  // 每次偵測前清掉上一檔的結果。少了它，偵測失敗時 W8 會殘留前一檔的型別／歧義／hostname，
+  // 而殘留的歧義勾選框仍掛著 change→refreshSubmitState——勾滿就把「確認寫入」重新解鎖，於是
+  // 對一個偵測失敗的檔案送出納管、還帶著另一檔的歧義確認，繞過 AC4 的確認閘門。
+  onboardHostnameEl.textContent = "";
+  onboardPermsEl.textContent = "";
+  onboardSummaryEl.textContent = "";
+  onboardTypesEl.replaceChildren();
+  onboardAmbiguitiesEl.replaceChildren();
+  currentAmbiguities = [];
+}
+
 async function runInspect() {
   const generation = ++inspectGeneration;
   onboardErrorEl.hidden = true;
   onboardSubmitEl.disabled = true;
+  clearInspectResults();
   try {
     const response = await fetch(`${API_BASE}/api/inspect`, {
       method: "POST",
@@ -892,8 +917,10 @@ function renderAmbiguities(ambiguities) {
 
 function refreshSubmitState() {
   // 每個歧義都要勾了才解鎖「確認寫入」（AC4：確認後才繼續）。無歧義時 every 回 true。
+  // 錯誤顯示中一律停用：偵測失敗的檔案不該送得出去，即使有殘留／勾選的框（縱深防禦，
+  // 主要仍靠 clearInspectResults 不留殘留框）。
   const acks = [...onboardAmbiguitiesEl.querySelectorAll("input[type='checkbox']")];
-  onboardSubmitEl.disabled = !acks.every((box) => box.checked);
+  onboardSubmitEl.disabled = !onboardErrorEl.hidden || !acks.every((box) => box.checked);
 }
 
 function renderOnboardError(detail) {
