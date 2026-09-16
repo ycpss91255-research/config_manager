@@ -47,6 +47,7 @@ from config_manager.io.errors import (
     SourceTooLarge,
     SourceUnreachable,
 )
+from config_manager.io.paths import blocking_parent
 
 # 安全的 hostname 段：字母數字加 . _ -（涵蓋 FQDN 與容器 ID）。用來擋住會逃出
 # `files/<hostname>/` 或重塑 commit 主旨的值——`/`、控制字元、空白都不match（#178）。
@@ -234,7 +235,7 @@ def _classify_open_failure(path: str, resolved: str, error: OSError) -> Exceptio
         )
 
     if error.errno in (errno.EACCES, errno.EPERM):
-        blocker = _blocking_parent(resolved)
+        blocker = blocking_parent(resolved)
         if blocker is not None:
             return SourceUnreachable(
                 f"上層目錄擋住去路（「{blocker}」沒有 traverse 權限）：{path}。"
@@ -249,36 +250,6 @@ def _classify_open_failure(path: str, resolved: str, error: OSError) -> Exceptio
         f"來源開不起來（{error.strerror}）：{path} → {resolved}。"
         f"下一步：確認它是一份一般檔案（不是裝置或 socket）"
     )
-
-
-def _blocking_parent(resolved: str) -> str | None:
-    """去不到 `resolved` 時，是哪一層目錄擋住的；若目標本身可 `stat` 則回 None。
-
-    從根往下逐層 `stat`：第一個 `stat` 不了的祖先，它的上一層就是缺 `+x` 的那個
-    目錄。目標本身 `stat` 得到（EACCES 來自檔案自己的讀取權限、不是 traverse）時
-    回 None，交給呼叫端判為 `ContentUnreadable`。
-    """
-    reachable = "/"
-    for ancestor in _ancestors(resolved)[1:]:
-        try:
-            os.stat(ancestor)
-        except OSError:
-            return reachable
-        reachable = ancestor
-    return None
-
-
-def _ancestors(path: str) -> list[str]:
-    """path 從根到它自己的每一層，根在最前面。"""
-    chain = []
-    current = path
-    while True:
-        chain.append(current)
-        parent = os.path.dirname(current)
-        if parent == current:
-            break
-        current = parent
-    return list(reversed(chain))
 
 
 def _read_all(descriptor: int, path: str, resolved: str, max_bytes: int) -> bytes:

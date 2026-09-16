@@ -101,6 +101,24 @@ class ContentUnreadable(Exception):
     """路徑存在但內容讀不出來。與「不存在」分開：後者是未部署，是合法狀態。"""
 
 
+class NotARegularFile(Exception):
+    """路徑存在但不是可讀的一般檔案：目錄、裝置、具名管道（FIFO）、socket 或符號連結。
+
+    偏離偵測要雜湊的是一份 config 檔案本身。目標若被換成 FIFO，跟隨式 `open` 會**永久
+    卡住**（沒有寫入端就一直等）——`digest` 對 target 逐筆呼叫，一個這種目標就讓整支
+    掃描不回。以 `O_NONBLOCK` 開檔＋`fstat` 的 `S_ISREG` 在讀任何位元組之前認出它並具名
+    拒絕。中性命名（非 `Source*`）：`digest` 同時服務 repo 內來源與部署目標兩邊（`io/scan`）。"""
+
+
+class PathUnreachable(Exception):
+    """去不到那個路徑：某一層祖先目錄少了 traverse（+x）權限。
+
+    與「不存在」分開至關重要（不變式 2）：祖先缺 +x 時 `os.path.lexists` 會回 False，
+    若照此判為「未部署」，UI 就提供一鍵寫出——一個修不好權限問題的動作，操作者還不知
+    道為什麼。要看 `open` 的 errno（EACCES／EPERM）而非 lexists 才分得出「看不到」與
+    「不存在」。中性命名，理由同 `NotARegularFile`。"""
+
+
 class SourceError(Exception):
     """匯入時刻讀取來源失敗的基底（T22）。
 
