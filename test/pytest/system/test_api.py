@@ -131,6 +131,43 @@ def test_configs_carries_the_state_of_every_entry(api, listing):
     assert rows[0]["ref"] == "a@amr01-mfz3k9q1"
 
 
+def test_configs_surfaces_a_pathological_target_as_a_row_error_not_a_bare_500(api, repo):
+    # #214 Q3(ii)：某筆目標被換成 FIFO（digest 加固後會拒絕、不掛住）。GET /api/configs 不裸
+    # 500，該列帶 error（state 為 null）、其餘列照常帶 state——一筆比不了不弄垮整份清單。
+    root = pathlib.Path(repo)
+    (root / "files").mkdir(exist_ok=True)
+    (root / "deployed").mkdir(exist_ok=True)
+    (root / "files" / "ok.yaml").write_text("ok: 1\n", encoding="utf-8")
+    ok_target = root / "deployed" / "ok.yaml"
+    ok_target.write_text("ok: 1\n", encoding="utf-8")
+    (root / "files" / "bad.yaml").write_text("bad: 1\n", encoding="utf-8")
+    fifo_target = root / "deployed" / "bad.pipe"
+    fifo_target.unlink(missing_ok=True)
+    os.mkfifo(fifo_target)
+    header = (
+        'list_version = 1\n\n[defaults.permissions]\n'
+        'owner = "root"\ngroup = "root"\nmode = "0644"\n'
+    )
+    entry = (
+        '\n[[files]]\nuid = "{uid}"\nname = "{name}"\nhostname = "amr01"\n'
+        'source = "files/{name}.yaml"\ntarget = "{target}"\nformat = "yaml"\ngroups = []\n'
+    )
+    (root / "config-list.toml").write_text(
+        header
+        + entry.format(uid="aaaaaaaa", name="ok", target=ok_target)
+        + entry.format(uid="bbbbbbbb", name="bad", target=fifo_target),
+        encoding="utf-8",
+    )
+
+    rows = _get(api, "/api/configs")
+
+    by_name = {row["name"]: row for row in rows}
+    assert by_name["ok"]["state"] == "in_sync"
+    assert by_name["ok"]["error"] is None
+    assert by_name["bad"]["state"] is None
+    assert str(fifo_target) in by_name["bad"]["error"]
+
+
 def test_cli_list_goes_through_the_same_endpoint_as_the_page(api, listing):
     # ADR-00000009：不存在「CLI 能做但介面不能」或反之，因為根本是同一組端點。
     # 把關的不是輸出比對而是 --api：自己讀清單檔的實作根本用不到那個位址。
@@ -145,6 +182,33 @@ def test_cli_list_goes_through_the_same_endpoint_as_the_page(api, listing):
     for state in ("一致", "偏離", "未部署"):
         assert state in result.stdout
     assert "a@amr01-mfz3k9q1" in result.stdout
+
+
+def test_cli_list_marks_a_pathological_target_as_an_error_row(api, repo):
+    # #214 Q3(ii)：病態目標那一列在 CLI 標「錯誤」並帶原因，不印一個偽裝的狀態，也不讓
+    # 整個 list 崩掉——與 GET /api/configs 同一份資料。
+    root = pathlib.Path(repo)
+    (root / "files").mkdir(exist_ok=True)
+    (root / "deployed").mkdir(exist_ok=True)
+    (root / "files" / "bad.yaml").write_text("bad: 1\n", encoding="utf-8")
+    fifo_target = root / "deployed" / "bad2.pipe"
+    fifo_target.unlink(missing_ok=True)
+    os.mkfifo(fifo_target)
+    header = (
+        'list_version = 1\n\n[defaults.permissions]\n'
+        'owner = "root"\ngroup = "root"\nmode = "0644"\n'
+    )
+    entry = (
+        '\n[[files]]\nuid = "cccccccc"\nname = "bad"\nhostname = "amr01"\n'
+        f'source = "files/bad.yaml"\ntarget = "{fifo_target}"\nformat = "yaml"\ngroups = []\n'
+    )
+    (root / "config-list.toml").write_text(header + entry, encoding="utf-8")
+
+    result = _cli("list", "--api", api)
+
+    assert result.returncode == 0
+    assert "錯誤" in result.stdout
+    assert str(fifo_target) in result.stdout
 
 
 def test_cli_fails_loudly_when_the_backend_is_not_up():

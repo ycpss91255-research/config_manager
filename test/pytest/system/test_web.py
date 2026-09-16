@@ -31,6 +31,7 @@ T11 先前**沒有執行通路**：頁面裡的 `data-testid` 是給未來的測
 import functools
 import http.server
 import json
+import os
 import pathlib
 import socket
 import subprocess
@@ -341,6 +342,25 @@ def test_each_state_is_spelled_the_way_context_spells_it(open_page, listing):
     words = page.eval_on_selector_all(".state", "nodes => nodes.map(node => node.textContent)")
 
     assert words == ["一致", "偏離", "未部署"]
+
+
+def test_a_pathological_target_shows_an_error_row_not_a_fake_state(open_page, repo):
+    # #214 Q3(ii)：目標是 FIFO（判不出狀態）那一列標「錯誤」並把原因放進 title，不畫一個
+    # 偽裝的狀態點——把「比不了」講成某個狀態就是靜默失敗（不變式 2）。
+    (repo / "files").mkdir(exist_ok=True)
+    (repo / "deployed").mkdir(exist_ok=True)
+    (repo / "files" / "bad.yaml").write_text("bad: 1\n", encoding="utf-8")
+    fifo = repo / "deployed" / "bad.pipe"
+    fifo.unlink(missing_ok=True)
+    os.mkfifo(fifo)
+    entry = _ENTRY.format(uid="mfz3k9q1", name="bad", target=str(fifo), groups="")
+    (repo / "config-list.toml").write_text(_LIST_HEADER + entry, encoding="utf-8")
+    page = _enter_identity(open_page())
+
+    page.wait_for_selector("[data-testid='tree-item-mfz3k9q1']")
+    assert page.get_attribute("[data-testid='status-dot']", "data-state") == "error"
+    assert page.inner_text("[data-testid='row-error']") == "錯誤"
+    assert str(fifo) in page.get_attribute("[data-testid='row-error']", "title")
 
 
 def test_an_entry_in_no_group_lands_under_the_ungrouped_heading(open_page, listing):
