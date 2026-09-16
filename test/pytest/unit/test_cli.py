@@ -199,6 +199,43 @@ def _http_error(code, detail):
     )
 
 
+def _http_error_raw(code, body):
+    # 一個 body 由呼叫端指定原始位元組的 HTTPError——用來餵非物件的 JSON body。
+    return urllib.error.HTTPError("http://x/api", code, "refused", {}, io.BytesIO(body))
+
+
+def test_browse_does_not_crash_on_a_non_object_error_body(monkeypatch, capsys):
+    # --api 是使用者可任意指向的位址：指到別的服務／代理層時，4xx/5xx 的 body 可能是合法但
+    # 非物件的 JSON（null、陣列、字面值）。_http_detail 該回退成狀態行，不是崩成裸 traceback
+    # ——json.loads([]) 後 ["detail"] 下標對 list 拋 TypeError，而它不在 except 之列（不變式 2）。
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda url, timeout=None: (_ for _ in ()).throw(_http_error_raw(502, b"[]")),
+    )
+
+    code = main(["config_manager", "browse", "--api", "http://x", "--path", "/srv"])
+
+    assert code == 1
+    assert "HTTP 502" in capsys.readouterr().err
+
+
+def test_list_relays_a_server_error_instead_of_saying_the_backend_is_down(monkeypatch, capsys):
+    # 後端已啟動但回 5xx（如清單檔執行期讀取失敗）時，list 要指名伺服器的錯誤，不是誤報
+    # 「確認 backend 已啟動」——HTTPError 是 OSError 子類，少了專屬分支就被連線失敗文案吞掉，
+    # 把「起來了但出錯」說成「沒起來」（不變式 2）。與 import／browse／inspect 對齊。
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda url, timeout=None: (_ for _ in ()).throw(_http_error(500, "清單檔讀不出來")),
+    )
+
+    code = main(["config_manager", "list", "--api", "http://x"])
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "清單檔讀不出來" in err
+    assert "確認 backend 已啟動" not in err
+
+
 def test_import_posts_the_source_to_the_configs_endpoint(answers, capsys):
     # 把關的是位址與方法：自己另做一套的實作不會 POST 到 --api 指的 /api/configs。
     called = answers({"ref": "nav2@amr01-abc", "target": "/etc/nav2.yaml"})

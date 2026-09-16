@@ -144,6 +144,14 @@ def _list(api: str) -> int:
     try:
         with urllib.request.urlopen(f"{api}/api/configs", timeout=_TIMEOUT) as response:
             rows = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        # 後端起來了、卻回 4xx/5xx：呈現它的原因，別當連線失敗。HTTPError 是 OSError 子類，
+        # 少了這個分支就會被下面的連線失敗文案吞掉，把「起來了但出錯」說成「沒起來」（不變式 2）。
+        print(
+            f"config_manager: 列出失敗（{_http_detail(error)}）。下一步：依上面的原因修正後重試",
+            file=sys.stderr,
+        )
+        return 1
     except (OSError, ValueError) as error:
         print(
             f"config_manager: 讀不到 {api}/api/configs（{error}）。"
@@ -278,7 +286,9 @@ def _http_detail(error: urllib.error.HTTPError) -> str:
     """
     try:
         detail = json.loads(error.read().decode("utf-8"))["detail"]
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, TypeError):
+        # TypeError：body 是合法 JSON 但非物件（null／陣列／字面值），["detail"] 下標會拋它。
+        # 少了它，指到別的服務／代理層時 CLI 會崩成裸 traceback 而非回退狀態行（不變式 2）。
         return f"HTTP {error.code}"
     if isinstance(detail, dict):
         message = detail.get("message", detail)
