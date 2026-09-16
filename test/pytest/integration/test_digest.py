@@ -12,7 +12,7 @@ import os
 import pytest
 
 from config_manager.io.digest import digest
-from config_manager.io.errors import NotARegularFile, PathUnreachable
+from config_manager.io.errors import ContentTooLarge, NotARegularFile, PathUnreachable
 
 # 以 coreutils 的 sha256sum 取得，不是用 hashlib 再算一次——
 # 用實作自己的算法產生期望值的測試恆真（TEST-PLAN 撰寫規則）：
@@ -81,6 +81,16 @@ def test_a_symlink_target_is_refused_not_followed(tmp_path):
 
     with pytest.raises(NotARegularFile):
         digest(str(link))
+
+
+def test_a_target_larger_than_the_cap_is_refused_before_being_hashed(tmp_path):
+    # #214：一般檔案 target 也可能異常巨大（S_ISREG 過關但 GB 級），讓每次掃描白花時間。
+    # fstat 的 st_size 超過上限就在讀之前具名拒絕（max_bytes 可覆寫，測試給小值）。
+    target = tmp_path / "big.yaml"
+    target.write_bytes(b"x" * 4096)
+
+    with pytest.raises(ContentTooLarge):
+        digest(str(target), max_bytes=1024)
 
 
 def test_a_parent_without_traverse_permission_is_not_reported_as_missing(tmp_path):

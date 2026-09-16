@@ -16,6 +16,7 @@ from config_manager.core.models import FileEntry
 from config_manager.core.state import State, decide
 from config_manager.io.digest import digest
 from config_manager.io.errors import (
+    ContentTooLarge,
     ContentUnreadable,
     NotARegularFile,
     PathUnreachable,
@@ -59,7 +60,7 @@ def _state_of(repo: str, entry: FileEntry) -> State | ScanFailure:
 
     try:
         target_hash = digest(entry.target)
-    except (NotARegularFile, PathUnreachable, ContentUnreadable) as error:
+    except (NotARegularFile, PathUnreachable, ContentTooLarge, ContentUnreadable) as error:
         # 一個病態目標（FIFO／裝置／symlink／不可 traverse）不弄垮整份掃描（#214，Q3=ii）：
         # 這一筆回結構化錯誤、其餘照常。digest 的加固讓這裡不會掛住也不誤判未部署。
         return ScanFailure(str(error))

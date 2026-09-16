@@ -6,6 +6,30 @@
 """
 
 import os
+from collections.abc import Callable, Iterator
+
+
+def read_capped(
+    descriptor: int,
+    chunk_size: int,
+    max_bytes: int,
+    too_large: Callable[[int], Exception],
+) -> Iterator[bytes]:
+    """逐塊讀 fd 並 yield 每一塊；總量超過 `max_bytes` 就丟 `too_large(total)` 回傳的例外。
+
+    以 generator 逐塊交出，呼叫端可以邊讀邊雜湊（O(1) 記憶體，`io/digest`）或收集成 bytes
+    （`io/source`）——兩種都在此守同一道「讀取途中超過上限」的邊界（#200／#214）。`os.read`
+    的 `OSError` 原樣往外拋，交給呼叫端包成「內容讀不出來」。
+    """
+    total = 0
+    while True:
+        block = os.read(descriptor, chunk_size)
+        if not block:
+            return
+        total += len(block)
+        if total > max_bytes:
+            raise too_large(total)
+        yield block
 
 
 def ancestors(path: str) -> list[str]:

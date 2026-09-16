@@ -26,22 +26,27 @@ import os
 import stat
 
 from config_manager.io.errors import (
+    ContentTooLarge,
     ContentUnreadable,
     NotARegularFile,
     PathUnreachable,
 )
-from config_manager.io.paths import blocking_parent
+from config_manager.io.paths import blocking_parent, read_capped
 
 # 一次讀進記憶體的分塊大小。內容串流進 hashlib、不留存，所以記憶體是 O(1)。
 _CHUNK = 65536
 
+# 目標大小上限。config 檔本就小；10 MiB 已遠比任何真實 config 寬鬆，但擋得住異常巨大的
+# 目標讓每次掃描白花大量時間（比照 io/source 的 MAX_SOURCE_BYTES，#200／#214）。
+_MAX_BYTES = 10 * 1024 * 1024
 
-def digest(path: str) -> str | None:
+
+def digest(path: str, max_bytes: int = _MAX_BYTES) -> str | None:
     """回傳 path 的內容 sha256；路徑不存在則回 None，其餘讀不成的情形丟具名例外。
 
     「不存在」回 None、「存在但讀不成」丟例外——兩者不可混為一談：都回 None 的話，一個
     權限壞掉或被換成 FIFO 的目標會被判成「未部署」，UI 於是提供一鍵寫出，而那個動作修不好
-    真正的問題，操作者也不會知道為什麼（不變式 2）。
+    真正的問題，操作者也不會知道為什麼（不變式 2）。`max_bytes` 是大小上限（#214）。
     """
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -58,20 +63,33 @@ def digest(path: str) -> str | None:
                 f"目標不是一般檔案（{_kind(info.st_mode)}）：{path}。"
                 f"下一步：確認該路徑指向一份 config 檔案，不是裝置、目錄或具名管道"
             )
-        return _hash(descriptor, path)
+        if info.st_size > max_bytes:
+            raise ContentTooLarge(
+                f"目標太大（{info.st_size} 位元組，上限 {max_bytes}）：{path}。"
+                f"下一步：確認它是一份 config 檔案，不是被誤指到的大檔"
+            )
+        return _hash(descriptor, path, max_bytes)
     finally:
         os.close(descriptor)
 
 
-def _hash(descriptor: int, path: str) -> str:
-    """把 fd 的內容分塊餵進 sha256。內容不留存，記憶體 O(1)。"""
+def _hash(descriptor: int, path: str, max_bytes: int) -> str:
+    """把 fd 的內容分塊餵進 sha256。內容串流不留存，記憶體 O(1)。
+
+    `st_size` 檢查之外再守一道（`read_capped`）：檔案若在 fstat 與讀取之間被撐大，讀到超過
+    上限就丟 `ContentTooLarge`，而不是一路讀下去。
+    """
+    def _too_large(total: int) -> Exception:
+        return ContentTooLarge(
+            f"目標邊讀邊被撐大（已讀 {total} 位元組，上限 {max_bytes}）：{path}。"
+            f"下一步：確認沒有其他程序正在寫入它，然後重試"
+        )
+
     hasher = hashlib.sha256()
     try:
-        while True:
-            block = os.read(descriptor, _CHUNK)
-            if not block:
-                return hasher.hexdigest()
+        for block in read_capped(descriptor, _CHUNK, max_bytes, _too_large):
             hasher.update(block)
+        return hasher.hexdigest()
     except OSError as error:
         raise ContentUnreadable(
             f"內容讀不出來：{path}（{error.strerror}）。"

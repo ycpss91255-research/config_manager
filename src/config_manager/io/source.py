@@ -47,7 +47,7 @@ from config_manager.io.errors import (
     SourceTooLarge,
     SourceUnreachable,
 )
-from config_manager.io.paths import blocking_parent
+from config_manager.io.paths import blocking_parent, read_capped
 
 # 安全的 hostname 段：字母數字加 . _ -（涵蓋 FQDN 與容器 ID）。用來擋住會逃出
 # `files/<hostname>/` 或重塑 commit 主旨的值——`/`、控制字元、空白都不match（#178）。
@@ -262,21 +262,15 @@ def _read_all(descriptor: int, path: str, resolved: str, max_bytes: int) -> byte
     `max_bytes` 的邊界在 `st_size` 檢查之外再守一道（#200）：檔案若在 fstat 與讀取之間被
     撐大，讀到超過上限就丟 `SourceTooLarge`，而不是無上限地一路讀進記憶體。
     """
-    blocks: list[bytes] = []
-    total = 0
+    def _too_large(total: int) -> Exception:
+        return SourceTooLarge(
+            f"來源檔在讀取途中超過上限（已讀 {total} 位元組，上限 {max_bytes}）："
+            f"{path} → {resolved}。下一步：確認沒有其他程序正在把它撐大，且指到的是"
+            f"一份 config 檔案"
+        )
+
     try:
-        while True:
-            block = os.read(descriptor, _CHUNK)
-            if not block:
-                return b"".join(blocks)
-            total += len(block)
-            if total > max_bytes:
-                raise SourceTooLarge(
-                    f"來源檔在讀取途中超過上限（已讀 {total} 位元組，上限 {max_bytes}）："
-                    f"{path} → {resolved}。下一步：確認沒有其他程序正在把它撐大，且指到的是"
-                    f"一份 config 檔案"
-                )
-            blocks.append(block)
+        return b"".join(read_capped(descriptor, _CHUNK, max_bytes, _too_large))
     except OSError as error:
         raise ContentUnreadable(
             f"內容讀不出來：{path} → {resolved}（{error.strerror}）。"

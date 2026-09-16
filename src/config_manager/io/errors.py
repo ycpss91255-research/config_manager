@@ -110,6 +110,14 @@ class NotARegularFile(Exception):
     拒絕。中性命名（非 `Source*`）：`digest` 同時服務 repo 內來源與部署目標兩邊（`io/scan`）。"""
 
 
+class ContentTooLarge(Exception):
+    """目標是一般檔案，但大到超過雜湊上限。
+
+    偏離偵測要雜湊整份內容；一個異常巨大的目標（`S_ISREG` 過關但 GB 級）會讓每次掃描
+    白花大量時間。`digest` 在讀之前先看 `fstat` 的 `st_size`，超過就具名拒絕（比照
+    `read_source` 的 `SourceTooLarge`，#200）。中性命名，理由同 `NotARegularFile`。"""
+
+
 class PathUnreachable(Exception):
     """去不到那個路徑：某一層祖先目錄少了 traverse（+x）權限。
 
