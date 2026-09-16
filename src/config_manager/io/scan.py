@@ -10,16 +10,35 @@
 """
 
 import os
+from dataclasses import dataclass
 
 from config_manager.core.models import FileEntry
 from config_manager.core.state import State, decide
 from config_manager.io.digest import digest
-from config_manager.io.errors import SourceMissing
+from config_manager.io.errors import (
+    ContentUnreadable,
+    NotARegularFile,
+    PathUnreachable,
+    SourceMissing,
+)
 from config_manager.io.preflight import read_config_list
 
 
-def scan(repo: str) -> list[tuple[FileEntry, State]]:
-    """逐筆比對目標與來源，回傳每筆的狀態。順序與清單檔一致。
+@dataclass(frozen=True)
+class ScanFailure:
+    """某一筆的狀態判不出來：目標存在但不是可讀的一般檔案（FIFO／裝置／目錄／symlink），
+    或去不到（上層目錄無 traverse），或讀不出來。
+
+    **不是第五種 State**（設計刻意只留四種）——是「這一筆比不了」的旁路結果，讓一個病態
+    目標不弄垮整份掃描（#214，Q3=ii）：該筆回這個、其餘照常判定。`message` 是 `digest`
+    丟出的可行動訊息（含路徑與下一步）。
+    """
+
+    message: str
+
+
+def scan(repo: str) -> list[tuple[FileEntry, State | ScanFailure]]:
+    """逐筆比對目標與來源，回傳每筆的狀態（或該筆的 `ScanFailure`）。順序與清單檔一致。
 
     順序不由這裡決定：畫面要怎麼排是畫面的事，掃描保留清單檔的順序，
     這樣「清單檔第三筆」與「畫面第三列」永遠指同一件事。
@@ -27,7 +46,7 @@ def scan(repo: str) -> list[tuple[FileEntry, State]]:
     return [(entry, _state_of(repo, entry)) for entry in read_config_list(repo).files]
 
 
-def _state_of(repo: str, entry: FileEntry) -> State:
+def _state_of(repo: str, entry: FileEntry) -> State | ScanFailure:
     source_hash = digest(os.path.join(repo, entry.source))
     if source_hash is None:
         # 啟動時 T15 驗過來源都在，所以此刻不在代表有人動了 repo。折進「未部署」
@@ -38,5 +57,10 @@ def _state_of(repo: str, entry: FileEntry) -> State:
             f"下一步：還原該檔，或從清單檔移除這筆條目"
         )
 
-    target_hash = digest(entry.target)
+    try:
+        target_hash = digest(entry.target)
+    except (NotARegularFile, PathUnreachable, ContentUnreadable) as error:
+        # 一個病態目標（FIFO／裝置／symlink／不可 traverse）不弄垮整份掃描（#214，Q3=ii）：
+        # 這一筆回結構化錯誤、其餘照常。digest 的加固讓這裡不會掛住也不誤判未部署。
+        return ScanFailure(str(error))
     return decide(target_hash is not None, target_hash, source_hash)

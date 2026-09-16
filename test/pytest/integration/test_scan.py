@@ -7,11 +7,13 @@
 以真實的檔案系統測（io 層），用 tmp_path。
 """
 
+import os
+
 import pytest
 
 from config_manager.core.state import State
 from config_manager.io.errors import SourceMissing
-from config_manager.io.scan import scan
+from config_manager.io.scan import ScanFailure, scan
 
 _HEADER = """\
 list_version = 1
@@ -57,6 +59,30 @@ def test_absent_target_is_reported_as_missing(tmp_path):
     )
 
     assert [state for _, state in scan(str(tmp_path))] == [State.MISSING]
+
+
+def test_a_pathological_target_is_a_per_entry_failure_not_a_whole_scan_error(tmp_path):
+    # #214 Q3(ii)：一筆的目標被換成 FIFO（digest 會拒絕、不掛住），不該讓整支 scan raise——
+    # 該筆回 ScanFailure（帶可行動訊息）、其餘照常判定。一筆壞不弄垮整表。
+    _write(tmp_path / "files" / "ok.yaml", "a: 1\n")
+    ok_target = tmp_path / "deployed" / "ok.yaml"
+    _write(ok_target, "a: 1\n")
+    _write(tmp_path / "files" / "bad.yaml", "b: 2\n")
+    fifo_target = tmp_path / "deployed" / "bad.pipe"
+    fifo_target.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(fifo_target)
+    _write(
+        tmp_path / "config-list.toml",
+        _HEADER
+        + _entry("mfz3k9q1", "ok", "files/ok.yaml", str(ok_target))
+        + _entry("mfz3k9q2", "bad", "files/bad.yaml", str(fifo_target)),
+    )
+
+    results = [state for _, state in scan(str(tmp_path))]
+
+    assert results[0] == State.IN_SYNC
+    assert isinstance(results[1], ScanFailure)
+    assert str(fifo_target) in results[1].message
 
 
 def test_target_matching_source_is_reported_as_in_sync(tmp_path):
