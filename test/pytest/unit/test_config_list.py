@@ -512,6 +512,39 @@ def test_files_as_an_inline_array_is_rejected_with_a_named_exception():
         load(text)
 
 
+def test_a_misplaced_entry_field_reports_its_own_line_not_a_colliding_earlier_key():
+    # 條目層誤放 owner，與 [defaults.permissions] 的合法 owner 同名。find_line 先前指向檔案
+    # 較前處的合法出現（第 4 行），現在指向條目裡真正出錯的那一行（#218 驗收條件 2）。
+    text = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/a.yaml"
+target   = "/opt/a.yaml"
+format   = "yaml"
+groups   = []
+owner    = "amr01"
+"""
+
+    with pytest.raises(UnknownField) as exc:
+        load(text)
+
+    message = str(exc.value)
+    lines = text.splitlines()
+    lineno = [i for i, line in enumerate(lines, 1) if line.lstrip().startswith("owner")]
+    legit_line, misplaced_line = min(lineno), max(lineno)
+    assert f"第 {misplaced_line} 行" in message
+    assert f"第 {legit_line} 行" not in message
+
+
 def test_valid_config_list_loads_top_level_and_defaults():
     # core/models 無獨立測試介面，T1 是 list_version 與 defaults 的唯一觀察點。
     text = """\

@@ -18,7 +18,7 @@ from config_manager.core.errors import (
     RootsUnknownField,
 )
 from config_manager.core.models import AllowedRoot, AllowedRoots
-from config_manager.core.toml_support import reject_unknown
+from config_manager.core.toml_support import Source, reject_unknown
 
 # 白名單設定檔的允許鍵集。結構驗證（必填、型別）交給 pydantic；這裡只擋未知欄位、
 # 指名行號（防止由設定檔注入內部欄位，比照 config_list）。
@@ -106,11 +106,11 @@ def _root_to_table(root: AllowedRoot) -> items.Table:
 
 def _check_unknown_fields(doc: "tomlkit.TOMLDocument", text: str) -> None:
     """在轉為資料模型前，對照鍵集攔下未知欄位並指名行號。"""
-    reject_unknown(doc.keys(), _TOP_KEYS, text, "白名單設定檔頂層", RootsUnknownField)
+    reject_unknown(doc.keys(), _TOP_KEYS, Source(text), "白名單設定檔頂層", RootsUnknownField)
     roots = doc.get("roots")
     if roots is not None:
         for root in roots:
-            reject_unknown(root.keys(), _ROOT_KEYS, text, "白名單根條目", RootsUnknownField)
+            reject_unknown(root.keys(), _ROOT_KEYS, Source(text), "白名單根條目", RootsUnknownField)
 
 
 def check_prefix(prefix: str) -> None:
