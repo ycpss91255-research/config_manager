@@ -424,6 +424,20 @@ def test_the_page_says_it_cannot_read_the_list_instead_of_showing_an_empty_one(o
     page.wait_for_selector("[data-testid='load-error']")
 
 
+def test_typing_in_search_does_not_silently_clear_the_load_error(open_page, api):
+    # render() 綁在搜尋輸入上、每次無條件從 rows 重畫。載入失敗時 rows 仍是空／過期的，
+    # 一在錯誤態打字就會把 load-error 蓋成空清單或舊清單——把「讀不到」靜默改寫成「沒有」
+    # 或「這是現況」（不變式 2）。錯誤要黏住。
+    _remember_identity(api)
+    page = open_page(unreachable="**/api/configs")
+    page.wait_for_selector("[data-testid='load-error']")
+
+    page.fill("[data-testid='search-input']", "x")
+
+    page.wait_for_selector("[data-testid='load-error']")  # 仍在，沒被 render 清掉
+    assert page.query_selector("[data-testid='empty-state']") is None
+
+
 def test_the_identity_page_is_still_there_when_the_backend_never_answers(open_page):
     # backend 連不上時仍顯示身分輸入頁：那是使用者唯一能操作的東西。載入時那一發
     # 打不出去也一樣——不是空白，也不是一個轉不完的圈。
@@ -798,6 +812,34 @@ def test_an_inspect_error_is_shown_in_the_confirm_screen(open_page, browse_root)
     assert error_text.strip()
     assert error_text.count("（第") == 1  # 行號標記只出現一次（後端已內嵌，前端不再補）
     assert page.get_by_role("button", name="確認寫入").is_disabled()  # 出錯時不能寫入
+
+
+def test_a_failed_inspect_clears_the_previous_files_ambiguities(open_page, browse_root):
+    # 偵測失敗不清舊結果 → W8 殘留前一檔的歧義勾選框，勾滿就把「確認寫入」重新解鎖，於是對
+    # 偵測失敗的檔案送出納管、還帶著另一檔的歧義確認，繞過 AC4 的確認閘門。清場後不殘留。
+    (browse_root / "ambiguous.yaml").write_text("flag: yes\n", encoding="utf-8")
+    (browse_root / "broken.json").write_text("{not: valid\n", encoding="utf-8")
+    page = _open_browser(open_page())
+    page.click(f"[data-testid='browse-root-{browse_root}']")
+
+    # 檔案 A（有歧義）：偵測成功，歧義框出現。
+    page.wait_for_selector("[data-testid='browse-entry-ambiguous.yaml']")
+    page.click("[data-testid='browse-entry-ambiguous.yaml']")
+    page.get_by_role("button", name="檢視並納管").click()
+    page.wait_for_selector("[data-testid='onboard-ambiguity-1']")
+
+    # 取消回瀏覽會回到選根狀態（清單讓位給根，見 showBrowse），故重新展開根，改選檔案 B。
+    page.get_by_role("button", name="取消").click()
+    page.wait_for_selector(f"[data-testid='browse-root-{browse_root}']")
+    page.click(f"[data-testid='browse-root-{browse_root}']")
+    page.wait_for_selector("[data-testid='browse-entry-broken.json']")
+    page.click("[data-testid='browse-entry-broken.json']")
+    page.get_by_role("button", name="檢視並納管").click()
+    page.wait_for_selector("[data-testid='onboard-error']:not([hidden])")
+
+    # A 的歧義框不再殘留，且「確認寫入」停用（無法對失敗的 B 送出）。
+    assert page.query_selector("[data-testid='onboard-ambiguity-1']") is None
+    assert page.get_by_role("button", name="確認寫入").is_disabled()
 
 
 def test_cancelling_returns_to_browse_and_writes_nothing(open_page, browse_root):
