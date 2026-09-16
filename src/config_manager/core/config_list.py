@@ -9,6 +9,7 @@ import tomlkit
 from tomlkit import items
 
 from config_manager.core.errors import (
+    ConfigListMalformed,
     DumpMismatch,
     DuplicateSource,
     DuplicateTarget,
@@ -44,6 +45,7 @@ _OPTIONAL_ENTRY_KEYS = frozenset(
 def load(text: str) -> ConfigList:
     """把 config 清單檔的原始文字解析為已驗證的資料模型。"""
     doc = tomlkit.parse(text)
+    _check_shape(doc)
     _check_unknown_fields(doc, text)
     config_list = ConfigList.model_validate(doc.unwrap())
     _check_integrity(config_list)
@@ -95,6 +97,39 @@ def dump(config_list: ConfigList, original: str) -> str:
             del files[index]
 
     return tomlkit.dumps(doc)
+
+
+def _check_shape(doc: "tomlkit.TOMLDocument") -> None:
+    """`files` 若存在必須是 `[[files]]` 表格串列（AoT）；permissions 若存在必須是表格。
+
+    在迭代 `files`／對 permissions 取 `.keys()`（`_check_unknown_fields`）與轉模型之前先擋下
+    純量、inline 陣列等形狀：那些會讓迭代丟 raw TypeError、對 permissions 取 `.keys()` 丟 raw
+    AttributeError，逃過「結構驗證交給 pydantic、讀取層認得 load 的失敗詞彙」的契約；inline
+    陣列的 files 更是 load 接受、dump 才崩（只吃 AoT）。比照 allowed_roots 的 `_check_roots_shape`。
+    """
+    files = doc.get("files")
+    if files is not None and not isinstance(files, items.AoT):
+        raise ConfigListMalformed(
+            "清單檔 config-list.toml 的 files 要以 [[files]] 表格串列書寫。"
+            "下一步：把每個條目寫成一段 [[files]]，不要用 inline 陣列或其他型別"
+        )
+
+    defaults = doc.get("defaults")
+    if defaults is not None:
+        _check_permissions_shape(defaults.get("permissions"), "defaults.permissions")
+
+    if isinstance(files, items.AoT):
+        for entry in files:
+            _check_permissions_shape(entry.get("permissions"), "條目的 permissions")
+
+
+def _check_permissions_shape(perms: "items.Item | None", where: str) -> None:
+    """permissions 若存在必須是表格（可取 `.keys()`），否則具名擋下。"""
+    if perms is not None and not hasattr(perms, "keys"):
+        raise ConfigListMalformed(
+            f"清單檔 config-list.toml 的 {where} 要以表格書寫（owner／group／mode）。"
+            f"下一步：把 {where} 寫成表格或 inline 表格，不要用純量"
+        )
 
 
 def _check_unknown_fields(doc: "tomlkit.TOMLDocument", text: str) -> None:

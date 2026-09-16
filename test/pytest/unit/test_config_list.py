@@ -8,6 +8,7 @@ import pytest
 from config_manager.core.config_list import dump, load
 from config_manager.core.models import Permissions
 from config_manager.core.errors import (
+    ConfigListMalformed,
     DumpMismatch,
     DuplicateSource,
     DuplicateTarget,
@@ -483,6 +484,32 @@ mode = "0644"
     with pytest.raises(UnknownField) as exc:
         load(text)
     assert "warnings" in str(exc.value)
+
+
+def test_scalar_permissions_is_rejected_with_a_named_exception():
+    # `permissions = "0644"`（純量誤放）是合法 TOML 但不是表格形狀。先前 _check_unknown_fields
+    # 會對它取 .keys() 丟 raw AttributeError，逃過具名錯誤契約；現在以 ConfigListMalformed 擋下。
+    text = "list_version = 1\n\n[defaults]\npermissions = \"0644\"\n"
+
+    with pytest.raises(ConfigListMalformed):
+        load(text)
+
+
+def test_files_as_a_scalar_is_rejected_with_a_named_exception():
+    # `files = 5` 是合法 TOML 但不是 [[files]] 形狀。先前迭代它丟 raw TypeError；以具名例外擋下。
+    text = "list_version = 1\nfiles = 5\n"
+
+    with pytest.raises(ConfigListMalformed):
+        load(text)
+
+
+def test_files_as_an_inline_array_is_rejected_with_a_named_exception():
+    # inline 陣列（`files = [{...}]`）load 接受得了、dump 卻只吃 [[files]] 的 AoT——形狀不對稱
+    # 會讓第一次寫回就崩。以 ConfigListMalformed 在 load 擋下，兩邊一致。
+    text = 'list_version = 1\nfiles = [{uid = "mfz3k9q1"}]\n'
+
+    with pytest.raises(ConfigListMalformed):
+        load(text)
 
 
 def test_valid_config_list_loads_top_level_and_defaults():
