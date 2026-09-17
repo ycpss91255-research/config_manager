@@ -122,20 +122,41 @@ _AMBIGUOUS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
 _AMBIGUOUS_FORMATS = frozenset({"yaml"})
 
 
+# 區塊純量標頭：`|`／`>`，可帶 chomping（`-`／`+`）與明示縮排指示（數字）。其後縮排更深
+# 的行是**字面文字**，不是 YAML 的鍵值——不能拿去比對歧義（#219）。
+_BLOCK_HEADER = re.compile(r"^[|>][+-]?\d*$")
+
+
 def find_ambiguous(text: str, fmt: str) -> list[Ambiguity]:
     if fmt not in _AMBIGUOUS_FORMATS:
         return []
 
     found: list[Ambiguity] = []
+    block_indent: int | None = None  # 不在區塊純量內時為 None；否則為標頭行的縮排
     for number, line in enumerate(text.splitlines(), start=1):
+        if block_indent is not None:
+            if not line.strip():
+                continue  # 空行留在區塊內：config 的腳本／內嵌文字常含空行（#219）
+            if _indent(line) > block_indent:
+                continue  # 縮排更深＝區塊純量的字面內文，不掃
+            block_indent = None  # 縮排回到標頭層級以下：區塊結束，這一行照常處理
+
         value = _written_value(line)
         if value is None:
+            continue
+        if _BLOCK_HEADER.match(value):
+            block_indent = _indent(line)  # 這行的值是區塊標頭，其後縮排更深者為字面內文
             continue
         for pattern, readings in _AMBIGUOUS:
             if pattern.match(value):
                 found.append(Ambiguity(line=number, value=value, readings=readings))
                 break
     return found
+
+
+def _indent(line: str) -> int:
+    """行首的空白數（區塊純量以縮排界定內文範圍）。"""
+    return len(line) - len(line.lstrip())
 
 
 def _written_value(line: str) -> str | None:
