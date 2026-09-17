@@ -135,6 +135,49 @@ sys.exit(0 if [r.prefix for r in allowed.roots] == ['${WORK}/targets'] else 1)
   [ ! -f "${WORK}/repo/allowed-roots.toml" ]
 }
 
+@test "CM_ALLOWED_ROOTS 有重複的根時，種子在寫檔前就失敗並指名該變數（#233/#232 發現4）" {
+  # 重複前綴會種成 core 的 _check_integrity 拒絕的 DuplicatePrefix，preflight 以「檔案壞了」
+  # 死掉、指向機器生成檔（§0.4 指錯方向），且毒檔已提交→重啟 seed-if-missing 跳過→崩潰迴圈。
+  # 兩條都是可見的真實目錄（先過 #146），才驗得到種子這道守門。
+  mkdir -p "${WORK}/repo" "${WORK}/targets"
+
+  CM_CONFIG_REPO="${WORK}/repo" CM_ALLOWED_ROOTS="${WORK}/targets,${WORK}/targets" \
+    run "${ENTRYPOINT}" true
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"CM_ALLOWED_ROOTS"* ]]
+  [ ! -f "${WORK}/repo/allowed-roots.toml" ]
+}
+
+@test "CM_ALLOWED_ROOTS 的根含 .. 路徑段時，種子在寫檔前就失敗並指名該變數（#233/#232 發現4）" {
+  # 含 .. 的根會種成 core 的 check_prefix 拒絕的 InvalidPrefix，同樣讓 preflight 死在機器生成
+  # 檔、且毒檔已提交→崩潰迴圈。可見性檢查以 [[ -d ]] 解析 .. 而通過，故要在種子這道字面擋下。
+  # x 與 targets 都建起來，讓 ${WORK}/x/../targets 解析得過 #146 的 -d 檢查。
+  mkdir -p "${WORK}/repo" "${WORK}/x" "${WORK}/targets"
+
+  CM_CONFIG_REPO="${WORK}/repo" CM_ALLOWED_ROOTS="${WORK}/x/../targets" \
+    run "${ENTRYPOINT}" true
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"CM_ALLOWED_ROOTS"* ]]
+  [ ! -f "${WORK}/repo/allowed-roots.toml" ]
+}
+
+@test "preflight 非零退出卻無輸出時，die 仍給出可行動訊息而非空原因（#233/#232 發現7）" {
+  # preflight 被 OOM/SIGKILL（exit 137、無 stdout/stderr）時，check_config_list 的 die 若直接
+  # 用 ${output} 只會印「entrypoint: 」（無原因），違反 die() 自身承諾與 §0.4 三要素。
+  git init --quiet --initial-branch=main "${WORK}"
+  write_minimal_list "${WORK}"
+  # stub python：非零退出、完全無輸出，模擬被信號中止。
+  local stub="${WORK}/stub"
+  mkdir -p "${stub}"
+  printf '#!/usr/bin/env bash\nexit 137\n' >"${stub}/python"
+  chmod +x "${stub}/python"
+
+  CM_CONFIG_REPO="${WORK}" PATH="${stub}:${PATH}" run "${ENTRYPOINT}" true
+  [ "${status}" -ne 0 ]
+  # 不是只印空原因——要帶得出下一步。
+  [[ "${output}" == *"下一步"* ]]
+}
+
 @test "已存在的白名單設定檔不被種子覆蓋（以檔為準，#202）" {
   # 以檔為準：一旦有了這份檔，重啟不因 CM_ALLOWED_ROOTS 改變而動它——介面加的根不該
   # 被下一次啟動的種子抹掉。CM_ALLOWED_ROOTS 指向一個真實可見的目錄（否則會先卡在
