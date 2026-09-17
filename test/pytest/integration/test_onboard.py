@@ -250,6 +250,23 @@ def test_a_commit_is_recorded_with_the_import_kind(tmp_path):
     assert changes[0].summary == f"{entry.name}@{entry.hostname}"
 
 
+def test_the_import_records_the_author_who_performed_it(tmp_path, monkeypatch):
+    # #114（#6 的第四條驗收條件）：輸入的身分要**真的到達 git**——變更紀錄的作者＝執行這次
+    # 納管的身分，且隨傳入的身分而變。斷言 `git_author` 這個 property 本身不算（那只證字串
+    # 拼得對，不證它有到達 git）；要從 `history()` 讀回 `author`。用兩個不同的身分納管兩份來源，
+    # 各自紀錄的作者要對得上——把作者寫死或漏傳，會讓其中一筆對不上。
+    repo = _repo(tmp_path)
+    root, first = _source(tmp_path, name="first.yaml")
+    _, second = _source(tmp_path, name="second.yaml")
+    _fixed_uids(monkeypatch, "uidming01", "uidlin0001")
+
+    e1 = onboard(str(repo), _request(root, first), "陳小明 <ming@example.com>")
+    e2 = onboard(str(repo), _request(root, second), "林巡檢 <lin@example.com>")
+
+    assert history(str(repo), e1.uid)[0].author == "陳小明 <ming@example.com>"
+    assert history(str(repo), e2.uid)[0].author == "林巡檢 <lin@example.com>"
+
+
 def test_the_ambiguity_note_goes_into_the_commit_body(tmp_path):
     repo = _repo(tmp_path)
     root, path = _source(tmp_path)
