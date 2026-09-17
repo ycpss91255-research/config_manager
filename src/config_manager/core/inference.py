@@ -34,13 +34,24 @@ def infer_types(data: object) -> dict[str, str]:
     return types
 
 
+def _escape_key(key: str) -> str:
+    r"""把 key 裡的字面 `.` 跳脫成 `\.`，才不會與路徑分隔用的 `.` 撞號（#219）。
+
+    路徑鍵以 `.` 相接扁平化；key 本身含 `.`（如 `a.b`）不跳脫的話，會與巢狀 `a`→`b`
+    產生的路徑 `a.b` 撞成同一鍵、靜默覆蓋、遺失型別。消費端（前端型別樹）以「未跳脫的
+    點」切段、並把 `\.` 還原成 `.`。key 含字面反斜線是 config 幾乎不會出現的邊界，不在此處理。
+    """
+    return key.replace(".", "\\.")
+
+
 def _walk(value: object, path: str, out: dict[str, str]) -> None:
     if path:
         out[path] = _type_name(value)
 
     if isinstance(value, Mapping):
         for key, item in value.items():
-            child = f"{path}.{key}" if path else str(key)
+            escaped = _escape_key(str(key))
+            child = f"{path}.{escaped}" if path else escaped
             _walk(item, child, out)
         return
 

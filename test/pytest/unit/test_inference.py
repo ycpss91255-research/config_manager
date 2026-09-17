@@ -62,6 +62,13 @@ def test_list_of_dicts_yields_paths_for_element_fields():
     }
 
 
+def test_a_key_containing_a_dot_does_not_collide_with_a_nested_path():
+    # key 本身含 `.` 會與巢狀路徑撞號、靜默覆蓋、遺失型別，且結果隨欄位順序變（#219，
+    # 不變式 2）。跳脫含點的 key（`a\.b`）後，它與巢狀 `a.b` 是不同鍵，兩個型別都在。
+    types = infer_types({"a.b": "hello", "a": {"b": 123}})
+    assert types == {"a\\.b": "string", "a": "dict", "a.b": "int"}
+
+
 def test_null_value_is_recorded_as_null():
     # yaml 的 `key:` 與 json 的 null 都會落到這裡；記成 null，不是漏掉那個欄位。
     assert infer_types({"missing": None}) == {"missing": "null"}
