@@ -36,7 +36,7 @@ readonly COVERAGE_JSON="${CM_COVERAGE_JSON:-}"
 
 usage() {
   cat <<'USAGE'
-Usage: script/coverage_gate.sh
+用法：script/coverage_gate.sh
 
   fail  core / io / api / web 之中任何一個低於它自己的下限
   fail  某一層的覆蓋率報告不存在——那一層從頭到尾沒有被量到
