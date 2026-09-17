@@ -168,6 +168,41 @@ def test_configs_surfaces_a_pathological_target_as_a_row_error_not_a_bare_500(ap
     assert str(fifo_target) in by_name["bad"]["error"]
 
 
+def test_a_runtime_unparsable_config_list_is_a_structured_500_not_a_bare_500(api, repo):
+    # #209 Q1／Q4：服務起來後清單檔被改壞（掛載漂移／手改）。GET /api/configs 回帶檔名與
+    # 下一步的結構化 500，不是不指名檔、不可行動的裸 500（不變式 2）。
+    root = pathlib.Path(repo)
+    list_path = root / "config-list.toml"
+    original = list_path.read_text(encoding="utf-8")
+    list_path.write_text("this is not valid toml {[\n", encoding="utf-8")
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _get(api, "/api/configs")
+        assert exc.value.code == _SERVER_ERROR
+        detail = json.loads(exc.value.read().decode("utf-8"))["detail"]
+        assert str(list_path) in detail["file"]  # 結構化：機器可讀的檔名欄位
+        assert "下一步" in detail["message"]  # 帶可行動訊息
+    finally:
+        list_path.write_text(original, encoding="utf-8")
+
+
+def test_a_runtime_unparsable_allowed_roots_is_a_structured_500_not_a_bare_500(api, repo):
+    # #209：白名單設定檔在執行期被改壞，走 root_prefixes 的端點（browse）回結構化 500。
+    root = pathlib.Path(repo)
+    roots_path = root / "allowed-roots.toml"
+    original = roots_path.read_text(encoding="utf-8")
+    roots_path.write_text("not valid toml {[\n", encoding="utf-8")
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _get(api, "/api/browse?path=/tmp")
+        assert exc.value.code == _SERVER_ERROR
+        detail = json.loads(exc.value.read().decode("utf-8"))["detail"]
+        assert str(roots_path) in detail["file"]
+        assert "下一步" in detail["message"]
+    finally:
+        roots_path.write_text(original, encoding="utf-8")
+
+
 def test_cli_list_goes_through_the_same_endpoint_as_the_page(api, listing):
     # ADR-00000009：不存在「CLI 能做但介面不能」或反之，因為根本是同一組端點。
     # 把關的不是輸出比對而是 --api：自己讀清單檔的實作根本用不到那個位址。

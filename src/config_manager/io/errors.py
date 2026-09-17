@@ -57,7 +57,16 @@ class RecordFieldUnsafe(ChangeError):
 
 
 class PreflightError(Exception):
-    """啟動前置檢查失敗的基底。"""
+    """啟動前置檢查失敗的基底。
+
+    `file` 是出問題的那個檔案路徑：這些例外在啟動時被 preflight 攔下退出，但服務起來之後
+    也會從請求路徑冒出（清單檔／白名單檔在執行期被改壞、刪除）。api 層把它們映成結構化
+    500 時，`file` 是機器可讀的欄位（與 `browse`／`inspect` 的結構化 detail 一致，#209）。
+    """
+
+    def __init__(self, message: str, file: str | None = None) -> None:
+        super().__init__(message)
+        self.file = file
 
 
 class ConfigListMissing(PreflightError):

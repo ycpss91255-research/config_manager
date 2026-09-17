@@ -60,7 +60,8 @@ def read_config_list(repo: str) -> ConfigList:
     if not os.path.isfile(list_path):
         raise ConfigListMissing(
             f"config-repo 裡沒有清單檔：{list_path}。"
-            f"下一步：確認 CM_CONFIG_REPO 指向正確的掛載，或從備份還原該檔"
+            f"下一步：確認 CM_CONFIG_REPO 指向正確的掛載，或從備份還原該檔",
+            file=list_path,
         )
 
     # 只接「清單檔真的有問題」會產生的那三類：TOML 語法不成立、內容不符資料模型、
@@ -75,11 +76,13 @@ def read_config_list(repo: str) -> ConfigList:
         return load(text)
     except OSError as error:
         raise ConfigListUnparsable(
-            f"清單檔讀不出來：{list_path}（{error.strerror}）。下一步：檢查該檔的權限與編碼"
+            f"清單檔讀不出來：{list_path}（{error.strerror}）。下一步：檢查該檔的權限與編碼",
+            file=list_path,
         ) from error
     except (ParseError, ValidationError, ConfigListError) as error:
         raise ConfigListUnparsable(
-            f"清單檔無法解析：{list_path}——{error}。下一步：依訊息指出的位置修正該檔"
+            f"清單檔無法解析：{list_path}——{error}。下一步：依訊息指出的位置修正該檔",
+            file=list_path,
         ) from error
 
 

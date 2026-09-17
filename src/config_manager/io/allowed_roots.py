@@ -41,7 +41,8 @@ def read_allowed_roots(repo: str) -> AllowedRoots:
     if not os.path.isfile(path):
         raise AllowedRootsMissing(
             f"config-repo 裡沒有白名單設定檔：{path}。"
-            "下一步：確認 CM_CONFIG_REPO 指向正確的掛載，或讓 entrypoint 重新種下它"
+            "下一步：確認 CM_CONFIG_REPO 指向正確的掛載，或讓 entrypoint 重新種下它",
+            file=path,
         )
 
     try:
@@ -49,11 +50,13 @@ def read_allowed_roots(repo: str) -> AllowedRoots:
         return load(text)
     except OSError as error:
         raise AllowedRootsUnparsable(
-            f"白名單設定檔讀不出來：{path}（{error.strerror}）。下一步：檢查該檔的權限與編碼"
+            f"白名單設定檔讀不出來：{path}（{error.strerror}）。下一步：檢查該檔的權限與編碼",
+            file=path,
         ) from error
     except (ParseError, ValidationError, AllowedRootsError) as error:
         raise AllowedRootsUnparsable(
-            f"白名單設定檔無法解析：{path}——{error}。下一步：依訊息指出的位置修正該檔"
+            f"白名單設定檔無法解析：{path}——{error}。下一步：依訊息指出的位置修正該檔",
+            file=path,
         ) from error
 
 
