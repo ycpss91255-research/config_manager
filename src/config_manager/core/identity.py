@@ -7,9 +7,14 @@ import datetime
 import string
 from pathlib import PurePosixPath
 
-from config_manager.core.errors import NameUnderivable
+from config_manager.core.errors import NameUnderivable, UidHorizonReached
 
 _BASE36 = string.digits + string.ascii_lowercase
+
+# uid 固定寬度是 ref 格式契約（ADR-00000012）。8 碼 base36 能表示 [0, 36^8) 的整數；
+# 到達 36^8 就需要第 9 碼、破壞「固定寬度可排序」不變式（#231）。值必須 < 此上限。
+_UID_WIDTH = 8
+_UID_CEILING = 36**_UID_WIDTH
 
 # 訊息裡給的那個合格例子。與 T5 第一列的推導範例同一條路徑，讀者對得起來。
 _EXAMPLE_TARGET = "/opt/robot/navigation/params.yaml"
@@ -56,10 +61,21 @@ def new_uid(now: datetime.datetime, previous: str | None = None) -> str:
 
     唯一性來自時間單調遞增（backend 是唯一寫入者，無競爭）。傳入前一個 uid 時，
     若時間值未超過它（例如同一毫秒內批次納管），則以前值加一，保證嚴格遞增。
+
+    到達 8 碼寬度容納不下的時間 horizon（`36^8` ms，2059-05-25T17:38:27Z 起）時丟
+    `UidHorizonReached`：`rjust` 只補不截，放行 9 碼會靜默破壞固定寬度可排序不變式
+    （#231）。守衛加在 prev+1 補償**之後**的最終值上，兩條產生路徑都蓋到。
     """
     value = int(now.timestamp() * 1000)
     if previous is not None:
         prev_value = int(previous, 36)
         if value <= prev_value:
             value = prev_value + 1
-    return _to_base36(value).rjust(8, "0")
+    if value >= _UID_CEILING:
+        raise UidHorizonReached(
+            f"uid 由毫秒時間戳轉 base36、固定 {_UID_WIDTH} 碼；時間值 {value} 已達 "
+            f"{_UID_WIDTH} 碼容納上限 {_UID_CEILING}（36^{_UID_WIDTH}），轉出來會是 9 碼、"
+            f"破壞固定寬度可排序不變式。horizon 是 2059-05-25T17:38:27Z。"
+            f"下一步：uid 寬度是參照格式契約（ADR-00000012，uid 永不變），加寬需先修契約——見 #231"
+        )
+    return _to_base36(value).rjust(_UID_WIDTH, "0")
