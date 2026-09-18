@@ -58,7 +58,7 @@ from config_manager.core.config_list import dump, load
 from config_manager.core.identity import derive_name, new_uid
 from config_manager.core.models import FileEntry, Permissions
 from config_manager.io.atomic import replace_atomically
-from config_manager.io.errors import OnboardLeftBehind
+from config_manager.io.errors import OnboardLeftBehind, WriterError
 from config_manager.io.git import record, stage, unstage
 from config_manager.io.preflight import CONFIG_LIST_NAME
 from config_manager.io.repo import place_source, source_relpath, write_config_list
@@ -165,7 +165,7 @@ def _rollback(repo: str, relative: str, before: _WritePreState, failure: BaseExc
 
     try:
         write_config_list(repo, before.list_text)
-    except OSError as error:
+    except (OSError, WriterError) as error:
         leftover.append(f"{CONFIG_LIST_NAME}（{error}）")
 
     try:
@@ -173,7 +173,7 @@ def _rollback(repo: str, relative: str, before: _WritePreState, failure: BaseExc
             replace_atomically(absolute, before.source_bytes or b"")
         elif os.path.lexists(absolute):
             os.remove(absolute)
-    except OSError as error:
+    except (OSError, WriterError) as error:
         leftover.append(f"{relative}（{error}）")
 
     if leftover:

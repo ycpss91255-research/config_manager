@@ -23,6 +23,7 @@ from config_manager.io.errors import (
     AllowedRootUnreachable,
     AllowedRootsMissing,
     AllowedRootsUnparsable,
+    TargetNotWritable,
 )
 
 AUTHOR = "劉宇盈 <yy@example.invalid>"
@@ -157,6 +158,37 @@ def test_when_rollback_itself_fails_it_raises_left_behind_naming_the_file(
 
     monkeypatch.setattr(allowed_roots_module, "commit", boom)
     monkeypatch.setattr(allowed_roots_module, "unstage", boom)  # 回滾的清理也失敗
+
+    with pytest.raises(AllowedRootLeftBehind) as exc:
+        add_allowed_root(str(repo), str(newdir), AUTHOR, "2026-09-12T09:00:00Z")
+
+    assert "allowed-roots.toml" in str(exc.value)
+
+
+def test_when_rollback_hits_a_writer_error_it_raises_left_behind(tmp_path, monkeypatch):
+    # #213（io/allowed_roots :105）：回滾還原設定檔那一步的 replace_atomically 丟 WriterError
+    # （非 OSError 子類，如 repo 根對服務身分不可寫→TargetNotWritable）。except 只接
+    # (OSError, CalledProcessError) 會讓它逃出→白名單靜默擴張、無 commit、不發
+    # AllowedRootLeftBehind。except 涵蓋 WriterError 後大聲失敗指名該設定檔。
+    repo = _repo(tmp_path)
+    newdir = tmp_path / "etc-robot"
+    newdir.mkdir()
+
+    def commit_boom(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, ["git", "commit"])
+
+    monkeypatch.setattr(allowed_roots_module, "commit", commit_boom)
+
+    seen = []
+    real_replace = allowed_roots_module.replace_atomically
+
+    def replace_then_writer_error(*args, **kwargs):
+        seen.append(1)
+        if len(seen) == 1:
+            return real_replace(*args, **kwargs)  # 新增當下寫成功
+        raise TargetNotWritable("回滾還原設定檔時 repo 根不可寫")
+
+    monkeypatch.setattr(allowed_roots_module, "replace_atomically", replace_then_writer_error)
 
     with pytest.raises(AllowedRootLeftBehind) as exc:
         add_allowed_root(str(repo), str(newdir), AUTHOR, "2026-09-12T09:00:00Z")

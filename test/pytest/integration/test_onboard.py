@@ -18,7 +18,7 @@ import subprocess
 from config_manager.core.config_list import load
 from config_manager.core.errors import DuplicateTarget, DuplicateUid
 from config_manager.io.digest import digest
-from config_manager.io.errors import OnboardLeftBehind, SourceOutsideRoots
+from config_manager.io.errors import OnboardLeftBehind, SourceOutsideRoots, TargetNotWritable
 from config_manager.io.git import history
 from config_manager.io.onboard import OnboardRequest, onboard
 from config_manager.io.preflight import CONFIG_LIST_NAME
@@ -449,6 +449,35 @@ def test_a_rollback_that_cannot_finish_fails_loudly(tmp_path, monkeypatch):
     assert isinstance(caught.value.__cause__, RuntimeError)
 
 
+def test_a_rollback_that_hits_a_writer_error_still_fails_loudly(tmp_path, monkeypatch):
+    # #213：回滾還原清單檔那一步的 replace_atomically 丟 WriterError（非 OSError 子類，如
+    # repo 根對服務身分不可寫→TargetNotWritable）。except 只接 OSError 會讓它逃出回滾——
+    # 孤兒靜默殘留、不發 OnboardLeftBehind。except 涵蓋 WriterError 後，殘留才累進、大聲失敗。
+    repo = _repo(tmp_path)
+    root, path = _source(tmp_path)
+
+    seen = []
+
+    def _write_then_writer_error(*args, **kwargs):
+        seen.append(1)
+        if len(seen) == 1:
+            return real_write_config_list(*args, **kwargs)  # 納管當下寫成功
+        raise TargetNotWritable("repo 根不可寫")  # 回滾還原清單檔時原子寫失敗
+
+    monkeypatch.setattr("config_manager.io.onboard.write_config_list", _write_then_writer_error)
+
+    def _commit_boom(*args, **kwargs):
+        raise RuntimeError("commit 壞了")
+
+    monkeypatch.setattr("config_manager.io.onboard.record", _commit_boom)
+
+    with pytest.raises(OnboardLeftBehind) as caught:
+        onboard(str(repo), _request(root, path), _AUTHOR)
+
+    assert CONFIG_LIST_NAME in str(caught.value)
+    assert isinstance(caught.value.__cause__, RuntimeError)
+
+
 def _repo_relpath(repo, path):
     """來源檔在 repo 內會落到的相對路徑，與 onboard 內部算的一致（用 realpath 的目標）。"""
     return source_relpath(local_hostname(), os.path.realpath(str(path)))
@@ -510,6 +539,32 @@ def test_a_rollback_names_the_source_when_cleanup_fails(tmp_path, monkeypatch):
 
     monkeypatch.setattr("config_manager.io.onboard.record", _commit_boom)
     monkeypatch.setattr("config_manager.io.onboard.os.remove", _remove_boom)
+
+    with pytest.raises(OnboardLeftBehind) as caught:
+        onboard(str(repo), _request(root, path), _AUTHOR)
+
+    assert _repo_relpath(repo, path) in str(caught.value)
+    assert isinstance(caught.value.__cause__, RuntimeError)
+
+
+def test_a_rollback_whose_source_restore_hits_a_writer_error_fails_loudly(tmp_path, monkeypatch):
+    # #213（第二處 except，:176）：來源檔本來就有孤兒→回滾要把它還原成原本的位元組，那一步
+    # 的 replace_atomically 丟 WriterError。except 只接 OSError 會讓它逃出→孤兒殘留成過期位元組、
+    # 不發 OnboardLeftBehind。except 涵蓋 WriterError 後，殘留才累進、大聲失敗指名該來源檔。
+    repo = _repo(tmp_path)
+    root, path = _source(tmp_path)
+    orphan = repo / _repo_relpath(repo, path)
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_bytes(b"old orphan\n")
+
+    def _commit_boom(*args, **kwargs):
+        raise RuntimeError("commit 壞了")
+
+    def _restore_boom(*args, **kwargs):
+        raise TargetNotWritable("還原孤兒時 repo 根不可寫")
+
+    monkeypatch.setattr("config_manager.io.onboard.record", _commit_boom)
+    monkeypatch.setattr("config_manager.io.onboard.replace_atomically", _restore_boom)
 
     with pytest.raises(OnboardLeftBehind) as caught:
         onboard(str(repo), _request(root, path), _AUTHOR)

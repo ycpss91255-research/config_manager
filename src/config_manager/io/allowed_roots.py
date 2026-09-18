@@ -24,6 +24,7 @@ from config_manager.io.errors import (
     AllowedRootsMissing,
     AllowedRootsUnparsable,
     AllowedRootUnreachable,
+    WriterError,
 )
 from config_manager.io.git import commit, stage, unstage
 
@@ -145,7 +146,7 @@ def _write_roots_and_commit(
         try:
             replace_atomically(path, original.encode("utf-8"))
             unstage(repo, ALLOWED_ROOTS_NAME)
-        except (OSError, CalledProcessError) as cleanup:
+        except (OSError, WriterError, CalledProcessError) as cleanup:
             raise AllowedRootLeftBehind(
                 f"「{subject}」失敗後，回滾 {path} 也失敗了（{cleanup}）；"
                 f"該變更可能已生效卻未提交。下一步：手動檢視並還原 {path}"
