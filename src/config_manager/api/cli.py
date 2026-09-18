@@ -40,6 +40,10 @@ _STATE_TEXT = {
     "missing": "未部署",
 }
 
+# 病態目標（FIFO／裝置／不可 traverse）那一列判不出狀態：標「錯誤」並帶原因，不偽裝成
+# 某個狀態（#214，Q3=ii）。與畫面用同一個詞。
+_ERROR_TEXT = "錯誤"
+
 
 @dataclass(frozen=True)
 class ServePlan:
@@ -158,8 +162,12 @@ def _list(api: str) -> int:
 
     width = max(len(row["ref"]) for row in rows)
     for row in rows:
-        state = _STATE_TEXT.get(row["state"], row["state"])
-        print(f"{state:<4}  {row['ref']:<{width}}  {row['target']}")
+        if row.get("error"):
+            # 判不出狀態的那一列：標「錯誤」並帶原因，不印一個偽裝的狀態（不變式 2）。
+            print(f"{_ERROR_TEXT:<4}  {row['ref']:<{width}}  {row['target']}  ← {row['error']}")
+        else:
+            state = _STATE_TEXT.get(row["state"], row["state"])
+            print(f"{state:<4}  {row['ref']:<{width}}  {row['target']}")
     return 0
 
 

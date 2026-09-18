@@ -1224,6 +1224,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言；`OnboardLeftBehind`（納管回滾失敗）在 `io/onboard` 的整合規格被斷言（#173）；`BrowseError` 族（瀏覽白名單外／不是目錄）在 T9 的 `GET /api/browse` 被斷言（#185） | 已落地 |
 | `io/parsers` | T6 | 未落地（#17） |
 | `io/source` | T22（匯入時刻對外界的讀取，介面議定於 #177） | 已落地：路徑判定（realpath 後比對白名單、一般檔案檢查）與一次性讀取（#174）、讀取失敗的三種分類（不存在／讀不到／上層目錄無 traverse，#182）。`local_hostname` 的部署穩定性見 #178 |
+| `io/paths` | 效果透過既有介面觀察：`blocking_parent` 的「上層目錄擋住去路」分類在 T22（`io/source`）與 T20（`io/digest`）的 EACCES 規格被斷言——`source` 與 `digest` 共用的薄工具，同 `io/repo` 的處理（#214） | 已落地（`ancestors`／`blocking_parent`） |
 | `io/onboard` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔條目→T1（`load`）、匯入 commit→T7（`io/git.history`）（#12）——編排層，不算新值，同 `io/repo` 的處理。**匯入紀錄的作者＝傳入的身分、隨之而變**（以 `history()` 的 `Change.author` 驗、不同身分各對各的紀錄，#114）。重複攔在寫入前（#172）與寫入失敗即整批回滾（#173）以注入失敗＋`git status` 觀察，回滾也失敗時丟 `OnboardLeftBehind` | 已落地（`onboard`） |
 | `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath 與列目錄——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185） | 已落地（`browse`） |
 | `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202）；移除以檔案原樣 prefix 定位、找不到丟 `PrefixNotFound`、commit 失敗回滾同樣以真實 fs＋git 斷言（#15） | 已落地（`read_allowed_roots`／`add_allowed_root`／`remove_allowed_root`） |

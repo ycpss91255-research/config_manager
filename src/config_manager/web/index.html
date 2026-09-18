@@ -105,6 +105,9 @@
   .dot-in_sync { background: var(--in-sync); }
   .dot-drift   { background: var(--drift); }
   .dot-missing { background: var(--missing); }
+  /* 判不出狀態（#214）：用偏離的紅並加外框，與四種狀態的實心點區隔。 */
+  .dot-error   { background: var(--drift); box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px var(--drift); }
+  [data-state="error"] .state { color: var(--drift); }
   .name { font-weight: 500; }
   .target {
     color: var(--muted);
@@ -411,6 +414,26 @@ function element(tag, attributes, children) {
 }
 
 function rowNode(row) {
+  if (row.error) {
+    // 判不出狀態的那一列（目標是 FIFO／裝置／不可 traverse，#214）：標「錯誤」並把原因放進
+    // title，不畫一個偽裝的狀態點——把「比不了」講成某個狀態就是靜默失敗（不變式 2）。
+    return element("li", { "data-testid": `tree-item-${row.uid}`, "data-state": "error" }, [
+      element("span", {
+        class: "dot dot-error",
+        "data-testid": "status-dot",
+        "data-state": "error",
+        title: row.error,
+      }),
+      element("span", { class: "name", text: row.name }),
+      element("span", { class: "target", text: row.target }),
+      element("span", {
+        class: "state",
+        "data-testid": "row-error",
+        text: "錯誤",
+        title: row.error,
+      }),
+    ]);
+  }
   // 狀態色點在左，與草稿標記（右側，隨 T18 加入）分開——UI-ELEMENTS W2 的左側樹。
   return element("li", { "data-testid": `tree-item-${row.uid}` }, [
     element("span", {

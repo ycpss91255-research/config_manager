@@ -53,7 +53,7 @@ from config_manager.io.errors import (
 )
 from config_manager.io.onboard import OnboardRequest, onboard
 from config_manager.io.preflight import read_config_list
-from config_manager.io.scan import scan
+from config_manager.io.scan import ScanFailure, scan
 from config_manager.io.source import Source, local_hostname, read_source
 
 
@@ -552,9 +552,14 @@ def _as_session(identity: Identity) -> dict[str, str]:
     }
 
 
-def _as_row(entry: FileEntry, state: State) -> dict[str, object]:
-    """條目在清單畫面上需要的欄位。"""
-    return {
+def _as_row(entry: FileEntry, result: State | ScanFailure) -> dict[str, object]:
+    """條目在清單畫面上需要的欄位。
+
+    病態目標（FIFO／裝置／symlink／不可 traverse）那一筆帶 `error` 而非 `state`（#214，
+    Q3=ii）：一筆比不了不弄垮整份清單，也不裸 500——該列標記錯誤、其餘照顯示。兩個鍵都
+    在，畫面不必猜：正常列 state 有值、error 為 null；病態列反之。
+    """
+    row: dict[str, object] = {
         "uid": entry.uid,
         "name": entry.name,
         "hostname": entry.hostname,
@@ -562,8 +567,14 @@ def _as_row(entry: FileEntry, state: State) -> dict[str, object]:
         "target": entry.target,
         "format": entry.format,
         "groups": entry.groups,
-        "state": state.value,
     }
+    if isinstance(result, ScanFailure):
+        row["state"] = None
+        row["error"] = result.message
+    else:
+        row["state"] = result.value
+        row["error"] = None
+    return row
 
 
 def _as_entry(entry: FileEntry) -> dict[str, object]:

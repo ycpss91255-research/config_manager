@@ -47,6 +47,7 @@ from config_manager.io.errors import (
     SourceTooLarge,
     SourceUnreachable,
 )
+from config_manager.io.paths import blocking_parent, read_capped
 
 # 安全的 hostname 段：字母數字加 . _ -（涵蓋 FQDN 與容器 ID）。用來擋住會逃出
 # `files/<hostname>/` 或重塑 commit 主旨的值——`/`、控制字元、空白都不match（#178）。
@@ -234,7 +235,7 @@ def _classify_open_failure(path: str, resolved: str, error: OSError) -> Exceptio
         )
 
     if error.errno in (errno.EACCES, errno.EPERM):
-        blocker = _blocking_parent(resolved)
+        blocker = blocking_parent(resolved)
         if blocker is not None:
             return SourceUnreachable(
                 f"上層目錄擋住去路（「{blocker}」沒有 traverse 權限）：{path}。"
@@ -251,36 +252,6 @@ def _classify_open_failure(path: str, resolved: str, error: OSError) -> Exceptio
     )
 
 
-def _blocking_parent(resolved: str) -> str | None:
-    """去不到 `resolved` 時，是哪一層目錄擋住的；若目標本身可 `stat` 則回 None。
-
-    從根往下逐層 `stat`：第一個 `stat` 不了的祖先，它的上一層就是缺 `+x` 的那個
-    目錄。目標本身 `stat` 得到（EACCES 來自檔案自己的讀取權限、不是 traverse）時
-    回 None，交給呼叫端判為 `ContentUnreadable`。
-    """
-    reachable = "/"
-    for ancestor in _ancestors(resolved)[1:]:
-        try:
-            os.stat(ancestor)
-        except OSError:
-            return reachable
-        reachable = ancestor
-    return None
-
-
-def _ancestors(path: str) -> list[str]:
-    """path 從根到它自己的每一層，根在最前面。"""
-    chain = []
-    current = path
-    while True:
-        chain.append(current)
-        parent = os.path.dirname(current)
-        if parent == current:
-            break
-        current = parent
-    return list(reversed(chain))
-
-
 def _read_all(descriptor: int, path: str, resolved: str, max_bytes: int) -> bytes:
     """把整個 fd 讀完，但不超過 `max_bytes`。
 
@@ -291,21 +262,15 @@ def _read_all(descriptor: int, path: str, resolved: str, max_bytes: int) -> byte
     `max_bytes` 的邊界在 `st_size` 檢查之外再守一道（#200）：檔案若在 fstat 與讀取之間被
     撐大，讀到超過上限就丟 `SourceTooLarge`，而不是無上限地一路讀進記憶體。
     """
-    blocks: list[bytes] = []
-    total = 0
+    def _too_large(total: int) -> Exception:
+        return SourceTooLarge(
+            f"來源檔在讀取途中超過上限（已讀 {total} 位元組，上限 {max_bytes}）："
+            f"{path} → {resolved}。下一步：確認沒有其他程序正在把它撐大，且指到的是"
+            f"一份 config 檔案"
+        )
+
     try:
-        while True:
-            block = os.read(descriptor, _CHUNK)
-            if not block:
-                return b"".join(blocks)
-            total += len(block)
-            if total > max_bytes:
-                raise SourceTooLarge(
-                    f"來源檔在讀取途中超過上限（已讀 {total} 位元組，上限 {max_bytes}）："
-                    f"{path} → {resolved}。下一步：確認沒有其他程序正在把它撐大，且指到的是"
-                    f"一份 config 檔案"
-                )
-            blocks.append(block)
+        return b"".join(read_capped(descriptor, _CHUNK, max_bytes, _too_large))
     except OSError as error:
         raise ContentUnreadable(
             f"內容讀不出來：{path} → {resolved}（{error.strerror}）。"
