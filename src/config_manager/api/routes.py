@@ -9,6 +9,7 @@ app 由 create_app(repo) 產生而非模組層的全域物件：config-repo 的�
 """
 
 import json
+import os
 from collections.abc import Iterable
 from datetime import datetime, timezone
 
@@ -25,13 +26,20 @@ from config_manager.core.errors import (
     InvalidPrefix,
     NameUnderivable,
     ParseError,
+    PrefixNotFound,
     SyntaxParse,
 )
 from config_manager.core.inference import Ambiguity, find_ambiguous, infer_types
 from config_manager.core.models import FileEntry, Permissions
 from config_manager.core.parse import Parsed, parse
 from config_manager.core.state import State
-from config_manager.io.allowed_roots import add_allowed_root, root_prefixes
+from config_manager.core.whitelist import decide
+from config_manager.io.allowed_roots import (
+    add_allowed_root,
+    read_allowed_roots,
+    remove_allowed_root,
+    root_prefixes,
+)
 from config_manager.io.browse import Entry, Listing, browse
 from config_manager.io.errors import (
     AllowedRootUnreachable,
@@ -44,6 +52,7 @@ from config_manager.io.errors import (
     SourceError,
 )
 from config_manager.io.onboard import OnboardRequest, onboard
+from config_manager.io.preflight import read_config_list
 from config_manager.io.scan import scan
 from config_manager.io.source import Source, local_hostname, read_source
 
@@ -87,6 +96,18 @@ class AllowedRootInput(BaseModel):
     """
 
     prefix: str
+
+
+class RemoveRootInput(BaseModel):
+    """把一個路徑前綴從白名單移除的請求主體（§7.9, #15）。
+
+    `prefix` 是**檔案原樣儲存的前綴**（檢視清單 `roots[].prefix` 那一份，非 realpath），
+    移除以它定位（core.dump 也以原樣定位）。`confirmed` 是「確認在前」：未帶時端點先回
+    受影響的納管項目清單、要求確認（不靜默移除，AC3），帶了才真刪。
+    """
+
+    prefix: str
+    confirmed: bool = False
 
 # 前端是另一個容器、另一個 port（設計文件 §3.1：瀏覽器分別連 frontend 與
 # backend），所以頁面對 API 的請求是跨來源的。
@@ -170,21 +191,36 @@ def create_app(
         """偵測候選檔案（§3.5.3 追加，#195）。供納管確認畫面顯示偵測結果。"""
         return _inspect(root_prefixes(repo), payload)
 
+    _register_allowed_roots(app, repo, held)
+    return app
+
+
+def _register_allowed_roots(app: FastAPI, repo: str, held: dict[str, Identity]) -> None:
+    """把白名單維護的三個端點（檢視／新增／移除，§7.9）掛上 app。
+
+    抽出來讓 `create_app` 不因這一組路由而過度複雜（C901）；三者同屬白名單維護、放一起讀。
+    以 `held` 閉包共用身分，與 `create_app` 裡其餘路由一致。
+    """
+
     @app.get("/api/allowed-roots")
     def list_allowed_roots() -> dict[str, object]:
-        """列出目前白名單的根前綴（§7.9, #13）。browse 的起點與「檢視允許範圍」都讀它。
+        """列出目前白名單的根（§7.9, #13／#15）。browse 的起點與「檢視允許範圍」都讀它。
 
-        唯讀、無角色門檻——看白名單允許哪些目錄，兩種角色都該做得到。誰／何時加入的
-        檢視與移除是完整管理面板（#15）。
+        唯讀、無角色門檻——看白名單允許哪些目錄，兩種角色都該做得到。回 `prefixes`（realpath
+        後的前綴，#13 的 browse 消費）與 `roots`（每筆帶原樣 prefix、resolved、誰／何時，#15
+        的檢視面板消費）。移除的角色門檻在 DELETE，不在這裡。
         """
-        return {"prefixes": list(root_prefixes(repo))}
+        return _allowed_roots_view(repo)
 
     @app.post("/api/allowed-roots")
     def add_root(payload: AllowedRootInput) -> dict[str, object]:
         """把一個路徑前綴加進白名單（§7.9, #202）。僅開發者可用；記下是誰、何時加的。"""
         return _add_allowed_root(repo, held, payload)
 
-    return app
+    @app.delete("/api/allowed-roots")
+    def remove_root(payload: RemoveRootInput) -> dict[str, object]:
+        """把一個路徑前綴從白名單移除（§7.9, #15）。僅開發者可用；確認在前，回更新後的清單。"""
+        return _remove_allowed_root(repo, held, payload)
 
 
 def _onboard_config(
@@ -273,6 +309,94 @@ def _add_allowed_root(
         # 衝突 → 409（同 _onboard_config 對重複條目的處置）。core 的訊息已指出是哪兩筆。
         raise HTTPException(status_code=409, detail=str(error)) from error
     return {"prefixes": list(root_prefixes(repo))}
+
+
+def _remove_allowed_root(
+    repo: str, held: dict[str, Identity], payload: RemoveRootInput
+) -> dict[str, object]:
+    """把 `payload.prefix` 從白名單移除。僅開發者可用；確認在前（未帶 confirmed 先回受影響
+    清單＋409，不靜默移除，AC3），以檔案原樣 prefix 定位、定位不到 → 404。"""
+    identity = held.get("identity")
+    if identity is None:
+        # 移除會產生一筆提交，需要作者。沒有身分就無從署名——先設身分。
+        raise HTTPException(
+            status_code=409,
+            detail="尚未設定身分，無法維護白名單。下一步：先 POST /api/session 設定姓名與 email",
+        )
+    if identity.role != DEVELOPER:
+        # 白名單維護僅開發者可用（§7.9、W2）——一般使用者連這個能力都不該有。
+        raise HTTPException(
+            status_code=403,
+            detail="只有開發者能維護白名單。下一步：以開發者身分進入，或請開發者代為移除",
+        )
+
+    stored = {root.prefix for root in read_allowed_roots(repo).roots}
+    if payload.prefix not in stored:
+        # 以檔案原樣 prefix 定位，定位不到就 404——不是衝突（現狀沒這一筆）、不是輸入格式錯。
+        raise HTTPException(
+            status_code=404,
+            detail=f"白名單裡沒有這個前綴：{payload.prefix}。"
+            "下一步：以檢視清單列出的原樣前綴為準，確認拼寫與尾斜線",
+        )
+
+    if not payload.confirmed:
+        # 確認在前（語義同 onboard）：先把受影響的納管項目回給前端、要求確認，不靜默移除。
+        raise HTTPException(status_code=409, detail=_confirm_removal_detail(repo, payload.prefix))
+
+    try:
+        remove_allowed_root(repo, payload.prefix, identity.git_author)
+    except PrefixNotFound as error:
+        # 檢查與移除之間被別的請求刪掉了（同一行程一次一個編輯階段，實務上罕見）。
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return _allowed_roots_view(repo)
+
+
+def _confirm_removal_detail(repo: str, prefix: str) -> dict[str, object]:
+    """未確認移除時回給前端的結構化 detail：受影響的納管項目＋一句可行動的訊息。"""
+    affected = _affected_by_removing(repo, prefix)
+    if affected:
+        message = (
+            "移除這個白名單根前請先確認。以下納管項目的目標落在此前綴底下（僅供知情，"
+            "不會自動解除納管）。下一步：確認後再帶 confirmed 送出"
+        )
+    else:
+        message = (
+            "移除這個白名單根前請先確認。目前沒有納管項目的目標落在此前綴底下。"
+            "下一步：確認後再帶 confirmed 送出"
+        )
+    return {"kind": "confirm_required", "affected": affected, "message": message}
+
+
+def _affected_by_removing(repo: str, prefix: str) -> list[dict[str, str]]:
+    """移除 `prefix` 會涉及哪些納管項目：清單檔中 target（realpath）落在該前綴（realpath）
+    底下的條目。用 core.whitelist.decide、兩邊都 realpath（比照 io/browse 對根與路徑的處理）。
+
+    **資訊性、不連動解除納管**：target 是絕對路徑、apply 不靠白名單（§7.9），所以移除白名單根
+    不改變這些項目的部署——只是讓開發者在移除前知情。回 `ref`（指名條目）＋`target`（哪個位置）。
+    """
+    resolved_prefix = os.path.realpath(prefix)
+    return [
+        {"ref": entry.ref, "target": entry.target}
+        for entry in read_config_list(repo).files
+        if decide((resolved_prefix,), os.path.realpath(entry.target)).allowed
+    ]
+
+
+def _allowed_roots_view(repo: str) -> dict[str, object]:
+    """白名單的檢視表示：`prefixes`（realpath 後，#13 的 browse 消費）＋`roots`（每筆帶原樣
+    prefix〔移除識別碼〕、resolved〔顯示〕、added_by、added_at，#15 的檢視面板消費）。"""
+    return {
+        "prefixes": list(root_prefixes(repo)),
+        "roots": [
+            {
+                "prefix": root.prefix,
+                "resolved": os.path.realpath(root.prefix),
+                "added_by": root.added_by,
+                "added_at": root.added_at,
+            }
+            for root in read_allowed_roots(repo).roots
+        ],
+    }
 
 
 _BROWSE_KINDS: tuple[tuple[type[BrowseError], str], ...] = (

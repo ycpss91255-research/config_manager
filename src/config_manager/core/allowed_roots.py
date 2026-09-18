@@ -53,8 +53,9 @@ def _check_roots_shape(doc: "tomlkit.TOMLDocument") -> None:
 def dump(allowed: AllowedRoots, original: str) -> str:
     """把白名單設定檔寫回文字，保留原樣（註解、順序、引號樣式）。
 
-    原樣資訊為原始檔文字；以 tomlkit 重新解析後在其上**追加**模型裡有、而原文沒有的根，
-    未觸動的部分逐位元組保留。範圍只到追加（#202）——移除與改動是 #15。
+    原樣資訊為原始檔文字；以 tomlkit 重新解析後在其上套用變更，未觸動的部分逐位元組
+    保留。兩種變更皆支援：新增（附加於既有之後，#202）、移除（刪掉原文有、模型沒有的
+    `[[roots]]`，#15）。白名單根不就地改動——維護只增減整筆（§7.9）。
 
     **寫出之前先自我驗證**，與 `load` 同一組完整性檢查（比照 config_list #181）：檢查不
     通過時丟具名例外，且不產生輸出。原樣資訊以 `prefix` 定位既有根（白名單根沒有 uid，
@@ -72,6 +73,15 @@ def dump(allowed: AllowedRoots, original: str) -> str:
     for root in allowed.roots:
         if root.prefix not in existing:
             roots.append(_root_to_table(root))
+
+    model_prefixes = {root.prefix for root in allowed.roots}
+    removed = [
+        index
+        for index, table in enumerate(roots.body)
+        if table.get("prefix") not in model_prefixes
+    ]
+    for index in reversed(removed):
+        del roots[index]
 
     return tomlkit.dumps(doc)
 
