@@ -80,11 +80,18 @@ seed_config_list() {
 }
 
 check_allowed_roots_seedable() {
-  # 種檔前先驗每個根不含會破壞 TOML basic string 的字元（" 或反斜線）。種檔是手刻 printf，
-  # 不像 API 路徑走過 tomlkit 的跳脫——含這些字元的根會產出無法解析的 allowed-roots.toml，
-  # 讓 preflight 以「白名單設定檔無法解析」死掉、把矛頭指向這份機器自動生成的檔，而真正該
-  # 修的是 CM_ALLOWED_ROOTS（§0.4 的指錯方向）。在這裡大聲失敗、指名是哪個根與哪個變數。
+  # 種檔前先驗每個根，種子的驗證範圍要與 Python 端 load() 對齊——否則 shell 種出一份
+  # core 隨後會拒絕的 allowed-roots.toml，讓 preflight 以「白名單設定檔無法解析」死掉、把
+  # 矛頭指向這份機器自動生成的檔，而真正該修的是 CM_ALLOWED_ROOTS（§0.4 的指錯方向）。
+  # 更糟：毒檔在 preflight 之前就已提交，重啟時 seed-if-missing 跳過重種 → 每次啟動再死一次
+  # → 崩潰迴圈。在這裡大聲失敗、指名是哪個根與哪個變數。
+  #
+  # 三類 core 會拒的形狀（對齊 core.allowed_roots.check_prefix 與 _check_integrity）：
+  #   1. 含 " 或反斜線 —— 手刻 printf 寫不成合法 TOML basic string
+  #   2. 含 .. 路徑段 —— check_prefix 拒（InvalidPrefix，會逃逸到預期目錄外）
+  #   3. 重複前綴 —— _check_integrity 拒（DuplicatePrefix）
   local root trimmed
+  declare -A seen
   while IFS= read -r root; do
     trimmed="${root#"${root%%[![:space:]]*}"}"
     trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
@@ -95,6 +102,20 @@ check_allowed_roots_seedable() {
           "下一步：從 CM_ALLOWED_ROOTS 移除或修正這個路徑——config 目錄的路徑不該含這些字元"
         ;;
     esac
+    # 前後補 / 讓 .. 位在開頭、結尾或中間都被 */../* 命中。
+    case "/${trimmed}/" in
+      */../*)
+        die "CM_ALLOWED_ROOTS 的根「${trimmed}」含 .. 路徑段，core 會拒（會逃逸到預期目錄外）、" \
+          "寫成的白名單設定檔隨後於 preflight 無法解析。" \
+          "下一步：從 CM_ALLOWED_ROOTS 移除 .. 、改成不含 .. 的正規絕對路徑"
+        ;;
+    esac
+    if [[ -n "${seen[${trimmed}]:-}" ]]; then
+      die "CM_ALLOWED_ROOTS 有重複的根「${trimmed}」，core 會拒成重複前綴（DuplicatePrefix）、" \
+        "寫成的白名單設定檔隨後於 preflight 無法解析。" \
+        "下一步：從 CM_ALLOWED_ROOTS 移除重複的那一筆"
+    fi
+    seen[${trimmed}]=1
   done < <(printf '%s\n' "${CM_ALLOWED_ROOTS:-}" | tr ',' '\n')
 }
 
@@ -207,7 +228,10 @@ check_config_list() {
   local output
 
   if ! output="$(python -m config_manager.io.preflight "${repo}" 2>&1)"; then
-    die "${output}"
+    # preflight 若被 OOM/信號中止（exit 137、無輸出），${output} 會是空的——比照檔內其他每個
+    # die 站點補後備，否則只印「entrypoint: 」（無原因），違反 die() 自身承諾與 §0.4 三要素。
+    die "${output:-preflight 檢查未輸出任何訊息就失敗了（可能被 OOM 或信號中止）；" \
+      "下一步：檢查容器的記憶體上限，並手動檢視 ${repo}/config-list.toml 與 ${repo}/allowed-roots.toml}"
   fi
 }
 
