@@ -157,6 +157,23 @@ class NameUnderivable(Exception):
     """
 
 
+class UidHorizonReached(Exception):
+    """匯入時刻已達 uid 固定 8 碼寬度容納不下的時間 horizon（2059-05-25T17:38:27Z 起）。
+
+    uid 由毫秒時間戳轉 base36：`36^8 = 2821109907456 ms` 起需要 9 碼。舊碼以
+    `rjust(8)` 產生——只補不截，會原樣放行 9 碼，靜默破壞「固定 8 碼、字串可排序」
+    不變式（8 碼與 9 碼混排時，字串序不再等同時間序）。uid 是參照
+    `<name>@<hostname>-<uid>` 的一部分、且 ADR-00000012 說 uid 永不變，寬度是格式
+    契約，不逕自加寬；故在溢位前大聲失敗、指出 horizon（不變式 2），把「悄悄產生
+    壞 uid」換成「明確擋下」。防撞路徑（prev+1）在邊界附近把值推過 36^8 時同樣由此擋下。
+
+    **放這裡而不是 identity 自己一支 errors**，理由同 `NameUnderivable`：這一層的
+    例外集中一處匯入。也不併進 `ConfigListError`——那一族講清單檔內容有問題，這一則
+    講的是 identity 產生 uid 時撞到格式 horizon，來源與處置都不同（改的是 uid 格式
+    契約，見 #231），故與 `NameUnderivable`／`UnknownScope` 同樣直接繼承 `Exception`。
+    """
+
+
 class ParseError(Exception):
     """T6 格式解析的錯誤基底。
 

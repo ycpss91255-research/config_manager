@@ -9,7 +9,7 @@ import string
 
 import pytest
 
-from config_manager.core.errors import NameUnderivable
+from config_manager.core.errors import NameUnderivable, UidHorizonReached
 from config_manager.core.identity import derive_name, new_uid
 
 _UID_LEN = 8
@@ -183,3 +183,40 @@ def test_new_uid_is_string_sortable_in_time_order():
     later = datetime.datetime(2026, 9, 4, 12, 0, 1, tzinfo=datetime.timezone.utc)
     # 可排序 = 保留納管順序：字串比較的順序需與時間一致（固定 8 碼寬度是關鍵）。
     assert new_uid(earlier) < new_uid(later)
+
+
+def test_new_uid_refuses_the_millisecond_that_would_overflow_eight_chars():
+
+    # 36^8 = 2821109907456 ms 起，base36 需要 9 碼；rjust(8) 只補不截、會原樣放行 9 碼，
+    # 破壞「固定 8 碼、字串可排序」不變式（#231）。2060-01-01 遠在 horizon 之後。
+    over = datetime.datetime(2060, 1, 1, tzinfo=datetime.timezone.utc)
+    with pytest.raises(UidHorizonReached):
+        new_uid(over)
+
+
+def test_new_uid_still_fits_eight_chars_just_before_the_horizon():
+
+    # horizon 是 2059-05-25T17:38:27Z；在那之前每個時間值仍落在 8 碼內。此測釘住
+    # 「擋下的是溢位本身，不是把還合法的值也一起擋掉」。
+    before = datetime.datetime(2059, 1, 1, tzinfo=datetime.timezone.utc)
+    assert len(new_uid(before)) == _UID_LEN
+
+
+def test_new_uid_refuses_a_previous_bump_that_would_overflow():
+
+    # 防撞路徑（prev+1）也可能把值推過 36^8：previous 已是 8 碼最大值 "zzzzzzzz"（= 36^8-1）
+    # 時，遞增 1 正好溢位。守衛加在最終值上，這條路徑同樣被擋（#231）。
+    now = datetime.datetime(2026, 9, 4, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    with pytest.raises(UidHorizonReached):
+        new_uid(now, previous="zzzzzzzz")
+
+
+def test_new_uid_overflow_refusal_names_the_horizon():
+
+    # 三要素：說出溢位了什麼（固定 8 碼寬）、指出 horizon（2059），下一步在訊息裡指向
+    # ref 格式契約。裸例外刻意不接住以外——這裡要斷言它說了足以定位的話。
+    over = datetime.datetime(2060, 1, 1, tzinfo=datetime.timezone.utc)
+    with pytest.raises(UidHorizonReached) as exc:
+        new_uid(over)
+    message = str(exc.value)
+    assert "8" in message and "2059" in message
