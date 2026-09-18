@@ -47,6 +47,15 @@ class UnknownKind(ChangeError):
     """變更類型不在允許的集合內。"""
 
 
+class RecordFieldUnsafe(ChangeError):
+    """變更紀錄的主旨或作者含 history() 的欄位分隔符（\\x1f／\\x1e）。
+
+    `history()` 以 `\\x1f` 切 `sha／subject／author／body` 四欄、以 `\\x1e` 分筆。任一非 body 欄位
+    混進這兩個字元，切出來的段數就不對——整庫帳本從此讀不出來（#212）。寫入前大聲失敗、指名
+    是哪個欄位（不變式 2），不清洗：清洗會讓 commit 上的名字與輸入的不同，而帳本的用途正是追溯到人。
+    """
+
+
 class PreflightError(Exception):
     """啟動前置檢查失敗的基底。"""
 

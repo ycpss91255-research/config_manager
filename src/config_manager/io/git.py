@@ -11,7 +11,7 @@ import re
 import subprocess
 from typing import NamedTuple
 
-from config_manager.io.errors import UnknownKind
+from config_manager.io.errors import RecordFieldUnsafe, UnknownKind
 
 # 變更紀錄的類型（CONTEXT）。介面上顯示的是行為描述，這些代號只進 commit 訊息。
 KINDS = ("import", "cfg", "revert", "adopt", "meta", "unmanage")
@@ -19,6 +19,8 @@ KINDS = ("import", "cfg", "revert", "adopt", "meta", "unmanage")
 _SUBJECT = re.compile(r"^(?P<kind>[a-z]+)\((?P<uid>[^)]+)\): (?P<summary>.*)$")
 _UNIT = "\x1f"
 _RECORD = "\x1e"
+# history() 每筆切成 sha／subject／author／body 四欄（以 _UNIT 分隔）。
+_RECORD_FIELDS = 4
 
 
 class Change(NamedTuple):
@@ -101,9 +103,27 @@ def commit(repo: str, message: str, author: str) -> None:
     _do_commit(repo, author, _message_parts(message))
 
 
+# history() 以 \x1f 切欄位、\x1e 分筆。非 body 欄位（主旨、作者）含這兩個字元會讓解析切錯
+# 段數、崩整庫（#212）。body 是最後一欄、能安全吸收多出的分隔符，故不在此列。
+_FIELD_SEPARATORS = ("\x1f", "\x1e")
+
+
+def _reject_separators(field: str, value: str) -> None:
+    """`value` 含 history() 的欄位分隔符就大聲失敗、指名（不變式 2），不清洗。"""
+    for separator in _FIELD_SEPARATORS:
+        if separator in value:
+            raise RecordFieldUnsafe(
+                f"變更紀錄的{field}含分隔字元（U+{ord(separator):04X}），會讓整庫的變更紀錄"
+                f"讀不出來（history 以它切欄位）。下一步：移除該字元——"
+                f"檔名或身分裡的控制字元不該進 commit 訊息。"
+            )
+
+
 def _message_parts(message: str, subject_prefix: str = "") -> list[str]:
     """把 `message` 切成 git 的 `-m 主旨 [-m 內文]`。第一個空行之前是主旨。"""
     subject, _, body = message.partition("\n\n")
+    # 主旨進 history() 的一個欄位，含分隔符會崩整庫；內文是最後一欄、安全吸收，故只擋主旨。
+    _reject_separators("主旨", f"{subject_prefix}{subject}")
     # 第二個 -m 就是 commit 內文；git 以一個空行把它與主旨隔開。沒有內文就不加。
     parts = ["-m", f"{subject_prefix}{subject}"]
     if body:
@@ -113,6 +133,7 @@ def _message_parts(message: str, subject_prefix: str = "") -> list[str]:
 
 def _do_commit(repo: str, author: str, parts: list[str]) -> None:
     """以 `author`（`姓名 <email>`）為署名跑 `git commit`，commit 訊息為 `parts`。"""
+    _reject_separators("作者", author)
     name, email = _split_author(author)
     _git(
         repo,
@@ -138,7 +159,13 @@ def history(repo: str, uid: str, kind: str | None = None) -> list[Change]:
         entry = raw.strip("\n")
         if not entry:
             continue
-        sha, subject, author, body = entry.split(_UNIT)
+        # maxsplit=3：body 是最後一欄，含分隔符的舊 commit（在寫入端擋起來之前造的、或
+        # raw git／被改的 client 造的）不會切出 >4 段而崩**整庫**。段數不對的不是本工具寫的
+        # 變更紀錄，略過而非炸掉——history 是唯一的帳本讀取路徑（#212）。
+        parts = entry.split(_UNIT, _RECORD_FIELDS - 1)
+        if len(parts) != _RECORD_FIELDS:
+            continue
+        sha, subject, author, body = parts
         matched = _SUBJECT.match(subject)
         # 不符格式的（例如 repo 的初始 commit）不是變更紀錄，略過。
         if matched is None or matched["uid"] != uid:
