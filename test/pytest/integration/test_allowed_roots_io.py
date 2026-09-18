@@ -28,6 +28,10 @@ from config_manager.io.errors import (
 
 AUTHOR = "劉宇盈 <yy@example.invalid>"
 
+# main() 參數個數不符時的回傳碼（比照 preflight.main 的 usage 分支）。具名以避開對字面 2
+# 的比較（ruff PLR2004 豁免 0／1，不豁免 2）。
+_USAGE_EXIT = 2
+
 _SEED = """\
 roots_version = 1
 
@@ -303,3 +307,33 @@ def test_when_removal_rollback_itself_fails_it_raises_left_behind_naming_the_fil
         remove_allowed_root(str(repo), "/opt/robot/config", AUTHOR)
 
     assert "allowed-roots.toml" in str(exc.value)
+
+
+def test_main_prints_the_files_root_prefixes_one_per_line(tmp_path, capsys):
+    # entrypoint 的開機可見性檢查（#146）以這個取生效白名單的根：以檔為準（#202），
+    # 不是 CM_ALLOWED_ROOTS——首啟後兩者會漂移（#232 發現5）。一行一個，便於 shell 迭代。
+    repo = _repo(tmp_path)
+
+    code = allowed_roots_module.main(["config_manager.io.allowed_roots", str(repo)])
+
+    assert code == 0
+    assert capsys.readouterr().out.splitlines() == ["/opt/robot/config"]
+
+
+def test_main_reports_a_usage_error_when_not_given_exactly_one_repo(capsys):
+    code = allowed_roots_module.main(["config_manager.io.allowed_roots"])
+
+    assert code == _USAGE_EXIT
+    assert "usage" in capsys.readouterr().err
+
+
+def test_main_names_a_missing_file_on_stderr_without_a_traceback(tmp_path, capsys):
+    # 種子後不該缺檔；真缺了（被刪／掛錯）要具名指路、回非零碼，而不是丟 traceback——
+    # entrypoint 據以大聲失敗（比照 preflight.main 只收具名例外）。
+    empty = tmp_path / "empty-repo"
+    empty.mkdir()
+
+    code = allowed_roots_module.main(["config_manager.io.allowed_roots", str(empty)])
+
+    assert code == 1
+    assert "allowed-roots.toml" in capsys.readouterr().err

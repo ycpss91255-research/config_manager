@@ -141,9 +141,19 @@ seed_allowed_roots() {
   local file="${repo}/allowed-roots.toml"
   local output
 
-  # 以檔為準（#202）：已經有一份就不動它——之後的增減都經由介面寫這份檔。升級既有部署時
-  # 這份檔還不存在，所以這裡是 seed-if-missing、每次啟動都跑，而不是只在首次 git init 時。
+  # 以檔為準（#202）：工作區已有一份就不動它——之後的增減都經由介面寫這份檔。
   [[ -f "${file}" ]] && return 0
+
+  # 工作區沒有，但它是不是已被追蹤（HEAD 有）？已追蹤卻工作區缺 = 不是首次開機，而是
+  # 遺失（volume 損毀、還原不全）。這時從 CM_ALLOWED_ROOTS 重種會靜默用部署 env 蓋掉
+  # 之後經介面增減的白名單（#232 發現6）——大聲失敗、指路從 git 還原，不從 env 重生，對照
+  # config-list 遺失時 preflight 直接死。首次開機（含升級既有部署）HEAD 沒有這份檔，cat-file
+  # 非零 → 落到下面照常種子。
+  if git -C "${repo}" cat-file -e "HEAD:allowed-roots.toml" 2>/dev/null; then
+    die "白名單設定檔 ${file} 已在版控裡，但工作區的這份不見了——這不是首次開機。" \
+      "從 CM_ALLOWED_ROOTS 重種會靜默蓋掉之後經介面增減的白名單。" \
+      "下一步：從 git 還原它（git -C '${repo}' checkout -- allowed-roots.toml），不要靠重種"
+  fi
 
   check_allowed_roots_seedable
 
@@ -212,9 +222,11 @@ check_backend_preconditions() {
         "下一步：對它跑 'git init --initial-branch=main'，或檢查掛載路徑"
   fi
 
-  check_allowed_roots_visible
   seed_allowed_roots "${repo}"
   check_config_list "${repo}"
+  # 可見性驗的是「生效白名單」＝檔（#202），故排在種子與 preflight 之後：種子確保檔在、
+  # preflight 確保檔可解析，這裡才逐條讀它列出的根驗可見（#232 發現5）。
+  check_allowed_roots_visible "${repo}"
 }
 
 # 清單檔，以及它所引用的來源內容。交給 Python 做，因為這個判斷屬於
@@ -238,25 +250,34 @@ check_config_list() {
 # 掛載是白名單的上界（#146）：白名單允許的每個根目錄都必須在容器裡看得到，否則寫出會
 # 以「目標目錄無法寫入」失敗——訊息指向權限，真正的原因是掛載沒把它帶進來，是一則指錯
 # 方向的訊息（§0.4 三要素要防的）。在這裡逐條驗、看不到就大聲失敗並指名，而不是等到第
-# 一次寫出才在執行期發現。沒設 CM_ALLOWED_ROOTS = 什麼都不放行（安全預設），沒有根要驗。
+# 一次寫出才在執行期發現。
+#
+# 驗的是**生效白名單＝檔**（allowed-roots.toml，#202），不是 CM_ALLOWED_ROOTS：首啟後
+# 兩者會漂移——經介面增減只寫檔，驗 env 會驗錯對象（env 裡失效的根被驗、檔裡生效的根不被
+# 驗，#232 發現5）。shell 不自己 parse TOML（會與 core 漂移，比照 check_config_list）：交給
+# io.allowed_roots 印出 realpath 正規化後的根（與 browse／onboard 取用一致），逐一驗 isdir。
+# 檔的根為空 = 什麼都不放行（安全預設，不變式 4），沒有根要驗。
 check_allowed_roots_visible() {
-  local roots="${CM_ALLOWED_ROOTS:-}"
-  [[ -n "${roots}" ]] || return 0
+  local repo="$1"
+  local prefixes root
 
-  local root trimmed
-  # 逗號分隔、去前後空白，與 api/cli._allowed_roots 同一種切法。
+  if ! prefixes="$(python -m config_manager.io.allowed_roots "${repo}" 2>&1)"; then
+    die "讀不出生效白名單設定檔的根：" \
+      "${prefixes:-io.allowed_roots 沒有給出任何錯誤輸出}；" \
+      "下一步：檢查 ${repo}/allowed-roots.toml 的權限與內容"
+  fi
+  [[ -n "${prefixes}" ]] || return 0
+
   while IFS= read -r root; do
-    trimmed="${root#"${root%%[![:space:]]*}"}"
-    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
-    [[ -n "${trimmed}" ]] || continue
+    [[ -n "${root}" ]] || continue
     # `[[ -d ]]` 失敗有兩種：路徑沒掛進來（ENOENT），或某層上層目錄對服務執行身分沒有
     # traverse（+x）權限（EACCES）——bash 把兩者都收成 false，分不出來。所以訊息把兩個
     # 可能的成因都講出來，而不是只說「去掛載」，否則掛好了卻卡在權限的人會被指錯方向
     # （§0.4；io/source._blocking_parent 在讀取時能分得更細）。
-    [[ -d "${trimmed}" ]] || die "白名單允許的路徑在容器裡看不到：${trimmed}。" \
+    [[ -d "${root}" ]] || die "白名單允許的路徑在容器裡看不到：${root}。" \
       "下一步：把它掛進容器（compose 的 volumes）、給它某層上層目錄對服務執行身分加上" \
-      "traverse（+x）權限、或從 CM_ALLOWED_ROOTS 移除；白名單只在掛載掛得到的範圍內有意義（#146）"
-  done < <(printf '%s\n' "${roots}" | tr ',' '\n')
+      "traverse（+x）權限、或經 API／CLI 從白名單移除該根；白名單只在掛載掛得到的範圍內有意義（#146）"
+  done <<< "${prefixes}"
 }
 
 main() {
