@@ -14,6 +14,7 @@ from config_manager.core.errors import (
     DuplicateTarget,
     DuplicateUid,
     InvalidFormat,
+    SourceEscape,
     TargetEscape,
     UnknownField,
 )
@@ -321,6 +322,15 @@ def _check_integrity(config_list: ConfigList) -> None:
             raise TargetEscape(
                 f"目標路徑含 ..（逃逸風險）：{entry.ref} 的目標「{entry.target}」。"
                 f"下一步：把目標改寫成不含 .. 的路徑"
+            )
+
+        source_path = PurePosixPath(entry.source)
+        if source_path.is_absolute() or ".." in source_path.parts:
+            raise SourceEscape(
+                f"來源路徑逃出 config repo（絕對或含 ..）："
+                f"{entry.ref} 的來源「{entry.source}」。"
+                f"下一步：來源須是 repo 內的相對路徑（如 files/<hostname>/…），"
+                f"不得是絕對路徑或含 .."
             )
 
         if entry.format not in ALLOWED_FORMATS:
