@@ -13,8 +13,9 @@ import os
 from collections.abc import Iterable
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from config_manager.api.errors import InvalidAuthor
@@ -49,6 +50,7 @@ from config_manager.io.errors import (
     BrowseUnreadable,
     ContentUnreadable,
     HostnameInvalid,
+    PreflightError,
     SourceError,
 )
 from config_manager.io.onboard import OnboardRequest, onboard
@@ -138,6 +140,10 @@ def create_app(
         allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["content-type"],
     )
+
+    # 清單檔／白名單設定檔在執行期讀不了（被改壞／刪除、掛載漂移）時，PreflightError 家族
+    # 會從請求路徑冒出。一處統一映射成帶檔名與下一步的結構化 500，不讓它們變裸 500（#209）。
+    app.add_exception_handler(PreflightError, _preflight_error)
 
     # 目前的身分。一次只有一個編輯階段（ADR-00000014），所以放在 app 上而不是
     # 一個模組層的全域——後者會讓同一個行程裡起兩個 app 互相看見對方的身分。
@@ -550,6 +556,21 @@ def _as_session(identity: Identity) -> dict[str, str]:
         "role": identity.role,
         "git_author": identity.git_author,
     }
+
+
+def _preflight_error(_request: Request, error: Exception) -> JSONResponse:
+    """PreflightError 家族（清單檔／白名單設定檔在執行期讀不了）→ 帶檔名與下一步的結構化 500。
+
+    這些例外啟動時由 preflight 攔下退出；服務起來之後從請求路徑冒出時沒有一處接，會變裸
+    500——不指名檔、不可行動（不變式 2）。500：伺服器側資料完整性問題，比照 `HostnameInvalid`
+    的處理。結構化 `{message, file}` 與 `browse`／`inspect` 的 detail 一致（#209 Q1／Q4）。
+    `SourceMissing` 是逐筆條件、由 `scan` 折成 row error，不會走到這裡（#209 Q2）。
+    """
+    file = getattr(error, "file", None)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": {"message": str(error), "file": file}},
+    )
 
 
 def _as_row(entry: FileEntry, result: State | ScanFailure) -> dict[str, object]:

@@ -20,7 +20,6 @@ from config_manager.io.errors import (
     ContentUnreadable,
     NotARegularFile,
     PathUnreachable,
-    SourceMissing,
 )
 from config_manager.io.preflight import read_config_list
 
@@ -50,11 +49,12 @@ def scan(repo: str) -> list[tuple[FileEntry, State | ScanFailure]]:
 def _state_of(repo: str, entry: FileEntry) -> State | ScanFailure:
     source_hash = digest(os.path.join(repo, entry.source))
     if source_hash is None:
-        # 啟動時 T15 驗過來源都在，所以此刻不在代表有人動了 repo。折進「未部署」
-        # 會讓一個壞掉的 repo 看起來只是還沒 apply——UI 於是提供一鍵寫出，而那個
-        # 動作沒有東西可寫（不變式 2）。
-        raise SourceMissing(
-            f"掃描時來源內容不見了：{entry.ref} 的來源「{entry.source}」不在 {repo} 裡。"
+        # 清單檔解析成功、只有這一筆的來源不見（有人動了 repo）。折進「未部署」會讓壞掉的
+        # repo 看起來只是還沒 apply——UI 於是提供一鍵寫出，而那個動作沒有東西可寫（不變式 2）。
+        # 這一筆逐筆降級成 ScanFailure（#209 Q2）：與 target 病態同構，標記該列、其餘照常，
+        # 一筆壞不弄垮整表；也不會在請求路徑冒成裸 500（#209 的整支失敗只留給整份讀不了）。
+        return ScanFailure(
+            f"來源內容不見了：{entry.ref} 的來源「{entry.source}」不在 repo 裡。"
             f"下一步：還原該檔，或從清單檔移除這筆條目"
         )
 

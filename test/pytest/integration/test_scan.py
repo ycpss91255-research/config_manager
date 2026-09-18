@@ -9,10 +9,7 @@
 
 import os
 
-import pytest
-
 from config_manager.core.state import State
-from config_manager.io.errors import SourceMissing
 from config_manager.io.scan import ScanFailure, scan
 
 _HEADER = """\
@@ -133,15 +130,22 @@ def test_each_entry_is_judged_independently_and_in_list_order(tmp_path):
     assert [state for _, state in result] == [State.IN_SYNC, State.DRIFT, State.MISSING]
 
 
-def test_source_vanishing_after_startup_raises_naming_the_entry(tmp_path):
-    # 啟動時 T15 驗過來源都在。掃描時不在了，代表有人動了 repo——這不是四種
-    # 狀態之一，把它折進「未部署」會讓一個壞掉的 repo 看起來只是還沒 apply。
+def test_a_vanished_source_is_a_per_entry_failure_not_a_whole_scan_error(tmp_path):
+    # #209 Q2：清單解析成功、只某筆的來源不見（有人動了 repo）→ 該筆回 ScanFailure（指名
+    # 該條目、標記該列），其餘照常判定——與 #214 的 target 病態同構，一筆壞不弄垮整表。
+    # 折進「未部署」會讓壞掉的 repo 看起來只是還沒 apply（不變式 2）。
+    good_target = tmp_path / "deployed" / "ok.yaml"
+    _write(tmp_path / "files" / "ok.yaml", "ok: 1\n")
+    _write(good_target, "ok: 1\n")
     _write(
         tmp_path / "config-list.toml",
-        _HEADER + _entry("mfz3k9q1", "nav", "files/nav.yaml", "/opt/robot/nav.yaml"),
+        _HEADER
+        + _entry("mfz3k9q1", "ok", "files/ok.yaml", str(good_target))
+        + _entry("mfz3k9q2", "nav", "files/gone.yaml", "/opt/robot/nav.yaml"),
     )
 
-    with pytest.raises(SourceMissing) as exc:
-        scan(str(tmp_path))
+    results = scan(str(tmp_path))
 
-    assert "nav@amr01-mfz3k9q1" in str(exc.value)
+    assert results[0][1] == State.IN_SYNC  # 好的那筆照常判定
+    assert isinstance(results[1][1], ScanFailure)  # 來源不見的那筆是逐筆錯誤，不整支 raise
+    assert "nav@amr01-mfz3k9q2" in results[1][1].message
