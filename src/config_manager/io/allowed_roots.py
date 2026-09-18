@@ -10,6 +10,7 @@ ParseError、pydantic 的 ValidationError、core 的 AllowedRootsError），不�
 """
 
 import os
+import sys
 from subprocess import CalledProcessError
 
 from pydantic import ValidationError
@@ -29,6 +30,9 @@ from config_manager.io.errors import (
 from config_manager.io.git import commit, stage, unstage
 
 ALLOWED_ROOTS_NAME = "allowed-roots.toml"
+
+# main() 的參數個數：程式名 + config-repo 路徑（比照 io/preflight）。
+_ARGV_LEN = 2
 
 
 def read_allowed_roots(repo: str) -> AllowedRoots:
@@ -157,3 +161,31 @@ def _write_roots_and_commit(
 def _read(path: str) -> str:
     with open(path, encoding="utf-8") as handle:
         return handle.read()
+
+
+def main(argv: list[str]) -> int:
+    """entrypoint 開機可見性檢查（#146）的呼叫點：印出生效白名單（**檔案**，#202）的根，
+    一行一個（realpath 正規化，與 browse／onboard 取用一致）。
+
+    entrypoint 驗的是這份檔、不是 CM_ALLOWED_ROOTS：首啟後 env 與檔會漂移——經介面增減
+    只寫檔，驗 env 會驗錯對象（#232 發現5）。讀不出檔就把原因印到 stderr、回非零碼，不丟
+    traceback（比照 preflight.main 只收具名例外）；shell 迭代 stdout 的每一行做 isdir。
+    """
+    if len(argv) != _ARGV_LEN:
+        print(
+            "usage: python -m config_manager.io.allowed_roots <config-repo>",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        for prefix in root_prefixes(argv[1]):
+            print(prefix)
+    except (AllowedRootsMissing, AllowedRootsUnparsable) as error:
+        print(f"allowed-roots: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
