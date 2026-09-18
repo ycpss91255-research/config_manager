@@ -207,7 +207,19 @@ check_backend_preconditions() {
     # 這件事之所以要緊，是因為在別人的檔案上面 git init，等於把一個不屬於我們的
     # 目錄當成 config-repo 收下：一個打錯的掛載路徑看起來就跟啟動成功一模一樣，
     # 而那個目錄從此被這個系統當成唯一真實來源。
-    if [[ -n "$(ls -A "${repo}")" ]]; then
+    # ls 讀不動時（EACCES：NFS root_squash，或 drop 掉 CAP_DAC_OVERRIDE／DAC_READ_SEARCH
+    # 而目錄拒讀）stdout 是空的——命令替換的失敗在 set -e 下不會中止外層，[[ ]] 只看被捕捉
+    # 的 stdout，於是「讀不到」被當成「空」，一個裝滿檔案的目錄被誤判成空首啟、被 git init
+    # 收下（正是 #69 要防的形狀，#232 發現2）。先接住 ls 的退出碼：讀不進來就大聲失敗、指向
+    # 權限，不當成空。單獨一行宣告再賦值——local 會吃掉右側的退出碼，寫在同一行就檢查不到。
+    local listing
+    if ! listing="$(ls -A "${repo}" 2>/dev/null)"; then
+      die "config-repo 的掛載點 ${repo} 列不出內容（多半是權限——讀不進來）。" \
+        "空與非空在這裡分不出來，不能當成空目錄逕自 git init（那會把別人的目錄收成 config-repo，#69）。" \
+        "下一步：確認執行這個容器的使用者對 ${repo} 有讀取權（NFS root_squash、或 drop 掉" \
+        "CAP_DAC_OVERRIDE／DAC_READ_SEARCH 都會擋讀），或改 CM_CONFIG_REPO 指到讀得到的掛載"
+    fi
+    if [[ -n "${listing}" ]]; then
       die "config-repo 的掛載點 ${repo} 不是空的，但也不在版控之下。" \
         "下一步：確定要用它的話就自己 git init，否則檢查掛載路徑是不是打錯了"
     fi

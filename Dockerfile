@@ -246,9 +246,27 @@ RUN mkdir -p /tmp/foreign-repo /tmp/foreign-target \
     && git -C /tmp/foreign-repo -c user.name=seed -c user.email=seed@localhost commit --quiet -m "seed 外來-owner repo" \
     && chmod -R a+rX /tmp/foreign-repo /tmp/foreign-target
 
+# 讀不進來的 config-repo 不被當成空目錄逕自 git init（#232 發現2）。以 root 造一個裝了東西、
+# 但對服務身分（uid 1000，屬 other）只給 -wx（可寫、可 traverse，不可讀，mode 0733）的目錄：
+# ls -A 會 EACCES。沒有修法時 stdout 空 → 被當成空首啟 → git init 把這個別人的目錄收成
+# config-repo（#69）。有修法則接住 ls 退出碼、大聲失敗。下一段以服務身分跑的 RUN 斷言擋下。
+RUN mkdir -p /tmp/blind-repo \
+    && printf 'not ours\n' > /tmp/blind-repo/stray.txt \
+    && chmod 0733 /tmp/blind-repo
+
 ARG USER_NAME="user"
 USER ${USER_NAME}
 
 # 服務身分（uid 1000）對上面那份 root 擁有的 repo 啟動；entrypoint 跑完前置檢查後 exec true。
 RUN CM_CONFIG_REPO=/tmp/foreign-repo CM_ROLE=backend /entrypoint.sh true \
     && echo 'Dockerfile: 非 root（uid 1000）對外來 owner 的 config-repo 啟動成功（#232 發現1）'
+
+# 服務身分（uid 1000）對讀不進來的 blind-repo 啟動：entrypoint 應大聲失敗（列不出內容 →
+# 指向權限），不得把它當成空目錄 git init 收下。沒有修法時 ls 空 → git init 成功 → entrypoint
+# 以 0 退出 → 下面的 if 命中 → 建置紅（本 smoke 的紅／綠鑑別）。
+RUN if CM_CONFIG_REPO=/tmp/blind-repo CM_ROLE=backend /entrypoint.sh true 2>/dev/null; then \
+      echo 'Dockerfile: BUG——讀不進來的 config-repo 被當成空目錄收下了（#232 發現2）' >&2; \
+      exit 1; \
+    else \
+      echo 'Dockerfile: 讀不進來的 config-repo 被擋下、未誤判為空首啟（#232 發現2）'; \
+    fi
