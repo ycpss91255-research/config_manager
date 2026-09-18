@@ -187,6 +187,18 @@ check_backend_preconditions() {
   [[ -d "${repo}" ]] || die "config-repo 的掛載點 ${repo} 不存在。" \
     "下一步：確認那個 volume 真的掛上來了，或改 CM_CONFIG_REPO 指到正確的位置"
 
+  # git ≥2.35.2（CVE-2022-24765）在 repo 探索時要求 worktree／.git 的擁有者 == 執行身分，
+  # 不符就 `fatal: detected dubious ownership` 並拒絕**所有**操作（連 rev-parse 唯讀都拒）。
+  # 服務以非 root（uid 1000）跑，而 config-repo 可能由別的 uid 擁有——從備份還原、掛既有
+  # 簽出、或以 root 建好後改回服務身分執行。那是一份合法 repo，卻會讓下面的 rev-parse 非零
+  # 退出、落入「不是 git repo」的 die，把矛頭指向重 init（真因是擁有權，#232 發現1）。
+  # 明示信任這一個 repo：走 GIT_CONFIG_*（而非全域設定，比照 script/test.sh／acceptance.sh
+  # ——不依賴可寫的 HOME），並 export 讓稍後 exec 出去的服務（io/git.py 也對同一 repo 跑
+  # git）一併繼承。範圍限這一個 repo、不用 '*' 全信任——entrypoint 只碰 CM_CONFIG_REPO 這份。
+  export GIT_CONFIG_COUNT=1
+  export GIT_CONFIG_KEY_0=safe.directory
+  export GIT_CONFIG_VALUE_0="${repo}"
+
   if [[ ! -e "${repo}/.git" ]]; then
     # 空與非空是兩種不同的狀況，而這裡曾經把它們混為一談：註解寫著「空目錄」，
     # 條件卻只問 .git 在不在，於是一個裝滿檔案的目錄被初始化，還被宣告成空的
