@@ -900,10 +900,12 @@ function renderInspect(payload) {
 
 function renderTypeTree(types) {
   // 後端回的 types 已含容器（dict／list）與葉，鍵為前序走訪的欄位路徑（. 相接、[] 標元素）。
+  // key 裡的字面點跳脫成 \.（#219），所以深度只算「未跳脫的點」與 []，葉名取最後一段後把
+  // \. 還原成 .——否則含點 key 會被算錯層、或葉名被切半。
   onboardTypesEl.replaceChildren(...Object.keys(types).map((path) => {
     const type = types[path];
-    const depth = (path.match(/\.|\[\]/g) || []).length;
-    const leaf = path.split(".").pop();
+    const depth = (path.match(/(?<!\\)\.|\[\]/g) || []).length;
+    const leaf = path.split(/(?<!\\)\./).pop().replace(/\\\./g, ".");
     const node = element("li", {
       "data-testid": `onboard-type-${path}`,
       "data-name": path,

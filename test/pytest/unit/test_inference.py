@@ -62,6 +62,13 @@ def test_list_of_dicts_yields_paths_for_element_fields():
     }
 
 
+def test_a_key_containing_a_dot_does_not_collide_with_a_nested_path():
+    # key 本身含 `.` 會與巢狀路徑撞號、靜默覆蓋、遺失型別，且結果隨欄位順序變（#219，
+    # 不變式 2）。跳脫含點的 key（`a\.b`）後，它與巢狀 `a.b` 是不同鍵，兩個型別都在。
+    types = infer_types({"a.b": "hello", "a": {"b": 123}})
+    assert types == {"a\\.b": "string", "a": "dict", "a.b": "int"}
+
+
 def test_null_value_is_recorded_as_null():
     # yaml 的 `key:` 與 json 的 null 都會落到這裡；記成 null，不是漏掉那個欄位。
     assert infer_types({"missing": None}) == {"missing": "null"}
@@ -159,3 +166,25 @@ def test_block_scalar_continuation_is_not_treated_as_a_value():
     # 區塊純量的續行既沒有鍵也不是清單項目——不當成值，否則多行字串裡的 `no`
     # 會被誤報成歧義。
     assert find_ambiguous("note: |\n  no\n", "yaml") == []
+
+
+def test_block_scalar_content_shaped_like_key_value_is_not_reported():
+    # `script: |` 之下的字面文字長得像 `key: 值`（如 shell 腳本），不是 YAML 的鍵值，
+    # 不該把裡面的 yes／no 誤報成歧義（#219）。
+    assert find_ambiguous("script: |\n  run: yes\n  retry: no\n", "yaml") == []
+
+
+def test_block_scalar_content_shaped_like_a_list_item_is_not_reported():
+    # `- 值` 形狀的區塊內文也不誤報（#219 本文明列的另一半）。
+    assert find_ambiguous("script: |\n  - yes\n  - no\n", "yaml") == []
+
+
+def test_block_scalar_content_after_a_blank_line_is_not_reported():
+    # 區塊純量常含空行；空行（縮排 0）不該提早中止跳過、讓其後內文又被誤報（#219）。
+    assert find_ambiguous("script: |\n  run: yes\n\n  retry: no\n", "yaml") == []
+
+
+def test_a_value_after_the_block_scalar_ends_is_still_reported():
+    # 區塊結束後（縮排回到標頭層級以下）真正的 key: 值仍要偵測——別過度跳過（#219）。
+    found = find_ambiguous("script: |\n  run: yes\nflag: no\n", "yaml")
+    assert [(a.line, a.value) for a in found] == [(3, "no")]

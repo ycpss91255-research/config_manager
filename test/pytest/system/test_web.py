@@ -737,6 +737,28 @@ def test_nested_types_render_as_a_collapsible_tree(open_page, browse_root):
     page.wait_for_selector("[data-testid='onboard-type-outer.inner']", state="hidden")
 
 
+def test_a_key_with_a_dot_renders_without_colliding_with_a_nested_field(open_page, browse_root):
+    # #219：key 含 . 與巢狀路徑撞號會靜默遺失型別；跳脫後兩者都在，含點 key 的葉名顯示為
+    # 原樣 a.b（還原跳脫）、巢狀的顯示為 b（不被切半、不算錯層）。
+    (browse_root / "dotkey.json").write_text(
+        '{"a.b": "hello", "a": {"b": 123}}\n', encoding="utf-8"
+    )
+    page = _open_confirm(open_page(), browse_root, "dotkey.json")
+
+    nodes = page.eval_on_selector_all(
+        "[data-testid^='onboard-type-']",
+        "els => els.map(e => ({name: e.dataset.name, type: e.dataset.type, "
+        "leaf: e.querySelector('span').textContent.trim()}))",
+    )
+    by_name = {n["name"]: n for n in nodes}
+
+    assert by_name["a\\.b"]["type"] == "string"  # 含點 key 的欄位還在
+    assert by_name["a.b"]["type"] == "int"  # 巢狀欄位也還在（沒撞號遺失）
+    assert by_name["a"]["type"] == "dict"
+    assert by_name["a\\.b"]["leaf"] == "a.b"  # 葉名還原成 a.b，不是 a\.b 或被切成 b
+    assert by_name["a.b"]["leaf"] == "b"
+
+
 def test_ambiguous_yaml_gates_the_submit_until_each_is_acked(open_page, browse_root):
     # AC4：歧義以清單呈現（指名值與行號），逐條確認後才可寫入。
     (browse_root / "amb.yaml").write_text("enabled: no\nmode: 08\n", encoding="utf-8")

@@ -34,13 +34,24 @@ def infer_types(data: object) -> dict[str, str]:
     return types
 
 
+def _escape_key(key: str) -> str:
+    r"""把 key 裡的字面 `.` 跳脫成 `\.`，才不會與路徑分隔用的 `.` 撞號（#219）。
+
+    路徑鍵以 `.` 相接扁平化；key 本身含 `.`（如 `a.b`）不跳脫的話，會與巢狀 `a`→`b`
+    產生的路徑 `a.b` 撞成同一鍵、靜默覆蓋、遺失型別。消費端（前端型別樹）以「未跳脫的
+    點」切段、並把 `\.` 還原成 `.`。key 含字面反斜線是 config 幾乎不會出現的邊界，不在此處理。
+    """
+    return key.replace(".", "\\.")
+
+
 def _walk(value: object, path: str, out: dict[str, str]) -> None:
     if path:
         out[path] = _type_name(value)
 
     if isinstance(value, Mapping):
         for key, item in value.items():
-            child = f"{path}.{key}" if path else str(key)
+            escaped = _escape_key(str(key))
+            child = f"{path}.{escaped}" if path else escaped
             _walk(item, child, out)
         return
 
@@ -122,20 +133,41 @@ _AMBIGUOUS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
 _AMBIGUOUS_FORMATS = frozenset({"yaml"})
 
 
+# 區塊純量標頭：`|`／`>`，可帶 chomping（`-`／`+`）與明示縮排指示（數字）。其後縮排更深
+# 的行是**字面文字**，不是 YAML 的鍵值——不能拿去比對歧義（#219）。
+_BLOCK_HEADER = re.compile(r"^[|>][+-]?\d*$")
+
+
 def find_ambiguous(text: str, fmt: str) -> list[Ambiguity]:
     if fmt not in _AMBIGUOUS_FORMATS:
         return []
 
     found: list[Ambiguity] = []
+    block_indent: int | None = None  # 不在區塊純量內時為 None；否則為標頭行的縮排
     for number, line in enumerate(text.splitlines(), start=1):
+        if block_indent is not None:
+            if not line.strip():
+                continue  # 空行留在區塊內：config 的腳本／內嵌文字常含空行（#219）
+            if _indent(line) > block_indent:
+                continue  # 縮排更深＝區塊純量的字面內文，不掃
+            block_indent = None  # 縮排回到標頭層級以下：區塊結束，這一行照常處理
+
         value = _written_value(line)
         if value is None:
+            continue
+        if _BLOCK_HEADER.match(value):
+            block_indent = _indent(line)  # 這行的值是區塊標頭，其後縮排更深者為字面內文
             continue
         for pattern, readings in _AMBIGUOUS:
             if pattern.match(value):
                 found.append(Ambiguity(line=number, value=value, readings=readings))
                 break
     return found
+
+
+def _indent(line: str) -> int:
+    """行首的空白數（區塊純量以縮排界定內文範圍）。"""
+    return len(line) - len(line.lstrip())
 
 
 def _written_value(line: str) -> str | None:
