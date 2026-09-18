@@ -229,5 +229,26 @@ RUN mkdir -p /tmp/config-repo /tmp/sources \
        CM_SYSTEM_SOURCES_ROOT=/tmp/sources \
        pytest /opt/system -q --ignore=/opt/system/test_web.py
 
+# 非 root（uid 1000）對「屬別的 uid 的合法 repo」仍能啟動（#232 發現1）。git ≥2.35.2 的
+# dubious-ownership 會把這種 repo 誤判成「不是 git repo」，而這正是 CI build job 唯一遮不住
+# 的缺口——上面的 smoke 與實跑服務都以 root 跑，root==root 永不觸發。故在此以 root 造一份
+# **root 擁有**的合法 repo（uid 1000 讀得到、但擁有權不符），下一個 RUN 切到服務身分啟動：
+# entrypoint 為 config-repo 掛 safe.directory 後應正常啟動；沒有那道修法時 rev-parse 會因
+# dubious ownership 非零退出 → die → 這一步失敗、建置紅（這就是本 smoke 的紅／綠鑑別）。
+# 全程唯讀（清單檔已備妥故不重種、不 commit），故 uid 1000 不需寫入 root 擁有的 .git。
+RUN mkdir -p /tmp/foreign-repo /tmp/foreign-target \
+    && git init --quiet --initial-branch=main /tmp/foreign-repo \
+    && printf 'list_version = 1\n\n[defaults.permissions]\nowner = "root"\ngroup = "root"\nmode = "0644"\n' \
+         > /tmp/foreign-repo/config-list.toml \
+    && printf 'roots_version = 1\n\n[[roots]]\nprefix = "/tmp/foreign-target"\nadded_by = "部署設定 (CM_ALLOWED_ROOTS)"\nadded_at = "2026-01-01T00:00:00Z"\n' \
+         > /tmp/foreign-repo/allowed-roots.toml \
+    && git -C /tmp/foreign-repo -c user.name=seed -c user.email=seed@localhost add -A \
+    && git -C /tmp/foreign-repo -c user.name=seed -c user.email=seed@localhost commit --quiet -m "seed 外來-owner repo" \
+    && chmod -R a+rX /tmp/foreign-repo /tmp/foreign-target
+
 ARG USER_NAME="user"
 USER ${USER_NAME}
+
+# 服務身分（uid 1000）對上面那份 root 擁有的 repo 啟動；entrypoint 跑完前置檢查後 exec true。
+RUN CM_CONFIG_REPO=/tmp/foreign-repo CM_ROLE=backend /entrypoint.sh true \
+    && echo 'Dockerfile: 非 root（uid 1000）對外來 owner 的 config-repo 啟動成功（#232 發現1）'
