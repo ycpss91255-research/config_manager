@@ -3,12 +3,14 @@
 純邏輯，不做 I/O（ADR-00000011）：load/dump 收字串、不讀磁碟。
 """
 
+import re
 from pathlib import PurePosixPath
 
 import tomlkit
 from tomlkit import items
 
 from config_manager.core.errors import (
+    ConfigListMalformed,
     DumpMismatch,
     DuplicateSource,
     DuplicateTarget,
@@ -19,7 +21,7 @@ from config_manager.core.errors import (
     UnknownField,
 )
 from config_manager.core.models import ConfigList, FileEntry, Permissions
-from config_manager.core.toml_support import reject_unknown
+from config_manager.core.toml_support import Source, reject_unknown
 
 # tomlkit 容器 body 的一項：沒有鍵的是空白與註解，有鍵的是真正的值。
 _BodyItem = tuple[items.Key | None, items.Item]
@@ -44,6 +46,7 @@ _OPTIONAL_ENTRY_KEYS = frozenset(
 def load(text: str) -> ConfigList:
     """把 config 清單檔的原始文字解析為已驗證的資料模型。"""
     doc = tomlkit.parse(text)
+    _check_shape(doc)
     _check_unknown_fields(doc, text)
     config_list = ConfigList.model_validate(doc.unwrap())
     _check_integrity(config_list)
@@ -97,28 +100,76 @@ def dump(config_list: ConfigList, original: str) -> str:
     return tomlkit.dumps(doc)
 
 
-def _check_unknown_fields(doc: "tomlkit.TOMLDocument", text: str) -> None:
-    """在轉為資料模型前，對照鍵集攔下未知欄位並指名行號（PDF §329）。"""
-    reject_unknown(doc.keys(), _TOP_KEYS, text, "清單檔頂層", UnknownField)
+def _check_shape(doc: "tomlkit.TOMLDocument") -> None:
+    """`files` 若存在必須是 `[[files]]` 表格串列（AoT）；permissions 若存在必須是表格。
+
+    在迭代 `files`／對 permissions 取 `.keys()`（`_check_unknown_fields`）與轉模型之前先擋下
+    純量、inline 陣列等形狀：那些會讓迭代丟 raw TypeError、對 permissions 取 `.keys()` 丟 raw
+    AttributeError，逃過「結構驗證交給 pydantic、讀取層認得 load 的失敗詞彙」的契約；inline
+    陣列的 files 更是 load 接受、dump 才崩（只吃 AoT）。比照 allowed_roots 的 `_check_roots_shape`。
+    """
+    files = doc.get("files")
+    if files is not None and not isinstance(files, items.AoT):
+        raise ConfigListMalformed(
+            "清單檔 config-list.toml 的 files 要以 [[files]] 表格串列書寫。"
+            "下一步：把每個條目寫成一段 [[files]]，不要用 inline 陣列或其他型別"
+        )
 
     defaults = doc.get("defaults")
     if defaults is not None:
-        reject_unknown(defaults.keys(), _DEFAULTS_KEYS, text, "defaults", UnknownField)
+        _check_permissions_shape(defaults.get("permissions"), "defaults.permissions")
+
+    if isinstance(files, items.AoT):
+        for entry in files:
+            _check_permissions_shape(entry.get("permissions"), "條目的 permissions")
+
+
+def _check_permissions_shape(perms: "items.Item | None", where: str) -> None:
+    """permissions 若存在必須是表格（可取 `.keys()`），否則具名擋下。"""
+    if perms is not None and not hasattr(perms, "keys"):
+        raise ConfigListMalformed(
+            f"清單檔 config-list.toml 的 {where} 要以表格書寫（owner／group／mode）。"
+            f"下一步：把 {where} 寫成表格或 inline 表格，不要用純量"
+        )
+
+
+def _check_unknown_fields(doc: "tomlkit.TOMLDocument", text: str) -> None:
+    """在轉為資料模型前，對照鍵集攔下未知欄位並指名行號（PDF §329）。"""
+    reject_unknown(doc.keys(), _TOP_KEYS, Source(text), "清單檔頂層", UnknownField)
+
+    defaults = doc.get("defaults")
+    if defaults is not None:
+        reject_unknown(defaults.keys(), _DEFAULTS_KEYS, Source(text), "defaults", UnknownField)
         perms = defaults.get("permissions")
         if perms is not None:
             reject_unknown(
-                perms.keys(), _PERM_KEYS, text, "defaults.permissions", UnknownField
+                perms.keys(), _PERM_KEYS, Source(text), "defaults.permissions", UnknownField
             )
 
     files = doc.get("files")
     if files is not None:
-        for entry in files:
-            reject_unknown(entry.keys(), _ENTRY_KEYS, text, "檔案條目", UnknownField)
+        starts = _entry_header_lines(text)
+        for index, entry in enumerate(files):
+            # 從該條目的表頭起找行號：條目層誤放的鍵可能與 [defaults.permissions] 等較前處
+            # 的合法同名鍵相撞，全域取第一個會指錯行（#218）。
+            start = starts[index] if index < len(starts) else 1
+            source = Source(text, start)
+            reject_unknown(entry.keys(), _ENTRY_KEYS, source, "檔案條目", UnknownField)
             eperm = entry.get("permissions")
             if eperm is not None and hasattr(eperm, "keys"):
                 reject_unknown(
-                    eperm.keys(), _PERM_KEYS, text, "條目的 permissions", UnknownField
+                    eperm.keys(), _PERM_KEYS, source, "條目的 permissions", UnknownField
                 )
+
+
+def _entry_header_lines(text: str) -> list[int]:
+    """回傳每個 `[[files]]` 條目表頭的行號（1 起算），依出現順序。
+
+    `for entry in files`（AoT）與 `[[files]]` 表頭一一對應且同序，故第 index 個表頭行就是
+    第 index 個條目的搜尋起點（#218）。
+    """
+    pattern = re.compile(r"^\s*\[\[\s*files\s*\]\]")
+    return [lineno for lineno, line in enumerate(text.splitlines(), 1) if pattern.match(line)]
 
 
 def _take_trailing_items(body: list[_BodyItem], stop: int) -> list[_BodyItem]:
