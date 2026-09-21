@@ -233,6 +233,40 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 
 ---
 
+## W9 白名單維護
+
+完整的白名單管理面板（#15、設計 §7.9、設計原則 5）：檢視目前允許的根（誰／何時）、新增前綴
+（含 §7.9 的候選檔案數預覽）、移除前綴（含受影響納管項目的確認）。**整個面板開發者專屬**——
+工具列「白名單」按鈕對一般使用者**不存在於 DOM**（角色表、ADR-00000020）；一般使用者的「檢視」
+走 W7 的根清單與 `outside_roots` 拒絕下的允許範圍，不進本面板。獨立整頁 view，從 W2 工具列開啟。
+
+消費既有後端：`GET`／`POST`／`DELETE /api/allowed-roots`（#202／#15）與 `GET /api/candidate-count`
+（#206）。逃逸（`../`、symlink）由後端 `check_prefix`＋realpath 擋成 422，前端原樣呈現。
+
+| 元素 | 選取器 | 行為 |
+|---|---|---|
+| 白名單按鈕 | `data-testid="open-whitelist"` | 文字「白名單」；**僅開發者存在於 DOM**（角色表）；開啟本面板 |
+| 面板 view | `data-testid="whitelist"` | 整頁容器；開啟時隱藏其他 view |
+| 返回 | `data-testid="whitelist-back"` | 回 W2 清單 |
+| 新增前綴輸入 | `data-testid="whitelist-add-input"` | 要加入白名單的絕對路徑（與 W7 的 `whitelist-prefix-input` 不同元素） |
+| 預覽 | `data-testid="whitelist-preview-button"` | 對輸入的前綴 `GET /api/candidate-count`；不每字打就數（避免每字遞迴走訪主機目錄，§7.9／#206） |
+| 候選數預覽 | `data-testid="whitelist-preview"` | 「此路徑下有 N 個可納管檔」；觸上限顯示「N+」（`capped`）；前綴不合法（`..`／不存在／非目錄）顯示原樣錯誤訊息；空時隱藏 |
+| 加入白名單 | `data-testid="whitelist-add"` | `POST /api/allowed-roots`（prefix 取自輸入），成功後重載清單、清空輸入與預覽 |
+| 新增錯誤 | `data-testid="whitelist-error"` | 新增失敗原樣顯示（`..`／symlink 逃逸 422、指向到不了的目錄、重複前綴 409）；空時隱藏 |
+| 根清單 | `data-testid="whitelist-roots"` | 目前允許的根（`GET /api/allowed-roots` 的 `roots[]`）；空時顯示「白名單目前是空的」 |
+| 根項目 | `data-testid="whitelist-root-<原樣前綴>"` | 顯示原樣 prefix、resolved（realpath）、`由 <added_by> 於 <added_at>`（誰／何時，AC2） |
+| 移除 | 根項目內 `data-testid="whitelist-remove"` | 文字「移除」；先以 `confirmed=false` `DELETE`，回受影響清單＋要求確認（AC3） |
+| 移除確認 | `data-testid="whitelist-remove-confirm"` | 承載受影響納管項目清單與確認／取消；未在確認流程時隱藏 |
+| 受影響項目 | `data-testid="whitelist-affected"` | 受影響的納管項目（target 落在被移除前綴底下），資訊性、不連動解除納管（AC3） |
+| 確認移除 | `data-testid="whitelist-confirm-remove"` | 以 `confirmed=true` `DELETE`，成功後重載清單 |
+| 取消移除 | `data-testid="whitelist-cancel-remove"` | 收起確認、不移除 |
+
+**測試須斷言**：一般使用者模式下「白名單」按鈕**找不到**（不是 disabled，角色表）；列根帶誰／何時
+（AC2）；新增前先預覽候選數，`capped` 顯示「N+」（§7.9／#206）；`../`／symlink 前綴新增被擋、
+原樣顯示 422（AC5）；移除有受影響項目時先列出＋要求確認、確認後才真移除（AC3）。
+
+---
+
 ## 角色差異的測試方式
 
 僅開發者可用的元素在一般使用者模式下**直接不存在於 DOM**，而非停用

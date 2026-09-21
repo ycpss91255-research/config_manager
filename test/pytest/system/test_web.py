@@ -985,3 +985,113 @@ def _wait_until_answering(base: str) -> None:
         f"服務在 {_STARTUP_TIMEOUT} 秒內沒有回應：{base}。"
         f"下一步：看 uvicorn 的輸出，確認 create_app 起得來"
     )
+
+
+# ── W9 白名單維護（#15）──────────────────────────────────────────────────────
+
+
+def _open_whitelist_as_developer(page):
+    """以開發者身分進入 → 點「白名單」開維護面板（面板開發者專屬）。"""
+    page.click("[data-testid='role-toggle'] button[data-role='developer']")
+    _fill_identity(page)
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    page.get_by_role("button", name="白名單").click()
+    page.wait_for_selector("[data-testid='whitelist']", state="visible")
+    return page
+
+
+def test_the_whitelist_button_is_absent_for_a_normal_user(open_page):
+    # 白名單維護開發者專屬：一般使用者連按鈕都不存在於 DOM（角色表、ADR-00000020），非停用。
+    page = _enter_identity(open_page())  # 預設一般使用者
+
+    assert page.get_by_role("button", name="白名單").count() == 0
+
+
+def test_a_developer_can_open_the_whitelist_panel(open_page):
+    page = _open_whitelist_as_developer(open_page())
+
+    assert page.is_visible("[data-testid='whitelist']")
+
+
+def test_the_whitelist_lists_each_root_with_who_and_when(open_page, browse_root):
+    # AC2：檢視時列出目前允許的根，以及各是誰、何時加入的（種子根 added_by=seed）。
+    page = _open_whitelist_as_developer(open_page())
+
+    page.wait_for_selector(f"[data-testid='whitelist-root-{browse_root}']")
+    row = page.text_content(f"[data-testid='whitelist-root-{browse_root}']")
+    assert "seed" in row and "2026-01-01" in row
+
+
+def test_previewing_a_prefix_shows_its_candidate_file_count(open_page, tmp_path):
+    # §7.9：加根前顯示「此路徑下有 N 個可納管檔」（GET /api/candidate-count，#206）。
+    prefix = tmp_path / "preview_me"
+    prefix.mkdir()
+    (prefix / "a.yaml").write_text("x", encoding="utf-8")
+    (prefix / "b.conf").write_text("y", encoding="utf-8")
+    page = _open_whitelist_as_developer(open_page())
+
+    page.fill("[data-testid='whitelist-add-input']", str(prefix))
+    page.get_by_role("button", name="預覽").click()
+    page.wait_for_selector("[data-testid='whitelist-preview']", state="visible")
+
+    assert "2" in page.text_content("[data-testid='whitelist-preview']")
+
+
+def test_previewing_an_invalid_prefix_shows_the_reason_not_a_count(open_page, tmp_path):
+    # 前綴含 .. → 後端 422，預覽處顯示原樣錯誤、不顯示假的數字。
+    page = _open_whitelist_as_developer(open_page())
+
+    page.fill("[data-testid='whitelist-add-input']", str(tmp_path / "sub" / ".." / "x"))
+    page.get_by_role("button", name="預覽").click()
+
+    page.wait_for_selector("[data-testid='whitelist-error']", state="visible")
+
+
+def test_adding_a_prefix_appends_it_to_the_whitelist(open_page, tmp_path):
+    # AC1：可從介面新增路徑前綴。
+    prefix = tmp_path / "to_add"
+    prefix.mkdir()
+    page = _open_whitelist_as_developer(open_page())
+
+    page.fill("[data-testid='whitelist-add-input']", str(prefix))
+    page.get_by_role("button", name="加入白名單").click()
+
+    page.wait_for_selector(f"[data-testid='whitelist-root-{prefix}']")
+
+
+def test_adding_a_prefix_with_dotdot_is_rejected_with_the_reason_shown(open_page, tmp_path):
+    # AC5：以 ../ 嘗試逃逸被攔截（後端 422），前端原樣呈現，不靜默加入。
+    page = _open_whitelist_as_developer(open_page())
+
+    page.fill("[data-testid='whitelist-add-input']", str(tmp_path / "sub" / ".." / "escape"))
+    page.get_by_role("button", name="加入白名單").click()
+
+    page.wait_for_selector("[data-testid='whitelist-error']", state="visible")
+
+
+def test_removing_a_root_asks_for_confirmation_then_removes(open_page, browse_root):
+    # AC3：移除前先要求確認（不靜默移除），確認後才真移除。
+    page = _open_whitelist_as_developer(open_page())
+    page.wait_for_selector(f"[data-testid='whitelist-root-{browse_root}']")
+
+    page.locator(
+        f"[data-testid='whitelist-root-{browse_root}'] [data-testid='whitelist-remove']"
+    ).click()
+    page.wait_for_selector("[data-testid='whitelist-remove-confirm']", state="visible")
+    page.get_by_role("button", name="確認移除").click()
+
+    page.wait_for_selector(f"[data-testid='whitelist-root-{browse_root}']", state="detached")
+
+
+def test_cancelling_a_removal_keeps_the_root(open_page, browse_root):
+    # 取消確認 → 不移除，根還在。
+    page = _open_whitelist_as_developer(open_page())
+    page.wait_for_selector(f"[data-testid='whitelist-root-{browse_root}']")
+
+    page.locator(
+        f"[data-testid='whitelist-root-{browse_root}'] [data-testid='whitelist-remove']"
+    ).click()
+    page.wait_for_selector("[data-testid='whitelist-remove-confirm']", state="visible")
+    page.get_by_role("button", name="取消").click()
+
+    assert page.is_visible(f"[data-testid='whitelist-root-{browse_root}']")
