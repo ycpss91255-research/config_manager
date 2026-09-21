@@ -671,6 +671,54 @@ T1 會讓 `load()` 回兩種型別、介面變模糊。T4 是 `decide(rules, pat
 
 ---
 
+### T24 — 候選檔案數預覽
+
+> 本 repo 在設計文件 §3.7.2（`T1`–`T18`）之外新增，來由 `#206`（自 `#15` 拆出）。
+
+```
+count_candidates(prefix, *, max_depth=_MAX_DEPTH, max_items=_MAX_ITEMS)
+    -> 候選結果(count: int, capped: bool) | 具名例外
+```
+
+**為什麼是一個新介面。** 設計 §7.9 的新增流程要「輸入路徑 → 即時顯示此路徑下有幾個
+可納管檔 → 送出」。要數的前綴**此刻尚不在白名單內**（那正是新增流程），而既有 `browse`
+（T9）與 `read_source`（T22）對白名單**外**一律拒絕——雞生蛋。所以候選數需要一支**不以
+白名單為閘門、只在該前綴底下遞迴數一般檔（不讀內容）**的讀取路徑。這是白名單邊界的一次
+刻意放寬（只數 metadata、不讀內容），是系統唯一會主動走訪白名單外目錄的讀取路徑，需比照
+`#174`／`#185`／`#13` 做專屬的對抗式審查。
+
+| 驗證的行為 |
+|---|
+| 對一個前綴遞迴數其底下的**一般檔案**數（`S_ISREG`，以項目自身型別分類）；目錄不計入、只用來遞迴 |
+| **不跟隨符號連結**：指向檔案的連結不算一般檔（不計入）、指向目錄的連結不遞迴進去——一條指向白名單外（如 `/etc`）的目錄連結不把它底下的檔數進來，也切斷連結迴圈 |
+| 每層以 `O_NOFOLLOW` 加 `O_DIRECTORY` 在 dirfd 上重開、在該 fd 上 `scandir`（比照 T9 browse 的逃逸範式）：解析後最後一段被抽換成連結時開檔失敗，而不是被騙去列它指向的地方 |
+| 遞迴**深度**達上限 → 回 `capped=true` 與到此為止的部分計數（非靜默截斷、非報錯） |
+| 總**走訪項目數**達上限 → 同樣回 `capped=true` 與部分計數（防打 `/` 或家目錄拖垮服務） |
+| 空目錄 → `count=0`、`capped=false` |
+| 前綴含字面 `..` → 具名逃逸例外，**不走訪**（比照 T4／T8 的字面逃逸擋） |
+| 前綴 `realpath` 解析後**不存在**或**不是目錄** → 具名例外並指名原因（不回 0——0 會把「路徑打錯」誤報成「這裡沒有可納管檔」） |
+| 計數只讀 metadata（型別、遞迴），**絕不讀檔案內容** |
+
+**為什麼既有介面觀察不到。** `browse`（T9）與 `read_source`（T22）都以白名單為閘門，
+白名單外一律拒絕——候選數的前綴依定義在白名單外，這兩個介面根本到不了。`T21` 差異掃描
+與 `T20` 雜湊都對**已納管**的來源做，不走訪任意前綴。「不以白名單為閘門、遞迴數一般檔、
+帶深度／項目上限」這組行為在其餘 23 個介面上沒有觀察位置。
+
+**它擋不住什麼**（寫在這裡，免得日後以為它被驗過）：
+
+- **TOCTOU 殘餘窗口**與 T22 相同：`O_NOFOLLOW` 只保護每次開檔的最後一段，路徑中間的
+  目錄仍可能在解析與開檔之間被抽換——realpath 的既知限制，本介面不承諾完全消除。
+- **走訪會動 atime。** 遞迴列目錄會更新被列目錄的 atime，那是讀取的必然代價。
+- **計數是拍照當下的值。** 回傳後檔案數可以變；這個數字是給人在確認畫面上參考的量級，
+  不是任何後續操作的保證。
+- **env 覆寫上限尚未接。** 上限走模組常數 + 函式預設參數，`CM_MAX_*` 覆寫延後（對齊
+  `io/source` 的 `MAX_SOURCE_BYTES` 現況，那個 env 本身也還沒接）。
+
+**消費端**：`api` 的 `GET /api/candidate-count?prefix=`（僅開發者，端點 behavior 記於 T9），
+前端白名單面板的新增流程（`#15`）。
+
+---
+
 ## 介面層
 
 ### T9 — HTTP 端點
@@ -738,6 +786,12 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 權威（副檔名的猜測放前端當提示、使用者確認後明寫進清單檔）。偵測**不擴充 `/api/validate`**
 （那是編輯既有 config 的即時逐參數驗證），是獨立的一支。
 
+**`GET /api/candidate-count`（候選數預覽）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，
+比照 GET /api/session／#122）。設計 §7.9 的新增流程要在送出前顯示「此路徑下有幾個可納管檔」；
+要數的前綴此刻還不在白名單內（那正是新增流程），故走**白名單外**、只數一般檔的 metadata
+（不讀內容），計數邏輯在 `io/candidate`（T24）。僅開發者、與白名單維護同一道門檻
+（`_require_developer`）——這是系統唯一主動走訪白名單外目錄的讀取路徑（#206）。
+
 **結構化錯誤那一條的適用範圍。** 「檔案、行號、欄位、建議」是**驗證／解析**錯誤的要求
 （供編輯器就地標示，§3.5.3）——那走 `POST /api/validate` 與**偵測端點（#195，已落地）**：
 `POST /api/inspect` 的錯誤回 `{detail: {message, file, line}}`，語法錯誤帶行號。納管與瀏覽
@@ -755,6 +809,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **偵測（`POST /api/inspect`）：收候選 `{source_path, format}`，回 format／欄位數／歧義（行號／值／讀法，yaml 才非空）／型別／原始權限／**納管當下會用的 hostname**（供確認畫面在納管前核對機器身分，#14）；語法錯誤→結構化 422（含 file、line），歧義不拒絕而是列出；白名單外／不是檔案／讀不到／format 非允許值→422；`CM_HOSTNAME` 不安全→帶訊息的 500（inspect 與 onboard 皆然，不再漏接成裸 500）** |
 | **白名單維護（`POST /api/allowed-roots`）：僅開發者可加一個前綴，`added_by` 取自 session、`added_at` 由伺服器蓋時間，回更新後的前綴清單、含剛加的；未設身分→409、一般使用者→403；相對／含 `..` 前綴或指向到不了的目錄→422；新增後同一個服務即刻生效、不必重啟（#202）** |
 | **白名單維護（`DELETE /api/allowed-roots`，body `{prefix, confirmed}`）：僅開發者（403）、需身分（409）；以檔案原樣 prefix 定位、定位不到→404；未帶 confirmed 先回受影響納管項目清單（`{kind:"confirm_required", affected:[{ref, target}], message}`）＋409，帶 confirmed 才真刪、回更新後的清單；受影響＝清單檔中 target（realpath）落在被移除前綴（realpath）底下的條目，資訊性、不連動解除納管（#15）** |
+| **候選數預覽（`GET /api/candidate-count?prefix=`）：僅開發者（403，角色不足）；數一個**白名單外**前綴底下的一般檔數（遞迴、不讀內容、不跟隨連結、觸及深度／項目上限回 `capped`），回 `{count, capped}`；字面 `..`／不存在／不是目錄→422，detail 為結構化 `{kind, message}`（比照 browse）。走白名單外故套白名單維護的開發者門檻（#206、T24）** |
 | 進版端點：驗證失敗時**不產生變更紀錄也不寫出**（原子性） |
 | **進版寫出 N 份、第 k 份失敗 → 前 k-1 份已寫出的目標檔案還原為進版前內容、全部已產生的變更紀錄一併撤銷**，容器內最終狀態與進版前逐位元組相同（承接 T18 移出的批次原子性） |
 | 第二個編輯階段被拒，回覆含持有者姓名、email、開始時間 |
@@ -1227,6 +1282,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/paths` | 效果透過既有介面觀察：`blocking_parent` 的「上層目錄擋住去路」分類在 T22（`io/source`）與 T20（`io/digest`）的 EACCES 規格被斷言——`source` 與 `digest` 共用的薄工具，同 `io/repo` 的處理（#214） | 已落地（`ancestors`／`blocking_parent`） |
 | `io/onboard` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔條目→T1（`load`）、匯入 commit→T7（`io/git.history`）（#12）——編排層，不算新值，同 `io/repo` 的處理。**匯入紀錄的作者＝傳入的身分、隨之而變**（以 `history()` 的 `Change.author` 驗、不同身分各對各的紀錄，#114）。重複攔在寫入前（#172）與寫入失敗即整批回滾（#173）以注入失敗＋`git status` 觀察，回滾也失敗時丟 `OnboardLeftBehind` | 已落地（`onboard`） |
 | `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath 與列目錄——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185） | 已落地（`browse`） |
+| `io/candidate` | T24（候選檔案數預覽，介面議定於 #206）：不以白名單為閘門、遞迴數一般檔（不讀內容）、每層 O_NOFOLLOW 不跟隨連結、深度／項目上限觸及回部分計數＋capped | 已落地（`count_candidates`） |
 | `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202）；移除以檔案原樣 prefix 定位、找不到丟 `PrefixNotFound`、commit 失敗回滾同樣以真實 fs＋git 斷言（#15） | 已落地（`read_allowed_roots`／`add_allowed_root`／`remove_allowed_root`） |
 | `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots` 與 CORS 中介層） |
 | `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`） |

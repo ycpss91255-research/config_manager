@@ -255,3 +255,38 @@ class SourceUnreachable(SourceError):
     UI 會把一個權限問題呈現成「未部署」，操作者去修錯的東西。訊息指名是**哪一層**
     目錄擋住去路。
     """
+
+
+class CandidateError(Exception):
+    """候選檔案數預覽（#206，設計 §7.9）的錯誤基底。
+
+    自成一族，不併進 `BrowseError`：browse 以白名單為閘門，候選數**刻意不以白名單為閘門**
+    ——新增流程要數的前綴依定義還在白名單外。兩者的安全前提不同（候選數是系統唯一主動走訪
+    白名單外目錄的讀取），錯誤族因此分開，呼叫端的處置也分開。
+    """
+
+
+class CandidatePrefixEscape(CandidateError):
+    """候選數的前綴含字面 `..` 路徑段。
+
+    `realpath` 會把 `..` 正規化掉、遮蔽「本來就想逃逸」的意圖，故在解析前以字面擋下（比照
+    core 的 T4／T8 字面逃逸檢查）。
+    """
+
+
+class CandidateNotADirectory(CandidateError):
+    """候選數的前綴 `realpath` 後不存在、不是目錄，或最後一段是符號連結——沒有可遞迴數檔的
+    目錄。
+
+    回具名例外而非 0：0 會把「路徑打錯」誤報成「這裡沒有可納管檔」，讓確認畫面上的人去修
+    錯的東西（不變式 2）。
+    """
+
+
+class CandidateUnreadable(CandidateError):
+    """候選數的前綴是目錄，但列不出來（權限）。
+
+    與 `CandidateNotADirectory` 分開，是 §0.4 的三要素：「不是目錄」與「是目錄但沒權限讀」
+    的下一步不同。走訪途中更深層的目錄若列不出來則 best-effort 跳過、不整個失敗——這一則
+    只講**前綴本身**列不出來。
+    """

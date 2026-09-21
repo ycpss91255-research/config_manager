@@ -42,12 +42,17 @@ from config_manager.io.allowed_roots import (
     root_prefixes,
 )
 from config_manager.io.browse import Entry, Listing, browse
+from config_manager.io.candidate import count_candidates
 from config_manager.io.errors import (
     AllowedRootUnreachable,
     BrowseError,
     BrowseNotADirectory,
     BrowseOutsideRoots,
     BrowseUnreadable,
+    CandidateError,
+    CandidateNotADirectory,
+    CandidatePrefixEscape,
+    CandidateUnreadable,
     ContentUnreadable,
     HostnameInvalid,
     PreflightError,
@@ -192,6 +197,15 @@ def create_app(
         """檔案系統瀏覽，受白名單限制（設計文件 §3.5.3）。供納管畫面挑檔案用。"""
         return _browse_filesystem(root_prefixes(repo), path)
 
+    @app.get("/api/candidate-count")
+    def candidate_count(prefix: str) -> dict[str, object]:
+        """數一個前綴底下有幾個可納管檔（§7.9 新增流程的即時預覽，#206）。
+
+        僅開發者，且**走白名單外**——新增流程要數的前綴依定義還不在白名單內。這是系統唯一
+        主動走訪白名單外目錄的讀取路徑，只數 metadata、不讀內容。
+        """
+        return _candidate_count(held, prefix)
+
     @app.post("/api/inspect")
     def inspect_source(payload: InspectInput) -> dict[str, object]:
         """偵測候選檔案（§3.5.3 追加，#195）。供納管確認畫面顯示偵測結果。"""
@@ -285,24 +299,33 @@ def _clean_note(note: str) -> str:
     )
 
 
+def _require_developer(held: dict[str, Identity], action: str) -> Identity:
+    """取得目前 session 身分並要求它是開發者，回傳該身分，否則以具名 HTTP 錯誤擋下。
+
+    白名單維護（新增／移除，§7.9、W2）與候選數預覽（#206）都走白名單外的敏感讀寫，僅開發者
+    可用。三個呼叫端共用同一道門檻：**沒有身分 → 409**（先設身分）、**角色不足 → 403**。
+    `action` 填在訊息裡（如「維護白名單」「查詢候選檔案數」），讓下一步對得上呼叫端在做的事。
+    """
+    identity = held.get("identity")
+    if identity is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"尚未設定身分，無法{action}。下一步：先 POST /api/session 設定姓名與 email",
+        )
+    if identity.role != DEVELOPER:
+        raise HTTPException(
+            status_code=403,
+            detail=f"只有開發者能{action}。下一步：以開發者身分進入，或請開發者代為處理",
+        )
+    return identity
+
+
 def _add_allowed_root(
     repo: str, held: dict[str, Identity], payload: AllowedRootInput
 ) -> dict[str, object]:
     """把 `payload.prefix` 加進白名單。僅開發者可用；`added_by` 取自 session、`added_at` 由
     伺服器蓋時間（抽成模組層函式，同 `_onboard_config`：端點的 closure 只負責接線）。"""
-    identity = held.get("identity")
-    if identity is None:
-        # 加白名單會產生一筆提交，需要作者。沒有身分就無從署名——先設身分。
-        raise HTTPException(
-            status_code=409,
-            detail="尚未設定身分，無法維護白名單。下一步：先 POST /api/session 設定姓名與 email",
-        )
-    if identity.role != DEVELOPER:
-        # 白名單維護僅開發者可用（§7.9、W2）——一般使用者連這個能力都不該有。
-        raise HTTPException(
-            status_code=403,
-            detail="只有開發者能維護白名單。下一步：以開發者身分進入，或請開發者代為加入",
-        )
+    identity = _require_developer(held, "維護白名單")
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
@@ -322,19 +345,7 @@ def _remove_allowed_root(
 ) -> dict[str, object]:
     """把 `payload.prefix` 從白名單移除。僅開發者可用；確認在前（未帶 confirmed 先回受影響
     清單＋409，不靜默移除，AC3），以檔案原樣 prefix 定位、定位不到 → 404。"""
-    identity = held.get("identity")
-    if identity is None:
-        # 移除會產生一筆提交，需要作者。沒有身分就無從署名——先設身分。
-        raise HTTPException(
-            status_code=409,
-            detail="尚未設定身分，無法維護白名單。下一步：先 POST /api/session 設定姓名與 email",
-        )
-    if identity.role != DEVELOPER:
-        # 白名單維護僅開發者可用（§7.9、W2）——一般使用者連這個能力都不該有。
-        raise HTTPException(
-            status_code=403,
-            detail="只有開發者能維護白名單。下一步：以開發者身分進入，或請開發者代為移除",
-        )
+    identity = _require_developer(held, "維護白名單")
 
     stored = {root.prefix for root in read_allowed_roots(repo).roots}
     if payload.prefix not in stored:
@@ -418,6 +429,37 @@ def _browse_kind(error: BrowseError) -> str:
         if isinstance(error, kind_type):
             return kind
     return "browse_error"
+
+
+_CANDIDATE_KINDS: tuple[tuple[type[CandidateError], str], ...] = (
+    (CandidatePrefixEscape, "prefix_escape"),
+    (CandidateNotADirectory, "not_a_directory"),
+    (CandidateUnreadable, "unreadable"),
+)
+
+
+def _candidate_kind(error: CandidateError) -> str:
+    """把候選數的具名例外對應成機器可讀的原因碼，供前端依原因分流（比照 _browse_kind）。"""
+    for kind_type, kind in _CANDIDATE_KINDS:
+        if isinstance(error, kind_type):
+            return kind
+    return "candidate_error"
+
+
+def _candidate_count(held: dict[str, Identity], prefix: str) -> dict[str, object]:
+    """候選數預覽的邏輯（僅開發者，#206）：數一個白名單外前綴底下有幾個可納管檔（不讀內容）。
+
+    走白名單外目錄，套與白名單維護一致的開發者門檻（`_require_developer`）。io 的具名例外
+    （前綴 escape／不是目錄／讀不出來）映成 422＋結構化 detail，比照 `_browse_filesystem`——
+    輸入的路徑值不合法，前端依 `kind` 分流、`message` 是原樣可行動訊息（含下一步）。
+    """
+    _require_developer(held, "查詢候選檔案數")
+    try:
+        result = count_candidates(prefix)
+    except CandidateError as error:
+        detail: dict[str, object] = {"kind": _candidate_kind(error), "message": str(error)}
+        raise HTTPException(status_code=422, detail=detail) from error
+    return {"count": result.count, "capped": result.capped}
 
 
 def _browse_filesystem(roots: tuple[str, ...], path: str) -> dict[str, object]:
