@@ -1275,6 +1275,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/paths` | 效果透過既有介面觀察：`blocking_parent` 的「上層目錄擋住去路」分類在 T22（`io/source`）與 T20（`io/digest`）的 EACCES 規格被斷言——`source` 與 `digest` 共用的薄工具，同 `io/repo` 的處理（#214） | 已落地（`ancestors`／`blocking_parent`） |
 | `io/onboard` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔條目→T1（`load`）、匯入 commit→T7（`io/git.history`）（#12）——編排層，不算新值，同 `io/repo` 的處理。**匯入紀錄的作者＝傳入的身分、隨之而變**（以 `history()` 的 `Change.author` 驗、不同身分各對各的紀錄，#114）。重複攔在寫入前（#172）與寫入失敗即整批回滾（#173）以注入失敗＋`git status` 觀察，回滾也失敗時丟 `OnboardLeftBehind` | 已落地（`onboard`） |
 | `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath 與列目錄——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185） | 已落地（`browse`） |
+| `io/candidate` | T24（候選檔案數預覽，介面議定於 #206）：不以白名單為閘門、遞迴數一般檔（不讀內容）、每層 O_NOFOLLOW 不跟隨連結、深度／項目上限觸及回部分計數＋capped | 已落地（`count_candidates`） |
 | `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202）；移除以檔案原樣 prefix 定位、找不到丟 `PrefixNotFound`、commit 失敗回滾同樣以真實 fs＋git 斷言（#15） | 已落地（`read_allowed_roots`／`add_allowed_root`／`remove_allowed_root`） |
 | `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots` 與 CORS 中介層） |
 | `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`） |
