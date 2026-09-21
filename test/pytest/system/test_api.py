@@ -886,3 +886,58 @@ def test_get_roots_resolves_symlink_prefixes_for_display_keeping_the_stored_pref
         assert entry["prefix"] == str(link)  # 檔案原樣（移除識別碼），與 resolved 不同
     finally:
         roots_path.write_text(original, encoding="utf-8")  # 還原共享 session repo 的白名單
+
+
+# ── GET /api/candidate-count（候選檔案數預覽，#206）─────────────────────────
+
+
+def test_a_developer_gets_a_candidate_count_for_a_prefix_outside_the_whitelist(api, tmp_path):
+    # 候選數預覽走白名單外——那正是新增流程的重點（要數的前綴此刻還沒加進白名單）。tmp_path
+    # 不在 sources_root（白名單）底下，仍數得到；數的是遞迴的一般檔（含子目錄），不讀內容。
+    _set_session(api)  # developer
+    prefix = tmp_path / "candidates"
+    prefix.mkdir()
+    (prefix / "a.yaml").write_text("x")
+    (prefix / "b.conf").write_text("y")
+    (prefix / "sub").mkdir()
+    (prefix / "sub" / "c.ini").write_text("z")
+
+    query = urllib.parse.urlencode({"prefix": str(prefix)})
+    result = _get(api, f"/api/candidate-count?{query}")
+
+    assert result == {"count": 3, "capped": False}
+
+
+def test_a_normal_user_cannot_get_a_candidate_count(api, tmp_path):
+    # 走白名單外、探測主機目錄 metadata——套與白名單維護一致的開發者門檻，角色不夠是 403（#206）。
+    _post(api, "/api/session", {"name": "王小美", "email": "mei@example.com", "role": "user"})
+    prefix = tmp_path / "user_prefix"
+    prefix.mkdir()
+
+    query = urllib.parse.urlencode({"prefix": str(prefix)})
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(api, f"/api/candidate-count?{query}")
+
+    assert exc.value.code == _FORBIDDEN
+
+
+def test_a_candidate_count_prefix_with_a_literal_dotdot_is_unprocessable(api, tmp_path):
+    # 字面 .. 是輸入的值不合法（可逃逸）→ 422，比照 browse 的 io 錯誤映射。
+    _set_session(api)  # developer
+    query = urllib.parse.urlencode({"prefix": str(tmp_path / "sub" / ".." / "x")})
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(api, f"/api/candidate-count?{query}")
+
+    assert exc.value.code == _UNPROCESSABLE
+
+
+def test_a_candidate_count_for_a_nonexistent_prefix_is_unprocessable(api, tmp_path):
+    # 不存在／不是目錄 → 422（具名結果，不回 0——0 會把打錯路徑誤報成沒有可納管檔）。
+    _set_session(api)  # developer
+    query = urllib.parse.urlencode({"prefix": str(tmp_path / "does-not-exist")})
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(api, f"/api/candidate-count?{query}")
+
+    assert exc.value.code == _UNPROCESSABLE
