@@ -217,6 +217,34 @@
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
   }
 
+  /* W9 白名單維護 */
+  #whitelist { padding: 16px 20px 40px; }
+  .whitelist-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .whitelist-title { font-size: 15px; margin: 0; }
+  .whitelist-add-row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .whitelist-input {
+    flex: 1; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px;
+  }
+  .whitelist-preview { color: var(--in-sync); font-size: 13px; margin: 0 0 8px; font-weight: 600; }
+  .whitelist-preview:empty, .whitelist-error:empty { display: none; }
+  .whitelist-error { color: var(--drift); font-size: 13px; margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .whitelist-roots {
+    list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 8px;
+  }
+  .whitelist-roots:empty { display: none; }
+  .whitelist-roots li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; }
+  .whitelist-roots li + li { border-top: 1px solid var(--line); }
+  .whitelist-prefix { font-family: ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 600; }
+  .whitelist-resolved { color: var(--muted); font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
+  .whitelist-who { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .whitelist-empty { color: var(--muted); font-size: 13px; }
+  .whitelist-remove-confirm {
+    margin-top: 12px; padding: 12px; border: 1px solid var(--drift); border-radius: 8px;
+  }
+  .whitelist-remove-confirm[hidden] { display: none; }
+  .whitelist-affected { margin: 8px 0; padding-left: 18px; font-size: 13px; color: var(--muted); }
+
   /* W8 納管確認 */
   #onboard-confirm { padding: 16px 20px 40px; }
   .onboard-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
@@ -296,6 +324,7 @@
   <span class="grow"></span>
   <span class="who" data-testid="current-role"></span>
   <button type="button" data-testid="open-browse">納管</button>
+  <button type="button" data-testid="open-whitelist" hidden>白名單</button>
   <button type="button" data-testid="rescan">檢查差異</button>
 </header>
 
@@ -320,6 +349,26 @@
   <p class="browse-selection" data-testid="browse-selection" hidden></p>
   <button type="button" class="onboard-start" data-testid="onboard-start" hidden>檢視並納管</button>
   <div class="browse-rejected" data-testid="browse-rejected" hidden></div>
+</section>
+
+<!-- W9 白名單維護（#15）：開發者專屬的白名單管理面板——檢視誰/何時、新增含候選數預覽、
+     移除含受影響確認。從工具列「白名單」開啟（該按鈕僅開發者存在）。data-testid 依
+     UI-ELEMENTS.md W9。 -->
+<section id="whitelist" data-testid="whitelist" hidden>
+  <div class="whitelist-bar">
+    <button type="button" class="whitelist-back" data-testid="whitelist-back">返回</button>
+    <h2 class="whitelist-title">白名單維護</h2>
+  </div>
+  <div class="whitelist-add-row">
+    <input type="text" data-testid="whitelist-add-input" class="whitelist-input"
+           placeholder="要加入白名單的絕對路徑…" aria-label="新增白名單前綴">
+    <button type="button" data-testid="whitelist-preview-button">預覽</button>
+    <button type="button" data-testid="whitelist-add">加入白名單</button>
+  </div>
+  <p class="whitelist-preview" data-testid="whitelist-preview" hidden></p>
+  <p class="whitelist-error" data-testid="whitelist-error" hidden></p>
+  <ul data-testid="whitelist-roots" class="whitelist-roots"></ul>
+  <div class="whitelist-remove-confirm" data-testid="whitelist-remove-confirm" hidden></div>
 </section>
 
 <!-- W8 納管確認（#14）：偵測結果供確認 → 寫入。從 W7 選檔後進入。
@@ -558,6 +607,9 @@ function showList(identity) {
   browseView.hidden = true;
   confirmView.hidden = true;
   currentRole.textContent = `${identity.name}・${ROLE_TEXT[identity.role] || identity.role}`;
+  // 白名單維護面板開發者專屬：按鈕對一般使用者不出現於 DOM（UI-ELEMENTS.md 角色表、
+  // ADR-00000020），不是停用。一般使用者的檢視走 browse 的根清單與允許範圍。
+  whitelistButton.hidden = identity.role !== "developer";
   load();
 }
 
@@ -791,6 +843,195 @@ browseListEl.addEventListener("click", (event) => {
 
 document.querySelector("[data-testid='open-browse']").addEventListener("click", showBrowse);
 browseView.querySelector(".browse-back").addEventListener("click", () => showList(currentIdentity));
+
+// ── W9 白名單維護（#15）──────────────────────────────────────────────────────
+// 開發者專屬面板：檢視誰/何時、新增含候選數預覽（GET /api/candidate-count，#206）、
+// 移除含受影響確認（DELETE 未帶 confirmed 先回受影響清單＋409）。按鈕由 showList 依角色
+// 顯示/隱藏。逃逸（../、symlink）由後端擋成 422，這裡原樣呈現。
+const whitelistView = document.querySelector("[data-testid='whitelist']");
+const whitelistButton = document.querySelector("[data-testid='open-whitelist']");
+const whitelistRootsEl = document.querySelector("[data-testid='whitelist-roots']");
+const whitelistAddInput = document.querySelector("[data-testid='whitelist-add-input']");
+const whitelistPreviewEl = document.querySelector("[data-testid='whitelist-preview']");
+const whitelistErrorEl = document.querySelector("[data-testid='whitelist-error']");
+const whitelistConfirmEl = document.querySelector("[data-testid='whitelist-remove-confirm']");
+
+function errText(error) {
+  return error && error.message ? error.message : String(error);
+}
+
+// 端點的 detail 有兩形：純字串（add／remove 的值錯誤）或物件（candidate-count 與 DELETE
+// 確認的 {kind, message, …}）。兩者都取得出可行動訊息，不自造籠統字句（不變式 2）。
+function detailText(detail) {
+  if (typeof detail === "string") return detail;
+  if (detail && detail.message) return detail.message;
+  return JSON.stringify(detail);
+}
+
+function showWhitelist() {
+  identityForm.hidden = true;
+  header.hidden = true;
+  listView.hidden = true;
+  browseView.hidden = true;
+  confirmView.hidden = true;
+  whitelistView.hidden = false;
+  whitelistAddInput.value = "";
+  whitelistPreviewEl.hidden = true;
+  whitelistErrorEl.hidden = true;
+  whitelistConfirmEl.hidden = true;
+  loadWhitelist();
+}
+
+async function loadWhitelist() {
+  whitelistConfirmEl.hidden = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/allowed-roots`);
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    const roots = (await response.json()).roots;
+    if (!roots.length) {
+      whitelistRootsEl.replaceChildren(
+        element("li", { class: "whitelist-empty", text: "白名單目前是空的。" })
+      );
+      return;
+    }
+    whitelistRootsEl.replaceChildren(...roots.map(whitelistRootRow));
+  } catch (error) {
+    whitelistRootsEl.replaceChildren(
+      element("li", { class: "whitelist-empty", text: `讀不到白名單：${errText(error)}` })
+    );
+  }
+}
+
+function whitelistRootRow(root) {
+  const remove = element("button", {
+    type: "button", "data-testid": "whitelist-remove", text: "移除",
+  });
+  remove.addEventListener("click", () => beginRemoveRoot(root.prefix));
+  return element("li", { "data-testid": `whitelist-root-${root.prefix}`, "data-prefix": root.prefix }, [
+    element("span", { class: "whitelist-prefix", text: root.prefix }),
+    element("span", { class: "whitelist-resolved", text: root.resolved }),
+    element("span", { class: "whitelist-who", text: `由 ${root.added_by} 於 ${root.added_at}` }),
+    remove,
+  ]);
+}
+
+async function previewCandidates() {
+  whitelistErrorEl.hidden = true;
+  const prefix = whitelistAddInput.value.trim();
+  if (!prefix) { whitelistPreviewEl.hidden = true; return; }
+  try {
+    const response = await fetch(`${API_BASE}/api/candidate-count?prefix=${encodeURIComponent(prefix)}`);
+    const payload = await response.json();
+    if (!response.ok) {
+      whitelistPreviewEl.hidden = true;
+      whitelistErrorEl.textContent = detailText(payload.detail);
+      whitelistErrorEl.hidden = false;
+      return;
+    }
+    const shown = payload.capped ? `${payload.count}+` : `${payload.count}`;
+    whitelistPreviewEl.textContent = `此路徑下有 ${shown} 個可納管檔。`;
+    whitelistPreviewEl.hidden = false;
+  } catch (error) {
+    whitelistPreviewEl.hidden = true;
+    whitelistErrorEl.textContent = `數不出來：${errText(error)}`;
+    whitelistErrorEl.hidden = false;
+  }
+}
+
+async function addRoot() {
+  whitelistErrorEl.hidden = true;
+  const prefix = whitelistAddInput.value.trim();
+  if (!prefix) return;
+  try {
+    const response = await fetch(`${API_BASE}/api/allowed-roots`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prefix }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      whitelistErrorEl.textContent = detailText(payload.detail);
+      whitelistErrorEl.hidden = false;
+      return;
+    }
+    whitelistAddInput.value = "";
+    whitelistPreviewEl.hidden = true;
+    loadWhitelist();
+  } catch (error) {
+    whitelistErrorEl.textContent = `送不出去：${errText(error)}`;
+    whitelistErrorEl.hidden = false;
+  }
+}
+
+async function beginRemoveRoot(prefix) {
+  // 先以 confirmed=false 問後端：有受影響的納管項目就列出＋要求確認，不靜默移除（AC3）。
+  // 後端在未確認時一律回 409 confirm_required（含受影響清單，可能為空）。
+  whitelistErrorEl.hidden = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/allowed-roots`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prefix, confirmed: false }),
+    });
+    const payload = await response.json();
+    if (response.status === 409 && payload.detail && payload.detail.kind === "confirm_required") {
+      renderRemoveConfirm(prefix, payload.detail);
+      return;
+    }
+    whitelistErrorEl.textContent = detailText(payload.detail);
+    whitelistErrorEl.hidden = false;
+  } catch (error) {
+    whitelistErrorEl.textContent = `送不出去：${errText(error)}`;
+    whitelistErrorEl.hidden = false;
+  }
+}
+
+function renderRemoveConfirm(prefix, detail) {
+  const affected = element("ul", { "data-testid": "whitelist-affected" },
+    (detail.affected || []).map((item) =>
+      element("li", { text: `${item.ref}：${item.target}` })));
+  const confirm = element("button", {
+    type: "button", "data-testid": "whitelist-confirm-remove", text: "確認移除",
+  });
+  confirm.addEventListener("click", () => confirmRemoveRoot(prefix));
+  const cancel = element("button", {
+    type: "button", "data-testid": "whitelist-cancel-remove", text: "取消",
+  });
+  cancel.addEventListener("click", () => { whitelistConfirmEl.hidden = true; });
+  whitelistConfirmEl.replaceChildren(
+    element("p", { class: "whitelist-confirm-msg", text: detailText(detail) }),
+    affected, confirm, cancel);
+  whitelistConfirmEl.hidden = false;
+}
+
+async function confirmRemoveRoot(prefix) {
+  try {
+    const response = await fetch(`${API_BASE}/api/allowed-roots`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prefix, confirmed: true }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      whitelistErrorEl.textContent = detailText(payload.detail);
+      whitelistErrorEl.hidden = false;
+      return;
+    }
+    whitelistConfirmEl.hidden = true;
+    loadWhitelist();
+  } catch (error) {
+    whitelistErrorEl.textContent = `送不出去：${errText(error)}`;
+    whitelistErrorEl.hidden = false;
+  }
+}
+
+whitelistButton.addEventListener("click", showWhitelist);
+whitelistView.querySelector("[data-testid='whitelist-back']")
+  .addEventListener("click", () => showList(currentIdentity));
+whitelistView.querySelector("[data-testid='whitelist-preview-button']")
+  .addEventListener("click", previewCandidates);
+whitelistView.querySelector("[data-testid='whitelist-add']")
+  .addEventListener("click", addRoot);
 browseView.querySelector(".browse-go").addEventListener("click", () => {
   const path = browsePathInput.value.trim();
   if (path) browseTo(path);
