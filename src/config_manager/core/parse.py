@@ -5,8 +5,11 @@
 （T6、ADR-00000029）。
 
 解析器由 `format` 欄位決定，**不由副檔名推斷**——`.yml`、`.param` 等變體不可靠（#8）。
-每一種格式用它在 Python 生態裡最成熟的 lossless round-trip 函式庫（ADR-00000029）：
-yaml→ruamel.yaml、toml→tomlkit、ini→configobj；`raw` 不解析，原文通過。
+yaml→ruamel.yaml、toml→tomlkit 用成熟的 lossless round-trip 函式庫（ADR-00000029），
+document 即其 round-trip 物件。**json 與 ini 沒有保位元組的編輯器**（json 標準庫正規化；
+configobj 補尾換行、去引號、壓 CRLF、吃尾隨空白，#217），故兩者**存原文**達到逐位元組往返，
+只拿標準庫／configobj 驗語法與取值（`values()`）；改動值後的往返留待 v0.3.0（#217）。
+`raw` 不解析，原文通過。需要走訪值（型別推斷）時一律經 `values()`。
 
 核心層不做 I/O：`text` 由呼叫端讀好傳進來（CLAUDE.md 分層）。
 """
@@ -65,10 +68,9 @@ def dump(parsed: Parsed) -> str:
             return _dump_yaml(parsed.document)
         case "toml":
             return _dump_toml(parsed.document)
-        case "json":
+        case "json" | "ini":
+            # json／ini 都存原文（configobj／json 不保位元組），dump 回原文即逐位元組相同。
             return _as_text(parsed.document)
-        case "ini":
-            return _dump_ini(parsed.document)
         case _:
             raise UnsupportedFormat(_unsupported(parsed.fmt))
 
@@ -143,7 +145,20 @@ def _parse_json(text: str) -> str:
 # 讀寫都走記憶體內的 bytes 緩衝，不碰檔案系統（核心層不做 I/O）。
 
 
-def _parse_ini(text: str) -> object:
+def _parse_ini(text: str) -> str:
+    """驗語法後**存原文**（比照 json）。
+
+    configobj 是設定讀寫器、不是保位元組的編輯器：它 dump 時會補尾換行、去引號、把 CRLF
+    壓成 LF、吃掉尾隨空白（#217）——值語意有保、位元組不同，違反「未改動時逐位元組相同」。
+    所以只拿它當語法檢查器，document 存原文；未改動時 dump 回原文即逐位元組相同。改動一個值
+    後的往返（configobj 序列化）留待 v0.3.0 參數編輯落地——那時才會有人去動 ini 的值（同 json）。
+    """
+    _ini_document(text)  # 只為驗語法；失敗丟具名 SyntaxParse
+    return text
+
+
+def _ini_document(text: str) -> object:
+    """把 ini 原文解析成 configobj 的結構（供驗語法與取值，非往返）。"""
     try:
         return ConfigObj(io.BytesIO(text.encode("utf-8")), encoding="utf-8")
     except ConfigObjError as exc:
@@ -154,9 +169,20 @@ def _parse_ini(text: str) -> object:
         ) from exc
 
 
-def _dump_ini(document: object) -> str:
-    lines = cast(ConfigObj, document).write()
-    return b"\n".join(lines).decode("utf-8") + "\n"
+def values(parsed: Parsed) -> object:
+    """回傳可供型別推斷／走訪的值結構（dict／list／純量）。
+
+    yaml／toml 的 `document` 本身就是可走訪的 round-trip 結構；json／ini 的 `document` 是
+    **原文字串**（為逐位元組往返而存，#217／ADR-00000029），需要值時在這裡再 parse 一次。
+    raw 不解析，`document` 是原文字串、沒有結構化值（呼叫端不對 raw 做型別推斷）。
+    """
+    match parsed.fmt:
+        case "json":
+            return json.loads(cast(str, parsed.document))
+        case "ini":
+            return _ini_document(cast(str, parsed.document))
+        case _:
+            return parsed.document
 
 
 def _unsupported(fmt: str) -> str:

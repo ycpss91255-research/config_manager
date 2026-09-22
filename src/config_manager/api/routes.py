@@ -8,7 +8,6 @@ app 由 create_app(repo) 產生而非模組層的全域物件：config-repo 的�
 不同的 repo（ADR-00000011 的同一個理由：輸入從參數進來）。
 """
 
-import json
 import os
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -33,7 +32,7 @@ from config_manager.core.errors import (
 )
 from config_manager.core.inference import Ambiguity, find_ambiguous, infer_types
 from config_manager.core.models import FileEntry, Permissions
-from config_manager.core.parse import Parsed, parse
+from config_manager.core.parse import Parsed, parse, values
 from config_manager.core.state import State
 from config_manager.core.whitelist import decide
 from config_manager.io.allowed_roots import (
@@ -526,11 +525,11 @@ def _inspect(roots: tuple[str, ...], payload: InspectInput) -> dict[str, object]
     text = _decode_for_inspect(source.content, payload)
     try:
         parsed = _parse_for_inspect(text, payload)
-        # json 的 Parsed.document 是**原文字串**（為了逐位元組 round-trip，ADR-00000029），
-        # 型別推斷要的是資料結構，所以 json 這裡再 load 一次拿結構；其餘格式（yaml／toml／
-        # ini）的 document 本就是結構，raw 沒有結構（不解析）。少了這一步，json 一律回
-        # field_count=0／types={}，在確認畫面上是一個靜默的假訊號（#195 資安審查）。
-        data = json.loads(text) if parsed.fmt == "json" else parsed.document
+        # json／ini 的 Parsed.document 是**原文字串**（為逐位元組 round-trip 而存，#217／
+        # ADR-00000029）；型別推斷要的是資料結構，所以一律經 core.parse.values() 取值——它對
+        # json／ini 再 parse 一次、對 yaml／toml 回其 round-trip 結構。少了這一步，json／ini 會
+        # 回 field_count=0／types={}，在確認畫面上是靜默的假訊號（#195／#217）。
+        data = values(parsed)
         types = infer_types(data)
         ambiguities = [_as_ambiguity(a) for a in find_ambiguous(text, payload.format)]
     except RecursionError as error:
