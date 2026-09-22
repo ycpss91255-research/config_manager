@@ -7,7 +7,7 @@
 import pytest
 
 from config_manager.core.errors import SyntaxParse, UnsupportedFormat
-from config_manager.core.parse import Parsed, dump, parse
+from config_manager.core.parse import Parsed, dump, parse, values
 
 
 def test_raw_format_round_trips_byte_identical():
@@ -80,3 +80,42 @@ def test_parser_is_chosen_by_format_argument_not_by_content():
     text = "a: 1\n"
     assert isinstance(parse(text, "raw").document, str)
     assert parse(text, "yaml").document["a"] == 1
+
+
+# ── #217：INI 逐位元組往返（存原文，比照 json；configobj 只用於驗語法／取值）───────
+
+
+def test_ini_round_trips_byte_identical_without_a_trailing_newline():
+    # configobj 無條件補尾換行；存原文才保住「原檔沒有尾換行」（#217）。
+    text = "a = 1"
+    assert dump(parse(text, "ini")) == text
+
+
+def test_ini_round_trips_byte_identical_for_an_empty_file():
+    # 空檔不該變成 "\n"（#217）。
+    assert dump(parse("", "ini")) == ""
+
+
+def test_ini_round_trips_byte_identical_keeping_quotes():
+    # configobj 去引號（值語意同、位元組不同）；存原文保住引號樣式（#217）。
+    text = 'a = "hello world"\n'
+    assert dump(parse(text, "ini")) == text
+
+
+def test_ini_round_trips_byte_identical_keeping_crlf():
+    # configobj 把 CRLF 壓成 LF；存原文保住換行樣式（#217）。
+    text = "a = 1\r\n"
+    assert dump(parse(text, "ini")) == text
+
+
+def test_ini_round_trips_byte_identical_keeping_trailing_whitespace():
+    # configobj 吃掉尾隨空白；存原文保住（#217）。
+    text = "a = 1  \n"
+    assert dump(parse(text, "ini")) == text
+
+
+def test_ini_values_are_extractable_for_type_inference():
+    # 存原文之後，型別推斷需要的值仍取得出來（比照 json：values() 再 parse 一次）。
+    data = values(parse("[s]\nn = 3\nname = amr01\n", "ini"))
+
+    assert data["s"]["n"] == "3" and data["s"]["name"] == "amr01"

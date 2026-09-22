@@ -61,3 +61,18 @@ Python 這邊三個函式庫就是為此而生：`ruamel.yaml`、`tomlkit`、`co
 - 部署映像維持在數百 MB 量級。可接受，因為部署形態是容器。
 - **這個決定的存續繫於一個條件**：只要「原樣寫回」還是核心保證，它就成立；那條保證
   一旦被放棄，這份 ADR 應立即重新檢視。
+
+## 更新（2026-09-22，#217）
+
+**`configobj` 不是保位元組的編輯器，INI 改採「存原文」策略。** 本 ADR 原把 `configobj`
+與 `ruamel.yaml`／`tomlkit` 並列為「為 lossless round-trip 而生」的函式庫——那對 INI 不成立：
+`configobj` 是設定讀寫器，`.write()` 會補尾換行、去引號、把 CRLF 壓成 LF、吃尾隨空白（#217
+實測 5.0.9）。值語意有保、位元組不同，違反 T6 的「未改動時逐位元組相同」。
+
+修正後，INI 比照 **json**（本就無成熟 lossless 編輯庫）：`core/parse` **存原文**、`dump` 回原文
+達到逐位元組往返，`configobj` 只作語法檢查與取值（`values()`）。**改動值後的往返**（保留註解／
+引號／格式）對 json／ini 留待 v0.3.0 參數編輯落地——那時才有人動它們的值。
+
+**這不動搖本 ADR 的核心決定**（後端用 Python，因 round-trip 函式庫生態）：yaml／toml 仍靠
+`ruamel.yaml`／`tomlkit` 的成熟 lossless 實作，那是「換掉 Python＝自己實作 lossless parser」
+的代價所在。json／ini 的「存原文」不需要任何語言專屬的函式庫，故不構成選型理由的一部分。
