@@ -12,11 +12,12 @@ import json
 import os
 from collections.abc import Iterable
 from datetime import datetime, timezone
+from subprocess import CalledProcessError
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from config_manager.api.errors import InvalidAuthor
 from config_manager.api.session import DEVELOPER, USER, Identity, author
@@ -55,8 +56,10 @@ from config_manager.io.errors import (
     CandidateUnreadable,
     ContentUnreadable,
     HostnameInvalid,
+    OnboardLeftBehind,
     PreflightError,
     SourceError,
+    WriterError,
 )
 from config_manager.io.onboard import OnboardRequest, onboard
 from config_manager.io.preflight import read_config_list
@@ -72,6 +75,9 @@ class SessionInput(BaseModel):
     role: str = USER
 
 
+_MAX_AMBIGUITY_NOTE = 10_000
+
+
 class ConfigInput(BaseModel):
     """納管請求的主體：來源路徑、確認過的 format、歧義確認結果（#185）。
 
@@ -81,7 +87,9 @@ class ConfigInput(BaseModel):
 
     source_path: str
     format: str
-    ambiguity_note: str = ""
+    # 上限防過大 note 讓 import commit 以 OSError(E2BIG) 失敗、漏成裸 500（#222）。歧義確認是
+    # 人看過的文字，10K 字元遠夠用、又遠低於 ARG_MAX；超過在 pydantic 就擋成 422，不進 commit。
+    ambiguity_note: str = Field(default="", max_length=_MAX_AMBIGUITY_NOTE)
 
 
 class InspectInput(BaseModel):
@@ -243,6 +251,17 @@ def _register_allowed_roots(app: FastAPI, repo: str, held: dict[str, Identity]) 
         return _remove_allowed_root(repo, held, payload)
 
 
+def _reject_nul(value: str, field: str) -> None:
+    """含 NUL 字元的路徑讓 `os.path.realpath` 拋 `ValueError`（非 OSError），下層的
+    `except OSError` 接不住、漏成裸 500（#222）。先在端點擋下回 422——那是送錯的值、不是
+    伺服器的錯。onboard／inspect 的 `source_path` 與 browse 的 `path` 都經此。"""
+    if "\x00" in value:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field} 含 NUL 字元，不是合法的路徑。下一步：移除路徑中的 NUL（\\x00）",
+        )
+
+
 def _onboard_config(
     repo: str, roots: tuple[str, ...], held: dict[str, Identity], payload: ConfigInput
 ) -> dict[str, object]:
@@ -257,6 +276,7 @@ def _onboard_config(
             detail="尚未設定身分，無法納管。下一步：先 POST /api/session 設定姓名與 email",
         )
 
+    _reject_nul(payload.source_path, "source_path")
     request = OnboardRequest(
         source_path=payload.source_path,
         fmt=payload.format,
@@ -277,6 +297,12 @@ def _onboard_config(
     except HostnameInvalid as error:
         # CM_HOSTNAME 設成不安全值：部署層的錯（非請求端能修），大聲失敗成帶訊息的 500，
         # 不是先前那樣漏接成裸 500（#14 盤點發現）。inspect 也做同樣的映射。
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    except (OnboardLeftBehind, WriterError, CalledProcessError, OSError) as error:
+        # 寫入／commit／回滾路徑失敗（#222）：OnboardLeftBehind 是回滾也失敗、指名孤兒殘留；
+        # WriterError／CalledProcessError／OSError 是磁碟或 git 出錯。比照 HostnameInvalid 映成
+        # 帶訊息的 500（伺服器側的錯、非使用者輸入），不裸 500——OnboardLeftBehind 指名殘留與
+        # 下一步的可行動訊息要保住，不被 FastAPI 的「Internal Server Error」蓋掉。
         raise HTTPException(status_code=500, detail=str(error)) from error
     return _as_entry(entry)
 
@@ -464,6 +490,7 @@ def _candidate_count(held: dict[str, Identity], prefix: str) -> dict[str, object
 
 def _browse_filesystem(roots: tuple[str, ...], path: str) -> dict[str, object]:
     """檔案系統瀏覽的邏輯（同 `_onboard_config`：抽出來讓 `create_app` 保持簡單）。"""
+    _reject_nul(path, "path")
     try:
         listing = browse(path, roots)
     except BrowseError as error:
@@ -486,6 +513,7 @@ def _inspect(roots: tuple[str, ...], payload: InspectInput) -> dict[str, object]
     錯誤才拒絕。錯誤一律結構化（`{message, file, line}`，行號供編輯器就地標示，§3.5.3）——
     這正是 #185 把結構化錯誤延到 #195 的那一塊。
     """
+    _reject_nul(payload.source_path, "source_path")
     # 納管當下會用的 hostname，讓確認畫面在按下納管前就能核對機器身分（AC5，#14）。
     # CM_HOSTNAME 設成不安全值是部署層的錯，非請求端能修——大聲失敗成帶訊息的 500，
     # 不是靜默把身分清洗掉，也不是裸 500（不變式 2）。

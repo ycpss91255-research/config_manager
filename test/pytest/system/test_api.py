@@ -941,3 +941,44 @@ def test_a_candidate_count_for_a_nonexistent_prefix_is_unprocessable(api, tmp_pa
         _get(api, f"/api/candidate-count?{query}")
 
     assert exc.value.code == _UNPROCESSABLE
+
+
+# ── #222：onboard／inspect 的例外映射缺口（與 #209 同類）─────────────────────
+
+
+def test_onboard_write_path_failure_is_a_structured_500_not_a_bare_500(api, sources_root, repo):
+    # 案1：寫入/回滾路徑失敗——這裡以 .git/index.lock 讓 git 動不了（回滾的 unstage 也失敗
+    # → OnboardLeftBehind）。應映成帶可行動訊息（指名殘留、下一步）的 500，不是丟掉訊息的裸 500。
+    _set_session(api)  # 納管要有作者
+    src = _write_source(sources_root, "wf_fail.yaml")
+    lock = pathlib.Path(repo) / ".git" / "index.lock"
+    lock.write_text("", encoding="utf-8")
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(api, "/api/configs", {"source_path": src, "format": "yaml"})
+        assert exc.value.code == _SERVER_ERROR
+        assert "下一步" in exc.value.read().decode("utf-8")  # 帶可行動訊息，非裸 500
+    finally:
+        lock.unlink()
+
+
+def test_a_source_path_with_a_nul_byte_is_refused_not_a_bare_500(api):
+    # 案2：NUL 字元讓 realpath 拋 ValueError（非 OSError），不接住會漏成裸 500。應回結構化 422。
+    _set_session(api)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/configs", {"source_path": "/tmp/a\x00b.yaml", "format": "yaml"})
+
+    assert exc.value.code == _UNPROCESSABLE
+
+
+def test_an_oversized_ambiguity_note_is_refused_not_a_bare_500(api, sources_root):
+    # 案3：ambiguity_note 無上限時過大會讓 git commit 以 E2BIG 失敗→裸 500。設上限→422。
+    _set_session(api)
+    src = _write_source(sources_root, "bignote.yaml")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/configs",
+              {"source_path": src, "format": "yaml", "ambiguity_note": "x" * 20_000})
+
+    assert exc.value.code == _UNPROCESSABLE
