@@ -427,6 +427,9 @@ let rows = [];
 // 非 null 表示上次載入失敗。render() 綁在搜尋輸入上、每次無條件從 rows 重畫；少了這個
 // 旗標，在錯誤態打字就會把 load-error 靜默蓋成空清單或過期清單（不變式 2：大聲失敗）。
 let loadError = null;
+// 每次載入遞增；回應回來時若世代已變（使用者又按了「檢查差異」、或啟動載入與手動重掃交錯），
+// 丟棄這個過時回應——否則晚到的舊回應會把新結果覆蓋，或把該顯示的錯誤靜默蓋掉／反之黏住假錯誤（#252）。
+let loadGeneration = 0;
 
 function groupsOf(row) {
   return row.groups && row.groups.length ? row.groups : [UNGROUPED];
@@ -546,16 +549,31 @@ function render() {
   }
 }
 
+// 後端把清單檔／白名單設定執行期讀不了包成 {detail:{message,file}}，指名壞掉的檔與下一步
+// （不變式 2，routes.py 的 _preflight_error）。這幾個 GET 載入器原樣取出該訊息，取不到才退回
+// HTTP 狀態——否則使用者只看到籠統的「500 Internal Server Error」，後端特地結構化的可行動訊息
+// 被丟掉，與同檔其餘 handler（identity／whitelist／browse／onboard 都呈現 detail）不一致（#252）。
+async function loadErrorText(response) {
+  const payload = await response.json().catch(() => null);
+  const detail = payload && payload.detail;
+  if (detail) return detailText(detail);
+  return `${response.status} ${response.statusText}`;
+}
+
 async function load() {
+  const generation = ++loadGeneration;
   try {
     const response = await fetch(`${API_BASE}/api/configs`);
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    rows = await response.json();
+    if (!response.ok) throw new Error(await loadErrorText(response));
+    const data = await response.json();
+    if (generation !== loadGeneration) return;  // 有更新的載入開始了，這次過時、丟棄
+    rows = data;
     loadError = null;
     render();
   } catch (error) {
     // 大聲失敗（不變式 2）：說出是什麼壞了，不是顯示一份空清單假裝沒事——空清單與「讀不到
     // 清單」看起來一樣，而那兩件事該做的處置完全不同。旗標讓錯誤黏住，經 render 重畫（見上）。
+    if (generation !== loadGeneration) return;  // 過時的失敗不覆寫新結果
     loadError = String(error && error.message ? error.message : error);
     render();
   }
@@ -590,10 +608,23 @@ roleToggle.addEventListener("click", (event) => {
   }
 });
 
-function showIdentityForm() {
-  identityForm.hidden = false;
+// 六個整頁 view 靠 hidden 布林互斥切換。集中在這裡把全部設 hidden，各 show* 先呼叫它再打開
+// 自己那個——否則每個 show* 都得逐一記得隱藏其餘五個，漏掉一個（whitelistView 先前就被 showList／
+// showBrowse／showConfirm 全數漏掉，#252）就會兩個 view 疊著顯示，且殘留 view 裡的控制（如白名單的
+// 「確認移除」）還活著、可從不該出現它的畫面觸發不可逆刪除。browseView／confirmView／whitelistView
+// 在此函式之後才宣告，但本函式只在事件與啟動時被呼叫（那時整段 script 已初始化完畢），故安全。
+function hideAllPageViews() {
+  identityForm.hidden = true;
   header.hidden = true;
   listView.hidden = true;
+  browseView.hidden = true;
+  confirmView.hidden = true;
+  whitelistView.hidden = true;
+}
+
+function showIdentityForm() {
+  hideAllPageViews();
+  identityForm.hidden = false;
 }
 
 // 目前身分。browse 的拒絕 UX 依角色分流（開發者才有加入白名單入口），返回也靠它。
@@ -601,11 +632,9 @@ let currentIdentity = null;
 
 function showList(identity) {
   currentIdentity = identity;
-  identityForm.hidden = true;
+  hideAllPageViews();
   header.hidden = false;
   listView.hidden = false;
-  browseView.hidden = true;
-  confirmView.hidden = true;
   currentRole.textContent = `${identity.name}・${ROLE_TEXT[identity.role] || identity.role}`;
   // 白名單維護面板開發者專屬：按鈕對一般使用者不出現於 DOM（UI-ELEMENTS.md 角色表、
   // ADR-00000020），不是停用。一般使用者的檢視走 browse 的根清單與允許範圍。
@@ -659,14 +688,14 @@ const browseRejectedEl = document.querySelector("[data-testid='browse-rejected']
 const browseHintEl = document.querySelector("[data-testid='browse-hint']");
 
 let whitelistRoots = [];
+// 每次導覽遞增；回應回來時若世代已變（使用者又點了別的目錄／麵包屑、或用「前往」貼了新路徑），
+// 丟棄這個過時回應——否則晚到的舊目錄回應會覆蓋新目錄，或讓被拒面板與成功清單並存（#252）。
+let browseGeneration = 0;
 
 function showBrowse() {
-  identityForm.hidden = true;
-  header.hidden = true;
-  listView.hidden = true;
-  // 從 W8 取消回來時要藏起確認 view——否則兩個整頁 view 疊著，殘留的「確認寫入」還能送舊
+  // hideAllPageViews 一併藏起確認 view——否則兩個整頁 view 疊著，殘留的「確認寫入」還能送舊
   // 路徑（#14 審查）。並清掉可能殘留的選檔狀態（loadBrowseRoots 會重載根、清列表與麵包屑）。
-  confirmView.hidden = true;
+  hideAllPageViews();
   selectedSourcePath = null;
   onboardStartEl.hidden = true;
   browseView.hidden = false;
@@ -680,7 +709,7 @@ async function loadBrowseRoots() {
   browseRejectedEl.hidden = true;
   try {
     const response = await fetch(`${API_BASE}/api/allowed-roots`);
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    if (!response.ok) throw new Error(await loadErrorText(response));
     whitelistRoots = (await response.json()).prefixes;
     browseRootsEl.replaceChildren(...whitelistRoots.map((prefix) =>
       element("li", { "data-testid": `browse-root-${prefix}`, "data-path": prefix }, [
@@ -696,6 +725,7 @@ async function loadBrowseRoots() {
 }
 
 async function browseTo(path) {
+  const generation = ++browseGeneration;
   browseRejectedEl.hidden = true;
   // 換目錄就清掉「已選」——選取屬於某個目錄，離開它之後那個殘留會與目前位置不一致（#13）。
   browseSelectionEl.hidden = true;
@@ -704,16 +734,24 @@ async function browseTo(path) {
   try {
     const response = await fetch(`${API_BASE}/api/browse?path=${encodeURIComponent(path)}`);
     const payload = await response.json();
+    if (generation !== browseGeneration) return;  // 有更新的導覽開始了，這個回應過時、丟棄
     if (!response.ok) {
       renderBrowseRejection(payload.detail, path);
       return;
     }
-    // 進入某目錄後，起點根清單讓位給內容。
+    // 成功抵達新目錄：再清一次選取狀態並確保被拒面板收起——若在載入途中於舊清單選了檔、或先前
+    // 有一則被拒回應，這裡讓成功清單與那些殘留互斥，不會出現「已選：舊目錄的檔」或拒絕面板與清單
+    // 並存（#252）。起點根清單也讓位給內容。
+    selectedSourcePath = null;
+    browseSelectionEl.hidden = true;
+    onboardStartEl.hidden = true;
+    browseRejectedEl.hidden = true;
     browseRootsEl.replaceChildren();
     browseHintEl.textContent = "";
     renderBreadcrumb(payload.path);
     renderBrowseEntries(payload.entries);
   } catch (error) {
+    if (generation !== browseGeneration) return;
     browseHintEl.textContent = `瀏覽失敗：${error && error.message ? error.message : error}`;
   }
 }
@@ -855,6 +893,9 @@ const whitelistAddInput = document.querySelector("[data-testid='whitelist-add-in
 const whitelistPreviewEl = document.querySelector("[data-testid='whitelist-preview']");
 const whitelistErrorEl = document.querySelector("[data-testid='whitelist-error']");
 const whitelistConfirmEl = document.querySelector("[data-testid='whitelist-remove-confirm']");
+// 每次預覽遞增；晚到的舊預覽若世代已變就丟棄——否則「此路徑下有 N 個可納管檔」會顯示上一次
+// 輸入的數字，與目前輸入框不符；加入成功時也遞增它，作廢加入前送出、仍在途的預覽（#252）。
+let previewGeneration = 0;
 
 function errText(error) {
   return error && error.message ? error.message : String(error);
@@ -869,11 +910,7 @@ function detailText(detail) {
 }
 
 function showWhitelist() {
-  identityForm.hidden = true;
-  header.hidden = true;
-  listView.hidden = true;
-  browseView.hidden = true;
-  confirmView.hidden = true;
+  hideAllPageViews();
   whitelistView.hidden = false;
   whitelistAddInput.value = "";
   whitelistPreviewEl.hidden = true;
@@ -886,7 +923,7 @@ async function loadWhitelist() {
   whitelistConfirmEl.hidden = true;
   try {
     const response = await fetch(`${API_BASE}/api/allowed-roots`);
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    if (!response.ok) throw new Error(await loadErrorText(response));
     const roots = (await response.json()).roots;
     if (!roots.length) {
       whitelistRootsEl.replaceChildren(
@@ -919,9 +956,11 @@ async function previewCandidates() {
   whitelistErrorEl.hidden = true;
   const prefix = whitelistAddInput.value.trim();
   if (!prefix) { whitelistPreviewEl.hidden = true; return; }
+  const generation = ++previewGeneration;
   try {
     const response = await fetch(`${API_BASE}/api/candidate-count?prefix=${encodeURIComponent(prefix)}`);
     const payload = await response.json();
+    if (generation !== previewGeneration) return;  // 有更新的預覽／加入開始了，這個回應過時、丟棄
     if (!response.ok) {
       whitelistPreviewEl.hidden = true;
       whitelistErrorEl.textContent = detailText(payload.detail);
@@ -932,6 +971,7 @@ async function previewCandidates() {
     whitelistPreviewEl.textContent = `此路徑下有 ${shown} 個可納管檔。`;
     whitelistPreviewEl.hidden = false;
   } catch (error) {
+    if (generation !== previewGeneration) return;
     whitelistPreviewEl.hidden = true;
     whitelistErrorEl.textContent = `數不出來：${errText(error)}`;
     whitelistErrorEl.hidden = false;
@@ -956,6 +996,7 @@ async function addRoot() {
     }
     whitelistAddInput.value = "";
     whitelistPreviewEl.hidden = true;
+    ++previewGeneration;  // 作廢加入前送出、仍在途的預覽，免得它稍後把已清空的預覽面板顯示回來（#252）
     loadWhitelist();
   } catch (error) {
     whitelistErrorEl.textContent = `送不出去：${errText(error)}`;
@@ -1072,10 +1113,7 @@ function guessFormat(path) {
 }
 
 function showConfirm() {
-  identityForm.hidden = true;
-  header.hidden = true;
-  listView.hidden = true;
-  browseView.hidden = true;
+  hideAllPageViews();
   confirmView.hidden = false;
 }
 
