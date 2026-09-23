@@ -19,3 +19,13 @@ class ConfigRepoMissing(Exception):
 
     不歸在 SessionError 底下——它與編輯階段無關，是啟動階段的接線問題。
     """
+
+
+class ServePortInvalid(Exception):
+    """起服務時 --port 不在合法範圍（0–65535）。
+
+    argparse 的 `type=int` 只驗「是不是整數」不驗範圍；不在這裡具名擋下的話，會一路
+    走到 `uvicorn.run` 綁 socket 時才以 `OverflowError`（非 OSError，uvicorn 的 bind
+    handler 接不到）炸成裸 traceback（違反不變式 2）。與 ConfigRepoMissing 同屬啟動
+    接線問題，訊息帶原因與下一步。
+    """

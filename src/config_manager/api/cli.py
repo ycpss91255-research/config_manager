@@ -13,6 +13,7 @@
 """
 
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -24,13 +25,15 @@ from dataclasses import dataclass
 
 import uvicorn
 
-from config_manager.api.errors import ConfigRepoMissing
+from config_manager.api.errors import ConfigRepoMissing, ServePortInvalid
 from config_manager.api.routes import DEFAULT_ORIGINS, create_app
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8080
 _DEFAULT_API = f"http://{_DEFAULT_HOST}:{_DEFAULT_PORT}"
 _TIMEOUT = 5
+# TCP 埠的上界（16-bit）。具名以避開對字面量的比較（ruff PLR2004）。
+_MAX_PORT = 65535
 
 # 狀態的中文說法取自 CONTEXT.md。與網頁用的是同一組字，因為使用者在兩邊看到的
 # 是同一件事——CLI 說「偏離」而畫面說別的，等於憑介面決定術語。
@@ -71,6 +74,13 @@ def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
         raise ConfigRepoMissing(
             "CM_CONFIG_REPO 未設定，服務沒有 config-repo 可服務。"
             "下一步：設定它指向掛載進來的 config-repo"
+        )
+
+    # argparse 的 type=int 只驗整數不驗範圍：0–65535 之外會在 uvicorn 綁 socket 時以
+    # OverflowError（非 OSError）炸成裸 traceback。在計畫階段就具名擋下（#250）。
+    if not 0 <= port <= _MAX_PORT:
+        raise ServePortInvalid(
+            f"--port {port} 不在合法範圍（0–{_MAX_PORT}）。下一步：改用該範圍內的埠"
         )
 
     return ServePlan(
@@ -156,7 +166,7 @@ def _list(api: str) -> int:
             file=sys.stderr,
         )
         return 1
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, http.client.HTTPException) as error:
         print(
             f"config_manager: 讀不到 {api}/api/configs（{error}）。"
             f"下一步：確認 backend 已啟動，或以 --api 指定它的位址",
@@ -164,18 +174,20 @@ def _list(api: str) -> int:
         )
         return 1
 
-    if not rows:
-        print("還沒有納管任何 config。")
-        return 0
-
-    width = max(len(row["ref"]) for row in rows)
-    for row in rows:
-        if row.get("error"):
-            # 判不出狀態的那一列：標「錯誤」並帶原因，不印一個偽裝的狀態（不變式 2）。
-            print(f"{_ERROR_TEXT:<4}  {row['ref']:<{width}}  {row['target']}  ← {row['error']}")
-        else:
-            state = _STATE_TEXT.get(row["state"], row["state"])
-            print(f"{state:<4}  {row['ref']:<{width}}  {row['target']}")
+    try:
+        if not rows:
+            print("還沒有納管任何 config。")
+            return 0
+        width = max(len(row["ref"]) for row in rows)
+        for row in rows:
+            if row.get("error"):
+                # 判不出狀態的那一列：標「錯誤」並帶原因，不印一個偽裝的狀態（不變式 2）。
+                print(f"{_ERROR_TEXT:<4}  {row['ref']:<{width}}  {row['target']}  ← {row['error']}")
+            else:
+                state = _STATE_TEXT.get(row["state"], row["state"])
+                print(f"{state:<4}  {row['ref']:<{width}}  {row['target']}")
+    except (KeyError, TypeError) as error:
+        return _unexpected_response(api, error)
     return 0
 
 
@@ -203,7 +215,7 @@ def _import(api: str, source: str, fmt: str, note: str) -> int:
             file=sys.stderr,
         )
         return 1
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, http.client.HTTPException) as error:
         print(
             f"config_manager: 讀不到 {api}/api/configs（{error}）。"
             f"下一步：確認 backend 已啟動，或以 --api 指定它的位址",
@@ -211,7 +223,10 @@ def _import(api: str, source: str, fmt: str, note: str) -> int:
         )
         return 1
 
-    print(f"已納管 {entry['ref']} ← {entry['target']}")
+    try:
+        print(f"已納管 {entry['ref']} ← {entry['target']}")
+    except (KeyError, TypeError) as error:
+        return _unexpected_response(api, error)
     return 0
 
 
@@ -227,7 +242,7 @@ def _browse(api: str, path: str) -> int:
             file=sys.stderr,
         )
         return 1
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, http.client.HTTPException) as error:
         print(
             f"config_manager: 讀不到 {api}/api/browse（{error}）。"
             f"下一步：確認 backend 已啟動，或以 --api 指定它的位址",
@@ -235,11 +250,14 @@ def _browse(api: str, path: str) -> int:
         )
         return 1
 
-    print(listing["path"])
-    for entry in listing["entries"]:
-        # 目錄尾端加 /，一眼分得出可再進去的與可挑的。
-        suffix = "/" if entry["kind"] == "dir" else ""
-        print(f"  {entry['name']}{suffix}")
+    try:
+        print(listing["path"])
+        for entry in listing["entries"]:
+            # 目錄尾端加 /，一眼分得出可再進去的與可挑的。
+            suffix = "/" if entry["kind"] == "dir" else ""
+            print(f"  {entry['name']}{suffix}")
+    except (KeyError, TypeError) as error:
+        return _unexpected_response(api, error)
     return 0
 
 
@@ -265,7 +283,7 @@ def _inspect(api: str, source: str, fmt: str) -> int:
             file=sys.stderr,
         )
         return 1
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, http.client.HTTPException) as error:
         print(
             f"config_manager: 讀不到 {api}/api/inspect（{error}）。"
             f"下一步：確認 backend 已啟動，或以 --api 指定它的位址",
@@ -273,15 +291,18 @@ def _inspect(api: str, source: str, fmt: str) -> int:
         )
         return 1
 
-    perms = result["permissions"]
-    print(f"format：{result['format']}　欄位數：{result['field_count']}")
-    print(f"原始權限：{perms['owner']}:{perms['group']} {perms['mode']}")
-    if result["ambiguities"]:
-        print("歧義（確認後以 import --note 帶進去）：")
-        for item in result["ambiguities"]:
-            print(f"  第 {item['line']} 行「{item['value']}」：{' / '.join(item['readings'])}")
-    else:
-        print("沒有歧義。")
+    try:
+        perms = result["permissions"]
+        print(f"format：{result['format']}　欄位數：{result['field_count']}")
+        print(f"原始權限：{perms['owner']}:{perms['group']} {perms['mode']}")
+        if result["ambiguities"]:
+            print("歧義（確認後以 import --note 帶進去）：")
+            for item in result["ambiguities"]:
+                print(f"  第 {item['line']} 行「{item['value']}」：{' / '.join(item['readings'])}")
+        else:
+            print("沒有歧義。")
+    except (KeyError, TypeError) as error:
+        return _unexpected_response(api, error)
     return 0
 
 
@@ -294,7 +315,7 @@ def _http_detail(error: urllib.error.HTTPError) -> str:
     """
     try:
         detail = json.loads(error.read().decode("utf-8"))["detail"]
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, http.client.HTTPException, KeyError, TypeError):
         # TypeError：body 是合法 JSON 但非物件（null／陣列／字面值），["detail"] 下標會拋它。
         # 少了它，指到別的服務／代理層時 CLI 會崩成裸 traceback 而非回退狀態行（不變式 2）。
         return f"HTTP {error.code}"
@@ -302,13 +323,38 @@ def _http_detail(error: urllib.error.HTTPError) -> str:
         message = detail.get("message", detail)
         line = detail.get("line")
         return f"{message}（第 {line} 行）" if line else str(message)
+    if isinstance(detail, list):
+        # FastAPI 的 request-validation 錯誤 detail 是 list of {msg, loc, input, ...}——接每筆
+        # msg（帶欄位末段）串成一行，不 str() 整個結構：那會把使用者送的輸入（如超長 note）
+        # 原樣回吐給使用者，違反 T10「可讀訊息」與不變式 2（#250）。
+        return "；".join(_validation_line(item) for item in detail)
     return str(detail)
+
+
+def _validation_line(item: object) -> str:
+    """把一筆 FastAPI 驗證錯誤化成「欄位：訊息」，不含回吐的 input。"""
+    if not isinstance(item, dict):
+        return str(item)
+    field = ".".join(str(part) for part in item.get("loc", ()) if part != "body")
+    message = item.get("msg", "")
+    return f"{field}：{message}" if field else str(message)
+
+
+def _unexpected_response(api: str, error: Exception) -> int:
+    """回應是 200 但形狀不對（--api 指到別的服務／代理落地頁）：渲染時的欄位存取拋
+    KeyError／TypeError。回退成可讀訊息＋退出碼，不讓它崩成裸 traceback（T10、#250）。"""
+    print(
+        f"config_manager: {api} 回了非預期的回應（{error}）。"
+        "下一步：確認 --api 指向的是本服務的 backend",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def _serve(host: str, port: int) -> int:
     try:
         plan = serve_plan(host, port, os.environ)
-    except ConfigRepoMissing as error:
+    except (ConfigRepoMissing, ServePortInvalid) as error:
         print(f"config_manager: {error}", file=sys.stderr)
         return 2
 

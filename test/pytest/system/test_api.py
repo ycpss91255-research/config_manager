@@ -10,11 +10,14 @@ PDF §3.6.1 軸 2 的層級只有 Unit／Integration／System／Acceptance。先
 「已知的量測缺口」）。
 """
 
+import contextlib
+import http.server
 import json
 import os
 import pathlib
 import subprocess
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1033,3 +1036,80 @@ def test_remove_root_write_failure_is_a_structured_500_not_a_bare_500(api, repo,
     finally:
         lock.unlink()
         subprocess.run(["git", "-C", str(repo), "reset", "--hard", "-q", "HEAD"], check=False)
+
+
+# ── #250：CLI（api/cli.py）錯誤呈現——裸 traceback／傾印，違反 T10 ────────────
+
+
+@contextlib.contextmanager
+def _foreign_server(body):
+    """一個回 200＋指定 body 的假服務——模擬 --api 指到別的服務／代理落地頁。"""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def _reply(self):
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(body.encode("utf-8"))
+
+        do_GET = _reply
+        do_POST = _reply
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+
+
+def test_cli_against_a_nonnumeric_port_is_a_readable_error_not_a_traceback():
+    # #250：http://localhost:abc → http.client.InvalidURL（非 OSError／ValueError）先前逃出成
+    # 裸 traceback。應回退成可讀訊息＋非零退出（T10）。
+    result = _cli("list", "--api", "http://localhost:abc")
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert "config_manager:" in result.stderr
+
+
+def test_cli_against_a_foreign_200_service_is_a_readable_error_not_a_traceback():
+    # #250：外來服務回 200＋合法但異形 JSON → 成功路徑欄位存取（在 try 外）拋 KeyError/TypeError
+    # → 裸 traceback。應回退成「非預期的回應」＋非零退出。
+    with _foreign_server('[{"wrong": "shape"}]') as foreign:
+        result = _cli("list", "--api", foreign)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert "非預期的回應" in result.stderr
+
+
+def test_cli_import_validation_error_is_readable_not_echoed_input(api, sources_root):
+    # #250：FastAPI 的 request-validation 錯誤 detail 是 list 形；先前 _http_detail 直接 str() →
+    # 把使用者送的超長 note 原樣回吐。應接每筆 msg 成可讀一行、不回吐 input。
+    _set_session(api)
+    src = _write_source(sources_root, "cli_note.yaml")
+    huge = "x" * 20_000
+
+    result = _cli("import", "--api", api, "--source", src, "--format", "yaml", "--note", huge)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert ("x" * 1000) not in result.stderr  # 沒有把超長輸入原樣回吐
+
+
+def test_cli_serve_out_of_range_port_is_a_readable_error(monkeypatch, tmp_path):
+    # #250：--port 99999 → uvicorn 綁 socket 時 OverflowError（非 OSError）裸 traceback。
+    # serve_plan 應在計畫階段具名擋下 → 可讀訊息＋退出碼 2，不啟動也不崩。
+    monkeypatch.setenv("CM_CONFIG_REPO", str(tmp_path))
+    config_exit = 2  # 啟動接線錯（比照 ConfigRepoMissing 的退出碼）
+
+    result = _cli("serve", "--port", "99999")
+
+    assert result.returncode == config_exit
+    assert "Traceback" not in result.stderr
+    assert "65535" in result.stderr
