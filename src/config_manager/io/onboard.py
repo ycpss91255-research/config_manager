@@ -54,11 +54,14 @@ import os
 import subprocess
 from dataclasses import dataclass
 
+from pydantic import ValidationError
+
 from config_manager.core.config_list import dump, load
+from config_manager.core.errors import ParseError
 from config_manager.core.identity import derive_name, new_uid
 from config_manager.core.models import FileEntry, Permissions
 from config_manager.io.atomic import replace_atomically
-from config_manager.io.errors import OnboardLeftBehind, WriterError
+from config_manager.io.errors import ConfigListUnparsable, OnboardLeftBehind, WriterError
 from config_manager.io.git import record, stage, unstage
 from config_manager.io.preflight import CONFIG_LIST_NAME
 from config_manager.io.repo import place_source, source_relpath, write_config_list
@@ -212,8 +215,19 @@ def onboard(repo: str, request: OnboardRequest, author: str) -> FileEntry:
 
     # 4. 先驗證再寫。_list_text_with 在產生任何輸出之前做完整性檢查——target 或 uid 與
     #    既有條目重複就在這裡丟例外，而此刻 repo 一個位元組都還沒動（#172 的 AC2）。
-    original_list = _read_list(repo)
-    new_list_text = _list_text_with(original_list, entry)
+    try:
+        original_list = _read_list(repo)
+        new_list_text = _list_text_with(original_list, entry)
+    except (UnicodeDecodeError, ParseError, ValidationError) as error:
+        # 既有清單檔在啟動後被改壞（非 UTF-8／非法 TOML／不符資料模型）：onboard 先前以原始
+        # open+load 讀，這三類逃逸成裸 500，繞過 scan／preflight 走的分類讀取器（#248）。映成
+        # ConfigListUnparsable（PreflightError），走 app 既有 handler → 結構化 500，與 scan 端一致。
+        # 新條目與既有衝突（DuplicateTarget／uid，屬 ConfigListError）不在此攔——留給下游映 409。
+        raise ConfigListUnparsable(
+            f"清單檔無法解析：{os.path.join(repo, CONFIG_LIST_NAME)}——{error}。"
+            "下一步：依訊息指出的位置修正該檔，或以 UTF-8 重新存檔",
+            file=os.path.join(repo, CONFIG_LIST_NAME),
+        ) from error
 
     # 5. 寫入是一個整批：先拍下現場，再放來源位元組、寫回清單檔、stage、記一筆 import
     #    commit。中途任一步失敗就回滾到納管前的狀態（#173）。回滾也失敗時大聲失敗。

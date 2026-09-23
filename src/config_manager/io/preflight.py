@@ -74,6 +74,13 @@ def read_config_list(repo: str) -> ConfigList:
     try:
         text = _read(list_path)
         return load(text)
+    except UnicodeDecodeError as error:
+        # 非 UTF-8 位元組（UnicodeDecodeError 是 ValueError 子類，非 OSError）先前從這裡逃出，
+        # 在 GET /api/configs 熱路徑成裸 500、繞過為此設計的 ConfigListUnparsable（#248）。
+        raise ConfigListUnparsable(
+            f"清單檔不是合法的 UTF-8：{list_path}（{error}）。下一步：以 UTF-8 重新存檔",
+            file=list_path,
+        ) from error
     except OSError as error:
         raise ConfigListUnparsable(
             f"清單檔讀不出來：{list_path}（{error.strerror}）。下一步：檢查該檔的權限與編碼",

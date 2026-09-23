@@ -982,3 +982,54 @@ def test_an_oversized_ambiguity_note_is_refused_not_a_bare_500(api, sources_root
               {"source_path": src, "format": "yaml", "ambiguity_note": "x" * 20_000})
 
     assert exc.value.code == _UNPROCESSABLE
+
+
+def test_add_root_write_failure_is_a_structured_500_not_a_bare_500(api, repo, tmp_path):
+    # #248：寫入/commit/回滾失敗（.git/index.lock → git 動不了、回滾 unstage 也失敗
+    # → AllowedRootLeftBehind）應映成帶可行動訊息的 500，不裸 500（比照 #222 onboard）。
+    _set_session(api)  # developer
+    new_root = tmp_path / "wf_add_root"
+    new_root.mkdir()
+    lock = pathlib.Path(repo) / ".git" / "index.lock"
+    lock.write_text("", encoding="utf-8")
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(api, "/api/allowed-roots", {"prefix": str(new_root)})
+        assert exc.value.code == _SERVER_ERROR
+        assert "下一步" in exc.value.read().decode("utf-8")
+    finally:
+        lock.unlink()
+        # 回滾失敗留下的擴張還原給後續 spec（session 共用 repo）。
+        subprocess.run(["git", "-C", str(repo), "reset", "--hard", "-q", "HEAD"], check=False)
+
+
+def test_a_source_with_a_control_char_in_its_path_is_refused_not_a_bare_500(api, sources_root):
+    # #248：來源 realpath 最後兩段含控制字元 → derive_name → record → RecordFieldUnsafe
+    # （ChangeError）。onboard 的 rollback 已還原 repo（無殘留），但錯誤映射漏 ChangeError
+    # → 裸 500。分隔符守衛正確觸發、應回 422，不是被誤報成 Internal Server Error。
+    _set_session(api)
+    weird_dir = pathlib.Path(sources_root) / "ctl\x1fdir"
+    weird_dir.mkdir()
+    (weird_dir / "cfg.yaml").write_text("a: 1\n", encoding="utf-8")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/configs", {"source_path": str(weird_dir / "cfg.yaml"), "format": "yaml"})
+
+    assert exc.value.code == _UNPROCESSABLE
+
+
+def test_remove_root_write_failure_is_a_structured_500_not_a_bare_500(api, repo, tmp_path):
+    # #248：移除路徑的寫入/commit/回滾失敗也映成 500，不裸 500（與 add 對稱）。
+    _set_session(api)  # developer
+    doomed = tmp_path / "doomed_root"
+    doomed.mkdir()
+    _post(api, "/api/allowed-roots", {"prefix": str(doomed)})  # 先加（committed）才刪得到
+    lock = pathlib.Path(repo) / ".git" / "index.lock"
+    lock.write_text("", encoding="utf-8")
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _delete(api, "/api/allowed-roots", {"prefix": str(doomed), "confirmed": True})
+        assert exc.value.code == _SERVER_ERROR
+    finally:
+        lock.unlink()
+        subprocess.run(["git", "-C", str(repo), "reset", "--hard", "-q", "HEAD"], check=False)

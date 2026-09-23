@@ -44,6 +44,7 @@ from config_manager.io.allowed_roots import (
 from config_manager.io.browse import Entry, Listing, browse
 from config_manager.io.candidate import count_candidates
 from config_manager.io.errors import (
+    AllowedRootLeftBehind,
     AllowedRootUnreachable,
     BrowseError,
     BrowseNotADirectory,
@@ -53,6 +54,7 @@ from config_manager.io.errors import (
     CandidateNotADirectory,
     CandidatePrefixEscape,
     CandidateUnreadable,
+    ChangeError,
     ContentUnreadable,
     HostnameInvalid,
     OnboardLeftBehind,
@@ -284,7 +286,7 @@ def _onboard_config(
     )
     try:
         entry = onboard(repo, request, identity.git_author)
-    except (SourceError, ContentUnreadable, NameUnderivable, InvalidFormat) as error:
+    except (SourceError, ContentUnreadable, NameUnderivable, InvalidFormat, ChangeError) as error:
         # 送進來的值不合法 → 422：來源路徑的問題（白名單外、不是一般檔案、不存在、上層無
         # traverse 的 SourceError 家族；或檔案在、讀不出來的 ContentUnreadable，不屬該家族、
         # 早先漏成 500）、目標路徑推不出名稱（NameUnderivable）、format 不是允許值
@@ -362,6 +364,11 @@ def _add_allowed_root(
         # 白名單已含這個前綴（存的是 realpath，尾斜線／symlink 都會解析到同一個）：與現狀
         # 衝突 → 409（同 _onboard_config 對重複條目的處置）。core 的訊息已指出是哪兩筆。
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except (WriterError, CalledProcessError, AllowedRootLeftBehind) as error:
+        # 寫入／commit／回滾失敗（唯讀掛載、git 出錯、.git/index.lock、回滾也失敗殘留）：伺服器
+        # 側的錯，帶訊息的 500（比照 #222 onboard 路由），不裸 500——AllowedRootLeftBehind 指名
+        # 殘留與下一步的可行動訊息要保住（#248）。
+        raise HTTPException(status_code=500, detail=str(error)) from error
     return {"prefixes": list(root_prefixes(repo))}
 
 
@@ -390,6 +397,9 @@ def _remove_allowed_root(
     except PrefixNotFound as error:
         # 檢查與移除之間被別的請求刪掉了（同一行程一次一個編輯階段，實務上罕見）。
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except (WriterError, CalledProcessError, AllowedRootLeftBehind) as error:
+        # 同 _add_allowed_root：寫入／commit／回滾失敗映成帶訊息的 500，不裸 500（#248）。
+        raise HTTPException(status_code=500, detail=str(error)) from error
     return _allowed_roots_view(repo)
 
 

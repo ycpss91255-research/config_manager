@@ -18,7 +18,12 @@ import subprocess
 from config_manager.core.config_list import load
 from config_manager.core.errors import DuplicateTarget, DuplicateUid
 from config_manager.io.digest import digest
-from config_manager.io.errors import OnboardLeftBehind, SourceOutsideRoots, TargetNotWritable
+from config_manager.io.errors import (
+    ConfigListUnparsable,
+    OnboardLeftBehind,
+    SourceOutsideRoots,
+    TargetNotWritable,
+)
 from config_manager.io.git import history
 from config_manager.io.onboard import OnboardRequest, onboard
 from config_manager.io.preflight import CONFIG_LIST_NAME
@@ -571,3 +576,15 @@ def test_a_rollback_whose_source_restore_hits_a_writer_error_fails_loudly(tmp_pa
 
     assert _repo_relpath(repo, path) in str(caught.value)
     assert isinstance(caught.value.__cause__, RuntimeError)
+
+
+def test_onboard_on_a_corrupt_config_list_is_named_unparsable_not_a_bare_error(tmp_path):
+    # #248：既有清單檔在啟動後被改壞（這裡非 UTF-8），onboard 先前以原始 open+load 讀，
+    # UnicodeDecodeError／ParseError／ValidationError 逃逸成裸 500，繞過 scan／preflight 的分類
+    # 讀取器。應映成 ConfigListUnparsable（→ app handler 結構化 500，與 scan 端一致）。
+    repo = _repo(tmp_path)
+    (repo / CONFIG_LIST_NAME).write_bytes(b"list_version = 1\nx = \xff\xfe\n")
+    root, path = _source(tmp_path)
+
+    with pytest.raises(ConfigListUnparsable):
+        onboard(str(repo), _request(root, path), _AUTHOR)

@@ -149,3 +149,25 @@ def test_a_vanished_source_is_a_per_entry_failure_not_a_whole_scan_error(tmp_pat
     assert results[0][1] == State.IN_SYNC  # 好的那筆照常判定
     assert isinstance(results[1][1], ScanFailure)  # 來源不見的那筆是逐筆錯誤，不整支 raise
     assert "nav@amr01-mfz3k9q2" in results[1][1].message
+
+
+def test_a_pathological_source_is_a_per_entry_failure_not_a_whole_scan_error(tmp_path):
+    # #248：來源側 digest 也要逐筆降級（不只目標側，#214）。一筆來源是 FIFO（digest 拒絕）
+    # 不該讓整支 scan raise——否則整張 GET /api/configs 裸 500，把其餘正常條目一起打掉。
+    _write(tmp_path / "files" / "ok.yaml", "a: 1\n")
+    ok_target = tmp_path / "deployed" / "ok.yaml"
+    _write(ok_target, "a: 1\n")
+    fifo_source = tmp_path / "files" / "bad.pipe"
+    fifo_source.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(fifo_source)
+    _write(
+        tmp_path / "config-list.toml",
+        _HEADER
+        + _entry("mfz3k9q1", "ok", "files/ok.yaml", str(ok_target))
+        + _entry("mfz3k9q2", "bad", "files/bad.pipe", str(tmp_path / "deployed" / "bad.yaml")),
+    )
+
+    results = [state for _, state in scan(str(tmp_path))]
+
+    assert results[0] == State.IN_SYNC
+    assert isinstance(results[1], ScanFailure)

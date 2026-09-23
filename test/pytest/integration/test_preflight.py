@@ -182,3 +182,12 @@ def test_unparsable_allowed_roots_raises_named_exception(tmp_path):
         preflight(str(tmp_path))
 
     assert "allowed-roots.toml" in str(exc.value)
+
+
+def test_a_non_utf8_config_list_is_named_unparsable_not_a_bare_unicode_error(tmp_path):
+    # #248：非 UTF-8 位元組（UnicodeDecodeError，ValueError 子類）先前不被 except OSError／
+    # (ParseError, ValidationError, ConfigListError) 接住 → GET /api/configs 熱路徑裸 500。
+    (tmp_path / "config-list.toml").write_bytes(b"list_version = 1\nx = \xff\xfe\n")
+
+    with pytest.raises(ConfigListUnparsable):
+        preflight_module.read_config_list(str(tmp_path))

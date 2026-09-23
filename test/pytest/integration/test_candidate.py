@@ -191,3 +191,10 @@ def test_a_subdirectory_that_cannot_be_opened_mid_walk_is_skipped(tmp_path, monk
     # 頂層 a.yaml 數到；sub 開不成被跳過（b.yaml 不計入），整體不失敗。
     assert result.count == 1
     assert result.capped is False
+
+
+def test_a_prefix_with_a_nul_byte_is_named_not_a_bare_value_error(tmp_path):
+    # #248：NUL 讓 os.path.realpath 拋 ValueError（非 OSError），未接住會裸 500。candidate-count
+    # 是唯一漏掉 #222 那道 NUL 守衛的 realpath 端點。具名成 CandidatePrefixEscape（→ api 422）。
+    with pytest.raises(CandidatePrefixEscape):
+        count_candidates("/tmp/a\x00b")
