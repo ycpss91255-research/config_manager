@@ -1095,3 +1095,58 @@ def test_cancelling_a_removal_keeps_the_root(open_page, browse_root):
     page.get_by_role("button", name="取消").click()
 
     assert page.is_visible(f"[data-testid='whitelist-root-{browse_root}']")
+
+
+def test_returning_from_the_whitelist_panel_hides_it_rather_than_stacking_on_the_list(open_page):
+    # #252 發現1：離開白名單面板的唯一出口是 showList，而它從不隱藏 whitelistView——返回後
+    # 白名單面板與 config 清單會同時堆疊顯示。這裡驗「返回」後白名單面板確實收起、只剩清單。
+    page = _open_whitelist_as_developer(open_page())
+
+    page.click("[data-testid='whitelist-back']")
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+
+    assert page.is_hidden("[data-testid='whitelist']")
+
+
+def test_the_remove_confirm_control_does_not_survive_leaving_the_whitelist_panel(
+    open_page, browse_root
+):
+    # #252 發現1（更嚴重的一面）：開了移除確認框後直接按「返回」，那顆綁著 confirmRemoveRoot
+    # 的「確認移除」按鈕若隨殘留面板留在看似清單的畫面上、還可點，就能觸發不可逆的白名單刪除。
+    # 驗離開白名單後該控制不再可觸達。
+    page = _open_whitelist_as_developer(open_page())
+    page.wait_for_selector(f"[data-testid='whitelist-root-{browse_root}']")
+    page.locator(
+        f"[data-testid='whitelist-root-{browse_root}'] [data-testid='whitelist-remove']"
+    ).click()
+    page.wait_for_selector("[data-testid='whitelist-remove-confirm']", state="visible")
+
+    page.click("[data-testid='whitelist-back']")
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+
+    assert page.is_hidden("[data-testid='whitelist-confirm-remove']")
+
+
+def test_a_structured_load_error_shows_the_backend_message_not_a_bare_status(open_page):
+    # #252 發現3：後端把清單檔執行期讀不了包成 {detail:{message,file}}，指名壞掉的檔與下一步
+    # （不變式 2）。前端要原樣呈現該訊息，不能丟掉只顯示籠統的「500」。
+    page = open_page()
+    page.route(
+        "**/api/configs",
+        lambda route: route.fulfill(
+            status=500,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "detail": {
+                        "message": "清單檔解析失敗。下一步：修正該檔",
+                        "file": "/repo/config-list.toml",
+                    }
+                }
+            ),
+        ),
+    )
+    _fill_identity(page)
+    page.wait_for_selector("[data-testid='load-error']:not([hidden])")
+
+    assert "下一步" in page.inner_text("[data-testid='load-error']")
