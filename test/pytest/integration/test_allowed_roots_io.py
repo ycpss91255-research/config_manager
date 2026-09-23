@@ -23,6 +23,7 @@ from config_manager.io.errors import (
     AllowedRootUnreachable,
     AllowedRootsMissing,
     AllowedRootsUnparsable,
+    RecordFieldUnsafe,
     TargetNotWritable,
 )
 
@@ -337,3 +338,27 @@ def test_main_names_a_missing_file_on_stderr_without_a_traceback(tmp_path, capsy
 
     assert code == 1
     assert "allowed-roots.toml" in capsys.readouterr().err
+
+
+def test_a_non_utf8_allowed_roots_file_is_named_unparsable(tmp_path):
+    # #248：同構於 read_config_list——非 UTF-8 白名單檔讓 root_prefixes 的端點裸 500。
+    repo = _repo(tmp_path)
+    (repo / "allowed-roots.toml").write_bytes(b"roots_version = 1\nx = \xff\xfe\n")
+
+    with pytest.raises(AllowedRootsUnparsable):
+        read_allowed_roots(str(repo))
+
+
+def test_a_commit_field_error_still_rolls_back_the_whitelist(tmp_path):
+    # #248：commit 對含分隔符的 subject 丟 RecordFieldUnsafe（ChangeError，非 CalledProcessError）
+    # 先前跳過回滾——白名單已寫上磁碟且立即生效（每次請求從檔讀）卻未提交、staged。任一寫入
+    # 步驟失敗都要回滾，否則白名單被靜默擴張。
+    repo = _repo(tmp_path)
+    original = (repo / "allowed-roots.toml").read_text(encoding="utf-8")
+    weird = tmp_path / "root\x1fdir"
+    weird.mkdir()
+
+    with pytest.raises(RecordFieldUnsafe):
+        add_allowed_root(str(repo), str(weird), AUTHOR, "2026-01-01T00:00:00Z")
+
+    assert (repo / "allowed-roots.toml").read_text(encoding="utf-8") == original

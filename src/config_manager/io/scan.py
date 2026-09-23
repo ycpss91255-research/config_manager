@@ -47,7 +47,13 @@ def scan(repo: str) -> list[tuple[FileEntry, State | ScanFailure]]:
 
 
 def _state_of(repo: str, entry: FileEntry) -> State | ScanFailure:
-    source_hash = digest(os.path.join(repo, entry.source))
+    try:
+        source_hash = digest(os.path.join(repo, entry.source))
+    except (NotARegularFile, PathUnreachable, ContentTooLarge, ContentUnreadable) as error:
+        # 來源側病態（symlink／FIFO／父目錄無 traverse——Docker volume 權限錯位的實況）與目標側
+        # 同構，逐筆降級成 ScanFailure：一筆壞不弄垮整份掃描、不在請求路徑冒成裸 500（#248）。
+        # 上面只把 SourceMissing（ENOENT→None）折起來，其餘 digest 例外先前從這裡逃出。
+        return ScanFailure(str(error))
     if source_hash is None:
         # 清單檔解析成功、只有這一筆的來源不見（有人動了 repo）。折進「未部署」會讓壞掉的
         # repo 看起來只是還沒 apply——UI 於是提供一鍵寫出，而那個動作沒有東西可寫（不變式 2）。

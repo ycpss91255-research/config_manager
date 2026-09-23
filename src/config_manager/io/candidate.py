@@ -51,6 +51,12 @@ def count_candidates(
             f"候選數的前綴含 .. 路徑段：{prefix}。"
             "下一步：改用不含 .. 的正規絕對路徑"
         )
+    # NUL 讓 os.path.realpath 拋 ValueError（非 OSError），下面接不住會逃逸成裸 500（#248）。
+    # 這是 realpath 端點裡唯一漏掉 #222 那道 NUL 守衛的一個——具名成同族錯誤（api 映 422）。
+    if "\x00" in prefix:
+        raise CandidatePrefixEscape(
+            f"候選數的前綴含 NUL 字元：{prefix!r}。下一步：移除路徑中的 NUL（\\x00）"
+        )
 
     resolved = os.path.realpath(prefix)
     state = _WalkState(max_depth=max_depth, max_items=max_items)

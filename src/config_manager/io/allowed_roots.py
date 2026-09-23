@@ -53,6 +53,13 @@ def read_allowed_roots(repo: str) -> AllowedRoots:
     try:
         text = _read(path)
         return load(text)
+    except UnicodeDecodeError as error:
+        # 非 UTF-8 位元組（ValueError 子類，非 OSError）先前逃出，在任何走 root_prefixes 的端點
+        # （onboard／browse／inspect／白名單增刪）成裸 500、繞過 AllowedRootsUnparsable（#248）。
+        raise AllowedRootsUnparsable(
+            f"白名單設定檔不是合法的 UTF-8：{path}（{error}）。下一步：以 UTF-8 重新存檔",
+            file=path,
+        ) from error
     except OSError as error:
         raise AllowedRootsUnparsable(
             f"白名單設定檔讀不出來：{path}（{error.strerror}）。下一步：檢查該檔的權限與編碼",
@@ -146,7 +153,11 @@ def _write_roots_and_commit(
     try:
         stage(repo, ALLOWED_ROOTS_NAME)
         commit(repo, subject, author)
-    except CalledProcessError as failure:
+    except BaseException as failure:
+        # 不只 git 的 CalledProcessError：commit() 對含分隔符的 subject 丟 RecordFieldUnsafe
+        # （ChangeError，非 CalledProcessError）先前跳過回滾——白名單已寫上磁碟且立即生效
+        # （每次請求從檔讀）、staged 卻未提交，下一筆不相干 commit 會把它收走（#248）。任一
+        # 寫入步驟失敗都要回滾（比照 onboard._rollback），才不會靜默擴張白名單。
         try:
             replace_atomically(path, original.encode("utf-8"))
             unstage(repo, ALLOWED_ROOTS_NAME)
