@@ -196,3 +196,24 @@ def test_ambiguity_line_numbers_count_by_newline_not_splitlines():
     found = find_ambiguous("a: 1\x0cb\nflag: no", "yaml")
 
     assert [(a.line, a.value) for a in found] == [(2, "no")]
+
+
+def test_ambiguous_scalar_inside_a_flow_sequence_flags_the_line():
+    # #258：[no, 0755] 的整段不吻合錨定 pattern，內部 no／0755 先前漏標，使用者未確認就納管
+    # （違反不變式 4）。fail-closed 標整行請人工確認。
+    found = find_ambiguous("ports: [no, 0755]\n", "yaml")
+
+    assert [a.line for a in found] == [1]
+    assert found[0].value == "[no, 0755]"
+
+
+def test_ambiguous_scalar_inside_a_flow_mapping_flags_the_line():
+    # {retry: yes} 的 yes 同理 fail-closed 標整行（#258）。
+    found = find_ambiguous("opts: {retry: yes}\n", "yaml")
+
+    assert [a.line for a in found] == [1]
+
+
+def test_a_flow_collection_without_ambiguous_tokens_is_not_flagged():
+    # [80, 443] 是純十進位、無跨版本歧義——fail-closed 只在含疑似 token 時才標，不誤報（#258）。
+    assert find_ambiguous("ports: [80, 443]\n", "yaml") == []

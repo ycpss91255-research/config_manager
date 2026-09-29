@@ -137,6 +137,43 @@ _AMBIGUOUS_FORMATS = frozenset({"yaml"})
 # 的行是**字面文字**，不是 YAML 的鍵值——不能拿去比對歧義（#219）。
 _BLOCK_HEADER = re.compile(r"^[|>][+-]?\d*$")
 
+# flow 集合（`[…]`／`{…}`）內文的粗略切詞：以括號、逗號、冒號、空白切。刻意不是真正的 flow
+# 解析器——那要處理巢狀、引號內逗號、跨行 flow（後者會直接打破本模組的逐行模型）。
+_FLOW_TOKENS = re.compile(r"[\[\]{}(),:\s]+")
+_FLOW_READINGS = (
+    "此行的 flow 集合可能含跨版本歧義值（如 no／yes／0755／尾數為 0 的小數）",
+    "請人工確認整行——工具不逐元素解析 flow 集合（#258）",
+)
+
+
+def _flow_has_ambiguous_token(value: str) -> bool:
+    """flow 集合內文（粗略以分隔符切）是否含任一疑似跨版本歧義的 token。
+
+    刻意 fail-closed 且寧可過度標記：加引號的 token 因帶引號不吻合錨定 pattern 而自然被排除
+    （作者已表明是字串），未加引號的 no／0755 等會命中。跨行／巢狀 flow 也以「多標一次確認」
+    化解，而不是誤解析（不變式 4：模糊就要人工確認，#258）。
+    """
+    return any(
+        token and any(pattern.match(token) for pattern, _ in _AMBIGUOUS)
+        for token in _FLOW_TOKENS.split(value)
+    )
+
+
+def _scalar_ambiguity(number: int, value: str) -> Ambiguity | None:
+    """一個已寫下的值的歧義（沒有則 None）。呼叫端已排除空行、只有鍵、引號與區塊標頭。
+
+    flow 集合（`[…]`／`{…}`）整段拿去比對錨定 pattern 永遠不吻合，內部的 no／0755 因此漏標
+    （#258）；不逐元素精準解析（見 _flow_has_ambiguous_token），改 fail-closed 標整行請人工確認。
+    """
+    if value.startswith(("[", "{")):
+        if _flow_has_ambiguous_token(value):
+            return Ambiguity(line=number, value=value, readings=_FLOW_READINGS)
+        return None
+    for pattern, readings in _AMBIGUOUS:
+        if pattern.match(value):
+            return Ambiguity(line=number, value=value, readings=readings)
+    return None
+
 
 def find_ambiguous(text: str, fmt: str) -> list[Ambiguity]:
     if fmt not in _AMBIGUOUS_FORMATS:
@@ -162,10 +199,9 @@ def find_ambiguous(text: str, fmt: str) -> list[Ambiguity]:
         if _BLOCK_HEADER.match(value):
             block_indent = _indent(line)  # 這行的值是區塊標頭，其後縮排更深者為字面內文
             continue
-        for pattern, readings in _AMBIGUOUS:
-            if pattern.match(value):
-                found.append(Ambiguity(line=number, value=value, readings=readings))
-                break
+        ambiguity = _scalar_ambiguity(number, value)
+        if ambiguity is not None:
+            found.append(ambiguity)
     return found
 
 
