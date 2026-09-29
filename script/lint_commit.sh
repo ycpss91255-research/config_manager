@@ -94,12 +94,16 @@ main() {
     local body="${subject% (#[0-9]*)}"
 
     if [[ ! "${body}" =~ ^(${TYPES})(\([A-Za-z0-9._/,-]+\))?:\  ]]; then
-      printf 'FAIL %s  %s\n' "${short}" "${subject}" >&2
+      # 原因那一行先依情況算好，再與表頭、下一步、例子以連續 printf 送出：一則訊息的各部分
+      # 之間不夾 if／else，lint_messages 才把它們當同一則（相鄰規則，#255）。輸出逐位元組不變。
+      local reason
       if [[ "${body}" =~ ^([A-Za-z]+)(\(.*\))?: ]]; then
-        printf '     type %s is not one of: %s\n' "${BASH_REMATCH[1]}" "${TYPES//|/ }" >&2
+        reason="$(printf 'type %s is not one of: %s' "${BASH_REMATCH[1]}" "${TYPES//|/ }")"
       else
-        printf '     missing the "type(scope): " prefix\n' >&2
+        reason='missing the "type(scope): " prefix'
       fi
+      printf 'FAIL %s  %s\n' "${short}" "${subject}" >&2
+      printf '     %s\n' "${reason}" >&2
       # The example is itself a compliant subject: Chinese, declarative, no
       # trailing period. It used to say "lowercase sentence" -- a rule that
       # stopped existing when ADR-00000028 moved subjects to Chinese, which has

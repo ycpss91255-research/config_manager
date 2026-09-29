@@ -215,11 +215,15 @@ _release() {
 
   # 正式 tag 的閘門。rc 走不到這裡：它的紅燈是它要記錄的東西。
   if [[ -z "${RC}" && "${verdict}" == '未通過' ]]; then
-    printf 'release: %s 的驗收報表未通過，正式 tag %s 不建立 release\n' "${MILESTONE}" "${tag}" >&2
+    # 沒過的檢查點先算成一段文字，再與表頭、下一步以連續 printf 送出：一則訊息的各部分之間
+    # 不夾程式行，lint_messages 才把它們當同一則（相鄰規則，#255）。條件段以 %s 帶進去、沒有
+    # 時為空，輸出與原本逐位元組相同。
+    local offender_note=""
     if ((${#offenders[@]} > 0)); then
-      printf 'release: 沒過的是這幾條檢查點：\n' >&2
-      printf '%s\n' "${offenders[@]}" >&2
+      offender_note="$(printf '\nrelease: 沒過的是這幾條檢查點：'; printf '\n%s' "${offenders[@]}")"
     fi
+    printf 'release: %s 的驗收報表未通過，正式 tag %s 不建立 release%s\n' \
+      "${MILESTONE}" "${tag}" "${offender_note}" >&2
     printf 'release: 下一步：修好上面那幾條，推一個 %s 確認報表轉綠，再打 %s\n' \
       "$(_next_rc_tag "${MILESTONE}")" "${tag}" >&2
     return 1
