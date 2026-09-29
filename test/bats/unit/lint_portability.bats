@@ -85,6 +85,32 @@ write_script() {
   [[ "${output}" == *"cp --parents"* ]]
 }
 
+@test "GNU-only 選項用反斜線續行拆到下一行仍被擋（#254）" {
+  # 續行後指令名與選項落在不同實體行，先前逐實體行比對抓不到。
+  write_script cont.sh 'find . \' '  -printf "%p\n"'
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"find -printf"* ]]
+  [[ "${output}" == *"cont.sh:2"* ]]
+}
+
+
+@test "head -n-5（無空白）與 --lines=-5 都被擋（#254）" {
+  # 規則先前硬性要求 -n 與負數間有空白，緊貼寫法與長選項形式（皆 GNU-only）溜過。
+  write_script tight.sh 'head -n-5 file'
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"tight.sh"* ]]
+
+  rm -f "${DIR}/tight.sh"
+  write_script longopt.sh 'head --lines=-5 file'
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"longopt.sh"* ]]
+}
+
+
 @test "目錄不存在時大聲失敗，不回報通過" {
   # 同 #115：script/ 不見了而回報通過，等於守門在自己缺席時說一切正常。
   run "${LINT}" "${DIR}/nowhere"
