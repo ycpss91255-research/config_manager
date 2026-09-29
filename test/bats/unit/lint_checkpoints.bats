@@ -139,3 +139,24 @@ closes #43" "- [ ] 還沒做"
   run "${LINT}" 1 "${BASE}"
   [ "${status}" -ne 0 ]
 }
+
+@test "大寫 [X] 勾選的條目也要記可查到的 commit（#254）" {
+  # GitHub 把 [x] 與 [X] 都算已勾、畫面一模一樣。先前正規式只認小寫 x，`- [X]` 勾的條目
+  # 完全不進 R3/R4，可不留任何 commit 證據就「勾完」。第一行給合法勾選讓帳本存在。
+  stub_gh "closes #42" "- [x] 第一條 — ${SUBJECT}
+- [X] 第二條 — feat(x): 這筆 commit 不存在"
+
+  run "${LINT}" 1 "${BASE}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"這筆 commit 不存在"* ]]
+}
+
+@test "星號／加號項目符號的未勾條件也算未勾（#254）" {
+  # GitHub 把 `* [ ]`／`+ [ ]` 都算合法的未勾任務項。先前正規式只認 `-`，於是這類未完成
+  # 的驗收條件讓 R2 失效、照樣能開 PR。第一行給合法勾選讓帳本存在。
+  stub_gh "closes #42" "- [x] 第一條 — ${SUBJECT}
+* [ ] 第二條還沒做"
+
+  run "${LINT}" 1 "${BASE}"
+  [ "${status}" -ne 0 ]
+}
