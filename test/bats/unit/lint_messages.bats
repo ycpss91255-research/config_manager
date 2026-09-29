@@ -722,3 +722,52 @@ SH
 }
 
 
+
+@test "if/else 兩個互斥分支各自完整的訊息不合併：缺下一步的那一支被擋（#255）" {
+  # 先前 MERGE_WINDOW=2 跨得過單一 else，把兩支黏成一則，缺「下一步：」的 A 被 B 遮蔽。
+  # 收回文件化的相鄰規則（1）後，else 是程式行、中斷合併，A 被單獨判定而擋下。
+  write_sh siblings.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  if [[ -n "$1" ]]; then
+    printf 'seed: 這條缺下一步 %s\n' "$1" >&2
+  else
+    printf 'seed: 這條有指引 %s。下一步：照著做\n' "$2" >&2
+  fi
+  exit 1
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"siblings.sh:6"* ]]
+  [[ "${output}" == *"下一步"* ]]
+}
+
+@test "條件才出現的那一段先算進變數再以連續 printf 送出，算同一則訊息（#255 的寫法）" {
+  # release.sh／lint_commit.sh 改寫後的形狀：表頭、條件段（%s 帶入）、下一步之間不夾程式行。
+  # 邊界由程式碼宣告，合併不必猜——也是 lint_messages 建議的寫法。
+  write_sh computed.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+main() {
+  local note=""
+  if [[ -n "$1" ]]; then
+    note="$(printf '\nseed: 補充：%s' "$1")"
+  fi
+  printf 'seed: 寫不進清單檔 %s%s\n' "$2" "${note}" >&2
+  printf 'seed: 下一步：確認掛載點可寫，或改指到另一個 config-repo\n' >&2
+  exit 1
+}
+
+main "$@"
+SH
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+}
