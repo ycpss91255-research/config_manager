@@ -21,7 +21,9 @@ ROLES = (USER, DEVELOPER)
 # git 的作者字串是 `姓名 <email>`。這三個字元會拆散它：角括號讓作者變成另一個人，
 # `<`／`>` 破壞 git 的作者字串；換行讓後面的內容變成另一行。`\x1f`／`\x1e` 是 io/git.history()
 # 切變更紀錄欄位／分筆用的分隔符——混進作者會讓整庫帳本讀不出來（#212），在輸入這關就擋下。
-_FORBIDDEN = ("<", ">", "\n", "\r", "\x1f", "\x1e")
+# NUL 放行的話會被存進身分，納管時帶進 git commit → subprocess 以 ValueError(embedded null byte)
+# 失敗（非 OSError，端點 except 接不到）而成裸 500（#257）；在輸入這關具名拒絕，比照 `<`。
+_FORBIDDEN = ("<", ">", "\n", "\r", "\x1f", "\x1e", "\x00")
 
 
 class Identity(NamedTuple):

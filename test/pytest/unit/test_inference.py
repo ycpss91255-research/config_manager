@@ -188,3 +188,11 @@ def test_a_value_after_the_block_scalar_ends_is_still_reported():
     # 區塊結束後（縮排回到標頭層級以下）真正的 key: 值仍要偵測——別過度跳過（#219）。
     found = find_ambiguous("script: |\n  run: yes\nflag: no\n", "yaml")
     assert [(a.line, a.value) for a in found] == [(3, "no")]
+
+
+def test_ambiguity_line_numbers_count_by_newline_not_splitlines():
+    # #257：str.splitlines() 會在 \x0c 等控制字元多斷一行，使歧義行號比解析器／編輯器（皆按 \n）
+    # 多算、跳到錯的行。只按 \n 切行後，flag: no 的歧義行號應是 2（不是 splitlines 的 3）。
+    found = find_ambiguous("a: 1\x0cb\nflag: no", "yaml")
+
+    assert [(a.line, a.value) for a in found] == [(2, "no")]
