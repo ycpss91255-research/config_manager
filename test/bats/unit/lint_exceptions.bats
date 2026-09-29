@@ -15,6 +15,8 @@
 # |---|---|
 # | M1 拿掉「只 pass」判定 | 「except 具名: pass 被擋」「多 handler 各自 pass 被擋」 |
 # | M2 拿掉「只 *.debug()」判定 | 「except 具名: log.debug 被擋」 |
+# | M1b 拿掉 Ellipsis 判定 | 「except 具名: ... 被擋」（#254） |
+# | M6 把「每條都吞才算」改回「只看 len==1」 | 「兩條 .debug 也被擋」（#254） |
 # | M3 拿掉 contextlib.suppress 判定 | 「contextlib.suppress 被擋」 |
 # | M4 把「具名才擋、bare 留給 E722」改成也擋 bare | 「bare except 不由這支擋（留給 E722）」 |
 # | M5 檔案不在時改成安靜通過 | 「python3 缺席或檔案不存在時大聲失敗」對應的那半 |
@@ -112,6 +114,40 @@ PY
   run "${LINT}" "${SRC}"
 
   [ "${status}" -ne 0 ]
+}
+
+
+@test "except 具名: ... （Ellipsis）被擋（#254）" {
+  # ... 語意等同 pass，但 AST 是 ast.Expr(ast.Constant(Ellipsis)) 而非 ast.Pass；先前只認 pass。
+  _py <<'PY'
+def f():
+    try:
+        risky()
+    except ValueError:
+        ...
+PY
+  run "${LINT}" "${SRC}"
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"sample.py"* ]]
+  [[ "${output}" == *"ValueError"* ]]
+}
+
+
+@test "except 具名: 兩條 .debug 也被擋（多敘述純吞掉，#254）" {
+  # 先前 len(body)!=1 一關就放行；body 兩條但都是 .debug，仍是純吞掉。
+  _py <<'PY'
+def f(logger):
+    try:
+        risky()
+    except KeyError:
+        logger.debug("ignore 1")
+        logger.debug("ignore 2")
+PY
+  run "${LINT}" "${SRC}"
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"sample.py"* ]]
 }
 
 
