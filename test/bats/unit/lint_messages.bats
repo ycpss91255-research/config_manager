@@ -697,3 +697,28 @@ SH
   [ "${status}" -eq 0 ]
   [[ "${output}" == *"SKIP"* ]]
 }
+
+@test "只帶格式縮寫、沒指名檔案/欄位/行號的散文訊息被擋（#254）" {
+  # 先前 _ENV_VAR 的裸全大寫分支 [A-Z][A-Z0-9]{2,} 命中 TOML／YAML 等格式縮寫，於是這種
+  # 沒有真正標的的訊息卻通過 R2。收緊成裸環境變數白名單後，格式縮寫不再算標的。
+  write_py acronym.py \
+    'def f() -> None:' \
+    '    raise ParseError("TOML 格式錯誤。下一步：請修正")'
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"acronym.py"* ]]
+}
+
+
+@test "指名裸環境變數 PATH 的訊息仍算有標的、不誤傷（#254）" {
+  # 收緊格式縮寫的同時，PATH／HOME 這類實際會出現的裸環境變數仍要算標的（#133 的原意）。
+  write_py path.py \
+    'def f() -> None:' \
+    '    raise ConfigRepoMissing("gh 不在 PATH 上。下一步：安裝 gh 或修正 PATH")'
+
+  run "${LINT}" "${DIR}"
+  [ "${status}" -eq 0 ]
+}
+
+

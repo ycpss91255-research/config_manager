@@ -42,14 +42,32 @@ find -printf	(^|[^[:alnum:]_-])find[[:space:]].*[[:space:]]-printf
 stat -c	(^|[^[:alnum:]_-])stat[[:space:]]+-[[:alnum:]]*c
 date -d	(^|[^[:alnum:]_-])date[[:space:]]+-d[[:space:]]
 base64 -w	(^|[^[:alnum:]_-])base64[[:space:]]+-[[:alnum:]]*w
-head -n -	(^|[^[:alnum:]_-])head[[:space:]]+-n[[:space:]]+-[0-9]
+head -n -	(^|[^[:alnum:]_-])head[[:space:]]+(-n[[:space:]]*|--lines[=[:space:]])-[0-9]
 cp --parents	(^|[^[:alnum:]_-])cp[[:space:]].*--parents
 RULES
 }
 
-# 非註解行，各自保留原本的行號。
+# 非註解行，各自保留原本的行號。先把以反斜線續行的實體行併回同一邏輯行（保留起始行號）——
+# 否則把指令名與它的 GNU-only 選項用 \ 拆到兩行就能繞過所有規則（規則都要求兩者同一實體行，#254）。
+# 整行註解不參與續行：shell 的 # 之後（含結尾的 \）都是註解，下一行是獨立的一行。
 _code_lines() {
-  awk '!/^[[:space:]]*#/ { printf "%d:%s\n", NR, $0 }' "$1"
+  awk '
+    {
+      if (buffer == "") {
+        if ($0 ~ /^[[:space:]]*#/) next
+        start = NR
+      }
+      line = $0
+      if (line ~ /\\[[:space:]]*$/) {
+        sub(/\\[[:space:]]*$/, "", line)
+        buffer = buffer line " "
+        next
+      }
+      printf "%d:%s\n", start, buffer line
+      buffer = ""
+    }
+    END { if (buffer != "") printf "%d:%s\n", start, buffer }
+  ' "$1"
 }
 
 main() {

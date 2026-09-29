@@ -112,11 +112,16 @@ _check_issue() {
   local body
   body="$(gh issue view "${issue}" --json body --jq .body)"
 
+  # 勾選框比對放寬到 GitHub task-list 的全部合法形狀：項目符號 -／*／+ 皆可、勾選字元
+  # x／X 皆為已勾（#254）。先前四處都寫死「- 加小寫 x」，於是 `- [X]`（大寫，畫面與 `- [x]`
+  # 一模一樣）勾的條目不進 R3/R4（可不留 commit 證據就「勾完」），`* [ ]`／`+ [ ]` 的未勾
+  # 條目讓 R2 失效（未完成也能開 PR）——帳本閘門被自己最想防的「看似在檢查、其實沒有」擊穿。
+  #
   # 規則 1：被引用的 issue 至少要有一個勾選行。
   # 沒有勾選框的 issue 三條後續規則全部跑不到——零個勾選框時既有檢查都不進來，
   # 而「兩個都不成立」被當成「沒有問題」。帳本可以是空的（#158）。
   local total_checkboxes
-  total_checkboxes="$(printf '%s\n' "${body}" | grep -cE '^[[:space:]]*- \[(x| )\]' || true)"
+  total_checkboxes="$(printf '%s\n' "${body}" | grep -cE '^[[:space:]]*[-*+] \[([xX]| )\]' || true)"
   if ((total_checkboxes == 0)); then
     printf 'FAIL #%s  issue 內文沒有任何勾選框——帳本不存在\n' "${issue}" >&2
     printf '      下一步：在 issue 內文寫下驗收條件並勾起來，不是把 closes 拿掉\n' >&2
@@ -125,7 +130,7 @@ _check_issue() {
   fi
 
   local unchecked
-  unchecked="$(printf '%s\n' "${body}" | grep -cE '^[[:space:]]*- \[ \]' || true)"
+  unchecked="$(printf '%s\n' "${body}" | grep -cE '^[[:space:]]*[-*+] \[ \]' || true)"
   if ((unchecked > 0)); then
     printf 'FAIL #%s  還有 %s 條驗收條件沒有勾起來\n' "${issue}" "${unchecked}" >&2
     printf '      下一步：都完成後才能開 PR。做不完就把這張 issue 拆小\n' >&2
@@ -135,7 +140,7 @@ _check_issue() {
   local line text candidate
   while IFS= read -r line; do
     [[ -n "${line}" ]] || continue
-    text="$(printf '%s' "${line}" | sed -E 's/^[[:space:]]*- \[x\][[:space:]]*//')"
+    text="$(printf '%s' "${line}" | sed -E 's/^[[:space:]]*[-*+] \[[xX]\][[:space:]]*//')"
 
     if [[ "${text}" != *"${_SEPARATOR}"* ]]; then
       printf 'FAIL #%s  勾起來了但沒有記 commit：%s\n' "${issue}" "${text}" >&2
@@ -150,7 +155,7 @@ _check_issue() {
       printf '      下一步：主旨要與 git log 的某一筆逐字相同（本 PR 或 main 的歷史都算）\n' >&2
       counter=$((counter + 1))
     fi
-  done < <(printf '%s\n' "${body}" | grep -E '^[[:space:]]*- \[x\]' || true)
+  done < <(printf '%s\n' "${body}" | grep -E '^[[:space:]]*[-*+] \[[xX]\]' || true)
 }
 
 _known_subject() {

@@ -178,6 +178,36 @@ sys.exit(0 if [r.prefix for r in allowed.roots] == ['${WORK}/targets'] else 1)
   [[ "${output}" == *"下一步"* ]]
 }
 
+@test "preflight 非零退出且有輸出時，die 仍附上下一步指引、不被 :- 預設值吞掉（#254）" {
+  # check_config_list 的 die 少放一個 }，把「${output:-後備}」與「下一步：…」黏成單一
+  # 參數展開，output 非空（常見情形）時「下一步」被歸進 :- 預設值而丟棄——#233 想補的後備
+  # 反而只在 OOM 才出現。stub python 非零退出且有輸出，驗原輸出與下一步指引都在。
+  git init --quiet --initial-branch=main "${WORK}"
+  write_minimal_list "${WORK}"
+  local stub="${WORK}/stub"
+  mkdir -p "${stub}"
+  printf '#!/usr/bin/env bash\nprintf "preflight 出錯了\\n" >&2\nexit 1\n' >"${stub}/python"
+  chmod +x "${stub}/python"
+
+  CM_CONFIG_REPO="${WORK}" PATH="${stub}:${PATH}" run "${ENTRYPOINT}" true
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"preflight 出錯了"* ]]   # 原輸出仍在
+  [[ "${output}" == *"手動檢視"* ]]            # 且下一步指引沒被 :- 吞掉
+}
+
+@test "CM_ALLOWED_ROOTS 的根不是絕對路徑時，種子在寫檔前就失敗並指名該變數（#254）" {
+  # 非絕對路徑（不以 / 開頭）會種成 core.check_prefix 拒絕的 InvalidPrefix，同 .. 那類：讓
+  # preflight 死在機器生成檔、毒檔已提交→崩潰迴圈。check_prefix 要求以 / 開頭，種子驗證先前
+  # 漏了這條。要在種子這道字面擋下、指向真正該修的 CM_ALLOWED_ROOTS。
+  mkdir -p "${WORK}/repo"
+
+  CM_CONFIG_REPO="${WORK}/repo" CM_ALLOWED_ROOTS="relative/config" \
+    run "${ENTRYPOINT}" true
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"CM_ALLOWED_ROOTS"* ]]
+  [ ! -f "${WORK}/repo/allowed-roots.toml" ]
+}
+
 @test "已存在的白名單設定檔不被種子覆蓋（以檔為準，#202）" {
   # 以檔為準：一旦有了這份檔，重啟不因 CM_ALLOWED_ROOTS 改變而動它——介面加的根不該
   # 被下一次啟動的種子抹掉。檔裡的根指向一個真實可見的目錄（否則會卡在 #146 可見性檢查，

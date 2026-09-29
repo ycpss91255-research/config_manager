@@ -95,21 +95,41 @@ def exception_names(type_node):
     return ast.dump(type_node)
 
 
-def swallow_kind(body):
-    """handler 的 body 是不是「只吞掉」：只有 pass，或只有一個 *.debug(...) 呼叫。都不是回 None。"""
-    if len(body) != 1:
-        return None
-    statement = body[0]
+def is_swallow_statement(statement):
+    """單一敘述是不是「只吞掉」：pass、... (Ellipsis)、或一個 *.debug(...) 呼叫。"""
     if isinstance(statement, ast.Pass):
-        return "只有 pass"
-    if (
-        isinstance(statement, ast.Expr)
-        and isinstance(statement.value, ast.Call)
-        and isinstance(statement.value.func, ast.Attribute)
-        and statement.value.func.attr == "debug"
-    ):
-        return "只有一個 .debug(...) 呼叫"
-    return None
+        return True
+    if isinstance(statement, ast.Expr):
+        value = statement.value
+        if isinstance(value, ast.Constant) and value.value is Ellipsis:
+            return True
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and value.func.attr == "debug"
+        ):
+            return True
+    return False
+
+
+def swallow_kind(body):
+    """handler 的 body 是不是「只吞掉」：每一條敘述都是 pass／...／*.debug(...)。都是才算，否則 None。
+
+    先前只認「body 恰好一條且是 pass 或 .debug」，於是 `except X: ...`（Ellipsis 語意等同 pass，
+    但 AST 是 ast.Expr(ast.Constant(Ellipsis)) 而非 ast.Pass）與「兩條 .debug」這類多敘述純吞掉都
+    溜過，而 ruff／pylint 對具名例外一律不管（#254）。混入任一條實質敘述就不算吞掉，零誤報。
+    """
+    if not all(is_swallow_statement(statement) for statement in body):
+        return None
+    kinds = set()
+    for statement in body:
+        if isinstance(statement, ast.Pass):
+            kinds.add("pass")
+        elif isinstance(statement.value, ast.Constant):
+            kinds.add("...")
+        else:
+            kinds.add(".debug(...)")
+    return "只有 " + "／".join(sorted(kinds))
 
 
 def imports_bare_suppress(tree):

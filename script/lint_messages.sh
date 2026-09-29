@@ -102,17 +102,19 @@ PRINT_PLUMBING = {"file", "sep", "end", "flush"}
 # 字面上就足以當標的的三種機器識別碼：含 / 的路徑、ENV_VAR 形式的名字、帶副檔名的
 # 檔名。純中文散文一個都不會命中，那正是「格式錯誤」被擋下的原因。
 _TOKEN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*")
-# 兩種形狀：帶底線的 `CM_CONFIG_REPO`，以及不帶底線的全大寫 `PATH`／`HOME`。
-# 第二種是把 `script/` 納進來之後補的：`release: gh 不在 PATH 上` 這則訊息指名了
-# 一個工具與一個環境變數，卻因為 `PATH` 沒有底線而被判成「沒有具體標的」——誤報。
-# 下限三個字母，讓 `PR`、`CI` 這種散文裡的縮寫不會被當成標的（#133）。
-_ENV_VAR = re.compile(r"(?:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|[A-Z][A-Z0-9]{2,})\Z")
+# 帶底線的全大寫環境變數名（`CM_CONFIG_REPO`）——機器識別碼，算標的。
+_ENV_VAR = re.compile(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\Z")
+# 不帶底線的裸環境變數只認實際會出現在訊息裡的標準名。先前用萬用的 `[A-Z][A-Z0-9]{2,}`
+# 收 `release: gh 不在 PATH 上` 的 PATH，卻也命中 TOML／YAML／JSON／INI／HTTP 等格式縮寫，
+# 於是「TOML 格式錯誤。下一步：…」這種沒指名檔案／欄位／行號的散文也被判成「有標的」而
+# 通過——R2 存在的理由正是擋這種（#254）。CM_* 等帶底線者由 _ENV_VAR 涵蓋，不受影響。
+_BARE_ENV = {"PATH", "HOME"}
 _FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\.[a-z]{2,5}\Z")
 
 
 def names_a_target(text):
     for token in _TOKEN.findall(text):
-        if "/" in token or _ENV_VAR.match(token) or _FILENAME.match(token):
+        if "/" in token or token in _BARE_ENV or _ENV_VAR.match(token) or _FILENAME.match(token):
             return True
     return False
 

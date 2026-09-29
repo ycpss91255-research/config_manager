@@ -122,6 +122,30 @@ STUB
   [ "${status}" -ne 0 ]
 }
 
+@test "規則 B：只認每個新介面段落自己的 #issue，不被 diff 前面的舊 issue 冒充（#254）" {
+  # #42 早於 commit、#99 晚於 commit。T5 的真正回指是 #99，但 diff 前面（既有 T1 段落的
+  # 改動）另有一行提到 #42；先前 _added_issue 取整份 diff 的第一個 #N=#42 而放行，T5 的
+  # #99 從未被檢查。改為逐段落抓自己的回指後，T5 的 #99 被檢出、晚於 commit 而擋下。
+  cat >"${STUB}/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$3" in
+  99) printf '2020-12-01T00:00:00Z' ;;
+  *) printf '2020-01-01T00:00:00Z' ;;
+esac
+STUB
+  chmod +x "${STUB}/gh"
+  printf '### T1 — 既有介面\n\n一些內容。承 #42 的討論。\n\n### T5 — 新介面\n\n來由 #99。\n' \
+    >doc/TEST-PLAN.md
+  git add -A
+  GIT_AUTHOR_DATE="2020-06-01T00:00:00Z" GIT_COMMITTER_DATE="2020-06-01T00:00:00Z" \
+    git commit -q -m "docs(test-plan): 新介面段落"
+
+  run "${LINT}" agreed "${BASE}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"T5"* ]]
+  [[ "${output}" == *"99"* ]]
+}
+
 @test "用法說明可取得" {
   run "${LINT}" --help
   [ "${status}" -eq 0 ]
