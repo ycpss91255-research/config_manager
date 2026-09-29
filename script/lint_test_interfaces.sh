@@ -67,12 +67,27 @@ _touches_tests() {
   git diff-tree --no-commit-id --name-only -r "${commit}" | grep -qE '^test/'
 }
 
-# 這個 commit 新增到 doc/TEST-PLAN.md 的內容裡，第一個 `#<issue>` 回指的編號。
-_added_issue() {
+# 這個 commit 新增的每一個 T/A 介面段落，各自在自己的段落內（到下一個 ### 為止）的第一個
+# `#<issue>` 回指。輸出一行一個「<介面編號> <issue 或空>」。範圍限段落內——先前取的是整份
+# diff 的第一個 `#N`，於是無回指的新段落只要 diff 別處有舊 `#N` 就被冒充、或比對到段落外
+# 更前的無關舊 issue，rule B 的「事先議定」因此驗到錯的 issue 或被繞過（#254）。
+_added_interface_issues() {
   local commit="$1"
   git show --format='' "${commit}" -- doc/TEST-PLAN.md 2>/dev/null |
-    grep -E '^\+' | grep -vE '^\+\+\+' |
-    grep -oE '#[0-9]+' | head -n1 | tr -d '#' || true
+    grep -E '^\+' | grep -vE '^\+\+\+' | sed -E 's/^\+//' |
+    awk '
+      /^### [TA][0-9]+ — / {
+        if (iface != "") print iface, issue
+        iface = $2
+        issue = ""
+        if (match($0, /#[0-9]+/)) issue = substr($0, RSTART + 1, RLENGTH - 1)
+        next
+      }
+      iface != "" && issue == "" {
+        if (match($0, /#[0-9]+/)) issue = substr($0, RSTART + 1, RLENGTH - 1)
+      }
+      END { if (iface != "") print iface, issue }
+    ' || true
 }
 
 # 這個 commit 的 author date，正規化成 UTC 的 ISO（結尾 Z），供逐字比較。
@@ -108,32 +123,33 @@ run_order() {
 }
 
 run_agreed() {
-  local base="$1" failures=0 commit ifaces issue created commit_utc short
+  local base="$1" failures=0 commit iface issue created commit_utc short
   while IFS= read -r commit; do
     [[ -n "${commit}" ]] || continue
-    ifaces="$(_added_interfaces "${commit}")"
-    [[ -n "${ifaces}" ]] || continue
+    [[ -n "$(_added_interfaces "${commit}")" ]] || continue
     short="$(git rev-parse --short "${commit}")"
-    ifaces="$(printf '%s' "${ifaces}" | tr '\n' ' ')"
-
-    issue="$(_added_issue "${commit}")"
-    if [[ -z "${issue}" ]]; then
-      printf 'FAIL commit %s 新增了測試介面 %s，但段落裡沒有 #<issue> 回指\n' \
-        "${short}" "${ifaces}" >&2
-      printf '     下一步：在新介面段落寫下它的來由 issue（#<編號>），且該 issue 要早於這個 commit\n' >&2
-      failures=$((failures + 1))
-      continue
-    fi
-
-    created="$(gh issue view "${issue}" --json createdAt --jq '.createdAt')"
     commit_utc="$(_commit_utc "${commit}")"
-    if [[ "${created}" < "${commit_utc}" ]]; then
-      continue
-    fi
-    printf 'FAIL 測試介面 %s 回指的 #%s 在 commit %s 之後才建立（issue %s ≥ commit %s）\n' \
-      "${ifaces}" "${issue}" "${short}" "${created}" "${commit_utc}" >&2
-    printf '     下一步：介面要事先議定——先開 issue 取得確認，再落地介面\n' >&2
-    failures=$((failures + 1))
+
+    # 逐個新增的介面段落各自檢查它自己段落內的回指，而不是整個 commit 共用一個 issue。
+    while IFS=' ' read -r iface issue; do
+      [[ -n "${iface}" ]] || continue
+      if [[ -z "${issue}" ]]; then
+        printf 'FAIL commit %s 新增了測試介面 %s，但段落裡沒有 #<issue> 回指\n' \
+          "${short}" "${iface}" >&2
+        printf '     下一步：在新介面段落寫下它的來由 issue（#<編號>），且該 issue 要早於這個 commit\n' >&2
+        failures=$((failures + 1))
+        continue
+      fi
+
+      created="$(gh issue view "${issue}" --json createdAt --jq '.createdAt')"
+      if [[ "${created}" < "${commit_utc}" ]]; then
+        continue
+      fi
+      printf 'FAIL 測試介面 %s 回指的 #%s 在 commit %s 之後才建立（issue %s ≥ commit %s）\n' \
+        "${iface}" "${issue}" "${short}" "${created}" "${commit_utc}" >&2
+      printf '     下一步：介面要事先議定——先開 issue 取得確認，再落地介面\n' >&2
+      failures=$((failures + 1))
+    done < <(_added_interface_issues "${commit}")
   done < <(_commits "${base}")
 
   printf 'lint_test_interfaces(agreed): %s..HEAD -- %d 個問題\n' "${base}" "${failures}"
