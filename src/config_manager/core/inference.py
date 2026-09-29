@@ -144,7 +144,11 @@ def find_ambiguous(text: str, fmt: str) -> list[Ambiguity]:
 
     found: list[Ambiguity] = []
     block_indent: int | None = None  # 不在區塊純量內時為 None；否則為標頭行的縮排
-    for number, line in enumerate(text.splitlines(), start=1):
+    # 只按 \n（含 \r\n）切行，不用 str.splitlines()——後者還會在 \x0b\x0c\x1c\x1d\x1e\x85 等處斷行，
+    # 使行號比解析器（ruamel／json／configobj，皆按 \n）與編輯器所見多算，回報的歧義行號因而偏移
+    # （#257）。rstrip 掉 \r 讓 CRLF 檔的行內容與 LF 檔一致。
+    for number, raw in enumerate(text.split("\n"), start=1):
+        line = raw.rstrip("\r")
         if block_indent is not None:
             if not line.strip():
                 continue  # 空行留在區塊內：config 的腳本／內嵌文字常含空行（#219）

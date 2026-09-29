@@ -7,7 +7,7 @@ allowed-roots.toml 是 §7.9 持久化、可從介面維護的白名單（#202�
 
 import pytest
 
-from config_manager.core.allowed_roots import dump, load
+from config_manager.core.allowed_roots import check_prefix, dump, load
 from config_manager.core.errors import (
     DuplicatePrefix,
     InvalidPrefix,
@@ -272,3 +272,54 @@ added_by = "Alice"
 
     with pytest.raises(RootsDumpMismatch):
         dump(allowed, bad_original)
+
+
+def test_a_prefix_with_a_nul_byte_is_rejected_not_a_raw_valueerror():
+    # #257：NUL 既非相對路徑也無 ..，會通過字面檢查、走到 io 的 realpath 才拋 ValueError（端點
+    # except 接不到）而成裸 500。check_prefix 要在字面這關具名擋成 InvalidPrefix（端點映 422）。
+    with pytest.raises(InvalidPrefix):
+        check_prefix("/tmp/a\x00b")
+
+
+def test_unknown_field_in_a_later_root_names_that_roots_line_not_an_earlier_valid_one():
+    # #257：條目層誤放一個在頂層合法的鍵（roots_version）會與第 1 行的合法頂層宣告相撞；先前
+    # 對每個 root 都從第 1 行找行號，指到第 1 行（錯）。逐 root 限縮後應指到該 root 內的實際行。
+    text = """\
+roots_version = 1
+
+[[roots]]
+prefix = "/opt/a"
+added_by = "seed"
+added_at = "2026-01-01T00:00:00Z"
+
+[[roots]]
+prefix = "/opt/b"
+roots_version = 2
+"""
+    with pytest.raises(RootsUnknownField) as exc:
+        load(text)
+
+    assert "第 10 行" in str(exc.value)  # 指第二個 root 內的實際行，不是第 1 行
+
+
+def test_removing_a_root_keeps_the_next_roots_standalone_leading_comment():
+    # #257：獨立一行的前導註解掛在前一筆的尾端；天真 del 會連同下一筆倖存根的前導註解一起刪。
+    # 搬前導 trivia 後，移除第一筆仍保留第二筆的前導註解（比照 config_list）。
+    original = """\
+roots_version = 1
+
+[[roots]]
+prefix = "/opt/a"
+added_by = "Alice"
+
+# B 的說明
+[[roots]]
+prefix = "/opt/b"
+added_by = "Bob"
+"""
+    allowed = load(original)
+    allowed.roots = [root for root in allowed.roots if root.prefix != "/opt/a"]
+    result = dump(allowed, original)
+
+    assert "# B 的說明" in result  # 倖存根的獨立行前導註解未被吃掉
+    assert "/opt/a" not in result  # 被移除的根確實消失

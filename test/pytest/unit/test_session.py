@@ -77,3 +77,10 @@ def test_surrounding_whitespace_is_trimmed_not_rejected():
     identity = author("  陳小明  ", "  ming@example.com  ", USER)
 
     assert identity.git_author == "陳小明 <ming@example.com>"
+
+
+def test_a_name_with_a_nul_byte_is_rejected():
+    # #257：NUL 放行的話會被存進身分，納管時帶進 git commit → subprocess 以 ValueError 失敗
+    # （非 OSError，端點 except 接不到）而成裸 500。在輸入這關具名拒絕，比照 `<`。
+    with pytest.raises(InvalidAuthor):
+        author("a\x00b", "ming@example.com", USER)

@@ -5,6 +5,7 @@ io（T15），realpath 正規化與可見性也在 io（realpath 是 I/O，比�
 I/O 層）。與 config_list（T1，清單檔本身）分開：那是另一個檔、另一套 schema。
 """
 
+import re
 from pathlib import PurePosixPath
 
 import tomlkit
@@ -18,7 +19,7 @@ from config_manager.core.errors import (
     RootsUnknownField,
 )
 from config_manager.core.models import AllowedRoot, AllowedRoots
-from config_manager.core.toml_support import Source, reject_unknown
+from config_manager.core.toml_support import Source, adopt_leading_trivia, reject_unknown
 
 # 白名單設定檔的允許鍵集。結構驗證（必填、型別）交給 pydantic；這裡只擋未知欄位、
 # 指名行號（防止由設定檔注入內部欄位，比照 config_list）。
@@ -80,8 +81,17 @@ def dump(allowed: AllowedRoots, original: str) -> str:
         for index, table in enumerate(roots.body)
         if table.get("prefix") not in model_prefixes
     ]
-    for index in reversed(removed):
-        del roots[index]
+    if removed:
+        # tomlkit 把一筆根的前導註解掛在**前一筆**的尾端；天真 del 會連同下一筆倖存根的前導
+        # 註解一起刪掉（違反 dump docstring「未觸動的部分逐位元組保留」，#257）。先把每筆的前導
+        # trivia 搬到它自己身上，刪除就只是刪除——比照 config_list._adopt_leading_trivia（同構的
+        # tomlkit 陷阱，allowed_roots 是 config_list 的平行模組）。
+        # 移除某筆前先把每筆的前導 trivia 搬到自身，否則天真 del 會連同下一筆倖存根的前導註解
+        # 一起刪掉（違反 dump docstring「未觸動的部分逐位元組保留」，#257）。與 config_list 共用
+        # 同一支 helper（同構的 tomlkit 陷阱，不再各留一份而漂移）。
+        adopt_leading_trivia(doc, roots, "roots")
+        for index in reversed(removed):
+            del roots[index]
 
     return tomlkit.dumps(doc)
 
@@ -114,17 +124,40 @@ def _root_to_table(root: AllowedRoot) -> items.Table:
     return table
 
 
+def _root_header_lines(text: str) -> list[int]:
+    """回傳每個 `[[roots]]` 條目表頭的行號（1 起算），依出現順序。
+
+    `for root in roots`（AoT）與 `[[roots]]` 表頭一一對應且同序，故第 index 個表頭行就是第
+    index 個 root 的搜尋起點（比照 config_list._entry_header_lines 的 #218 修法）。
+    """
+    pattern = re.compile(r"^\s*\[\[\s*roots\s*\]\]")
+    return [lineno for lineno, line in enumerate(text.splitlines(), 1) if pattern.match(line)]
+
+
 def _check_unknown_fields(doc: "tomlkit.TOMLDocument", text: str) -> None:
     """在轉為資料模型前，對照鍵集攔下未知欄位並指名行號。"""
     reject_unknown(doc.keys(), _TOP_KEYS, Source(text), "白名單設定檔頂層", RootsUnknownField)
     roots = doc.get("roots")
     if roots is not None:
-        for root in roots:
-            reject_unknown(root.keys(), _ROOT_KEYS, Source(text), "白名單根條目", RootsUnknownField)
+        starts = _root_header_lines(text)
+        for index, root in enumerate(roots):
+            # 從該 root 的表頭起找行號：條目層誤放一個在頂層合法的鍵（如 roots_version）會與
+            # 較前處的合法頂層宣告相撞，全域從第 1 行找會指錯行（比照 config_list #218，#257）。
+            start = starts[index] if index < len(starts) else 1
+            reject_unknown(
+                root.keys(), _ROOT_KEYS, Source(text, start), "白名單根條目", RootsUnknownField
+            )
 
 
 def check_prefix(prefix: str) -> None:
-    """前綴的字面檢查：絕對路徑、不含 .. 逃逸（realpath 留給 io）。"""
+    """前綴的字面檢查：不含 NUL、絕對路徑、不含 .. 逃逸（realpath 留給 io）。"""
+    if "\x00" in prefix:
+        # NUL 既非相對路徑也無 ..，會通過下面兩關、走到 io 的 os.path.realpath 才拋 ValueError
+        # （非 OSError，端點 except 接不到）而成裸 500（#257）。在字面這關具名擋下，端點映 422；
+        # 同時保護 load／dump 對檔內既存 prefix 走 realpath 的路徑。
+        raise InvalidPrefix(
+            f"前綴 {prefix!r} 含 NUL 位元組。下一步：移除字串中的 NUL——路徑不該含它"
+        )
     if not prefix.startswith("/"):
         raise InvalidPrefix(
             f"前綴「{prefix}」不是絕對路徑。"

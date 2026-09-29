@@ -26,6 +26,7 @@ import pytest
 
 import config_manager
 from config_manager.core.allowed_roots import load as load_allowed_roots
+from config_manager.core.errors import UidHorizonReached
 
 _TIMEOUT = 5
 # 422：輸入的形狀對、值不合法。端點刻意不用 400——那會把「你送錯格式」與
@@ -1113,3 +1114,23 @@ def test_cli_serve_out_of_range_port_is_a_readable_error(monkeypatch, tmp_path):
     assert result.returncode == config_exit
     assert "Traceback" not in result.stderr
     assert "65535" in result.stderr
+
+
+def test_onboard_after_the_uid_horizon_is_a_500_with_a_message(api, sources_root, monkeypatch):
+    # #257/#231：uid 的 8 碼 base36 空間用盡（2059 之後）→ new_uid 丟 UidHorizonReached。它直接
+    # 繼承 Exception、不屬 _onboard_config 上面任何族，先前漏接成裸 500。應映成帶可行動訊息的 500。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地 monkeypatch new_uid，外部映像控不了 server 端模組")
+
+    def _horizon(_now):
+        raise UidHorizonReached("uid 空間用盡（horizon 2059）。下一步：見 ADR-00000012／#231")
+
+    monkeypatch.setattr("config_manager.io.onboard.new_uid", _horizon)
+    _set_session(api)
+    source = _write_source(sources_root, "onboard_horizon.yaml", b"a: 1\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/configs", {"source_path": source, "format": "yaml"})
+
+    assert exc.value.code == _SERVER_ERROR
+    assert "2059" in _detail(exc.value)  # identity 的可行動訊息保住，不是裸 500

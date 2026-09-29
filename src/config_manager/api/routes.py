@@ -29,6 +29,7 @@ from config_manager.core.errors import (
     ParseError,
     PrefixNotFound,
     SyntaxParse,
+    UidHorizonReached,
 )
 from config_manager.core.inference import Ambiguity, find_ambiguous, infer_types
 from config_manager.core.models import FileEntry, Permissions
@@ -298,6 +299,11 @@ def _onboard_config(
     except HostnameInvalid as error:
         # CM_HOSTNAME 設成不安全值：部署層的錯（非請求端能修），大聲失敗成帶訊息的 500，
         # 不是先前那樣漏接成裸 500（#14 盤點發現）。inspect 也做同樣的映射。
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    except UidHorizonReached as error:
+        # uid 的 8 碼 base36 空間用盡（2059 之後，#231）：identity 精心寫的可行動訊息（指出
+        # horizon 與 ref 格式契約）要保住成帶訊息的 500，不被 FastAPI 的「Internal Server
+        # Error」蓋掉（#257）——它直接繼承 Exception、不屬上面任何族，先前漏接成裸 500。
         raise HTTPException(status_code=500, detail=str(error)) from error
     except (OnboardLeftBehind, WriterError, CalledProcessError, OSError) as error:
         # 寫入／commit／回滾路徑失敗（#222）：OnboardLeftBehind 是回滾也失敗、指名孤兒殘留；

@@ -926,3 +926,68 @@ def test_dump_refuses_a_format_outside_the_allowed_set():
 
     with pytest.raises(InvalidFormat):
         dump(_with_files(config_list, [unknown, second]), _ROUNDTRIP_TEXT)
+
+
+def test_defaults_as_a_scalar_is_a_named_malformed_not_a_raw_attributeerror():
+    # #257：defaults 寫成純量／陣列／[[defaults]] 時，_check_shape 的 defaults.get 先前丟 raw
+    # AttributeError，逃過具名例外契約、在 GET /api/configs 熱路徑與啟動 preflight 成裸 500。
+    # files／permissions 都有守衛，defaults 本身也要具名擋成 ConfigListMalformed。
+    with pytest.raises(ConfigListMalformed):
+        load("list_version = 1\ndefaults = 5\n")
+
+
+def test_normalised_equivalent_targets_are_detected_as_duplicate():
+    # #257：/opt/shared.yaml 與 /opt/./shared.yaml 指向同一檔。原始字串比對會漏判，兩筆便靜默
+    # 寫向同一位置（違反不變式 6 與 DuplicateTarget 契約）。去重前正規化路徑後應判為重複。
+    text = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/a.yaml"
+target   = "/opt/shared.yaml"
+format   = "yaml"
+groups   = []
+
+[[files]]
+uid      = "mfz3k9r7"
+name     = "docker-daemon"
+hostname = "amr01"
+source   = "files/b.yaml"
+target   = "/opt/./shared.yaml"
+format   = "yaml"
+groups   = []
+"""
+    with pytest.raises(DuplicateTarget):
+        load(text)
+
+
+def test_a_hand_written_requires_privilege_false_survives_round_trip():
+    # #257：requires_privilege = false 明寫時，dump 先前靜默刪整行（含行內註解），破壞逐位元組
+    # round-trip（不變式 6，#217 家族）。未觸動的條目 dump 後應與原文逐位元組相同。
+    text = """\
+list_version = 1
+
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+
+[[files]]
+uid      = "mfz3k9q1"
+name     = "navigation-params"
+hostname = "amr01"
+source   = "files/a.yaml"
+target   = "/opt/a.yaml"
+format   = "yaml"
+groups   = []
+requires_privilege = false
+"""
+    assert dump(load(text), text) == text

@@ -21,7 +21,12 @@ from config_manager.core.errors import (
     UnknownField,
 )
 from config_manager.core.models import ConfigList, FileEntry, Permissions
-from config_manager.core.toml_support import Source, reject_unknown
+from config_manager.core.toml_support import (
+    Source,
+    adopt_leading_trivia,
+    reject_unknown,
+    take_trailing_items,
+)
 
 # tomlkit 容器 body 的一項：沒有鍵的是空白與註解，有鍵的是真正的值。
 _BodyItem = tuple[items.Key | None, items.Item]
@@ -93,7 +98,7 @@ def dump(config_list: ConfigList, original: str) -> str:
         # 搬前導註解要排在新增與改動之後：註解一旦進了 trivia.indent，tomlkit 會
         # 把註解文字裡的空白當成縮排，套到後續新增的鍵上（`# 相機驅動` 的那個
         # 空格會變成新鍵前面的一格）。只在真的要刪的時候搬，順序就不會咬到。
-        _adopt_leading_trivia(doc, files)
+        adopt_leading_trivia(doc, files, "files")
         for index in reversed(removed):
             del files[index]
 
@@ -116,6 +121,14 @@ def _check_shape(doc: "tomlkit.TOMLDocument") -> None:
         )
 
     defaults = doc.get("defaults")
+    if defaults is not None and not hasattr(defaults, "get"):
+        # defaults 本身若是純量／陣列／[[defaults]]（AoT），下面 defaults.get 會丟 raw
+        # AttributeError，逃過具名例外契約、在 GET /api/configs 熱路徑與啟動 preflight 成裸 500
+        # （#257）。比照 files（AoT）與 permissions（.keys()）先具名擋下。
+        raise ConfigListMalformed(
+            "清單檔 config-list.toml 的 defaults 要以 [defaults] 表格書寫。"
+            "下一步：把 defaults 寫成 [defaults] 表格，不要用純量、陣列或 [[defaults]]"
+        )
     if defaults is not None:
         _check_permissions_shape(defaults.get("permissions"), "defaults.permissions")
 
@@ -170,75 +183,6 @@ def _entry_header_lines(text: str) -> list[int]:
     """
     pattern = re.compile(r"^\s*\[\[\s*files\s*\]\]")
     return [lineno for lineno, line in enumerate(text.splitlines(), 1) if pattern.match(line)]
-
-
-def _take_trailing_items(body: list[_BodyItem], stop: int) -> list[_BodyItem]:
-    """取走 body[:stop] 尾端那段空白與註解，回傳被取走的項目。
-
-    只動尾端，所以容器內部「鍵 → 位置」的對照不受影響——被取走的項目本來就
-    沒有鍵，排在它們前面的鍵位置也沒有變。
-    """
-    start = stop
-    while start > 0 and body[start - 1][0] is None:
-        start -= 1
-    run = body[start:stop]
-    del body[start:stop]
-    return run
-
-
-def _take_trailing_trivia(body: list[_BodyItem], stop: int) -> str:
-    """同上，但回傳被取走那段的原文。"""
-    return "".join(item.as_string() for _, item in _take_trailing_items(body, stop))
-
-
-def _body_before_files(doc: tomlkit.TOMLDocument) -> tuple[list[_BodyItem], int]:
-    """找出 files 這個 AOT 前方那段空白與註解所在的容器 body 與位置。
-
-    tomlkit 把「`[[files]]` 上方那幾行」存在**前一個容器**的尾端。第一筆條目的
-    前導註解因此不在 AOT 裡，而在前一個 table 的最深處——`[defaults.permissions]`
-    的尾端就是這個 repo 的清單檔實際長的樣子。
-    """
-    body: list[_BodyItem] = doc.body
-    index = next(
-        position
-        for position, (key, _) in enumerate(body)
-        if key is not None and key.key == "files"
-    )
-    while index > 0:
-        previous = body[index - 1][1]
-        if not isinstance(previous, items.Table):
-            break
-        body = previous.value.body
-        index = len(body)
-    return body, index
-
-
-def _adopt_leading_trivia(doc: tomlkit.TOMLDocument, files: items.AoT) -> None:
-    """把每一筆條目上方的空白與註解，搬到那一筆條目自己身上。
-
-    tomlkit 解析後，一筆條目的前導註解掛在**前一筆**的尾端。照那個形狀直接刪掉
-    一筆，被刪的那筆會把自己的註解留給下一筆，而下一筆的註解跟著它一起消失
-    ——輸出裡「那一筆不見了」成立，「其餘條目原樣保留」卻不成立，兩件事在這裡
-    分道揚鑣。搬完之後每一筆自帶前導註解，刪除就只是刪除。
-
-    搬移本身不改變輸出的任何一個位元組，但**只在真的要刪的時候呼叫**：理由寫在
-    `dump` 裡那一段（tomlkit 會把註解文字裡的空白當成後續新增鍵的縮排）。
-    呼叫端因此保證至少有一筆條目（有東西可刪才會走到這裡）。
-    """
-    tables = list(files.body)
-    body, index = _body_before_files(doc)
-    _prepend_indent(tables[0], _take_trailing_trivia(body, index))
-    for previous, current in zip(tables, tables[1:], strict=False):
-        previous_body: list[_BodyItem] = previous.value.body
-        _prepend_indent(
-            current, _take_trailing_trivia(previous_body, len(previous_body))
-        )
-
-
-def _prepend_indent(table: items.Table, trivia: str) -> None:
-    """把一段原文接到 table 的前導縮排前面（AOT 的表頭就從這裡渲染）。"""
-    if trivia:
-        table.trivia.indent = trivia + table.trivia.indent
 
 
 def _index_by_uid(files: items.AoT) -> dict[str, items.Table]:
@@ -344,7 +288,7 @@ def _update_table(table: items.Table, entry: FileEntry) -> None:
     # append 一律加在容器最尾端，所以先把它取下來——否則新加的選填欄位會落到
     # 下一筆的註解下方，而那一行看起來仍然「有寫出來」。
     body: list[_BodyItem] = table.value.body
-    trailing = _take_trailing_items(body, len(body))
+    trailing = take_trailing_items(body, len(body))
 
     values = _entry_values(entry)
     for key, value in values:
@@ -355,6 +299,13 @@ def _update_table(table: items.Table, entry: FileEntry) -> None:
             table[key] = _toml_value(value)
 
     written = {key for key, _ in values}
+    # requires_privilege 是 bool（預設 False），_entry_values 只在 True 時列入 values。但清單檔可
+    # 手寫 `requires_privilege = false`（含行內註解）——那與模型的 False 相符、屬「未觸動」，dump
+    # 要逐位元組保留（不變式 6，#257）。僅當它與模型值不符（檔裡是 true、模型是 False＝被關掉）
+    # 才讓刪除迴圈移除它。
+    current_rp = table.get("requires_privilege")
+    if not entry.requires_privilege and current_rp is not None and not current_rp:
+        written = written | {"requires_privilege"}
     for key in _OPTIONAL_ENTRY_KEYS - written:
         if key in table:
             del table[key]
@@ -400,23 +351,28 @@ def _check_integrity(config_list: ConfigList) -> None:
             )
         seen_uid[entry.uid] = entry
 
-        first_target = seen_target.get(entry.target)
+        # 以正規化後的路徑當鍵，讓 /a、/a/./、/a//、/a/ 這些指向同一位置的等價寫法被判為重複
+        # ——原樣字串比對會漏判，兩筆便靜默寫向同一檔／共用同一複本（違反不變式 6 與 Duplicate*
+        # 契約，#257）。此處只做純字串正規化（.／重複斜線／尾斜線），realpath／symlink 仍留 io。
+        target_key = str(PurePosixPath(entry.target))
+        first_target = seen_target.get(target_key)
         if first_target is not None:
             raise DuplicateTarget(
                 f"目標位置重複：{first_target.ref} 與 {entry.ref} "
                 f"共用目標「{entry.target}」。"
                 f"下一步：改掉其中一筆的目標位置——寫出順序會決定最終內容"
             )
-        seen_target[entry.target] = entry
+        seen_target[target_key] = entry
 
-        first_source = seen_source.get(entry.source)
+        source_key = str(PurePosixPath(entry.source))
+        first_source = seen_source.get(source_key)
         if first_source is not None:
             raise DuplicateSource(
                 f"來源複本重複：{first_source.ref} 與 {entry.ref} "
                 f"共用來源「{entry.source}」。"
                 f"下一步：改掉其中一筆的來源路徑——同一個複本被兩筆共用，動一個會牽到另一個"
             )
-        seen_source[entry.source] = entry
+        seen_source[source_key] = entry
 
         key = (entry.name, entry.hostname)
         first_pair = seen_name_host.get(key)

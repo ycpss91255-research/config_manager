@@ -588,3 +588,25 @@ def test_onboard_on_a_corrupt_config_list_is_named_unparsable_not_a_bare_error(t
 
     with pytest.raises(ConfigListUnparsable):
         onboard(str(repo), _request(root, path), _AUTHOR)
+
+
+def test_onboard_with_broken_toml_existing_list_is_config_list_unparsable(tmp_path):
+    # #257：既有清單在啟動後被改壞成非法 TOML。onboard 先前接的是 core.ParseError（死碼），
+    # tomlkit 的 ParseError 逃逸成裸 500；應映成 ConfigListUnparsable（結構化 500，與 scan 一致）。
+    repo = _repo(tmp_path)
+    root, path = _source(tmp_path)
+    (repo / CONFIG_LIST_NAME).write_text("this is not valid toml {[\n", encoding="utf-8")
+
+    with pytest.raises(ConfigListUnparsable):
+        onboard(str(repo), _request(root, path), _AUTHOR)
+
+
+def test_onboard_with_structurally_broken_existing_list_is_unparsable_not_a_conflict(tmp_path):
+    # #257：既有清單結構壞（未知欄位）是伺服器端資料損壞、該走 ConfigListUnparsable（500 家族，
+    # 與 scan 一致）；先前冒到下游 except ConfigListError 被誤映成 409（衝突）。
+    repo = _repo(tmp_path)
+    root, path = _source(tmp_path)
+    (repo / CONFIG_LIST_NAME).write_text(_SEED + "\nbogus_top_key = 1\n", encoding="utf-8")
+
+    with pytest.raises(ConfigListUnparsable):
+        onboard(str(repo), _request(root, path), _AUTHOR)
