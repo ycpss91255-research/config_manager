@@ -201,3 +201,11 @@ class SyntaxParse(ParseError):
     def __init__(self, message: str, line: int | None = None) -> None:
         super().__init__(message)
         self.line = line
+
+
+class UnknownPath(ParseError):
+    r"""`set_value` 的路徑在這份 config 裡找不到對應的值（#17）。
+
+    路徑文法與 core/inference 的欄位路徑一致（`.` 相接、`\.` 跳脫、`[索引]`）；指不到就是
+    路徑與實際結構對不上。具名拋出，端點才映得成 422 而非裸 500（不變式 2）。
+    """
