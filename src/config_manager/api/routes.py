@@ -227,6 +227,12 @@ def create_app(
         """納管新檔案（設計文件 §3.5.3）。"""
         return _onboard_config(repo, root_prefixes(repo), held, payload)
 
+    @app.get("/api/configs/{uid}")
+    def config_detail(uid: str) -> dict[str, object]:
+        """單筆的 metadata 與內容（設計文件 §3.5.3）。欄位表（W3，#20）據 `types`＋`values`
+        渲染。"""
+        return _config_detail(repo, uid)
+
     @app.get("/api/browse")
     def browse_filesystem(path: str) -> dict[str, object]:
         """檔案系統瀏覽，受白名單限制（設計文件 §3.5.3）。供納管畫面挑檔案用。"""
@@ -392,6 +398,50 @@ def _clean_note(note: str) -> str:
         for character in note
         if character in "\n\t" or ord(character) >= _FIRST_PRINTABLE_ORD
     )
+
+
+def _config_detail(repo: str, uid: str) -> dict[str, object]:
+    """單筆條目的 metadata 與內容（#20）：欄位表以 `types`（欄位路徑→型別，與 inspect 同形）＋
+    `values`（來源複本解析後的值樹）渲染，型別與值都來自來源複本、不由前端猜（不變式 6）。
+
+    `raw` 不解析：`types` 空、`values` 為 null——介面顯示「未結構化」，不假裝有 0 個欄位（§7.5.4）。
+    權限回條目自己的、沒寫就回清單檔 defaults（T1 的語意，與進版寫出用的一致）。
+    """
+    config_list = read_config_list(repo)
+    entry = next((item for item in config_list.files if item.uid == uid), None)
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"清單檔裡沒有 uid「{uid}」的條目。"
+            "下一步：重新整理清單，確認該 config 仍在納管中",
+        )
+    detail: dict[str, object] = {
+        "uid": entry.uid,
+        "name": entry.name,
+        "hostname": entry.hostname,
+        "ref": entry.ref,
+        "target": entry.target,
+        "source": entry.source,
+        "format": entry.format,
+        "groups": entry.groups,
+        "permissions": _as_permissions(entry.permissions or config_list.defaults.permissions),
+        "types": {},
+        "values": None,
+    }
+    if entry.format == "raw":
+        return detail
+    try:
+        data = values(parse(read_source_copy(repo, entry.source), entry.format))
+        detail["types"] = infer_types(data)
+        detail["values"] = data
+    except (OSError, UnicodeDecodeError, SyntaxParse, RecursionError) as error:
+        # 來源複本讀不到／解析不了：伺服器端資料的問題，非請求端能修——帶檔名與下一步的 500。
+        raise HTTPException(
+            status_code=500,
+            detail=f"「{entry.source}」的來源複本讀不到或解析不了：{error}。"
+            "下一步：檢查 config-repo 裡這份檔案是否被改壞或移走",
+        ) from error
+    return detail
 
 
 def _drafts_view(stage: Stage) -> dict[str, object]:

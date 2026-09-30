@@ -1336,3 +1336,40 @@ def test_promote_kth_write_failure_restores_targets_and_withdraws_records(
     assert pathlib.Path(second["target"]).read_bytes() == b"speed: 1\n"
     assert _head(repo) == before  # 第 1 份的紀錄撤銷
     assert _get(api, "/api/drafts")["count"] == failing_call  # 兩份草稿都保留，修好後可重試
+
+
+# ── T9：單筆內容（GET /api/configs/{uid}，#20）────────────────────────────────
+
+
+def test_config_detail_returns_the_types_and_values_of_the_source_copy(api, sources_root):
+    # 欄位表據 types（路徑→型別）＋values（值樹）渲染；兩者都來自來源複本、不由前端猜。
+    entry = _onboard(
+        api, sources_root, "detail.yaml", b"max_vel: 0.8\nenabled: true\nnested:\n  n: 1\n"
+    )
+
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+
+    assert detail["types"] == {
+        "max_vel": "float", "enabled": "bool", "nested": "dict", "nested.n": "int",
+    }
+    assert detail["values"] == {"max_vel": 0.8, "enabled": True, "nested": {"n": 1}}
+    assert (detail["target"], detail["format"]) == (entry["target"], "yaml")
+    assert detail["permissions"]["mode"]  # 條目自己的權限（納管時的快照）
+
+
+def test_config_detail_for_an_unknown_uid_is_not_found(api):
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(api, "/api/configs/zzzzzzz9")
+
+    assert exc.value.code == _NOT_FOUND
+
+
+def test_config_detail_of_a_raw_config_has_no_fields_rather_than_zero_fields(api, sources_root):
+    # raw 不解析：types 空、values 為 null——介面顯示「未結構化」，不假裝有 0 個欄位（§7.5.4）。
+    _set_session(api)
+    source = _write_source(sources_root, "detail_raw.conf", b"whatever: [not parsed\n")
+    entry = _post(api, "/api/configs", {"source_path": source, "format": "raw"})
+
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+
+    assert (detail["types"], detail["values"]) == ({}, None)
