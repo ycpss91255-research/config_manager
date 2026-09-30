@@ -14,10 +14,13 @@ from pydantic import BaseModel, Field
 
 from config_manager.api.session import Identity
 from config_manager.core.drafts import Promotion, Stage
+from config_manager.core.errors import SyntaxParse
+from config_manager.core.inference import infer_types
 from config_manager.core.models import ConfigList, FileEntry
+from config_manager.core.parse import parse, values
 from config_manager.io.allowed_roots import root_prefixes
 from config_manager.io.errors import PromoteLeftBehind, WriterError
-from config_manager.io.git import KINDS, history, show
+from config_manager.io.git import KINDS, Change, history, show
 from config_manager.io.preflight import read_config_list
 from config_manager.io.promote import apply as apply_promotions
 
@@ -39,6 +42,11 @@ def register_history(
         """單筆的變更歷史（設計文件 §3.5.3）。`?prefix=cfg,adopt` 依類型過濾；不給就只看
         內容變更。"""
         return _config_history(repo, uid, prefix)
+
+    @app.get("/api/configs/{uid}/history/{sha}")
+    def version_detail(uid: str, sha: str) -> dict[str, object]:
+        """那一版來源複本的內容（本 repo 對 §3.5.3 的追加，#26）：歷史檢視據此算參數層級差異。"""
+        return _version_detail(repo, uid, sha)
 
     @app.post("/api/configs/{uid}/revert")
     def revert_config(uid: str, payload: RevertInput) -> dict[str, object]:
@@ -80,6 +88,42 @@ def _config_history(repo: str, uid: str, prefix: str | None) -> list[dict[str, o
     ]
 
 
+def _version_detail(repo: str, uid: str, sha: str) -> dict[str, object]:
+    """`sha` 那一版的 `{sha, types, values}`，形狀同單筆內容端點（#26）。
+
+    sha 限這份 config 歷史裡的（前綴可）——別份的 sha 也 show 得出內容，但那不是這份的版本→422。
+    `raw` 不解析：types 空、values 為 null（同單筆內容端點）。
+    """
+    entry = require_entry(read_config_list(repo), uid)
+    change = _find_version(repo, entry, sha)
+    detail: dict[str, object] = {"sha": change.sha, "types": {}, "values": None}
+    if entry.format == "raw":
+        return detail
+    try:
+        data = values(parse(show(repo, change.sha, entry.source), entry.format))
+    except (CalledProcessError, UnicodeDecodeError, SyntaxParse, RecursionError) as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"「{entry.source}」在版本 {change.sha[:7]} 的內容讀不到或解析不了：{error}。"
+            "下一步：檢查 config-repo 的這筆紀錄是否完整",
+        ) from error
+    detail["types"] = infer_types(data)
+    detail["values"] = data
+    return detail
+
+
+def _find_version(repo: str, entry: FileEntry, sha: str) -> Change:
+    wanted = sha.lower()
+    change = next((c for c in history(repo, entry.uid) if c.sha.startswith(wanted)), None)
+    if change is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"版本「{sha}」不在「{entry.name}@{entry.hostname}」的歷史裡。"
+            "下一步：從 GET /api/configs/{uid}/history 挑一筆 sha",
+        )
+    return change
+
+
 def _revert_config(
     repo: str,
     held: dict[str, Identity],
@@ -109,14 +153,7 @@ def _revert_config(
             detail=f"「{entry.name}@{entry.hostname}」有未進版的草稿，退版會讓草稿對不上來源。"
             "下一步：先進版或捨棄這份草稿，再退版",
         )
-    wanted = payload.version.lower()
-    target_change = next((c for c in history(repo, uid) if c.sha.startswith(wanted)), None)
-    if target_change is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"版本「{payload.version}」不在「{entry.name}@{entry.hostname}」的歷史裡。"
-            "下一步：從 GET /api/configs/{uid}/history 挑一筆 sha",
-        )
+    target_change = _find_version(repo, entry, payload.version)
     plan = Promotion(
         uid=uid,
         source=entry.source,

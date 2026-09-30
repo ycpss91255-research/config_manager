@@ -1515,3 +1515,33 @@ def test_revert_of_an_unknown_uid_is_not_found(api):
         _post(api, "/api/configs/zzzzzzz9/revert", {"version": "0123456"})
 
     assert exc.value.code == _NOT_FOUND
+
+
+# ── T9：單一版本內容（GET /api/configs/{uid}/history/{sha}，#26）────────────
+
+
+def test_version_detail_returns_the_values_of_that_version(api, sources_root):
+    # 歷史檢視據此算參數層級差異：那一版的 values／types，形狀同單筆內容端點。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "version.yaml", b"count: 1\n")
+    _promote_value(api, entry["uid"], "count", 2)
+    import_sha = _history(api, entry["uid"], "import")[0]["sha"]
+
+    version = _get(api, f"/api/configs/{entry['uid']}/history/{import_sha[:7]}")
+
+    assert (version["sha"], version["values"], version["types"]) == (
+        import_sha, {"count": 1}, {"count": "int"},
+    )
+    assert _get(api, f"/api/configs/{entry['uid']}")["values"] == {"count": 2}  # 目前版本另讀
+
+
+def test_version_detail_of_another_configs_sha_is_refused(api, sources_root):
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "version_a.yaml", b"count: 1\n")
+    other = _onboard(api, sources_root, "version_b.yaml", b"speed: 1\n")
+    foreign = _history(api, other["uid"], "import")[0]["sha"]
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(api, f"/api/configs/{entry['uid']}/history/{foreign}")
+
+    assert exc.value.code == _UNPROCESSABLE
