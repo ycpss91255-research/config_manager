@@ -196,7 +196,13 @@ class _WebCoverage:
         for entry in cdp.send("Profiler.takePreciseCoverage")["result"]:
             if entry.get("url") != page_url:
                 continue
-            fetched = cdp.send("Debugger.getScriptSource", {"scriptId": entry["scriptId"]})
+            try:
+                fetched = cdp.send("Debugger.getScriptSource", {"scriptId": entry["scriptId"]})
+            except BrowserError:
+                # 頁面重新整理過：舊文件那份 script 已被回收、原始碼取不到，只剩它的計數。跳過它
+                # ——同一份 index.html 的新副本仍在，行號對得回同一個檔案；漏掉的只有重載前那段
+                # 執行（#33 起 pagehide 會送釋放請求，重載時舊文件多活一下，這種情況才出現）。
+                continue
             source = fetched["scriptSource"]
             covered, code = line_coverage(source, entry["functions"])
             # 報告上的行號指 index.html，不指行內 script 自己的第幾行：讀報告的人
@@ -1881,3 +1887,64 @@ def test_group_nodes_roll_up_the_most_severe_state_of_their_children(open_page, 
     nav = page.get_attribute(f"[data-testid='tree-group-navigation'] {dot}", "data-state")
     ungrouped = page.get_attribute(f"[data-testid='tree-group-ungrouped'] {dot}", "data-state")
     assert (nav, ungrouped) == ("in_sync", "drift")
+
+
+# ── W6 單一編輯階段（#33）────────────────────────────────────────────────────
+# 一次只允許一個編輯階段（§7.2.2、ADR-00000014）：第二個分頁唯讀、指名持有者與開始時間；會寫入的
+# 控制項不出現（不是停用）；不提供強制接管。
+
+
+def test_a_second_tab_is_read_only_and_names_the_holder(open_page, listing):
+    # 同一個人開第二個分頁：第一個持有編輯階段，第二個唯讀、橫幅指名持有者與開始時間。
+    listing("a")
+    holder = _enter_identity(open_page())
+    holder.wait_for_selector("[data-testid='promote-all']", state="visible")
+
+    second = open_page()  # 新 context＝新分頁：GET /api/session 有身分 → 進清單 → 取階段被拒
+    second.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+
+    banner = second.inner_text("[data-testid='readonly-banner']")
+    assert "陳小明" in banner and "ming@example.com" in banner and "起編輯中" in banner
+    assert second.is_hidden("[data-testid='promote-all']")
+    second.click("[data-testid='tree-item-mfz3k9q1']")
+    second.wait_for_selector("[data-testid='panel-mfz3k9q1']", state="visible")
+    assert second.is_hidden("[data-testid='panel-save']")
+    assert holder.is_visible("[data-testid='promote-all']")  # 持有者不受影響
+
+
+def test_entering_another_identity_while_someone_holds_the_session_is_read_only(open_page, listing):
+    # 換身分會把持有者的紀錄掛到別人頭上——後端擋下（409），前端以唯讀進清單並說明是誰。被拒過的
+    # 分頁重新整理後不沿用持有者的身分，回到身分表單。
+    listing("a")
+    _enter_identity(open_page())
+    second = open_page()
+    second.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+
+    second.reload()
+    second.wait_for_selector("[data-testid='identity-form']", state="visible")
+    _fill_identity(second, "林巡檢")
+
+    second.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+    assert "陳小明" in second.inner_text("[data-testid='readonly-banner']")
+    assert second.inner_text("[data-testid='current-role']") == "唯讀"
+    assert second.is_hidden("[data-testid='promote-all']")
+
+
+def test_when_the_holder_leaves_the_next_person_can_edit(open_page, listing):
+    # 正常關閉頁面主動釋放（pagehide）→ 下一個人重新整理、填自己的身分即可取得編輯階段。
+    listing("a")
+    holder = _enter_identity(open_page())
+    holder.wait_for_selector("[data-testid='promote-all']", state="visible")
+    second = open_page()
+    second.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+
+    holder.evaluate("window.dispatchEvent(new Event('pagehide'))")
+    second.wait_for_timeout(300)
+    second.reload()
+
+    second.wait_for_selector("[data-testid='identity-form']", state="visible")
+    _fill_identity(second, "林巡檢")
+    second.wait_for_selector("[data-testid='config-tree']", state="visible")
+    second.wait_for_selector("[data-testid='promote-all']", state="visible")
+    assert second.is_hidden("[data-testid='readonly-banner']")
+    assert second.inner_text("[data-testid='current-role']").startswith("林巡檢")

@@ -145,6 +145,8 @@
   .resolve-option .why { font-size: 12px; color: var(--muted); }
   .resolve-error { margin: 0 14px 12px; }
   .group > h2 { display: flex; align-items: center; gap: 8px; }
+  /* 單一編輯階段（#33、ADR-00000014）：非持有分頁唯讀——會寫入的控制項不出現，而不是停用。 */
+  body[data-readonly="true"] .editing-only { display: none !important; }
   /* 進版／捨棄變更（#22） */
   .banner { grid-column: 1 / -1; }
   .banner ul { margin: 8px 0 0; padding-left: 18px; list-style: disc; }
@@ -402,12 +404,12 @@
   <input type="search" data-testid="search-input" placeholder="搜尋" aria-label="搜尋">
   <span class="grow"></span>
   <span class="who" data-testid="current-role"></span>
-  <button type="button" data-testid="open-browse">納管</button>
-  <button type="button" data-testid="open-whitelist" hidden>白名單</button>
+  <button type="button" class="editing-only" data-testid="open-browse">納管</button>
+  <button type="button" class="editing-only" data-testid="open-whitelist" hidden>白名單</button>
   <button type="button" data-testid="rescan">檢查差異</button>
   <!-- 三段式的第三段（#22、§7.4.3）：進版是全域動作，按鈕顯示待進版草稿數；捨棄變更清草稿、不動來源與目標。 -->
-  <button type="button" data-testid="discard-all" disabled>捨棄變更</button>
-  <button type="button" class="promote" data-testid="promote-all" disabled>進版 (0)</button>
+  <button type="button" class="editing-only" data-testid="discard-all" disabled>捨棄變更</button>
+  <button type="button" class="promote editing-only" data-testid="promote-all" disabled>進版 (0)</button>
 </header>
 
 <!-- W6 確認對話框：捨棄變更（全域／單一）等不可逆動作共用；含可見標題與後果說明。 -->
@@ -422,6 +424,8 @@
 
 <main hidden>
   <!-- 進版的結果橫幅：失敗指名哪一份的哪一個參數（原樣列出後端的行號／原因／建議）、成功說進了幾份。 -->
+  <!-- W6 唯讀橫幅（#33）：非持有分頁顯示；含持有者姓名、email、開始時間。 -->
+  <div class="notice error banner" data-testid="readonly-banner" hidden></div>
   <div class="notice error banner" data-testid="promote-error" hidden></div>
   <div class="notice banner" data-testid="promote-done" hidden></div>
   <div id="tree" data-testid="config-tree"></div>
@@ -823,7 +827,7 @@ function panelNode(detail) {
   }
   // 儲存＝存為草稿：不記錄、不寫出（§7.4.3、T18）。驗證未過時停用；沒有任何改動也停用。
   const saveButton = element("button", {
-    type: "button", class: "panel-save", "data-testid": "panel-save", text: "儲存",
+    type: "button", class: "panel-save editing-only", "data-testid": "panel-save", text: "儲存",
   });
   saveButton.disabled = true;
   const saveError = element("div", {
@@ -852,7 +856,7 @@ function panelNode(detail) {
   });
   // 捨棄變更（單一 config）：清掉這份的草稿、回到來源內容；只有有草稿時才出現（#22）。
   const discardButton = element("button", {
-    type: "button", "data-testid": "panel-discard", text: "捨棄變更",
+    type: "button", class: "editing-only", "data-testid": "panel-discard", text: "捨棄變更",
   });
   discardButton.hidden = !detail.draft_values;
   discardButton.addEventListener("click", () => discardDrafts(detail.uid, detail.name));
@@ -1220,7 +1224,7 @@ function renderDiff(target, version, detail, view) {
   const differing = compared.filter((row) => row.change !== "same").length;
   // 退回此版本（#27、§5.3 圖 7）：看過差異才退；不可逆（會產生一筆新紀錄並寫出目標）→ W6 確認對話框。
   const revertButton = element("button", {
-    type: "button", "data-testid": "history-revert", text: "退回此版本",
+    type: "button", class: "editing-only", "data-testid": "history-revert", text: "退回此版本",
   });
   revertButton.disabled = differing === 0;
   revertButton.title = differing === 0 ? "這一版與目前版本相同，沒有東西可退" : "";
@@ -1395,7 +1399,7 @@ function resolveActions(detail, view) {
     button.addEventListener("click", () => resolveDrift(detail, option, view, error));
     return element("div", { class: "resolve-option" }, [button, element("span", { class: "why", text: option.why })]);
   });
-  return element("div", {}, [error, element("div", { class: "resolve-actions" }, options)]);
+  return element("div", {}, [error, element("div", { class: "resolve-actions editing-only" }, options)]);
 }
 
 async function resolveDrift(detail, option, view, errorEl) {
@@ -1553,6 +1557,130 @@ async function discardDrafts(uid, name) {
 promoteButton.addEventListener("click", promoteAll);
 discardAllButton.addEventListener("click", () => discardDrafts(null, null));
 
+// ── 編輯階段（#33、§7.2.2、ADR-00000014）──────────────────────────────────────
+// 一次只有一個編輯階段。進清單時向 backend 取得；成功就拿到識別碼（只存在這個分頁的 sessionStorage，
+// 重新整理不丟）並定期續期；關閉頁面時主動釋放；異常中斷靠續期逾時自動釋放。已被占用→唯讀：
+// 橫幅指名持有者與開始時間，會寫入的控制項不出現（不是停用）。不提供強制接管。
+const readonlyBanner = document.querySelector("[data-testid='readonly-banner']");
+const SESSION_TOKEN_KEY = "cm.session.token";
+// 這個分頁曾被拒（別人持有）：之後重新整理不自動沿用 app 上的身分——那是持有者的，不是你的。
+const REFUSED_KEY = "cm.session.refused";
+const RENEW_EVERY_MS = 30_000;
+let sessionToken = null;
+let renewTimer = null;
+
+function storedToken() {
+  try { return sessionStorage.getItem(SESSION_TOKEN_KEY); } catch (_error) { return null; }
+}
+
+function rememberToken(token) {
+  sessionToken = token;
+  try {
+    if (token) sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+    else sessionStorage.removeItem(SESSION_TOKEN_KEY);
+  } catch (_error) {
+    // 私密視窗等存不進去：識別碼還在記憶體裡，只是重新整理後要重新取得。
+  }
+}
+
+function markRefused(flag) {
+  try {
+    if (flag) sessionStorage.setItem(REFUSED_KEY, "1");
+    else sessionStorage.removeItem(REFUSED_KEY);
+  } catch (_error) {
+    // 存不進去就算了：只是少一層「重新整理後不沿用別人身分」的保護，後端的 409 仍擋著換身分。
+  }
+}
+
+function wasRefused() {
+  try { return sessionStorage.getItem(REFUSED_KEY) === "1"; } catch (_error) { return false; }
+}
+
+function setReadonly(holder, startedAt, reason) {
+  document.body.dataset.readonly = "true";
+  currentRole.textContent = "唯讀";
+  const who = holder
+    ? `目前由 ${holder.name}（${holder.email}）自 ${formatTime(startedAt)} 起編輯中。`
+    : "";
+  readonlyBanner.replaceChildren(
+    element("strong", { text: "唯讀模式。" }),
+    element("p", {
+      text: reason || `${who}一次只允許一個編輯階段；等對方離開或逾時釋放後重新整理即可取得。不提供強制接管。`,
+    }),
+  );
+  readonlyBanner.hidden = false;
+  if (renewTimer) { clearInterval(renewTimer); renewTimer = null; }
+}
+
+function setEditing() {
+  document.body.dataset.readonly = "false";
+  readonlyBanner.hidden = true;
+}
+
+async function acquireSession() {
+  const token = storedToken();
+  if (token && await renewSession(token)) return;
+  try {
+    const response = await fetch(`${API_BASE}/api/session/lock`, { method: "POST" });
+    const payload = await response.json();
+    if (response.status === 409 && payload.detail && payload.detail.kind === "held") {
+      markRefused(true);
+      setReadonly(payload.detail.holder, payload.detail.started_at, null);
+      return;
+    }
+    if (!response.ok) {
+      setReadonly(null, null, `取不到編輯階段：${detailText(payload.detail)}`);
+      return;
+    }
+    rememberToken(payload.token);
+    markRefused(false);
+    setEditing();
+    if (payload.cleared_drafts) {
+      // 上一個階段逾時釋放時的草稿被清掉——說出來，不靜默丟棄（T13）。
+      promoteDoneEl.textContent = `上一個編輯階段逾時釋放，清除了 ${payload.cleared_drafts} 份未進版的草稿。`;
+      promoteDoneEl.hidden = false;
+    }
+    if (!renewTimer) renewTimer = setInterval(() => renewSession(sessionToken), RENEW_EVERY_MS);
+  } catch (error) {
+    setReadonly(null, null, `取不到編輯階段（送不出去：${error && error.message ? error.message : error}）。`);
+  }
+}
+
+async function renewSession(token) {
+  if (!token) return false;
+  try {
+    const response = await fetch(`${API_BASE}/api/session/lock/renew`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    if (response.ok) {
+      rememberToken(token);
+      setEditing();
+      if (!renewTimer) renewTimer = setInterval(() => renewSession(sessionToken), RENEW_EVERY_MS);
+      return true;
+    }
+    if (response.status === 410) {
+      // 階段已失效（逾時被回收或已釋放）：明確轉唯讀並說明，不替使用者悄悄重新取得。
+      rememberToken(null);
+      setReadonly(null, null, "編輯階段已失效（逾時被回收或已釋放），這個分頁現在是唯讀。重新整理頁面以重新取得。");
+    }
+    return false;
+  } catch (_error) {
+    return false;  // 暫時連不上：下一次續期再試，不因此轉唯讀
+  }
+}
+
+window.addEventListener("pagehide", () => {
+  if (!sessionToken) return;
+  fetch(`${API_BASE}/api/session/lock`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: sessionToken }),
+    keepalive: true,
+  }).catch(() => {});
+});
+
 // ── W1 身分輸入 ──────────────────────────────────────────────────────────────
 // 不是登入：沒有密碼、不驗證、角色是自我宣告（ADR-00000020）。唯一的用途是成為
 // 變更紀錄的作者。文案一律用「身分輸入」，因為說「登入」會讓人以為有存取控制
@@ -1611,6 +1739,19 @@ function showList(identity) {
   // ADR-00000020），不是停用。一般使用者的檢視走 browse 的根清單與允許範圍。
   whitelistButton.hidden = identity.role !== "developer";
   load();
+  acquireSession();
+}
+
+// 別人正持有編輯階段（#33）：沒有自己的身分也能看清單，但一切會寫入的控制項不出現。
+function showReadonlyList(detail) {
+  currentIdentity = null;
+  hideAllPageViews();
+  header.hidden = false;
+  listView.hidden = false;
+  currentRole.textContent = "唯讀";
+  whitelistButton.hidden = true;
+  setReadonly(detail.holder, detail.started_at, null);
+  load();
 }
 
 identityForm.addEventListener("submit", async (event) => {
@@ -1630,10 +1771,15 @@ identityForm.addEventListener("submit", async (event) => {
       body: JSON.stringify(body),
     });
     const payload = await response.json();
+    if (response.status === 409 && payload.detail && payload.detail.kind === "held") {
+      // 別人正在編輯：不換身分（否則對方的紀錄會掛到你頭上），改以唯讀進清單（§7.2.2）。
+      showReadonlyList(payload.detail);
+      return;
+    }
     if (!response.ok) {
       // 端點的訊息已經寫成可行動的樣子（欄位＋原因＋下一步），原樣顯示，
       // 不在這裡改寫成一句籠統的「輸入無效」（不變式 2）。
-      identityError.textContent = payload.detail || `${response.status} ${response.statusText}`;
+      identityError.textContent = detailText(payload.detail) || `${response.status} ${response.statusText}`;
       identityError.hidden = false;
       return;
     }
@@ -2272,7 +2418,8 @@ confirmView.querySelector(".onboard-cancel").addEventListener("click", showBrows
   try {
     const response = await fetch(`${API_BASE}/api/session`);
     const identity = response.ok ? await response.json() : null;
-    if (identity) {
+    // 這個分頁曾被拒（別人持有）就不沿用 app 上的身分——那是持有者的；請填自己的（#33）。
+    if (identity && !wasRefused()) {
       showList(identity);
       return;
     }

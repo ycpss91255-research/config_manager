@@ -5,11 +5,18 @@
 ——說「登入」會讓使用者以為系統有存取控制（CONTEXT.md「避免使用的說法」）。
 
 身分（誰）與階段（誰正在編輯）是兩件事：使用者可以只是看清單，那不需要取得階段。
-這一版只有身分；階段的 acquire／renew／release／sweep 隨 #33 加入。
+階段（`SessionLock`，#33、§7.2.2、ADR-00000014）：一次只有一個編輯階段；已被占用就拒絕並說出
+持有者是誰、從何時開始；不提供強制接管——持有者逾時後自然釋放，其他人再取得。
 
-純邏輯，不做 I/O，也不讀時鐘——身分不涉及時間。
+純邏輯，不做 I/O，**也不讀時鐘**：階段的每個操作都收 `now`，逾時才測得出來（T13）。
 """
 
+from __future__ import annotations
+
+import secrets
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from typing import NamedTuple
 
 from config_manager.api.errors import InvalidAuthor
@@ -72,3 +79,86 @@ def _checked(field: str, value: str) -> str:
                 f"使紀錄上的人與實際輸入的人不同。下一步：移除該字元"
             )
     return trimmed
+
+
+# ── 編輯階段（#33）────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class EditingSession:
+    """一個編輯階段：識別碼（只有持有的分頁知道）、持有者、開始時間、最近一次續期。"""
+
+    token: str
+    holder: Identity
+    started_at: datetime
+    renewed_at: datetime
+
+
+class SessionHeld(Exception):
+    """已有活躍階段：回覆含持有者姓名、email、開始時間（§7.2.2）。不提供強制接管。"""
+
+    def __init__(self, holder: Identity, started_at: datetime) -> None:
+        super().__init__(
+            f"目前由 {holder.name}（{holder.email}）自 {started_at.isoformat()} 起編輯中，"
+            "介面為唯讀。下一步：等對方離開或逾時釋放後再取得；不提供強制接管"
+        )
+        self.holder = holder
+        self.started_at = started_at
+
+
+class SessionExpired(Exception):
+    """續期的階段已失效（逾時被回收、已釋放、或識別碼不對）：明確失敗，不靜默重新取得。"""
+
+
+class SessionLock:
+    """單一編輯階段（ADR-00000014）。`timeout` 為 None 是開發模式：不因閒置回收。
+
+    所有操作先 `sweep(now)`：逾時的階段在任何人碰它之前就被回收，被回收的那份回給呼叫端
+    ——API 層據此清草稿並回報「有 N 份草稿被清除」而非靜默丟棄（T13）。
+    """
+
+    def __init__(
+        self, timeout: timedelta | None, tokens: Callable[[], str] = secrets.token_urlsafe
+    ) -> None:
+        self.timeout = timeout
+        self._tokens = tokens
+        self.current: EditingSession | None = None
+
+    def acquire(self, holder: Identity, now: datetime) -> EditingSession:
+        """無人持有時取得；已被占用丟 `SessionHeld`（含持有者資訊）。"""
+        self.sweep(now)
+        if self.current is not None:
+            raise SessionHeld(self.current.holder, self.current.started_at)
+        self.current = EditingSession(self._tokens(), holder, now, now)
+        return self.current
+
+    def renew(self, token: str, now: datetime) -> EditingSession:
+        """續期。階段已失效（回收／釋放／識別碼不對）→ `SessionExpired`，不會替你重新取得。"""
+        self.sweep(now)
+        if self.current is None or self.current.token != token:
+            raise SessionExpired(
+                f"識別碼 {token[:6]}… 的編輯階段已失效（逾時被回收或已釋放），這個分頁現在是唯讀。"
+                "下一步：重新整理頁面以重新取得編輯階段"
+            )
+        self.current = replace(self.current, renewed_at=now)
+        return self.current
+
+    def release(self, token: str) -> bool:
+        """持有者主動釋放（正常關閉頁面）。識別碼不對就什麼都不做、回 False。"""
+        if self.current is None or self.current.token != token:
+            return False
+        self.current = None
+        return True
+
+    def sweep(self, now: datetime) -> list[EditingSession]:
+        """回收逾時的階段（部署模式：閒置達 timeout）。回被回收的那幾份（最多一份）。"""
+        if self.timeout is None or self.current is None:
+            return []
+        if now - self.current.renewed_at <= self.timeout:
+            return []
+        expired = self.current
+        self.current = None
+        return [expired]
+
+    def holds(self, token: str) -> bool:
+        return self.current is not None and self.current.token == token

@@ -11,6 +11,8 @@ PDF §3.6.1 軸 2 的層級只有 Unit／Integration／System／Acceptance。先
 """
 
 import contextlib
+import datetime
+import gc
 import http.server
 import json
 import os
@@ -26,6 +28,7 @@ import pytest
 
 import config_manager
 from config_manager.core.allowed_roots import load as load_allowed_roots
+from config_manager.api.lock import LockBox
 from config_manager.core.errors import UidHorizonReached
 from config_manager.io import promote as promote_io
 from config_manager.io.errors import TargetNotWritable
@@ -42,6 +45,8 @@ _FORBIDDEN = 403
 _SERVER_ERROR = 500
 # 404：要移除的白名單前綴不在檔裡（#15）——定位不到，不是衝突也不是輸入格式錯。
 _NOT_FOUND = 404
+# 410：續期的編輯階段已失效（逾時被回收或已釋放）——不是找不到資源，是曾經有、現在沒了（#33）。
+_GONE = 410
 
 
 def _get(api, path):
@@ -1803,3 +1808,108 @@ def test_search_with_an_unknown_scope_is_unprocessable_not_empty(api):
 
     assert exc.value.code == _UNPROCESSABLE
     assert "config 名稱／目標路徑／參數名稱／參數值／全部" in _detail(exc.value)
+
+
+# ── T9／T13：編輯階段（POST /api/session/lock…，#33）───────────────────────────
+
+
+def _lock(api, method="POST", path="/api/session/lock", payload=None):
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        f"{api}{path}", data=data, headers={"content-type": "application/json"}, method=method
+    )
+    with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def test_the_editing_session_can_be_acquired_once_and_names_the_holder_to_the_second(api):
+    # 已被占用 → 409，含持有者姓名、email、開始時間；不提供強制接管。
+    _set_session(api)
+    first = _lock(api)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _lock(api)
+        detail = _detail(exc.value)
+        assert exc.value.code == _CONFLICT
+        assert detail["holder"] == {"name": "陳小明", "email": "ming@example.com"}
+        assert detail["started_at"] == first["started_at"]
+        assert _lock(api, "GET")["held"] is True
+    finally:
+        _lock(api, "DELETE", payload={"token": first["token"]})
+        _set_session(api)
+
+
+def test_setting_another_identity_while_someone_holds_the_session_is_refused(api):
+    # 換身分會把持有者接下來的變更紀錄掛到別人頭上 → 409 帶持有者資訊，前端轉唯讀。
+    _set_session(api)
+    session = _lock(api)
+    try:
+        other = {"name": "林巡檢", "email": "lin@example.com", "role": "user"}
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(api, "/api/session", other)
+        assert exc.value.code == _CONFLICT and _detail(exc.value)["kind"] == "held"
+        assert _get(api, "/api/session")["name"] == "陳小明"  # 身分沒被換掉
+    finally:
+        _lock(api, "DELETE", payload={"token": session["token"]})
+        _set_session(api)
+
+
+def test_after_release_someone_else_can_set_an_identity_and_acquire(api):
+    _set_session(api)
+    session = _lock(api)
+
+    assert _lock(api, "DELETE", payload={"token": session["token"]}) == {"released": True}
+
+    assert _get(api, "/api/session")["name"] == "陳小明"  # 身分留著：重新整理也會觸發釋放
+    _post(api, "/api/session", {"name": "林巡檢", "email": "lin@example.com", "role": "user"})
+    second = _lock(api)
+    assert second["holder"]["name"] == "林巡檢"
+    _lock(api, "DELETE", payload={"token": second["token"]})
+    _set_session(api)
+
+
+def test_renewing_with_a_stale_token_is_gone_not_a_silent_reacquire(api):
+    _set_session(api)
+    session = _lock(api)
+    _lock(api, "DELETE", payload={"token": session["token"]})
+    _set_session(api)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _lock(api, path="/api/session/lock/renew", payload={"token": session["token"]})
+
+    assert exc.value.code == _GONE
+    assert _lock(api, "GET")["held"] is False
+
+
+def test_an_expired_session_is_swept_and_its_drafts_are_reported_as_cleared(api, sources_root):
+    # 部署模式：閒置達逾時後回收，草稿一併清除，下一個取得者被告知清了 N 份。時鐘與逾時就地
+    # 注入（T13：讀真實時間的實作測不了逾時）。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地注入時鐘與逾時，外部映像控不了 server 端模組")
+    entry = _onboard(api, sources_root, "lock_drafts.yaml", b"count: 1\n")
+    _clear_drafts(api)
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
+    session = _lock(api)
+    box = _find_lock_box()
+    real_clock, real_timeout = box.clock, box.lock.timeout
+    try:
+        box.lock.timeout = datetime.timedelta(minutes=10)
+        box.clock = lambda: real_clock() + datetime.timedelta(minutes=11)
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _lock(api, path="/api/session/lock/renew", payload={"token": session["token"]})
+        assert exc.value.code == _GONE
+        assert _get(api, "/api/drafts")["count"] == 0  # 逾時釋放時草稿一併清除
+        _set_session(api)
+        acquired = _lock(api)
+        assert acquired["cleared_drafts"] == 1  # 回報「有 N 份草稿被清除」，不靜默丟棄
+        _lock(api, "DELETE", payload={"token": acquired["token"]})
+    finally:
+        box.clock, box.lock.timeout = real_clock, real_timeout
+        _set_session(api)
+
+
+def _find_lock_box():
+    """就地起的服務：從物件圖裡撈出 app 的 LockBox（測逾時要動它的時鐘與逾時）。"""
+    boxes = [obj for obj in gc.get_objects() if isinstance(obj, LockBox)]
+    assert len(boxes) == 1, f"預期恰好一個 LockBox，找到 {len(boxes)}"
+    return boxes[0]

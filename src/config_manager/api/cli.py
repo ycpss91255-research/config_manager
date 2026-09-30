@@ -16,6 +16,7 @@ import argparse
 import http.client
 import json
 import os
+from datetime import timedelta
 import sys
 import urllib.error
 import urllib.parse
@@ -25,7 +26,7 @@ from dataclasses import dataclass
 
 import uvicorn
 
-from config_manager.api.errors import ConfigRepoMissing, ServePortInvalid
+from config_manager.api.errors import ConfigRepoMissing, ServePortInvalid, SessionTimeoutInvalid
 from config_manager.api.routes import DEFAULT_ORIGINS, create_app
 
 _DEFAULT_HOST = "127.0.0.1"
@@ -60,6 +61,8 @@ class ServePlan:
     host: str
     port: int
     allowed_origins: tuple[str, ...]
+    # 編輯階段閒置逾時（秒）；None＝開發模式不逾時（#33；模式判定是 #47）。
+    session_timeout: float | None = None
 
 
 def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
@@ -88,7 +91,26 @@ def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
         host=host,
         port=port,
         allowed_origins=_allowed_origins(environ),
+        session_timeout=_session_timeout(environ),
     )
+
+
+def _session_timeout(environ: Mapping[str, str]) -> float | None:
+    """`CM_SESSION_TIMEOUT`（秒）：設了就是部署模式的閒置逾時；未設＝開發模式不逾時（§7.2.3.2）。
+    不是正數就具名拒絕——寫錯的值靜默當成不逾時，等於部署模式失去逾時而沒人知道。"""
+    raw = environ.get("CM_SESSION_TIMEOUT", "").strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = -1.0
+    if seconds <= 0:
+        raise SessionTimeoutInvalid(
+            f"CM_SESSION_TIMEOUT 必須是正數（秒），現在是 {raw!r}。"
+            "下一步：改成如 600（10 分鐘），或取消設定表示不逾時（開發模式）"
+        )
+    return seconds
 
 
 def _allowed_origins(environ: Mapping[str, str]) -> tuple[str, ...]:
@@ -354,12 +376,16 @@ def _unexpected_response(api: str, error: Exception) -> int:
 def _serve(host: str, port: int) -> int:
     try:
         plan = serve_plan(host, port, os.environ)
-    except (ConfigRepoMissing, ServePortInvalid) as error:
+    except (ConfigRepoMissing, ServePortInvalid, SessionTimeoutInvalid) as error:
         print(f"config_manager: {error}", file=sys.stderr)
         return 2
 
     uvicorn.run(
-        create_app(plan.repo, plan.allowed_origins),
+        create_app(
+            plan.repo,
+            plan.allowed_origins,
+            None if plan.session_timeout is None else timedelta(seconds=plan.session_timeout),
+        ),
         host=plan.host,
         port=plan.port,
         log_level="warning",
