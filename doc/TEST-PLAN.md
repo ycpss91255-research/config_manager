@@ -842,6 +842,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **解除納管（`DELETE /api/configs/{uid}`，§3.5.3 表上既有）：從清單檔移除條目、來源複本自 repo 拿掉、記一筆 `unmanage`；**不刪 target**（§5.5：解除管理不改變系統當前行為）；回被解除的條目、清單不再列它；有未進版草稿→409、未設身分→409、uid 不在→404；寫入失敗整批回滾、帶訊息的 500（#28）** |
 | **偏離處置（`POST /api/configs/{uid}/resolve`，body `{action}`，§3.5.3 的 resolve 動作）：`overwrite`→來源寫回目標、記一筆空 `cfg`（以來源覆蓋目標）；`adopt`→目標現況走第 1 層驗證，過→一筆 `adopt` 進版資料走 apply（來源＝現場、寫出、狀態回一致），含非法值→422 列問題、來源不動；`adopt_draft`→現況載入草稿並回 `warnings`（不擋、不碰 repo 與目標）。目標與來源一致→409（沒有偏離）、目標不存在→409 指去寫出修復、未設身分→409、uid 不在→404、目標白名單外／非 UTF-8→422。**寫出修復（`POST /api/configs/{uid}/apply`，§3.5.3 的 apply 動作）**：來源寫到目標、不留紀錄（#29）** |
 | **搜尋（`GET /api/search?q=&scope=`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：五檔範圍、預設「全部」；回以 config 為單位的命中 `{uid, name, target, matched:[範圍…], params:[{path, value}]}` 與 `unindexed`（來源複本壞掉、參數沒進索引的那幾份）；索引每次請求從真實來源重建，所以修改後舊值不再命中、解除納管後索引移除；未知範圍→422 列五個允許值、`q` 空→422（#32） |
+| **編輯階段（`GET`／`POST`／`DELETE /api/session/lock`、`POST /api/session/lock/renew`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 GET /api/session／#122）：頁面載入時以目前身分取得（回識別碼、持有者、開始時間、上次逾時清了幾份草稿）；已被占用→409 `{kind:"held", holder{name,email}, started_at}`；續期用識別碼，階段已失效→410（不替你重新取得）；釋放不清身分（重新整理也會觸發釋放，同一個人回來不必再填）。**別人持有時 `POST /api/session` 換身分→409**（否則持有者接下來的紀錄會掛到別人頭上）；同一個人再設不擋。逾時（`CM_SESSION_TIMEOUT` 秒；未設＝開發模式不逾時）由注入的時鐘判定，回收時草稿一併清除、下一個取得者被告知清了 N 份（#33） |
 | **單一版本內容（`GET /api/configs/{uid}/history/{sha}`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 GET /api/session／#122）：回那一版來源複本的 `{sha, types, values}`（形狀同單筆內容端點），供歷史檢視算參數層級差異（§7.6.2）；sha 不在這份 config 的歷史→422、uid 不在清單→404（#26） |
 | **草稿（`POST /api/drafts`，body `{uid, edits}`）：以來源複本為底套 `edits`（路徑→新值）、跑第 1 層、存進階段，回 `{count, drafts:[{uid, format}]}`；不產生變更紀錄、目標不變；第 1 層沒過→422，detail 為結構化 `{message, uid, problems:[{line, message, suggestion, severity, lines}]}`（供欄位表標示那一列）且階段不變；路徑找不到→422、uid 不在清單→404、未設身分→409。`GET /api/drafts` 回同形；`DELETE /api/drafts[/{uid}]` 捨棄全部／一份，指名的沒草稿→404（#19）** |
 | 進版端點（`POST /api/promote`）：驗證失敗時**不產生變更紀錄也不寫出**（原子性）；422 的 detail 同草稿的結構化形（指名哪一份 uid 的哪些參數）；沒草稿→409、未設身分→409；成功回 `{promoted:[uid…], count:0}`、每份各一筆 `cfg` 紀錄、作者＝session 身分、目標改變、草稿清空（#19） |
@@ -911,7 +912,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | 偏離時選「將目標現況納入來源」→ 來源更新且產生紀錄（歷史列「採納現場調整」）；**若目標內容違反驗證則被拒**，原樣顯示行號／原因／建議並指去先納入待修正（#31） |
 | 偏離時選「**先納入、待修正**」→ 目標現況載入草稿；**若含非法值，橫幅與該列即時警告（原因＋正確寫法），進版按鈕停用**，改乾淨後可進版 |
 | 退版後參數回到先前值：**（#27）歷史 → 選第一版 → 看差異 → 「退回此版本」→ 確認對話框（與捨棄變更共用 W6）→ 目標內容回到第一版、歷史多一筆「退回舊版本」（連續改三次仍退得回第一版）；取消什麼都不變；有未進版草稿時後端擋下、原樣顯示原因** |
-| 開第二個分頁 → 顯示唯讀，並指出持有者 |
+| 開第二個分頁 → 顯示唯讀，並指出持有者（姓名、email、開始時間）；會寫入的控制項不出現；持有者不受影響；持有者關閉頁面（pagehide 釋放）後，下一個分頁重新整理、填身分即可取得（#33） |
 | 部署模式閒置逾時 → 自動退出且階段釋放 |
 | **一般使用者模式下，型別欄為純文字**、白名單與屬性編輯入口**不顯示**（非停用） |
 | 切換為開發者後，上述元素出現 |
@@ -1345,7 +1346,8 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `api/search` | T9 | 已落地（`GET /api/search`——參數層級搜尋，索引每次請求重建，#32） |
 | `api/history` | T9 | 已落地（`GET /api/configs/{uid}/history`、`GET /api/configs/{uid}/history/{sha}`、`POST /api/configs/{uid}/revert`——歷史與退版的端點與邏輯，自 `api/routes` 拆出以免該模組超過千行，#24） |
 | `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`） |
-| `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 部分落地：身分（`author`）已落地；階段的 acquire／renew／release／sweep 未落地（#33） |
+| `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 已落地：身分（`author`）；階段 `SessionLock` 的 acquire／renew／release／sweep，時鐘注入（#33） |
+| `api/lock` | T9 | 已落地（`POST`／`GET /api/session` 與編輯階段的取得／續期／釋放／狀態端點——設身分要看階段有沒有被別人持有，接線放一起；逾時回收清草稿並回報，#33） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |
 | `web/` | T11 | 已落地。執行通路於 #97 補上：`test/pytest/system/test_web.py`，Playwright 驅動 Chromium，行覆蓋率由 V8 自己算 |
 | `**/__init__.py` | 無——見「刻意的空格」 | 已落地 |

@@ -10,7 +10,8 @@ app 由 create_app(repo) 產生而非模組層的全域物件：config-repo 的�
 
 import os
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from subprocess import CalledProcessError
 
 from fastapi import FastAPI, HTTPException, Request
@@ -18,12 +19,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from config_manager.api.errors import InvalidAuthor
 from config_manager.api.drift import register_drift
 from config_manager.api.history import register_history, require_entry
 from config_manager.api.search import register_search
+from config_manager.api.lock import LockBox, register_session, utc_now
 from config_manager.api.shapes import as_problem, drafts_view
-from config_manager.api.session import DEVELOPER, USER, Identity, author
+from config_manager.api.session import DEVELOPER, Identity, SessionLock
 from config_manager.core.drafts import Stage, discard, promote, save_draft
 from config_manager.core.errors import (
     ConfigListError,
@@ -83,14 +84,6 @@ from config_manager.io.promote import apply as apply_promotions
 from config_manager.io.scan import ScanFailure, scan
 from config_manager.io.source import Source, local_hostname, read_source
 from config_manager.io.unmanage import unmanage
-
-
-class SessionInput(BaseModel):
-    """身分輸入的請求主體。角色預設為一般使用者（預設值落向安全，不變式 4）。"""
-
-    name: str
-    email: str
-    role: str = USER
 
 
 _MAX_AMBIGUITY_NOTE = 10_000
@@ -169,6 +162,8 @@ DEFAULT_ORIGINS = ("http://127.0.0.1:8081", "http://localhost:8081")
 def create_app(
     repo: str,
     allowed_origins: Iterable[str] = DEFAULT_ORIGINS,
+    session_timeout: timedelta | None = None,
+    clock: Callable[[], datetime] = utc_now,
 ) -> FastAPI:
     """建立服務於 repo 這份 config-repo 的 app。
 
@@ -195,28 +190,8 @@ def create_app(
     # 目前編輯階段裡的草稿（#18 的 D1：掛在 app 上、單一階段；階段生命週期是 #33）。與 held
     # 分開放，是為了不把 Identity 型別的 dict 混進另一種值；同樣是 app 級、重新整理頁面不丟。
     stage_box: dict[str, Stage] = {"stage": Stage()}
-
-    @app.post("/api/session")
-    def set_session(payload: SessionInput) -> dict[str, str]:
-        """設定使用者身分（設計文件 §3.5.3）。
-
-        **這不是登入。** 沒有密碼、不驗證、角色是自我宣告（ADR-00000020）。
-        """
-        try:
-            identity = author(payload.name, payload.email, payload.role)
-        except InvalidAuthor as error:
-            # 422 而非 400：輸入的形狀對，值不合法。訊息原樣傳給使用者，因為它
-            # 已經寫成可行動的樣子（欄位＋原因＋下一步）。
-            raise HTTPException(status_code=422, detail=str(error)) from error
-
-        held["identity"] = identity
-        return _as_session(identity)
-
-    @app.get("/api/session")
-    def get_session() -> dict[str, str] | None:
-        """目前的身分，尚未輸入則回 null。"""
-        identity = held.get("identity")
-        return _as_session(identity) if identity else None
+    # 單一編輯階段（#33、ADR-00000014）：timeout None＝開發模式不逾時；時鐘可注入（T13）。
+    lock_box = LockBox(SessionLock(session_timeout), clock)
 
     @app.get("/api/configs")
     def list_configs() -> list[dict[str, object]]:
@@ -265,6 +240,7 @@ def create_app(
     _register_unmanage(app, repo, held, stage_box)
     register_drift(app, repo, held, stage_box)
     register_search(app, repo)
+    register_session(app, held, stage_box, lock_box)
     return app
 
 
@@ -902,16 +878,6 @@ def _as_permissions(permissions: Permissions) -> dict[str, str]:
         "owner": permissions.owner,
         "group": permissions.group,
         "mode": permissions.mode,
-    }
-
-
-def _as_session(identity: Identity) -> dict[str, str]:
-    """身分在畫面上需要的欄位。git_author 一併回傳，讓「紀錄上會是誰」看得見。"""
-    return {
-        "name": identity.name,
-        "email": identity.email,
-        "role": identity.role,
-        "git_author": identity.git_author,
     }
 
 
