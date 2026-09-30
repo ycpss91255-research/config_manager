@@ -1948,3 +1948,69 @@ def test_when_the_holder_leaves_the_next_person_can_edit(open_page, listing):
     second.wait_for_selector("[data-testid='promote-all']", state="visible")
     assert second.is_hidden("[data-testid='readonly-banner']")
     assert second.inner_text("[data-testid='current-role']").startswith("林巡檢")
+
+
+# ── W2 左側樹依主機分層（#34）───────────────────────────────────────────────
+
+
+def _listing_two_hosts(repo) -> None:
+    """兩台主機各一份：a@amr01（navigation）、b@amr02（未分群），目標＝來源→一致。"""
+    entries = ""
+    hosts = (("mfz3k9q1", "a", "amr01", '"navigation"'), ("mfz3k9q2", "b", "amr02", ""))
+    for uid, name, hostname, groups in hosts:
+        (repo / "files" / f"{name}.yaml").write_text(f"{name}: 1\n", encoding="utf-8")
+        target = repo / "deployed" / f"{name}.yaml"
+        target.write_text(f"{name}: 1\n", encoding="utf-8")
+        entries += (
+            f'\n[[files]]\nuid = "{uid}"\nname = "{name}"\nhostname = "{hostname}"\n'
+            f'source = "files/{name}.yaml"\ntarget = "{target}"\nformat = "yaml"\n'
+            f"groups = [{groups}]\n"
+        )
+    (repo / "config-list.toml").write_text(_LIST_HEADER + entries, encoding="utf-8")
+
+
+def test_the_tree_is_grouped_by_default_with_no_host_layer(open_page, repo):
+    # 預設依群組：階層來自 groups，不是機器（§7.4.1）。
+    _listing_two_hosts(repo)
+    page = _enter_identity(open_page())
+
+    assert page.input_value("[data-testid='tree-layout']") == "group"
+    assert page.query_selector("[data-testid^='tree-host-']") is None
+    nav_a = "[data-testid='tree-group-navigation'] [data-testid='tree-item-mfz3k9q1']"
+    assert page.is_visible(nav_a)
+
+
+def test_switching_to_host_layout_puts_hostname_first_then_groups(open_page, repo):
+    # 依主機：第一層 hostname、第二層群組；每份 config 落在自己主機底下的群組節點。
+    _listing_two_hosts(repo)
+    page = _enter_identity(open_page())
+
+    page.select_option("[data-testid='tree-layout']", "host")
+
+    page.wait_for_selector("[data-testid='tree-host-amr01']")
+    host1 = "[data-testid='tree-host-amr01']"
+    host2 = "[data-testid='tree-host-amr02']"
+    nav_a = "[data-testid='tree-group-navigation'] [data-testid='tree-item-mfz3k9q1']"
+    ungrouped_b = "[data-testid='tree-group-ungrouped'] [data-testid='tree-item-mfz3k9q2']"
+    assert page.is_visible(f"{host1} {nav_a}")
+    assert page.is_visible(f"{host2} {ungrouped_b}")
+    hosts = page.eval_on_selector_all(
+        "[data-testid^='tree-host-']", "els => els.map(e => e.dataset.testid)"
+    )
+    assert hosts == ["tree-host-amr01", "tree-host-amr02"]
+    assert page.get_attribute(
+        "[data-testid='tree-host-amr01'] > h2 [data-testid='group-status-dot']", "data-state"
+    ) == "in_sync"
+
+
+def test_switching_back_to_group_layout_removes_the_host_layer(open_page, repo):
+    _listing_two_hosts(repo)
+    page = _enter_identity(open_page())
+    page.select_option("[data-testid='tree-layout']", "host")
+    page.wait_for_selector("[data-testid='tree-host-amr01']")
+
+    page.select_option("[data-testid='tree-layout']", "group")
+
+    page.wait_for_selector("[data-testid^='tree-host-']", state="detached")
+    ungrouped_b = "[data-testid='tree-group-ungrouped'] [data-testid='tree-item-mfz3k9q2']"
+    assert page.is_visible(ungrouped_b)

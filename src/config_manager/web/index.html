@@ -147,6 +147,12 @@
   .group > h2 { display: flex; align-items: center; gap: 8px; }
   /* 單一編輯階段（#33、ADR-00000014）：非持有分頁唯讀——會寫入的控制項不出現，而不是停用。 */
   body[data-readonly="true"] .editing-only { display: none !important; }
+  /* 樹的排列（#34） */
+  .tree-layout { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .tree-layout select { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  .host { margin-bottom: 22px; }
+  .host > h2 { font-size: 13px; letter-spacing: .04em; margin: 0 0 8px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .host .group { margin-left: 12px; }
   /* 進版／捨棄變更（#22） */
   .banner { grid-column: 1 / -1; }
   .banner ul { margin: 8px 0 0; padding-left: 18px; list-style: disc; }
@@ -428,7 +434,18 @@
   <div class="notice error banner" data-testid="readonly-banner" hidden></div>
   <div class="notice error banner" data-testid="promote-error" hidden></div>
   <div class="notice banner" data-testid="promote-done" hidden></div>
-  <div id="tree" data-testid="config-tree"></div>
+  <div class="tree-column">
+    <!-- 樹的排列（#34、§7.4.1）：依群組（預設）或依主機（第一層 hostname、第二層群組）。單機部署下
+         主機層只有一個節點，切換的價值在多機；結構先留著。 -->
+    <label class="tree-layout">
+      <span>排列</span>
+      <select data-testid="tree-layout">
+        <option value="group">依群組</option>
+        <option value="host">依主機</option>
+      </select>
+    </label>
+    <div id="tree" data-testid="config-tree"></div>
+  </div>
   <!-- W2 右側工作區／W3 參數欄位表（#20）：單擊左側樹的 config → 這裡顯示它的欄位表，一次一份
        （雙擊展開與多開是 #35／#36）。元素的 data-testid 依 UI-ELEMENTS.md 的 W3。 -->
   <section id="workspace" data-testid="workspace">
@@ -691,22 +708,49 @@ function render() {
     return;
   }
 
-  for (const [group, items] of byGroup(visible)) {
-    const worst = worstState(items);
-    tree.appendChild(element("section", {
-      class: "group",
-      "data-testid": `tree-group-${group}`,
-    }, [
-      element("h2", {}, [
-        element("span", {
-          class: `dot dot-${worst}`, "data-testid": "group-status-dot", "data-state": worst,
-          title: worst === "error" ? "有一筆判不出狀態" : STATE_TEXT[worst] || worst,
-        }),
-        element("span", { text: group === UNGROUPED ? "未分群" : group }),
-      ]),
-      element("ul", {}, items.map(rowNode)),
-    ]));
+  if (treeLayout.value === "host") {
+    // 依主機：第一層 hostname（依名字排序）、第二層群組。主機節點的色點彙總其下全部 config。
+    for (const [hostname, rows_] of byHost(visible)) {
+      const worst = worstState(rows_);
+      tree.appendChild(element("section", {
+        class: "host", "data-testid": `tree-host-${hostname}`,
+      }, [
+        element("h2", {}, [statusDot(worst), element("span", { text: hostname })]),
+        ...byGroup(rows_).map(([group, items]) => groupNode(group, items)),
+      ]));
+    }
+    return;
   }
+  for (const [group, items] of byGroup(visible)) tree.appendChild(groupNode(group, items));
+}
+
+const treeLayout = document.querySelector("[data-testid='tree-layout']");
+treeLayout.addEventListener("change", render);
+
+function byHost(items) {
+  const buckets = new Map();
+  for (const row of items) {
+    if (!buckets.has(row.hostname)) buckets.set(row.hostname, []);
+    buckets.get(row.hostname).push(row);
+  }
+  return [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b));
+}
+
+function statusDot(worst) {
+  return element("span", {
+    class: `dot dot-${worst}`, "data-testid": "group-status-dot", "data-state": worst,
+    title: worst === "error" ? "有一筆判不出狀態" : STATE_TEXT[worst] || worst,
+  });
+}
+
+function groupNode(group, items) {
+  return element("section", {
+    class: "group",
+    "data-testid": `tree-group-${group}`,
+  }, [
+    element("h2", {}, [statusDot(worstState(items)), element("span", { text: group === UNGROUPED ? "未分群" : group })]),
+    element("ul", {}, items.map(rowNode)),
+  ]);
 }
 
 // 父節點彙總子節點最嚴重的狀態（§7.4.1）：偏離 > 未部署 > 一致；判不出狀態的（#214）排最前——
