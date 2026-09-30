@@ -116,6 +116,17 @@
   .panel-save-error { margin: 0 14px 12px; }
   .panel-save-error ul { margin: 8px 0 0; padding-left: 18px; list-style: disc; }
   .panel-save-error li { display: list-item; padding: 2px 0; border: 0; font-size: 13px; }
+  /* 進版／捨棄變更（#22） */
+  .banner { grid-column: 1 / -1; }
+  .banner ul { margin: 8px 0 0; padding-left: 18px; list-style: disc; }
+  .banner li { display: list-item; padding: 2px 0; border: 0; font-size: 13px; }
+  button.promote { font-weight: 600; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .confirm { border: 1px solid var(--line); border-radius: 10px; padding: 20px 24px; max-width: 460px; background: var(--panel); color: var(--fg); }
+  .confirm::backdrop { background: rgba(0, 0, 0, .35); }
+  .confirm h3 { margin: 0 0 8px; font-size: 16px; }
+  .confirm p { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
+  .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
   .group { margin-bottom: 22px; }
   .group > h2 {
     font-size: 13px;
@@ -365,9 +376,25 @@
   <button type="button" data-testid="open-browse">納管</button>
   <button type="button" data-testid="open-whitelist" hidden>白名單</button>
   <button type="button" data-testid="rescan">檢查差異</button>
+  <!-- 三段式的第三段（#22、§7.4.3）：進版是全域動作，按鈕顯示待進版草稿數；捨棄變更清草稿、不動來源與目標。 -->
+  <button type="button" data-testid="discard-all" disabled>捨棄變更</button>
+  <button type="button" class="promote" data-testid="promote-all" disabled>進版 (0)</button>
 </header>
 
+<!-- W6 確認對話框：捨棄變更（全域／單一）等不可逆動作共用；含可見標題與後果說明。 -->
+<dialog data-testid="confirm-dialog" class="confirm">
+  <h3 data-testid="confirm-title"></h3>
+  <p data-testid="confirm-body"></p>
+  <div class="confirm-actions">
+    <button type="button" data-testid="confirm-cancel">取消</button>
+    <button type="button" data-testid="confirm-ok">確認</button>
+  </div>
+</dialog>
+
 <main hidden>
+  <!-- 進版的結果橫幅：失敗指名哪一份的哪一個參數（原樣列出後端的行號／原因／建議）、成功說進了幾份。 -->
+  <div class="notice error banner" data-testid="promote-error" hidden></div>
+  <div class="notice banner" data-testid="promote-done" hidden></div>
   <div id="tree" data-testid="config-tree"></div>
   <!-- W2 右側工作區／W3 參數欄位表（#20）：單擊左側樹的 config → 這裡顯示它的欄位表，一次一份
        （雙擊展開與多開是 #35／#36）。元素的 data-testid 依 UI-ELEMENTS.md 的 W3。 -->
@@ -476,14 +503,29 @@ let loadError = null;
 let loadGeneration = 0;
 // 目前有草稿的 uid（#21）。掛在 app 上的階段是唯一來源：每次載入清單一併重讀，儲存成功時以回應更新。
 let draftUids = new Set();
+// 目前在右側工作區打開的那份（進版／捨棄後要重讀它，畫面才與階段一致）。
+let openUid = null;
+
+const promoteButton = document.querySelector("[data-testid='promote-all']");
+const discardAllButton = document.querySelector("[data-testid='discard-all']");
+const promoteErrorEl = document.querySelector("[data-testid='promote-error']");
+const promoteDoneEl = document.querySelector("[data-testid='promote-done']");
+
+// draftUids 是唯一來源：每次它變（載入、儲存、進版、捨棄）都從這裡重畫樹與工具列。
+function setDrafts(uids) {
+  draftUids = new Set(uids);
+  render();
+  promoteButton.textContent = `進版 (${draftUids.size})`;
+  promoteButton.disabled = draftUids.size === 0;
+  discardAllButton.disabled = draftUids.size === 0;
+}
 
 async function loadDrafts() {
   try {
     const response = await fetch(`${API_BASE}/api/drafts`);
     if (!response.ok) throw new Error(await loadErrorText(response));
     const payload = await response.json();
-    draftUids = new Set(payload.drafts.map((draft) => draft.uid));
-    render();
+    setDrafts(payload.drafts.map((draft) => draft.uid));
   } catch (error) {
     // 讀不到草稿清單不該悄悄把標記藏掉（不變式 2）：在工作區說出來，樹照常顯示。
     workspace.replaceChildren(element("div", {
@@ -684,6 +726,7 @@ tree.addEventListener("click", (event) => {
 
 async function openPanel(uid) {
   const generation = ++panelGeneration;
+  openUid = uid;
   workspace.replaceChildren(element("p", {
     class: "notice", "data-testid": "panel-loading", text: "載入中…",
   }));
@@ -760,11 +803,20 @@ function panelNode(detail) {
     const container = event.target.closest("li[data-container='true']");
     if (container) toggleCollapse(list, container);
   });
+  // 捨棄變更（單一 config）：清掉這份的草稿、回到來源內容；只有有草稿時才出現（#22）。
+  const discardButton = element("button", {
+    type: "button", "data-testid": "panel-discard", text: "捨棄變更",
+  });
+  discardButton.hidden = !detail.draft_values;
+  discardButton.addEventListener("click", () => discardDrafts(detail.uid, detail.name));
   saveButton.addEventListener("click", () => {
-    saveDraft(detail, entries, { save: saveButton, error: saveError, draft: draftMark });
+    saveDraft(detail, entries, {
+      save: saveButton, error: saveError, draft: draftMark, discard: discardButton,
+    });
   });
   panel.append(list, saveError, element("div", { class: "panel-actions" }, [
     element("span", { class: "hint", text: "「儲存」只是存為草稿——不記錄、不寫到目標；工具列的「進版」才會。" }),
+    discardButton,
     saveButton,
   ]));
   refreshSave();
@@ -792,11 +844,11 @@ async function saveDraft(detail, entries, ui) {
       ui.save.disabled = false;
       return;
     }
-    draftUids = new Set(payload.drafts.map((draft) => draft.uid));
-    render();  // 樹上的草稿標記
+    setDrafts(payload.drafts.map((draft) => draft.uid));  // 樹上的草稿標記、工具列的計數
     for (const entry of entries) entry.row.baseline = currentValue(entry.control, entry.row);
     for (const entry of entries) entry.refresh();  // 畫面＝已存的草稿：不再 dirty、儲存回到停用
     ui.draft.hidden = !draftUids.has(detail.uid);
+    ui.discard.hidden = !draftUids.has(detail.uid);
   } catch (error) {
     renderSaveError(ui.error, `送不出去：${error && error.message ? error.message : error}`);
     ui.save.disabled = false;
@@ -979,6 +1031,89 @@ function toggleCollapse(list, container) {
     node.classList.toggle("is-collapsed-child", hidden);
   }
 }
+
+// ── 進版與捨棄變更（#22）─────────────────────────────────────────────────────
+// 進版是全域動作：全部草稿一次驗證、記錄、寫出，整批原子（§7.4.3、T18）。任一份沒過整批不進版，
+// 後端指名哪一份（uid）的哪些參數（行號／原因／建議）——原樣列在橫幅上並打開那份。捨棄變更清草稿、
+// 回到來源內容，不動來源也不動目標；不可逆，先經 W6 的確認對話框。
+const confirmDialog = document.querySelector("[data-testid='confirm-dialog']");
+
+function confirmAction(title, body) {
+  confirmDialog.querySelector("[data-testid='confirm-title']").textContent = title;
+  confirmDialog.querySelector("[data-testid='confirm-body']").textContent = body;
+  return new Promise((resolve) => {
+    const finish = (answer) => {
+      okButton.removeEventListener("click", onOk);
+      cancelButton.removeEventListener("click", onCancel);
+      confirmDialog.removeEventListener("close", onCancel);
+      if (confirmDialog.open) confirmDialog.close();
+      resolve(answer);
+    };
+    const onOk = () => finish(true);
+    const onCancel = () => finish(false);
+    const okButton = confirmDialog.querySelector("[data-testid='confirm-ok']");
+    const cancelButton = confirmDialog.querySelector("[data-testid='confirm-cancel']");
+    okButton.addEventListener("click", onOk);
+    cancelButton.addEventListener("click", onCancel);
+    confirmDialog.addEventListener("close", onCancel);  // Esc
+    confirmDialog.showModal();
+  });
+}
+
+function clearPromoteBanners() {
+  promoteErrorEl.hidden = true;
+  promoteDoneEl.hidden = true;
+}
+
+async function promoteAll() {
+  clearPromoteBanners();
+  promoteButton.disabled = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/promote`, { method: "POST" });
+    const payload = await response.json();
+    if (!response.ok) {
+      renderSaveError(promoteErrorEl, payload.detail);  // 同一種結構化形：message＋逐條行號／原因／建議
+      const detail = payload.detail;
+      if (detail && detail.uid) openPanel(detail.uid);  // 把人帶到沒過的那一份
+      setDrafts(draftUids);  // 草稿保留，按鈕恢復
+      return;
+    }
+    setDrafts([]);  // 進版後草稿清空（T18）
+    promoteDoneEl.textContent = `已進版 ${payload.promoted.length} 份，各記一筆變更紀錄並寫出至目標。`;
+    promoteDoneEl.hidden = false;
+    load();  // 目標變了，重掃狀態
+    if (openUid) openPanel(openUid);  // 打開的那份現在來源＝剛進版的內容
+  } catch (error) {
+    renderSaveError(promoteErrorEl, `送不出去：${error && error.message ? error.message : error}`);
+    setDrafts(draftUids);
+  }
+}
+
+async function discardDrafts(uid, name) {
+  const scope = uid ? `「${name}」的草稿` : `全部 ${draftUids.size} 份草稿`;
+  const ok = await confirmAction(
+    `捨棄${uid ? "這份" : "全部"}變更？`,
+    `${scope}會被清除、回到來源內容。來源與目標檔案都不會改變；這個動作無法復原。`,
+  );
+  if (!ok) return;
+  clearPromoteBanners();
+  try {
+    const path = uid ? `/api/drafts/${encodeURIComponent(uid)}` : "/api/drafts";
+    const response = await fetch(`${API_BASE}${path}`, { method: "DELETE" });
+    const payload = await response.json();
+    if (!response.ok) {
+      renderSaveError(promoteErrorEl, payload.detail);
+      return;
+    }
+    setDrafts(payload.drafts.map((draft) => draft.uid));
+    if (openUid && (!uid || uid === openUid)) openPanel(openUid);  // 畫面回到來源內容
+  } catch (error) {
+    renderSaveError(promoteErrorEl, `送不出去：${error && error.message ? error.message : error}`);
+  }
+}
+
+promoteButton.addEventListener("click", promoteAll);
+discardAllButton.addEventListener("click", () => discardDrafts(null, null));
 
 // ── W1 身分輸入 ──────────────────────────────────────────────────────────────
 // 不是登入：沒有密碼、不驗證、角色是自我宣告（ADR-00000020）。唯一的用途是成為
