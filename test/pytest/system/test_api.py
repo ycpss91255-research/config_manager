@@ -1743,3 +1743,63 @@ def test_config_detail_reports_a_missing_or_broken_target_without_failing(api, s
 
     assert broken["target_values"] is None and "解析" in broken["target_error"]
     assert (missing["target_values"], missing["target_error"]) == (None, None)
+
+
+# ── T9：搜尋（GET /api/search，#32）─────────────────────────────────────────────
+
+
+def _search(api, query, scope=None):
+    params = {"q": query} | ({"scope": scope} if scope else {})
+    return _get(api, f"/api/search?{urllib.parse.urlencode(params)}")
+
+
+def test_search_all_is_the_union_of_the_four_scopes(api, sources_root):
+    # 搜尋 giraffe 在「全部」下同時命中 config 名稱／目標路徑（giraffe.yaml：名字由目標路徑推導，
+    # 兩者都含這個字）與另一份的參數名稱（giraffe_fps）。
+    _clear_drafts(api)
+    cam = _onboard(api, sources_root, "giraffe.yaml", b"exposure: 0.4242\n")
+    nav = _onboard(api, sources_root, "nav.yaml", b"giraffe_fps: 30\nmax_vel: 0.8\n")
+
+    hits = {hit["uid"]: hit for hit in _search(api, "giraffe")["hits"]}
+
+    assert set(hits[cam["uid"]]["matched"]) == {"config 名稱", "目標路徑"}
+    assert hits[nav["uid"]]["matched"] == ["參數名稱"]
+    assert hits[nav["uid"]]["params"] == [{"path": "giraffe_fps", "value": 30}]
+
+
+def test_search_scope_limits_hits_to_that_scope(api, sources_root):
+    _clear_drafts(api)
+    cam = _onboard(api, sources_root, "zebra.yaml", b"exposure: 0.5577\n")
+    _onboard(api, sources_root, "nav2.yaml", b"zebra_fps: 30\n")
+
+    by_name = _search(api, "zebra", "config 名稱")["hits"]
+    by_value = _search(api, "0.5577", "參數值")["hits"]
+    by_target = _search(api, str(sources_root), "目標路徑")["hits"]
+
+    assert [hit["uid"] for hit in by_name] == [cam["uid"]]
+    assert by_value[0]["uid"] == cam["uid"] and by_value[0]["params"][0]["path"] == "exposure"
+    assert cam["uid"] in [hit["uid"] for hit in by_target]
+
+
+def test_search_reflects_promoted_changes_and_unmanaged_configs(api, sources_root):
+    # 最容易忘記的兩處：修改後舊值不再命中、新值命中；解除納管後索引移除。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "search_changes.yaml", b"speed: 111\n")
+    assert [h["uid"] for h in _search(api, "111", "參數值")["hits"]] == [entry["uid"]]
+
+    _promote_value(api, entry["uid"], "speed", 222)
+    assert _search(api, "111", "參數值")["hits"] == []
+    assert [h["uid"] for h in _search(api, "222", "參數值")["hits"]] == [entry["uid"]]
+
+    request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
+    with urllib.request.urlopen(request, timeout=_TIMEOUT):
+        pass
+    assert _search(api, "222", "參數值")["hits"] == []
+
+
+def test_search_with_an_unknown_scope_is_unprocessable_not_empty(api):
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _search(api, "x", "主機")
+
+    assert exc.value.code == _UNPROCESSABLE
+    assert "config 名稱／目標路徑／參數名稱／參數值／全部" in _detail(exc.value)
