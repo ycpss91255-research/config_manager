@@ -1604,3 +1604,114 @@ def test_unmanaging_an_unknown_uid_is_not_found(api):
         urllib.request.urlopen(request, timeout=_TIMEOUT)
 
     assert exc.value.code == _NOT_FOUND
+
+
+# ── T9：偏離處置與寫出修復（POST /api/configs/{uid}/resolve、/apply，#29）──────
+
+
+def _drifted(api, sources_root, name, content=b"count: 1\n", edited=b"count: 7\n"):
+    """納管後在介面外改 target → 偏離。回條目。"""
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, name, content)
+    pathlib.Path(entry["target"]).write_bytes(edited)
+    return entry
+
+
+def _state_of(api, uid):
+    return next(row["state"] for row in _get(api, "/api/configs") if row["uid"] == uid)
+
+
+def test_overwrite_puts_the_source_back_on_the_target_and_records_the_decision(api, sources_root):
+    # 以來源覆蓋目標：目標內容回到來源、狀態回到一致；repo 沒變但記一筆（誰決定丟掉現場修改）。
+    entry = _drifted(api, sources_root, "drift_overwrite.yaml")
+    assert _state_of(api, entry["uid"]) == "drift"
+
+    result = _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "overwrite"})
+
+    assert pathlib.Path(entry["target"]).read_bytes() == b"count: 1\n"
+    assert _state_of(api, entry["uid"]) == "in_sync"
+    assert result["record"]["kind"] == "cfg" and "覆蓋" in result["record"]["summary"]
+    assert [c["kind"] for c in _history(api, entry["uid"])] == ["cfg"]
+
+
+def test_adopt_makes_the_target_content_the_source_with_an_adopt_record(api, sources_root):
+    # 將目標現況納入來源：走完整驗證 → adopt 紀錄 → 寫出；來源複本現在等於現場內容、狀態一致。
+    entry = _drifted(api, sources_root, "drift_adopt.yaml")
+
+    result = _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
+
+    assert _get(api, f"/api/configs/{entry['uid']}")["values"] == {"count": 7}
+    assert _state_of(api, entry["uid"]) == "in_sync"
+    assert result["record"]["kind"] == "adopt"
+    assert [c["kind"] for c in _history(api, entry["uid"])] == ["adopt"]
+
+
+def test_adopt_of_an_invalid_target_is_refused_with_the_line_and_nothing_changes(api, sources_root):
+    # 含非法值則被拒並說明原因（A3）：壞內容不進來源、沒有 adopt 紀錄、狀態仍是偏離。
+    entry = _drifted(api, sources_root, "drift_bad.yaml", edited=b"enabled: yes\ncount: 7\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
+
+    detail = _detail(exc.value)
+    assert exc.value.code == _UNPROCESSABLE
+    assert detail["problems"][0]["line"] == 1 and "先納入、待修正" in detail["message"]
+    assert _get(api, f"/api/configs/{entry['uid']}")["values"] == {"count": 1}
+    assert _history(api, entry["uid"], "adopt") == []
+    assert _state_of(api, entry["uid"]) == "drift"
+
+
+def test_adopt_draft_loads_the_target_into_a_draft_and_warns_instead_of_refusing(api, sources_root):
+    # 先納入、待修正：壞內容不進來源、也不靜默丟棄——載入草稿並回警告，來源與目標都不動。
+    entry = _drifted(
+        api, sources_root, "drift_adopt_draft.yaml", edited=b"enabled: yes\ncount: 7\n"
+    )
+
+    result = _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt_draft"})
+
+    assert result["warnings"][0]["line"] == 1 and result["warnings"][0]["suggestion"]
+    assert [d["uid"] for d in result["drafts"]] == [entry["uid"]]
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+    assert (detail["values"], detail["draft_values"]) == (
+        {"count": 1}, {"enabled": "yes", "count": 7},
+    )
+    assert _state_of(api, entry["uid"]) == "drift"
+    _clear_drafts(api)
+
+
+def test_resolving_a_config_that_is_not_drifted_is_a_conflict(api, sources_root):
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "no_drift.yaml", b"count: 1\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "overwrite"})
+
+    assert exc.value.code == _CONFLICT
+
+
+def test_apply_repairs_a_missing_target_from_the_source_without_a_record(api, sources_root):
+    # 未部署（目標被刪）→ 一鍵寫出修復：目標回來、狀態一致；repo 沒變、不留紀錄。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "missing.yaml", b"count: 1\n")
+    pathlib.Path(entry["target"]).unlink()
+    assert _state_of(api, entry["uid"]) == "missing"
+    every = "import,cfg,revert,adopt,meta,unmanage"
+    before = [c["sha"] for c in _history(api, entry["uid"], every)]
+
+    _post(api, f"/api/configs/{entry['uid']}/apply", {})
+
+    assert pathlib.Path(entry["target"]).read_bytes() == b"count: 1\n"
+    assert _state_of(api, entry["uid"]) == "in_sync"
+    assert [c["sha"] for c in _history(api, entry["uid"], every)] == before
+
+
+def test_resolving_a_missing_target_points_to_apply_instead(api, sources_root):
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "missing_resolve.yaml", b"count: 1\n")
+    pathlib.Path(entry["target"]).unlink()
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
+
+    assert exc.value.code == _CONFLICT
+    assert "apply" in _detail(exc.value)

@@ -19,7 +19,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from config_manager.api.errors import InvalidAuthor
+from config_manager.api.drift import register_drift
 from config_manager.api.history import register_history, require_entry
+from config_manager.api.shapes import as_problem, drafts_view
 from config_manager.api.session import DEVELOPER, USER, Identity, author
 from config_manager.core.drafts import Stage, discard, promote, save_draft
 from config_manager.core.errors import (
@@ -41,7 +43,6 @@ from config_manager.core.inference import Ambiguity, find_ambiguous, infer_types
 from config_manager.core.models import FileEntry, Permissions
 from config_manager.core.parse import Parsed, dump, parse, set_value, values
 from config_manager.core.state import State
-from config_manager.core.validate import Problem
 from config_manager.core.whitelist import decide
 from config_manager.io.allowed_roots import (
     add_allowed_root,
@@ -260,6 +261,7 @@ def create_app(
     _register_drafts(app, repo, held, stage_box)
     register_history(app, repo, held, stage_box)
     _register_unmanage(app, repo, held, stage_box)
+    register_drift(app, repo, held, stage_box)
     return app
 
 
@@ -275,7 +277,7 @@ def _register_drafts(
     @app.get("/api/drafts")
     def list_drafts() -> dict[str, object]:
         """目前階段裡的草稿（uid 與 format），供工具列顯示「進版 (N)」（#22）。"""
-        return _drafts_view(stage_box["stage"])
+        return drafts_view(stage_box["stage"])
 
     @app.post("/api/drafts")
     def save_one_draft(payload: DraftInput) -> dict[str, object]:
@@ -491,23 +493,6 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
     return detail
 
 
-def _drafts_view(stage: Stage) -> dict[str, object]:
-    return {
-        "count": len(stage.drafts),
-        "drafts": [{"uid": draft.uid, "format": draft.fmt} for draft in stage.drafts.values()],
-    }
-
-
-def _as_problem(problem: Problem) -> dict[str, object]:
-    return {
-        "line": problem.line,
-        "message": problem.message,
-        "suggestion": problem.suggestion,
-        "severity": problem.severity,
-        "lines": list(problem.lines),
-    }
-
-
 def _save_draft(
     repo: str, held: dict[str, Identity], stage_box: dict[str, Stage], payload: DraftInput
 ) -> dict[str, object]:
@@ -543,10 +528,10 @@ def _save_draft(
             detail={
                 "message": str(error),
                 "uid": payload.uid,
-                "problems": [_as_problem(problem) for problem in error.problems],
+                "problems": [as_problem(problem) for problem in error.problems],
             },
         ) from error
-    return _drafts_view(stage_box["stage"])
+    return drafts_view(stage_box["stage"])
 
 
 def _discard_drafts(stage_box: dict[str, Stage], uid: str | None) -> dict[str, object]:
@@ -554,7 +539,7 @@ def _discard_drafts(stage_box: dict[str, Stage], uid: str | None) -> dict[str, o
         stage_box["stage"] = discard(stage_box["stage"], uid)
     except DraftNotFound as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-    return _drafts_view(stage_box["stage"])
+    return drafts_view(stage_box["stage"])
 
 
 def _promote_all(
@@ -583,7 +568,7 @@ def _promote_all(
             detail={
                 "message": str(error),
                 "uid": error.uid,
-                "problems": [_as_problem(problem) for problem in error.problems],
+                "problems": [as_problem(problem) for problem in error.problems],
             },
         ) from error
     try:

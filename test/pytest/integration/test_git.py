@@ -13,7 +13,7 @@ from datetime import datetime
 import pytest
 
 from config_manager.io.errors import RecordFieldUnsafe, UnknownKind
-from config_manager.io.git import head, history, record, reset_hard, show, stage
+from config_manager.io.git import head, history, record, record_empty, reset_hard, show, stage
 
 AUTHOR = "劉宇盈 <yy@example.invalid>"
 
@@ -208,3 +208,23 @@ def test_reset_hard_withdraws_the_records_after_that_point_and_restores_the_cont
 
     assert [entry.sha for entry in history(str(repo), "mfz3k9q1")] == [first]
     assert (repo / "nav2.yaml").read_text() == "max_vel: 0.8\n"
+
+
+# ── 空 commit（T7 加行為，#29）──────────────────────────────────────────────────
+
+
+def test_record_empty_records_a_change_even_when_nothing_is_staged(tmp_path):
+    # 以來源覆蓋目標：repo 內容沒變，但「誰在何時決定丟掉現場修改」要留在歷史上（A3）。
+    repo = _repo(tmp_path)
+
+    record_empty(str(repo), "mfz3k9q1", "cfg", "以來源覆蓋目標（捨棄現場修改）", AUTHOR)
+
+    assert [c.summary for c in history(str(repo), "mfz3k9q1")] == ["以來源覆蓋目標（捨棄現場修改）"]
+
+
+def test_record_refuses_to_record_nothing(tmp_path):
+    # 一筆什麼都沒動的變更紀錄本不該存在——只有 record_empty 例外，且只給覆蓋用。
+    repo = _repo(tmp_path)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        record(str(repo), "mfz3k9q1", "cfg", "什麼都沒動", AUTHOR)
