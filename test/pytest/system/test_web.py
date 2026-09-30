@@ -1150,3 +1150,153 @@ def test_a_structured_load_error_shows_the_backend_message_not_a_bare_status(ope
     page.wait_for_selector("[data-testid='load-error']:not([hidden])")
 
     assert "下一步" in page.inner_text("[data-testid='load-error']")
+
+
+# ── W3 參數欄位表（#20）──────────────────────────────────────────────────────
+# 不是線上 YAML 編輯器（ADR-00000013）：一列一個參數，依型別給控制項。單擊左側樹節點開啟
+# （#20 的 D1；雙擊與多開是 #35／#36）。型別與值來自 GET /api/configs/{uid}，前端不猜。
+
+_PARAM_UID = "mfz3k9q1"
+
+
+def _listing_with(repo, content: str, fmt: str = "yaml") -> None:
+    """一筆條目、內容由規格自己給（`listing` 夾具的內容太簡單，驗不到型別）。目標＝來源→一致。"""
+    suffix = "conf" if fmt == "raw" else fmt
+    (repo / "files" / f"p.{suffix}").write_text(content, encoding="utf-8")
+    target = repo / "deployed" / f"p.{suffix}"
+    target.write_text(content, encoding="utf-8")
+    entry = (
+        f'\n[[files]]\nuid = "{_PARAM_UID}"\nname = "p"\nhostname = "amr01"\n'
+        f'source = "files/p.{suffix}"\ntarget = "{target}"\nformat = "{fmt}"\ngroups = []\n'
+    )
+    (repo / "config-list.toml").write_text(_LIST_HEADER + entry, encoding="utf-8")
+
+
+def _open_panel(page, developer: bool = False):
+    """輸入身分 → 單擊樹上那筆 → 等右側欄位表出現。"""
+    if developer:
+        page.click("[data-testid='role-toggle'] button[data-role='developer']")
+    _enter_identity(page)
+    page.click(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    return page
+
+
+def _param_value(path: str) -> str:
+    return f"[data-testid='param-{path}'] [data-testid='param-value']"
+
+
+def test_clicking_a_config_opens_a_table_with_one_row_per_parameter(open_page, repo):
+    # AC1：一列一個參數——參數名、型別標示、輸入控制項、來源值、驗證狀態都在同一列。
+    _listing_with(repo, "max_vel: 0.8\nenabled: true\nname: amr\ncount: 3\n")
+    page = _open_panel(open_page())
+
+    labels = page.eval_on_selector_all(
+        "[data-testid='param-table'] li[data-name]",
+        "els => Object.fromEntries(els.map(e => [e.dataset.name,"
+        " e.querySelector('[data-testid=\"param-type\"]').textContent]))",
+    )
+    assert labels == {"max_vel": "double", "enabled": "bool", "name": "string", "count": "int"}
+    assert page.inner_text("[data-testid='param-count'] [data-testid='param-source-value']") == "3"
+    # 驗證狀態欄一開始就在（空的，因為值合法），該列標為合法。
+    assert page.inner_text("[data-testid='param-count'] [data-testid='param-validation']") == ""
+    assert page.get_attribute("[data-testid='param-count']", "data-valid") == "true"
+
+
+def test_nested_parameters_render_as_a_collapsible_block_not_a_dotted_name(open_page, repo):
+    # AC1：巢狀以可折疊區塊表示——子列以縮排呈現、顯示名是 inner 不是 outer.inner；點區塊折疊。
+    _listing_with(repo, "outer:\n  inner: 1\n")
+    page = _open_panel(open_page())
+
+    assert page.get_attribute("[data-testid='param-outer']", "data-container") == "true"
+    assert page.get_attribute("[data-testid='param-outer.inner']", "data-type") == "int"
+    leaf = page.inner_text("[data-testid='param-outer.inner'] .param-name").strip()
+    assert leaf == "inner"
+    page.click("[data-testid='param-outer']")
+    page.wait_for_selector("[data-testid='param-outer.inner']", state="hidden")
+
+
+def test_a_bool_parameter_is_a_checkbox_reflecting_its_value(open_page, repo):
+    # AC2：核取方塊——結構上輸入不了非布林值。
+    _listing_with(repo, "enabled: true\nverbose: false\n")
+    page = _open_panel(open_page())
+
+    assert page.get_attribute(_param_value("enabled"), "type") == "checkbox"
+    assert page.is_checked(_param_value("enabled"))
+    assert not page.is_checked(_param_value("verbose"))
+
+
+def test_an_int_parameter_rejects_a_decimal_and_says_why(open_page, repo):
+    # AC3：整數步進的數字框；打小數→該列標錯並說原因，打整數→恢復。
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+
+    assert page.get_attribute(_param_value("count"), "step") == "1"
+    page.fill(_param_value("count"), "1.5")
+    assert page.get_attribute("[data-testid='param-count']", "data-valid") == "false"
+    assert "整數" in page.inner_text("[data-testid='param-count'] [data-testid='param-validation']")
+    page.fill(_param_value("count"), "4")
+    assert page.get_attribute("[data-testid='param-count']", "data-valid") == "true"
+
+
+def test_a_double_parameter_always_shows_a_decimal_point(open_page, repo):
+    # AC4：允許小數的數字框；來源 `1.0` 顯示 1.0（不是 1），打 `5` 離開欄位後顯示 5.0。
+    _listing_with(repo, "ratio: 1.0\nmax_vel: 0.8\n")
+    page = _open_panel(open_page())
+
+    assert page.get_attribute(_param_value("max_vel"), "step") == "any"
+    assert page.input_value(_param_value("ratio")) == "1.0"
+    page.fill(_param_value("max_vel"), "5")
+    page.dispatch_event(_param_value("max_vel"), "change")
+    assert page.input_value(_param_value("max_vel")) == "5.0"
+
+
+def test_a_string_parameter_is_a_text_input_and_quotes_are_the_systems_business(open_page, repo):
+    # AC6：文字框顯示的是值本身，來源檔的引號不出現在框裡。
+    _listing_with(repo, 'name: "amr01"\n')
+    page = _open_panel(open_page())
+
+    assert page.get_attribute(_param_value("name"), "type") == "text"
+    assert page.input_value(_param_value("name")) == "amr01"
+
+
+def test_the_type_column_is_plain_text_even_for_a_developer(open_page, repo):
+    # AC7：型別由系統決定、使用者不能改——本版兩種角色都是純文字（人工指定是 v0.7.0）。
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page(), developer=True)
+
+    tag = page.eval_on_selector(
+        "[data-testid='param-count'] [data-testid='param-type']", "e => e.tagName"
+    )
+    assert tag == "SPAN"
+    assert page.query_selector("[data-testid='param-count'] select") is None
+
+
+def test_editing_a_value_keeps_the_source_value_beside_it_and_marks_the_change(open_page, repo):
+    # §7.5.1：已修改未儲存時目前值與來源值並列，改動一眼可見。
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+
+    page.fill(_param_value("count"), "4")
+
+    assert page.inner_text("[data-testid='param-count'] [data-testid='param-source-value']") == "3"
+    assert page.get_attribute("[data-testid='param-count']", "data-changed") == "true"
+
+
+def test_list_elements_are_listed_read_only(open_page, repo):
+    # D3：list 只列元素、唯讀；新增／移除／排序是 #46。
+    _listing_with(repo, "items:\n  - spin\n  - backup\n")
+    page = _open_panel(open_page())
+
+    assert page.get_attribute("[data-testid='param-items']", "data-type") == "list"
+    assert page.input_value(_param_value("items[1]")) == "backup"
+    assert page.get_attribute(_param_value("items[1]"), "readonly") is not None
+
+
+def test_a_raw_config_shows_an_unstructured_notice_not_an_empty_table(open_page, repo):
+    # §7.5.4：沒有結構就明說「未結構化」，不假裝有 0 個欄位。
+    _listing_with(repo, "whatever: [not parsed\n", fmt="raw")
+    page = _open_panel(open_page())
+
+    assert page.is_visible("[data-testid='panel-unstructured']")
+    assert page.query_selector("[data-testid='param-table']") is None

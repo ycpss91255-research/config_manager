@@ -76,7 +76,37 @@
     background: var(--bg);
     color: var(--fg);
   }
-  main { padding: 16px 20px 40px; }
+  main {
+    padding: 16px 20px 40px;
+    display: grid;
+    grid-template-columns: minmax(300px, 1fr) minmax(0, 2fr);
+    gap: 24px;
+    align-items: start;
+  }
+  /* W3 參數欄位表（#20）：一列一個參數——名稱／型別／值／來源值／驗證。 */
+  .panel { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  .panel-head { display: flex; align-items: baseline; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .panel-head .target { flex: 1; }
+  .param-table { padding: 6px 0; }
+  .param-table .param-head { color: var(--muted); font-size: 12px; font-weight: 600; }
+  .param-table .param-head:hover { background: transparent; }
+  .param-row { align-items: center; }
+  .param-row .param-name { flex: 1.4; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; overflow-wrap: anywhere; }
+  .param-row[data-container="true"] { cursor: pointer; }
+  .param-row[data-container="true"] .param-name { font-weight: 600; }
+  .param-row .param-type { flex: none; width: 64px; font-size: 12px; color: var(--muted); }
+  .param-row .param-value-wrap { flex: 1; }
+  .param-row .param-value-wrap input, .param-row .param-value-wrap select {
+    font: inherit; font-size: 13px; width: 100%; padding: 4px 8px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg);
+  }
+  .param-row .param-value-wrap input[type="checkbox"] { width: auto; }
+  .param-row .param-value-wrap input[readonly] { color: var(--muted); }
+  .param-row .param-source { flex: 1; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .param-row .param-source[data-changed="true"] { color: var(--drift); text-decoration: line-through; }
+  .param-row .param-validation { flex: 1; font-size: 12px; color: var(--drift); }
+  .param-row[data-valid="false"] { background: color-mix(in srgb, var(--drift) 8%, transparent); }
+  .param-row.is-collapsed-child { display: none; }
   .group { margin-bottom: 22px; }
   .group > h2 {
     font-size: 13px;
@@ -330,6 +360,11 @@
 
 <main hidden>
   <div id="tree" data-testid="config-tree"></div>
+  <!-- W2 右側工作區／W3 參數欄位表（#20）：單擊左側樹的 config → 這裡顯示它的欄位表，一次一份
+       （雙擊展開與多開是 #35／#36）。元素的 data-testid 依 UI-ELEMENTS.md 的 W3。 -->
+  <section id="workspace" data-testid="workspace">
+    <p class="notice" data-testid="workspace-empty">從左側點選一份 config，這裡會顯示它的參數欄位表。</p>
+  </section>
 </main>
 
 <!-- W7 檔案瀏覽（#13）：受白名單限制的瀏覽，供納管時選定路徑。獨立整頁 view，
@@ -472,7 +507,9 @@ function rowNode(row) {
   if (row.error) {
     // 判不出狀態的那一列（目標是 FIFO／裝置／不可 traverse，#214）：標「錯誤」並把原因放進
     // title，不畫一個偽裝的狀態點——把「比不了」講成某個狀態就是靜默失敗（不變式 2）。
-    return element("li", { "data-testid": `tree-item-${row.uid}`, "data-state": "error" }, [
+    return element("li", {
+      "data-testid": `tree-item-${row.uid}`, "data-uid": row.uid, "data-state": "error",
+    }, [
       element("span", {
         class: "dot dot-error",
         "data-testid": "status-dot",
@@ -490,7 +527,7 @@ function rowNode(row) {
     ]);
   }
   // 狀態色點在左，與草稿標記（右側，隨 T18 加入）分開——UI-ELEMENTS W2 的左側樹。
-  return element("li", { "data-testid": `tree-item-${row.uid}` }, [
+  return element("li", { "data-testid": `tree-item-${row.uid}`, "data-uid": row.uid }, [
     element("span", {
       class: `dot dot-${row.state}`,
       "data-testid": "status-dot",
@@ -581,6 +618,232 @@ async function load() {
 
 search.addEventListener("input", render);
 document.querySelector("[data-testid='rescan']").addEventListener("click", load);
+
+// ── W3 參數欄位表（#20）──────────────────────────────────────────────────────
+// 這不是線上 YAML 編輯器（ADR-00000013、設計 §7.5）：一列一個參數，依型別給控制項——bool 核取方塊、
+// int 整數步進、double 允許小數且顯示一定帶小數點、enum 下拉、string 文字框（引號由系統處理）。
+// 型別與值都來自 GET /api/configs/{uid}（來源複本解析＋推斷），前端不猜。單擊左側樹節點開啟、一次
+// 一份（#20 的 D1；雙擊與多開是 #35／#36）。型別欄兩種角色都是純文字（人工指定是 v0.7.0）。
+// list 只列元素、唯讀（新增／移除／排序是 #46）；巢狀物件是可折疊區塊，內部葉照常可編輯（D3）。
+// enum 的選項來自 schema（#40）：渲染器已支援 `options`，後端目前不會送——刻意留空，#40 接上。
+const workspace = document.querySelector("[data-testid='workspace']");
+// 介面上的型別名稱依設計 §7.5.1（double／object），API 的名稱（float／dict）留在 data-type。
+const TYPE_LABEL = {
+  bool: "bool", int: "int", float: "double", string: "string", enum: "enum",
+  dict: "object", list: "list", null: "null", unknown: "unknown",
+};
+// 每次開啟遞增；晚到的舊回應不覆蓋新開的那份（同 load／browse 的世代守門，#252）。
+let panelGeneration = 0;
+
+tree.addEventListener("click", (event) => {
+  const item = event.target.closest("li[data-uid]");
+  if (item) openPanel(item.dataset.uid);
+});
+
+async function openPanel(uid) {
+  const generation = ++panelGeneration;
+  workspace.replaceChildren(element("p", {
+    class: "notice", "data-testid": "panel-loading", text: "載入中…",
+  }));
+  try {
+    const response = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(uid)}`);
+    if (!response.ok) throw new Error(await loadErrorText(response));
+    const detail = await response.json();
+    if (generation !== panelGeneration) return;
+    workspace.replaceChildren(panelNode(detail));
+  } catch (error) {
+    if (generation !== panelGeneration) return;
+    // 大聲失敗（不變式 2）：說出讀不到，不留一個空表假裝這份 config 沒有參數。
+    workspace.replaceChildren(element("div", {
+      class: "notice error", "data-testid": `panel-error-${uid}`,
+    }, [
+      element("strong", { text: "讀不到這份 config 的內容。" }),
+      element("pre", { text: String(error && error.message ? error.message : error) }),
+    ]));
+  }
+}
+
+function panelNode(detail) {
+  const row = rows.find((item) => item.uid === detail.uid);
+  const state = row ? (row.error ? "錯誤" : STATE_TEXT[row.state] || row.state) : "";
+  const panel = element("section", { class: "panel", "data-testid": `panel-${detail.uid}` }, [
+    element("div", { class: "panel-head" }, [
+      element("span", { class: "name", text: detail.name }),
+      element("span", { class: "target", text: detail.target }),
+      element("span", { class: "state", "data-testid": `panel-status-${detail.uid}`, text: state }),
+    ]),
+  ]);
+  const structured = detail.values && typeof detail.values === "object" && !Array.isArray(detail.values);
+  if (detail.format === "raw" || !structured) {
+    // §7.5.4：沒有結構就明說「未結構化」——使用者看得到自己失去了型別保護（不變式 2）。
+    panel.appendChild(element("p", {
+      class: "notice", "data-testid": "panel-unstructured",
+      text: detail.format === "raw"
+        ? "raw：只版控、不解析——這份 config 沒有欄位表（未結構化）。"
+        : "這份 config 的頂層不是物件，無法以欄位表呈現（未結構化）。",
+    }));
+    return panel;
+  }
+  const list = element("ul", { class: "param-table", "data-testid": "param-table" }, [
+    element("li", { class: "param-row param-head" }, [
+      element("span", { class: "param-name", text: "參數" }),
+      element("span", { class: "param-type", text: "型別" }),
+      element("span", { class: "param-value-wrap", text: "值" }),
+      element("span", { class: "param-source", text: "來源值" }),
+      element("span", { class: "param-validation", text: "驗證" }),
+    ]),
+    ...paramRows(detail).map(paramRow),
+  ]);
+  list.addEventListener("click", (event) => {
+    const container = event.target.closest("li[data-container='true']");
+    if (container) toggleCollapse(list, container);
+  });
+  panel.appendChild(list);
+  return panel;
+}
+
+// 前序走訪值樹，配上 types 裡的型別（list 元素的型別鍵是 `path[]`，值的路徑是 `path[i]`）。
+// key 裡的字面點跳脫成 \.（#219），路徑文法與 set_value 一致（`a.b\.c[2]`）。
+function paramRows(detail) {
+  const out = [];
+  const escape = (key) => String(key).replace(/\./g, "\\.");
+  const walk = (value, path, typePath, depth, name, readonly) => {
+    const type = detail.types[typePath] || "unknown";
+    const container = type === "dict" || type === "list";
+    out.push({ path, type, value, depth, name, container, readonly });
+    if (type === "dict") {
+      for (const [key, child] of Object.entries(value)) {
+        walk(child, `${path}.${escape(key)}`, `${typePath}.${escape(key)}`, depth + 1, key, readonly);
+      }
+    } else if (type === "list") {
+      value.forEach((child, index) => walk(child, `${path}[${index}]`, `${typePath}[]`, depth + 1, `[${index}]`, true));
+    }
+  };
+  for (const [key, value] of Object.entries(detail.values)) {
+    walk(value, escape(key), escape(key), 0, key, false);
+  }
+  return out;
+}
+
+// double 顯示一定帶小數點（`5` → `5.0`）——擋 ROS 2 的 1 vs 1.0 型別錯誤（§7.5.2）。
+function formatDouble(number) {
+  return Number.isInteger(number) ? number.toFixed(1) : String(number);
+}
+
+function displayValue(value, type) {
+  if (type === "float") return formatDouble(value);
+  if (value === null || typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function valueControl(row) {
+  let control;
+  switch (row.type) {
+    case "bool":
+      control = element("input", { type: "checkbox" });
+      control.checked = row.value === true;
+      break;
+    case "int":
+      control = element("input", { type: "number", step: "1", value: String(row.value) });
+      break;
+    case "float":
+      control = element("input", { type: "number", step: "any", value: formatDouble(row.value) });
+      break;
+    case "enum":
+      control = element("select", {}, (row.options || []).map((option) =>
+        element("option", { value: String(option), text: String(option) })));
+      control.value = String(row.value);
+      break;
+    case "string":
+      control = element("input", { type: "text", value: row.value });  // 引號由系統處理
+      break;
+    default:
+      // 型別未知（null／空陣列元素…）：唯讀顯示原樣，標示未結構化（§7.5.4），不假裝可編輯。
+      control = element("input", { type: "text", value: displayValue(row.value, row.type), readonly: "" });
+  }
+  control.setAttribute("data-testid", "param-value");
+  if (row.readonly) {
+    // list 元素唯讀：新增／移除／排序是 #46，改值也留到那時一起做（D3）。
+    if (control.type === "checkbox") control.disabled = true;
+    else control.setAttribute("readonly", "");
+    control.title = "陣列元素的編輯留待陣列編輯功能（#46）";
+  }
+  return control;
+}
+
+function paramRow(row) {
+  const attributes = {
+    class: "param-row",
+    "data-testid": `param-${row.path}`,
+    "data-name": row.path,
+    "data-type": row.type,
+    "data-depth": String(row.depth),
+  };
+  if (row.container) attributes["data-container"] = "true";
+  const node = element("li", attributes, [
+    element("span", {
+      class: "param-name",
+      text: `${"　".repeat(row.depth)}${row.container ? "▾ " : ""}${row.name}`,
+    }),
+    element("span", { class: "param-type", "data-testid": "param-type", text: TYPE_LABEL[row.type] || row.type }),
+  ]);
+  if (row.container) return node;
+  const control = valueControl(row);
+  const source = element("span", {
+    class: "param-source", "data-testid": "param-source-value", text: displayValue(row.value, row.type),
+  });
+  const validation = element("span", { class: "param-validation", "data-testid": "param-validation" });
+  node.append(element("span", { class: "param-value-wrap" }, [control]), source, validation);
+  const refresh = () => refreshParamRow(node, control, row, source, validation);
+  control.addEventListener("input", refresh);
+  control.addEventListener("change", () => {
+    // double：離開欄位時把整數樣子的輸入正規化成帶小數點（打字中不動，否則沒法打出 52）。
+    if (row.type === "float" && control.value !== "" && !control.validity.badInput) {
+      control.value = formatDouble(Number(control.value));
+    }
+    refresh();
+  });
+  refresh();  // 一開始就標好 data-valid／data-changed，讓「尚未改動」與「改成一樣的值」是同一個狀態
+  return node;
+}
+
+function currentValue(control, row) {
+  if (row.type === "bool") return control.checked;
+  if (row.type === "int" || row.type === "float") return Number(control.value);
+  return control.value;
+}
+
+function refreshParamRow(node, control, row, source, validation) {
+  let problem = "";
+  if (row.type === "int") {
+    if (control.validity.badInput || control.validity.stepMismatch) problem = "必須是整數，不接受小數或文字";
+    else if (control.value === "") problem = "不可為空";
+  } else if (row.type === "float") {
+    if (control.validity.badInput) problem = "必須是數字";
+    else if (control.value === "") problem = "不可為空";
+  }
+  validation.textContent = problem;
+  node.dataset.valid = problem ? "false" : "true";
+  const changed = displayValue(currentValue(control, row), row.type) !== displayValue(row.value, row.type);
+  node.dataset.changed = String(changed);
+  if (changed) source.setAttribute("data-changed", "true");
+  else source.removeAttribute("data-changed");
+}
+
+function toggleCollapse(list, container) {
+  // 折疊狀態記在容器身上，再依「任一祖先折疊了嗎」重算每列可見性（與 W8 型別樹同一做法）。
+  container.dataset.collapsed = container.dataset.collapsed === "true" ? "false" : "true";
+  const collapsed = [...list.querySelectorAll("li[data-container='true']")]
+    .filter((node) => node.dataset.collapsed === "true")
+    .map((node) => node.dataset.name);
+  for (const node of list.querySelectorAll("li[data-name]")) {
+    const name = node.dataset.name;
+    const hidden = collapsed.some(
+      (prefix) => name !== prefix && (name.startsWith(`${prefix}.`) || name.startsWith(`${prefix}[`))
+    );
+    node.classList.toggle("is-collapsed-child", hidden);
+  }
+}
 
 // ── W1 身分輸入 ──────────────────────────────────────────────────────────────
 // 不是登入：沒有密碼、不驗證、角色是自我宣告（ADR-00000020）。唯一的用途是成為

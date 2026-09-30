@@ -830,6 +830,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **白名單維護（`POST /api/allowed-roots`）：僅開發者可加一個前綴，`added_by` 取自 session、`added_at` 由伺服器蓋時間，回更新後的前綴清單、含剛加的；未設身分→409、一般使用者→403；相對／含 `..` 前綴或指向到不了的目錄→422；新增後同一個服務即刻生效、不必重啟（#202）** |
 | **白名單維護（`DELETE /api/allowed-roots`，body `{prefix, confirmed}`）：僅開發者（403）、需身分（409）；以檔案原樣 prefix 定位、定位不到→404；未帶 confirmed 先回受影響納管項目清單（`{kind:"confirm_required", affected:[{ref, target}], message}`）＋409，帶 confirmed 才真刪、回更新後的清單；受影響＝清單檔中 target（realpath）落在被移除前綴（realpath）底下的條目，資訊性、不連動解除納管（#15）** |
 | **候選數預覽（`GET /api/candidate-count?prefix=`）：僅開發者（403，角色不足）；數一個**白名單外**前綴底下的一般檔數（遞迴、不讀內容、不跟隨連結、觸及深度／項目上限回 `capped`），回 `{count, capped}`；字面 `..`／不存在／不是目錄→422，detail 為結構化 `{kind, message}`（比照 browse）。走白名單外故套白名單維護的開發者門檻（#206、T24）** |
+| **單筆內容（`GET /api/configs/{uid}`，§3.5.3 表上既有）：回 metadata（name／hostname／ref／target／source／format／groups／permissions〔條目自己的、沒寫回 defaults〕）＋`types`（欄位路徑→型別，與 inspect 同形）＋`values`（來源複本解析後的值樹），供 W3 欄位表渲染（#20）；`raw`→`types` 空、`values` 為 null（不假裝 0 個欄位，§7.5.4）；uid 不在清單→404；來源複本讀不到／解析不了→帶檔名與下一步的 500** |
 | **草稿（`POST /api/drafts`，body `{uid, edits}`）：以來源複本為底套 `edits`（路徑→新值）、跑第 1 層、存進階段，回 `{count, drafts:[{uid, format}]}`；不產生變更紀錄、目標不變；第 1 層沒過→422，detail 為結構化 `{message, uid, problems:[{line, message, suggestion, severity, lines}]}`（供欄位表標示那一列）且階段不變；路徑找不到→422、uid 不在清單→404、未設身分→409。`GET /api/drafts` 回同形；`DELETE /api/drafts[/{uid}]` 捨棄全部／一份，指名的沒草稿→404（#19）** |
 | 進版端點（`POST /api/promote`）：驗證失敗時**不產生變更紀錄也不寫出**（原子性）；422 的 detail 同草稿的結構化形（指名哪一份 uid 的哪些參數）；沒草稿→409、未設身分→409；成功回 `{promoted:[uid…], count:0}`、每份各一筆 `cfg` 紀錄、作者＝session 身分、目標改變、草稿清空（#19） |
 | **進版寫出 N 份、第 k 份失敗 → 前 k-1 份已寫出的目標檔案還原為進版前內容、全部已產生的變更紀錄一併撤銷**，容器內最終狀態與進版前逐位元組相同（承接 T18 移出的批次原子性）；回帶訊息的 500、草稿保留供重試。**以注入第 k 次寫出失敗觀察**（比照 `io/onboard` 對 #173 的處理）；回滾本身失敗丟 `PromoteLeftBehind`（同時說出原本的失敗與未還原的目標） |
@@ -881,6 +882,9 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | **新增前綴前可預覽候選檔案數（「此路徑下有 N 個可納管檔」，`capped` 顯示「N+」，§7.9／#206）；前綴不合法時預覽處顯示原樣錯誤、不顯示假數字** |
 | **新增前綴 → 出現在清單（AC1）；以 `../` 逃逸的前綴被後端擋成 422、原樣顯示、不靜默加入（AC5）** |
 | **移除前綴 → 先列出受影響納管項目並要求確認（AC3），確認後才真移除、取消則保留** |
+| **（W3 參數欄位表，#20）單擊左側樹的 config → 右側顯示它的欄位表：一列一個參數（名稱／型別標示／控制項／來源值／驗證狀態）；巢狀物件為可折疊區塊、子列縮排、顯示名不以點號串接** |
+| **`bool` → 核取方塊反映值；`int` → `step=1` 數字框，打小數該列標錯並說原因；`double` → `step=any` 數字框，來源 `1.0` 顯示 `1.0`、打 `5` 離開欄位顯示 `5.0`；`string` → 文字框，值不帶來源檔的引號** |
+| **型別欄兩種角色都是純文字（人工指定是 v0.7.0）；改值後來源值仍並列、該列標示已改動；list 元素唯讀列出（編輯是 #46）；`raw` 顯示「未結構化」通知、不畫空表（§7.5.4）** |
 | 修改一個參數並儲存 → **存為草稿**；樹上出現草稿標記，目標檔案尚未改變 |
 | 再改另一份並儲存 → 兩份草稿並存，進版按鈕顯示「進版 (2)」 |
 | 按下進版 → **兩份一起送出**，各產生一筆變更紀錄；目標檔案改變 |
@@ -904,6 +908,11 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | 身分輸入頁的角色切換明顯可見（不在選單內） |
 
 **測的是行為，不是 DOM。** 選取元素以語意屬性為準，詳見 `doc/UI-ELEMENTS.md`。
+
+**enum 控制項是刻意留空（#20 的 D2）**：渲染器已支援型別 `enum`＋`options` 畫下拉選單，但選項來自
+schema、後端在 #40（欄位表套用 schema）之前不會送 `options`——現在沒有任何使用者路徑走得到它，
+所以 T11 不測；#40 接上時補「`enum` → 下拉選單，選不到不存在的值」那一列。寫在這裡，免得日後以為
+它被驗過了。
 
 ---
 
@@ -1311,7 +1320,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath 與列目錄——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185） | 已落地（`browse`） |
 | `io/candidate` | T24（候選檔案數預覽，介面議定於 #206）：不以白名單為閘門、遞迴數一般檔（不讀內容）、每層 O_NOFOLLOW 不跟隨連結、深度／項目上限觸及回部分計數＋capped | 已落地（`count_candidates`） |
 | `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202）；移除以檔案原樣 prefix 定位、找不到丟 `PrefixNotFound`、commit 失敗回滾同樣以真實 fs＋git 斷言（#15） | 已落地（`read_allowed_roots`／`add_allowed_root`／`remove_allowed_root`） |
-| `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots`、`GET`／`POST`／`DELETE /api/drafts[/{uid}]`、`POST /api/promote` 與 CORS 中介層） |
+| `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/configs/{uid}`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots`、`GET`／`POST`／`DELETE /api/drafts[/{uid}]`、`POST /api/promote` 與 CORS 中介層） |
 | `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 部分落地：身分（`author`）已落地；階段的 acquire／renew／release／sweep 未落地（#33） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |

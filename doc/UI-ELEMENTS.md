@@ -63,7 +63,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 |---|---|---|
 | 樹根 | `data-testid="config-tree"` | 階層來自 `groups`，**不是機器** |
 | 群組節點 | `data-testid="tree-group-<群組名>"` | 可折疊 |
-| config 節點 | `data-testid="tree-item-<uid>"` | 單擊選取、**雙擊展開參數** |
+| config 節點 | `data-testid="tree-item-<uid>"`（帶 `data-uid`） | 單擊選取、**雙擊展開參數**。**#20 的過渡：單擊即在右側工作區顯示該份的欄位表、一次一份**；雙擊與多開於 #35／#36 落地 |
 | 狀態色點 | 節點內 `data-testid="status-dot"` | **左側**。一致／偏離／未部署 |
 | 草稿標記 | 節點內 `data-testid="draft-dot"` | **右側**。有未進版草稿時出現。與狀態色點分開 |
 | 未分群節點 | `data-testid="tree-group-ungrouped"` | 無 `groups` 的項目集中於此 |
@@ -72,7 +72,8 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 
 | 元素 | 選取器 | 行為 |
 |---|---|---|
-| 展開區塊 | `data-testid="panel-<uid>"` | **可同時存在多個** |
+| 工作區 | `data-testid="workspace"` | 右側容器；尚未點選時顯示 `workspace-empty` 提示 |
+| 展開區塊 | `data-testid="panel-<uid>"` | **可同時存在多個**（#36；#20 先一次一份）。讀不到內容時顯示 `panel-error-<uid>`（原樣錯誤，不留空表） |
 | 狀態標籤 | `data-testid="panel-status-<uid>"` | 文字為一致／偏離／未部署 |
 | 草稿指示 | `data-testid="panel-draft-<uid>"` | 該區塊有草稿時出現 |
 | 儲存按鈕 | 文字「儲存」 | **存為草稿**，不記錄也不寫出 |
@@ -91,10 +92,13 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 
 ## W3 參數表
 
+資料來自 `GET /api/configs/{uid}` 的 `types`＋`values`（#20）；前端只渲染，不推斷型別。
+
 | 元素 | 選取器 | 行為 |
 |---|---|---|
-| 參數列 | `data-testid="param-<參數路徑>"` | 路徑以點號串接 |
-| 型別欄 | 列內 `data-testid="param-type"` | **開發者為下拉選單，一般使用者為純文字** |
+| 欄位表 | `data-testid="param-table"` | 一列一個參數；`raw`／頂層非物件時不出現，改顯示 `panel-unstructured`（§7.5.4） |
+| 參數列 | `data-testid="param-<參數路徑>"` | 路徑文法與 `set_value` 一致：點號串接、key 內字面點跳脫成 `\.`、list 元素 `[i]`。帶 `data-name`／`data-type`（API 型別名）／`data-depth`；容器（物件／list）帶 `data-container="true"`，單擊折疊其子列；改值後 `data-changed`、驗證結果 `data-valid` |
+| 型別欄 | 列內 `data-testid="param-type"` | **開發者為下拉選單，一般使用者為純文字**（人工指定是 v0.7.0；#20 兩種角色皆純文字）。顯示名依設計 §7.5.1（`double`／`object`），`data-type` 留 API 名（`float`／`dict`） |
 | 已指定標記 | 列內 `data-testid="type-overridden"` | 型別經人工指定時出現 |
 | 清除指定 | 文字「清除」 | **逐欄位**，不是全部重設 |
 | 值欄 | 列內 `data-testid="param-value"` | 控制項依型別 |
@@ -109,9 +113,9 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | `bool` | `<input type="checkbox">` | 勾選狀態 |
 | `int` | `<input type="number" step="1">` | 輸入小數被拒 |
 | `double` | `<input type="number" step="any">` | **輸出必帶小數點** |
-| `enum` | `<select>` | 選項集合來自 schema |
+| `enum` | `<select>` | 選項集合來自 schema（`options`）。**渲染器已支援、後端於 #40 之前不送 options——刻意留空，見 TEST-PLAN T11** |
 | `string` | `<input type="text">` | — |
-| `list` | 每元素一列 + 新增／移除／**↑↓** | 順序調整後儲存生效 |
+| `list` | 每元素一列 + 新增／移除／**↑↓** | 順序調整後儲存生效（#46；**#20 先只列元素、唯讀**） |
 | 物件 | 可折疊區塊，內部遞迴 | — |
 
 ### list 的操作
