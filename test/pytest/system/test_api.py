@@ -1373,3 +1373,26 @@ def test_config_detail_of_a_raw_config_has_no_fields_rather_than_zero_fields(api
     detail = _get(api, f"/api/configs/{entry['uid']}")
 
     assert (detail["types"], detail["values"]) == ({}, None)
+
+
+def test_config_detail_carries_the_saved_draft_beside_the_source_values(api, sources_root):
+    # #21：有草稿時 draft_values 是草稿的值樹、values 仍是來源值——介面據此並列「目前值／來源值」。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "detail_draft.yaml", b"count: 3\n")
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 4}})
+
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+
+    assert (detail["values"], detail["draft_values"]) == ({"count": 3}, {"count": 4})
+
+
+def test_a_double_edited_through_json_still_promotes_with_a_decimal_point(api, sources_root):
+    # JSON 分不出 5 與 5.0：介面送 5.0 到後端已是 int。型別由原值決定——原值是 double，寫出仍是
+    # 5.0（ADR-00000013 的招牌保證，端到端釘住，#21）。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "double_json.yaml", b"max_vel: 0.8\n")
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"max_vel": 5}})
+
+    _post(api, "/api/promote", {})
+
+    assert pathlib.Path(entry["target"]).read_bytes() == b"max_vel: 5.0\n"

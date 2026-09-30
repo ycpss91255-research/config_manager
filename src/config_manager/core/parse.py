@@ -301,7 +301,19 @@ def _assign(
         node = _child(node, segment, path)
     last = segments[-1]
     old = _child(node, last, path)
-    node[last] = make(value, old)
+    node[last] = make(_keep_double(value, old), old)
+
+
+def _keep_double(value: object, old: object) -> object:
+    """舊值是 double、新值是整數 → 轉成 float，寫出才帶小數點（ADR-00000013）。
+
+    JSON 分不出 `5` 與 `5.0`（介面送來的 5.0 到這裡已是 int）；型別由原值決定、不由新值的
+    寫法決定，不然改一次 double 就把它降成 int——ROS 2 最常見的型別錯誤正是這樣造出來的。
+    bool 是 int 的子類別，明確排除。
+    """
+    if isinstance(old, float) and isinstance(value, int) and not isinstance(value, bool):
+        return float(value)
+    return value
 
 
 def _toml_item(value: object, old: object) -> object:
