@@ -194,3 +194,12 @@ def test_a_cleaned_up_adopted_draft_promotes_normally():
 
 def test_promoting_an_empty_stage_yields_nothing():
     assert promote(Stage(), _config_list()) == []
+
+
+def test_promotions_are_recorded_as_cfg_changes():
+    # 進版的每一筆進版資料都是 cfg 紀錄；退版另組 kind=revert 的 Promotion 走同一條 apply（#24）。
+    stage = save_draft(Stage(), "aaaaaaa1", "a: 1\n", "yaml")
+
+    plans = promote(stage, _config_list(_entry("aaaaaaa1", "a")))
+
+    assert [p.kind for p in plans] == ["cfg"]

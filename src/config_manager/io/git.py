@@ -205,15 +205,12 @@ def history(repo: str, uid: str, kind: str | None = None) -> list[Change]:
     return changes
 
 
-def revert(repo: str, uid: str, version: str, source: str, author: str) -> None:
-    """把某個 uid 的來源內容退回指定版本，並記成一筆新的變更。
+def show(repo: str, sha: str, path: str) -> str:
+    """`sha` 那一版裡 `path` 的內容（`git show <sha>:<path>`）。
 
-    以反向變更實作：先還原內容，再記一筆 revert 紀錄。不移動指標、不改寫歷史
-    （ADR-00000005），所以退版本身也留在歷史裡、也可以再被退。
-
-    source 由呼叫端給——uid 對應到哪個來源檔是清單檔的知識，io 層不該自己推斷。
+    退版的原料（#24）：退版是「把舊版內容當成一筆新的變更寫回」——拿到內容後交給進版的
+    `io/promote.apply`（kind `revert`），記錄與寫出於是走同一條原子路徑、同一份回滾邏輯；不再用
+    `checkout <sha> -- <path>` 直接動工作區（那條路徑沒有寫出目標、也沒有失敗回復）。
+    版本或路徑不存在時 git 非零退出，CalledProcessError 帶著它的說法。
     """
-    # checkout <version> -- <source> 會同時更新工作區與索引，也就是說 source 已被 stage；
-    # record 只提交已 staged 的內容，所以這裡不需要再 stage 一次。
-    _git(repo, "checkout", version, "--", source)
-    record(repo, uid, "revert", f"退回 {version[:7]}", author)
+    return _git(repo, "show", f"{sha}:{path}")

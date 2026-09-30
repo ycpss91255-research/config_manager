@@ -1,7 +1,8 @@
 """io/promote — 進版的寫出、記錄與失敗回復（#19；T9 系統層驗批次回滾）。
 
 核心 `core/drafts.promote` 只產生一批 `Promotion` 並保證「全部驗證才進版」；這裡把它們真的做
-出來。每份 config：寫來源複本到 repo → stage → record（kind `cfg`，每份一筆）→ 以權限寫出部署
+出來。每份 config：寫來源複本到 repo → stage → record（kind 依 Promotion，進版 `cfg`、退版
+`revert`，每份一筆）→ 以權限寫出部署
 目標。記錄與寫出成對、整批原子（ADR-00000006、ADR-00000022）：
 
 **第 k 份失敗 → 前 k−1 份已寫出的目標檔案還原為進版前內容、全部已產生的變更紀錄一併撤銷。**
@@ -38,7 +39,7 @@ def apply(
             before_targets.append((plan.target, _read_or_none(plan.target)))
             replace_atomically(os.path.join(repo, plan.source), plan.text.encode("utf-8"))
             stage(repo, plan.source)
-            record(repo, plan.uid, "cfg", plan.summary, author)
+            record(repo, plan.uid, plan.kind, plan.summary, author)
             write(plan.target, plan.text, plan.permissions, roots)
     except BaseException as failure:
         _rollback(repo, before_head, before_targets, failure)

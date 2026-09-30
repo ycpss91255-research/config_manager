@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from config_manager.api.errors import InvalidAuthor
+from config_manager.api.history import register_history, require_entry
 from config_manager.api.session import DEVELOPER, USER, Identity, author
 from config_manager.core.drafts import Stage, discard, promote, save_draft
 from config_manager.core.errors import (
@@ -50,7 +51,6 @@ from config_manager.io.allowed_roots import (
 )
 from config_manager.io.browse import Entry, Listing, browse
 from config_manager.io.candidate import count_candidates
-from config_manager.io.git import KINDS, history
 from config_manager.io.errors import (
     AllowedRootLeftBehind,
     AllowedRootUnreachable,
@@ -255,7 +255,7 @@ def create_app(
 
     _register_allowed_roots(app, repo, held)
     _register_drafts(app, repo, held, stage_box)
-    _register_history(app, repo)
+    register_history(app, repo, held, stage_box)
     return app
 
 
@@ -293,17 +293,6 @@ def _register_drafts(
     def promote_all_drafts() -> dict[str, object]:
         """進版（全域動作）：全部草稿一次驗證、記錄、寫出，整批原子（#19、ADR-00000022）。"""
         return _promote_all(repo, root_prefixes(repo), held, stage_box)
-
-
-def _register_history(app: FastAPI, repo: str) -> None:
-    """把歷史與退版的端點（§7.6）掛上 app（#23／#24）。抽出來的理由同 `_register_allowed_roots`
-    （C901）。"""
-
-    @app.get("/api/configs/{uid}/history")
-    def config_history(uid: str, prefix: str | None = None) -> list[dict[str, object]]:
-        """單筆的變更歷史（設計文件 §3.5.3）。`?prefix=cfg,adopt` 依類型過濾；不給就只看
-        內容變更。"""
-        return _config_history(repo, uid, prefix)
 
 
 def _register_allowed_roots(app: FastAPI, repo: str, held: dict[str, Identity]) -> None:
@@ -413,51 +402,6 @@ def _clean_note(note: str) -> str:
     )
 
 
-# 歷史預設只看內容變更（§7.6.1、圖 7）：cfg 與 adopt 才真的改了內容；revert／meta 會干擾判讀，
-# import 是起點、unmanage 是終點——都可用 ?prefix= 明點要看的類型（「全部」就六種都給）。
-_CONTENT_KINDS = ("cfg", "adopt")
-
-
-def _config_history(repo: str, uid: str, prefix: str | None) -> list[dict[str, object]]:
-    """單筆 config 的變更歷史，最新在前（#23）。類型由 `prefix`（逗號分隔）決定，不給就內容變更。
-
-    未知的類型→422 並列出允許值（送錯的請求，不是靜默當成沒過濾）；uid 不在清單→404。每筆帶
-    sha／kind／summary／author／at／body——介面把 kind 對應成行為描述（§7.6.1），不顯示代號。
-    """
-    _require_entry(repo, uid)
-    kinds = _CONTENT_KINDS if not prefix else tuple(part.strip() for part in prefix.split(","))
-    unknown = [kind for kind in kinds if kind not in KINDS]
-    if unknown:
-        raise HTTPException(
-            status_code=422,
-            detail=f"prefix 含不是變更類型的值：{'、'.join(unknown)}。"
-            f"下一步：只用 {'／'.join(KINDS)} 之中的，以逗號分隔",
-        )
-    return [
-        {
-            "sha": change.sha,
-            "kind": change.kind,
-            "summary": change.summary,
-            "author": change.author,
-            "at": change.at,
-            "body": change.body,
-        }
-        for change in history(repo, uid)
-        if change.kind in kinds
-    ]
-
-
-def _require_entry(repo: str, uid: str) -> FileEntry:
-    entry = next((item for item in read_config_list(repo).files if item.uid == uid), None)
-    if entry is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"清單檔裡沒有 uid「{uid}」的條目。"
-            "下一步：重新整理清單，確認該 config 仍在納管中",
-        )
-    return entry
-
-
 def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str, object]:
     """單筆條目的 metadata 與內容（#20）：欄位表以 `types`（欄位路徑→型別，與 inspect 同形）＋
     `values`（來源複本解析後的值樹）渲染，型別與值都來自來源複本、不由前端猜（不變式 6）。
@@ -468,13 +412,7 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
     `values` 當「來源值」並列，重開這份 config 看到的是存過的草稿，不是被丟掉的改動。
     """
     config_list = read_config_list(repo)
-    entry = next((item for item in config_list.files if item.uid == uid), None)
-    if entry is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"清單檔裡沒有 uid「{uid}」的條目。"
-            "下一步：重新整理清單，確認該 config 仍在納管中",
-        )
+    entry = require_entry(config_list, uid)
     detail: dict[str, object] = {
         "uid": entry.uid,
         "name": entry.name,
@@ -535,14 +473,7 @@ def _save_draft(
             status_code=409,
             detail="尚未設定身分，無法儲存草稿。下一步：先 POST /api/session 設定姓名與 email",
         )
-    entries = {entry.uid: entry for entry in read_config_list(repo).files}
-    entry = entries.get(payload.uid)
-    if entry is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"清單檔裡沒有 uid「{payload.uid}」的條目。"
-            "下一步：重新整理清單，確認該 config 仍在納管中",
-        )
+    entry = require_entry(read_config_list(repo), payload.uid)
     try:
         parsed = parse(read_source_copy(repo, entry.source), entry.format)
         for path, value in payload.edits.items():

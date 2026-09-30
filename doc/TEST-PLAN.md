@@ -447,7 +447,7 @@ trivia 搬到新項，行內註解才保得住）；json 偵測原檔縮排後�
 ### T7 — 變更紀錄
 
 ```
-stage(路徑…) / record(uid, 類型, 訊息, 作者) / history(uid, 類型過濾) / revert(uid, 版本)
+stage(路徑…) / record(uid, 類型, 訊息, 作者) / history(uid, 類型過濾) / show(sha, 路徑)
 head() / reset_hard(sha)   # 進版回滾用（#19）
 ```
 
@@ -465,9 +465,7 @@ head() / reset_hard(sha)   # 進版回滾用（#19）
 | **訊息第一個空行之後的內文，透過 `history()` 的 `Change.body` 取回；有換行也整段保留，不漏進主旨**（納管把歧義確認放內文，#12 的 D6） |
 | **主旨或作者含欄位分隔符（`\x1f`／`\x1e`）→ `record`／`commit` 大聲失敗（`RecordFieldUnsafe`），不清洗**；且既存含分隔符的 commit 不讓 `history()` 崩整庫（`split` 有 maxsplit＋欄位數驗證，段數不對者略過）——被納管檔名或身分注入分隔符即讓帳本讀不出來（#212） |
 | 以 `cfg` 過濾時，`revert` 與 `meta` 紀錄不出現 |
-| 退版後歷史仍含全部先前紀錄（**未被截斷**） |
-| 退版產生新紀錄而非移動指標 |
-| **退版至版本 V 後，該 uid 在來源 repo 的內容等於 V 版當時內容**（以 `history()`／既有讀取介面驗證，非 `git log`） |
+| **`show(sha, 路徑)` 回那一版裡該檔的內容，工作區不動；版本不存在大聲失敗**（退版的原料，#24） |
 | **`head()` 指最新一筆紀錄；`reset_hard(sha)` 把該點之後的紀錄一併撤銷、來源複本回到該點內容**（進版第 k 份失敗時的整批撤銷——逐筆 revert 會各留一筆「退回」紀錄、與「整批不進版」不符，#19；只給進版回滾用） |
 
 「commit 只含 stage 的路徑、不掃進不相干的未追蹤檔」這條行為，在納管的實際情境下觀察
@@ -475,6 +473,11 @@ head() / reset_hard(sha)   # 進版回滾用（#19）
 
 **測試方式**：對真實的臨時 git repo 操作，透過本測試介面驗證（`history()`），
 **不直接跑 `git log` 檢查**——那是繞過介面驗證（反模式）。
+
+**退版的三條行為（新紀錄而非移動指標、歷史未截斷、內容等於 V 版）自 #24 起由 T9 的退版端點擁有**：
+退版＝以 `show()` 取舊版內容、組成一筆 kind `revert` 的進版資料交給 `io/promote.apply`（寫來源→記錄→
+寫出目標，失敗整批回滾），記錄與寫出於是走同一條原子路徑；原本 checkout 式的 `io/git.revert`（只動
+repo、不寫目標、無失敗回復）移除。
 
 ### T8 — 原子寫出
 
@@ -835,6 +838,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **變更歷史（`GET /api/configs/{uid}/history?prefix=…`，§3.5.3 表上既有）：回該 uid 的紀錄、最新在前，每筆 `{sha, kind, summary, author, at, body}`；`prefix` 逗號分隔的類型清單，不給就只看內容變更（`cfg`＋`adopt`，§7.6.1／圖 7——`import`／`revert`／`meta`／`unmanage` 要明點）；含未知類型→422 列出允許值（不靜默當成沒過濾）；uid 不在清單→404（#23）** |
 | **草稿（`POST /api/drafts`，body `{uid, edits}`）：以來源複本為底套 `edits`（路徑→新值）、跑第 1 層、存進階段，回 `{count, drafts:[{uid, format}]}`；不產生變更紀錄、目標不變；第 1 層沒過→422，detail 為結構化 `{message, uid, problems:[{line, message, suggestion, severity, lines}]}`（供欄位表標示那一列）且階段不變；路徑找不到→422、uid 不在清單→404、未設身分→409。`GET /api/drafts` 回同形；`DELETE /api/drafts[/{uid}]` 捨棄全部／一份，指名的沒草稿→404（#19）** |
 | 進版端點（`POST /api/promote`）：驗證失敗時**不產生變更紀錄也不寫出**（原子性）；422 的 detail 同草稿的結構化形（指名哪一份 uid 的哪些參數）；沒草稿→409、未設身分→409；成功回 `{promoted:[uid…], count:0}`、每份各一筆 `cfg` 紀錄、作者＝session 身分、目標改變、草稿清空（#19） |
+| **退版（`POST /api/configs/{uid}/revert`，body `{version}`，§3.5.3 表上既有）：`version` 必須是這份 config 歷史裡的一筆 sha（前綴可）→ 以那一版的來源內容當一筆 `revert` 紀錄寫回並寫出目標（`revert(<uid>): rollback to <sha7>`，設計 §2.3），目標內容等於那一版、歷史多一筆而先前紀錄全在（ADR-00000005）；預設「只看內容變更」的歷史不顯示這筆；sha 不在這份的歷史→422（不把別份的內容寫進來）、這份有未進版草稿→409、未設身分→409、uid 不在清單→404；寫出／記錄失敗整批回滾、帶訊息的 500（同進版）。介面不提供 reset（#24）** |
 | **進版寫出 N 份、第 k 份失敗 → 前 k-1 份已寫出的目標檔案還原為進版前內容、全部已產生的變更紀錄一併撤銷**，容器內最終狀態與進版前逐位元組相同（承接 T18 移出的批次原子性）；回帶訊息的 500、草稿保留供重試。**以注入第 k 次寫出失敗觀察**（比照 `io/onboard` 對 #173 的處理）；回滾本身失敗丟 `PromoteLeftBehind`（同時說出原本的失敗與未還原的目標） |
 | 第二個編輯階段被拒，回覆含持有者姓名、email、開始時間 |
 | 部署模式下逾時後階段自動釋放 |
@@ -1311,7 +1315,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/writer` | T8 | 已落地 |
 | `io/atomic` | T8——原子替換的共用核心，行為由 `io/writer` 的 T8 規格擋著（#186） | 已落地 |
 | `io/repo` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔可讀→T1（`load`）（#186） | 已落地（`place_source`／`write_config_list`） |
-| `io/git` | T7 | 已落地（`head`／`reset_hard` 於 #19 加入，只給進版回滾用） |
+| `io/git` | T7 | 已落地（`head`／`reset_hard` 於 #19 加入，只給進版回滾用；`show` 於 #24 加入、checkout 式 `revert` 移除） |
 | `io/preflight` | T15 | 已落地 |
 | `io/digest` | T20 | 已落地 |
 | `io/scan` | T21 | 已落地 |
@@ -1324,7 +1328,8 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath 與列目錄——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185） | 已落地（`browse`） |
 | `io/candidate` | T24（候選檔案數預覽，介面議定於 #206）：不以白名單為閘門、遞迴數一般檔（不讀內容）、每層 O_NOFOLLOW 不跟隨連結、深度／項目上限觸及回部分計數＋capped | 已落地（`count_candidates`） |
 | `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202）；移除以檔案原樣 prefix 定位、找不到丟 `PrefixNotFound`、commit 失敗回滾同樣以真實 fs＋git 斷言（#15） | 已落地（`read_allowed_roots`／`add_allowed_root`／`remove_allowed_root`） |
-| `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/configs/{uid}`、`GET /api/configs/{uid}/history`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots`、`GET`／`POST`／`DELETE /api/drafts[/{uid}]`、`POST /api/promote` 與 CORS 中介層） |
+| `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/configs/{uid}`、`GET /api/configs/{uid}/history`、`POST /api/configs/{uid}/revert`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots`、`GET`／`POST`／`DELETE /api/drafts[/{uid}]`、`POST /api/promote` 與 CORS 中介層） |
+| `api/history` | T9 | 已落地（`GET /api/configs/{uid}/history`、`POST /api/configs/{uid}/revert`——歷史與退版的端點與邏輯，自 `api/routes` 拆出以免該模組超過千行，#24） |
 | `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 部分落地：身分（`author`）已落地；階段的 acquire／renew／release／sweep 未落地（#33） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |

@@ -1,4 +1,4 @@
-"""T7 — 變更紀錄。測試介面：io/git 的 record / history / revert。
+"""T7 — 變更紀錄。測試介面：io/git 的 record / history / show（退版的原料）。
 
 對真實的臨時 git repo 操作，並且**透過 history() 驗證，不直接跑 git log**——
 繞過介面去讀底層，測到的就不是這個介面的行為（T7 的測試方式）。
@@ -13,7 +13,7 @@ from datetime import datetime
 import pytest
 
 from config_manager.io.errors import RecordFieldUnsafe, UnknownKind
-from config_manager.io.git import head, history, record, reset_hard, revert, stage
+from config_manager.io.git import head, history, record, reset_hard, show, stage
 
 AUTHOR = "劉宇盈 <yy@example.invalid>"
 
@@ -139,25 +139,19 @@ def _two_versions(tmp_path):
     return repo, first
 
 
-def test_revert_adds_a_record_and_leaves_the_earlier_ones_in_place(tmp_path):
-    # 退版以反向變更實作：多一筆新紀錄，先前的都還在（ADR-00000005）。
+def test_show_returns_the_content_of_that_version_without_touching_the_working_tree(tmp_path):
+    # 退版的原料（#24）：拿到舊版內容交給進版的 apply 寫回；工作區一個位元組都不動。
     repo, first = _two_versions(tmp_path)
 
-    revert(str(repo), "mfz3k9q1", first, "nav2.yaml", AUTHOR)
-
-    assert [entry.kind for entry in history(str(repo), "mfz3k9q1")] == [
-        "revert",
-        "cfg",
-        "cfg",
-    ]
+    assert show(str(repo), first, "nav2.yaml") == "max_vel: 0.8\n"
+    assert (repo / "nav2.yaml").read_text() == "max_vel: 1.2\n"
 
 
-def test_revert_puts_back_the_content_of_that_version(tmp_path):
-    repo, first = _two_versions(tmp_path)
+def test_show_of_a_version_that_does_not_exist_fails_loudly(tmp_path):
+    repo, _ = _two_versions(tmp_path)
 
-    revert(str(repo), "mfz3k9q1", first, "nav2.yaml", AUTHOR)
-
-    assert (repo / "nav2.yaml").read_text() == "max_vel: 0.8\n"
+    with pytest.raises(subprocess.CalledProcessError):
+        show(str(repo), "0000000", "nav2.yaml")
 
 
 # ── commit 內文（T7 加行為，#12 的 D6）───────────────────────────────────────

@@ -1450,3 +1450,68 @@ def test_history_for_an_unknown_uid_is_not_found(api):
         _history(api, "zzzzzzz9")
 
     assert exc.value.code == _NOT_FOUND
+
+
+# ── T9：退版（POST /api/configs/{uid}/revert，#24）────────────────────────────
+
+
+def _promote_value(api, uid, path, value):
+    _post(api, "/api/drafts", {"uid": uid, "edits": {path: value}})
+    _post(api, "/api/promote", {})
+
+
+def test_revert_writes_the_old_content_back_as_a_new_record_without_rewriting_history(
+    api, sources_root
+):
+    # ADR-00000005：退版是反向變更——目標內容回到那一版、歷史多一筆 revert（rollback to <sha>），
+    # 先前的紀錄全部都在（未截斷）；預設的「只看內容變更」不顯示這筆 revert。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "revert.yaml", b"count: 1\n")
+    _promote_value(api, entry["uid"], "count", 2)
+    _promote_value(api, entry["uid"], "count", 3)
+    first_cfg = _history(api, entry["uid"])[-1]["sha"]
+
+    result = _post(api, f"/api/configs/{entry['uid']}/revert", {"version": first_cfg})
+
+    assert pathlib.Path(entry["target"]).read_bytes() == b"count: 2\n"
+    assert result["record"]["summary"] == f"rollback to {first_cfg[:7]}"
+    everything = _history(api, entry["uid"], "import,cfg,revert,adopt,meta,unmanage")
+    assert [c["kind"] for c in everything] == ["revert", "cfg", "cfg", "import"]
+    assert [c["kind"] for c in _history(api, entry["uid"])] == ["cfg", "cfg"]
+
+
+def test_revert_to_a_version_outside_this_configs_history_is_refused(api, sources_root):
+    # 拿別份 config 的 sha 會把別人的內容寫進來——擋成 422、什麼都不動。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "revert_a.yaml", b"count: 1\n")
+    other = _onboard(api, sources_root, "revert_b.yaml", b"speed: 1\n")
+    foreign = _history(api, other["uid"], "import")[0]["sha"]
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, f"/api/configs/{entry['uid']}/revert", {"version": foreign})
+
+    assert exc.value.code == _UNPROCESSABLE
+    assert pathlib.Path(entry["target"]).read_bytes() == b"count: 1\n"
+
+
+def test_revert_while_a_draft_is_pending_is_a_conflict(api, sources_root):
+    # 草稿以退版前的來源為底；退了就對不上——先進版或捨棄（預設落向安全）。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "revert_draft.yaml", b"count: 1\n")
+    version = _history(api, entry["uid"], "import")[0]["sha"]
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 9}})
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, f"/api/configs/{entry['uid']}/revert", {"version": version})
+
+    assert exc.value.code == _CONFLICT
+    _clear_drafts(api)
+
+
+def test_revert_of_an_unknown_uid_is_not_found(api):
+    _set_session(api)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/configs/zzzzzzz9/revert", {"version": "0123456"})
+
+    assert exc.value.code == _NOT_FOUND
