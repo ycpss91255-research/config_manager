@@ -1080,7 +1080,7 @@ function describeChange(change) {
   return change.summary;
 }
 
-function openHistory(detail) {
+function openHistory(detail, notice) {
   const generation = ++historyGeneration;
   const back = element("button", { type: "button", "data-testid": "history-back", text: "返回欄位表" });
   back.addEventListener("click", () => openPanel(detail.uid));
@@ -1095,6 +1095,7 @@ function openHistory(detail) {
       back,
     ]),
     filter,
+    element("p", { class: "notice", "data-testid": "history-notice", text: notice || "" }),
     element("div", { class: "history-body" }, [
       element("ul", { class: "history-list", "data-testid": "history-list" }),
       element("div", { class: "history-diff", "data-testid": "history-diff" }, [
@@ -1110,6 +1111,7 @@ function openHistory(detail) {
     }
     loadHistory(view, detail, button.dataset.filter, ++historyGeneration);
   });
+  view.querySelector("[data-testid='history-notice']").hidden = !notice;
   workspace.replaceChildren(view);
   loadHistory(view, detail, "content", generation);
 }
@@ -1170,7 +1172,7 @@ async function selectChange(view, detail, change, node) {
     if (!response.ok) throw new Error(await loadErrorText(response));
     const version = await response.json();
     if (generation !== historyGeneration) return;
-    renderDiff(diff, version, detail);
+    renderDiff(diff, version, detail, view);
   } catch (error) {
     if (generation !== historyGeneration) return;
     diff.replaceChildren(element("div", { class: "notice error", "data-testid": "history-diff-error" }, [
@@ -1181,7 +1183,7 @@ async function selectChange(view, detail, change, node) {
 }
 
 // 那一版 vs 目前版本，以參數為單位（§7.6.2）：same／changed／added（那版沒有、現在有）／removed。
-function renderDiff(target, version, detail) {
+function renderDiff(target, version, detail, view) {
   const leaves = (payload) => new Map(
     paramRows({ types: payload.types || {}, values: payload.values || {}, draft_values: null })
       .filter((row) => !row.container)
@@ -1205,13 +1207,61 @@ function renderDiff(target, version, detail) {
     ]);
   });
   const differing = rows.filter((row) => row.dataset.change !== "same").length;
+  // 退回此版本（#27、§5.3 圖 7）：看過差異才退；不可逆（會產生一筆新紀錄並寫出目標）→ W6 確認對話框。
+  const revertButton = element("button", {
+    type: "button", "data-testid": "history-revert", text: "退回此版本",
+  });
+  revertButton.disabled = differing === 0;
+  revertButton.title = differing === 0 ? "這一版與目前版本相同，沒有東西可退" : "";
+  revertButton.addEventListener("click", () => revertTo(view, detail, version, differing));
   target.replaceChildren(
     element("p", {
       class: "diff-summary", "data-testid": "history-diff-summary",
       text: differing ? `與目前版本相比：${differing} 個參數不同（左邊是那一版，右邊是目前）` : "與目前版本沒有參數不同。",
     }),
     element("ul", {}, rows),
+    element("div", { class: "panel-actions" }, [
+      element("span", { class: "hint", text: "退版會產生一筆新的變更紀錄並寫出到目標；歷史不會被改寫，之後仍可再退。" }),
+      revertButton,
+    ]),
   );
+}
+
+async function revertTo(view, detail, version, differing) {
+  const short = version.sha.slice(0, 7);
+  const ok = await confirmAction(
+    "退回此版本？",
+    `「${detail.name}」會回到版本 ${short} 的內容：${differing} 個參數會改變、並寫出到目標。` +
+    "這會產生一筆新的變更紀錄；歷史不會被改寫，之後仍可再退。",
+  );
+  if (!ok) return;
+  const diff = view.querySelector("[data-testid='history-diff']");
+  try {
+    const response = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/revert`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ version: version.sha }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      // 409（有未進版草稿）／422／500：原樣顯示後端的原因與下一步，差異區保留讓人重看。
+      diff.prepend(element("div", { class: "notice error", "data-testid": "history-revert-error" }, [
+        element("strong", { text: "沒有退版。" }),
+        element("pre", { text: detailText(payload.detail) }),
+      ]));
+      return;
+    }
+    // 目前版本變了：重抓單筆內容、重開歷史（列表多一筆退回舊版本），左側樹重掃狀態。
+    load();
+    const fresh = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`);
+    const freshDetail = fresh.ok ? await fresh.json() : detail;
+    openHistory(freshDetail, `已退回到版本 ${short}，並寫出到目標。`);
+  } catch (error) {
+    diff.prepend(element("div", { class: "notice error", "data-testid": "history-revert-error" }, [
+      element("strong", { text: "沒有退版。" }),
+      element("pre", { text: `送不出去：${error && error.message ? error.message : error}` }),
+    ]));
+  }
 }
 
 // ── 進版與捨棄變更（#22）─────────────────────────────────────────────────────

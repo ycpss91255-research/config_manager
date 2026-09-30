@@ -1638,3 +1638,69 @@ def test_returning_from_history_shows_the_parameter_table_again(open_page, brows
 
     page.wait_for_selector(f"[data-testid='panel-{entry['uid']}']", state="visible")
     assert page.query_selector(f"[data-testid='history-{entry['uid']}']") is None
+
+
+# ── 退版按鈕（#27）───────────────────────────────────────────────────────────
+# 列出歷史 → 選版本 → 看差異 → 「退回此版本」→ 確認對話框 → 執行（§5.3 圖 7）。
+
+
+def _select_first_version(page):
+    """切到「全部」、點最舊那筆（納入管理＝第一版）、等差異出現。"""
+    page.click("[data-testid='history-filter'] button[data-filter='all']")
+    page.wait_for_selector("text=納入管理")
+    oldest = page.eval_on_selector_all(
+        "[data-testid^='history-entry-']", "els => els[els.length - 1].dataset.testid"
+    )
+    page.click(f"[data-testid='{oldest}']")
+    page.wait_for_selector("[data-testid='history-revert']")
+
+
+def test_reverting_from_history_puts_the_target_back_to_the_first_version(
+    open_page, browse_root, api
+):
+    # AC2／AC3：連續修改三次後可退回第一版，目標內容確實回到第一版；歷史多一筆「退回舊版本」。
+    versions = ["count: 1\n", "count: 2\n", "count: 3\n", "count: 4\n"]
+    entry = _history_via_api(api, browse_root, versions)
+    page = _open_history(open_page(), entry["uid"])
+    _select_first_version(page)
+
+    page.click("[data-testid='history-revert']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+
+    page.wait_for_selector("[data-testid='history-notice']:not([hidden])")
+    assert pathlib.Path(entry["target"]).read_text(encoding="utf-8") == "count: 1\n"
+    page.click("[data-testid='history-filter'] button[data-filter='all']")
+    page.wait_for_selector("text=退回舊版本")
+    assert "退回到版本" in page.inner_text("[data-testid='history-list']")
+
+
+def test_cancelling_the_revert_confirmation_changes_nothing(open_page, browse_root, api):
+    # AC4：破壞性操作二次確認——取消什麼都不變（與捨棄變更共用同一個對話框）。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
+    page = _open_history(open_page(), entry["uid"])
+    _select_first_version(page)
+
+    page.click("[data-testid='history-revert']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    assert "退回此版本" in page.inner_text("[data-testid='confirm-title']")
+    page.click("[data-testid='confirm-cancel']")
+
+    assert pathlib.Path(entry["target"]).read_text(encoding="utf-8") == "count: 2\n"
+    assert page.query_selector("[data-testid='history-notice']:not([hidden])") is None
+
+
+def test_reverting_while_a_draft_is_pending_shows_the_reason(open_page, browse_root, api):
+    # 後端擋（409：草稿以退版前的來源為底）→ 原樣顯示原因與下一步，目標不動。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
+    _api_json(api, "POST", "/api/drafts", {"uid": entry["uid"], "edits": {"count": 9}})
+    page = _open_history(open_page(), entry["uid"])
+    _select_first_version(page)
+
+    page.click("[data-testid='history-revert']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+
+    page.wait_for_selector("[data-testid='history-revert-error']")
+    assert "草稿" in page.inner_text("[data-testid='history-revert-error']")
+    assert pathlib.Path(entry["target"]).read_text(encoding="utf-8") == "count: 2\n"
