@@ -9,6 +9,16 @@
 """
 
 
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # 只給型別檢查用：validate 匯入 errors（SyntaxParse），執行期反向匯入會循環。
+    from config_manager.core.validate import Problem
+
+
 class ConfigListError(Exception):
     """config 清單檔完整性錯誤的基底。"""
 
@@ -209,3 +219,25 @@ class UnknownPath(ParseError):
     路徑文法與 core/inference 的欄位路徑一致（`.` 相接、`\.` 跳脫、`[索引]`）；指不到就是
     路徑與實際結構對不上。具名拋出，端點才映得成 422 而非裸 500（不變式 2）。
     """
+
+
+class DraftError(Exception):
+    """T18 草稿層的錯誤基底（#18）。與 ParseError／ConfigListError 分族：講的是編輯階段裡的
+    草稿操作，處置是改草稿內容或指對 uid，不是改檔案或清單檔。"""
+
+
+class DraftInvalid(DraftError):
+    """`save_draft` 的內容沒通過第 1 層驗證，草稿**沒有**被存下。
+
+    `problems` 是 core/validate 回的問題清單（各帶行號與建議），端點原樣回給介面逐條標示。
+    adopt_draft 不拋這個——它把壞內容載入並回警告（偏離處置要把它撈進來修）。
+    """
+
+    def __init__(self, message: str, problems: Sequence[Problem]) -> None:
+        super().__init__(message)
+        self.problems = tuple(problems)
+
+
+class DraftNotFound(DraftError):
+    """`discard` 指名的 uid 在階段裡沒有草稿。具名而非靜默略過：叫人捨棄一份不存在的草稿，
+    多半是 uid 拿錯了（不變式 2）。"""
