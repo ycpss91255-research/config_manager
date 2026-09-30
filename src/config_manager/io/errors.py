@@ -290,3 +290,12 @@ class CandidateUnreadable(CandidateError):
     的下一步不同。走訪途中更深層的目錄若列不出來則 best-effort 跳過、不整個失敗——這一則
     只講**前綴本身**列不出來。
     """
+
+
+class PromoteLeftBehind(Exception):
+    """進版中途失敗、回滾又沒能完全還原（#19）。
+
+    與 `OnboardLeftBehind` 同構：不蓋掉原本的失敗（`__cause__` 指向它），但也不讓「目標檔案
+    已被改成新內容、紀錄卻被撤銷」這種半套狀態悄悄留著——那正是 ADR-00000006 要防的
+    「已記錄未套用／已套用未記錄」。訊息同時說出原本的失敗與哪些目標沒還原。
+    """

@@ -20,21 +20,27 @@ from pydantic import BaseModel, Field
 
 from config_manager.api.errors import InvalidAuthor
 from config_manager.api.session import DEVELOPER, USER, Identity, author
+from config_manager.core.drafts import Stage, discard, promote, save_draft
 from config_manager.core.errors import (
     ConfigListError,
+    DraftInvalid,
+    DraftNotFound,
     DuplicatePrefix,
     InvalidFormat,
     InvalidPrefix,
     NameUnderivable,
     ParseError,
     PrefixNotFound,
+    PromoteInvalid,
     SyntaxParse,
     UidHorizonReached,
+    UnknownPath,
 )
 from config_manager.core.inference import Ambiguity, find_ambiguous, infer_types
 from config_manager.core.models import FileEntry, Permissions
-from config_manager.core.parse import Parsed, parse, values
+from config_manager.core.parse import Parsed, dump, parse, set_value, values
 from config_manager.core.state import State
+from config_manager.core.validate import Problem
 from config_manager.core.whitelist import decide
 from config_manager.io.allowed_roots import (
     add_allowed_root,
@@ -60,11 +66,14 @@ from config_manager.io.errors import (
     HostnameInvalid,
     OnboardLeftBehind,
     PreflightError,
+    PromoteLeftBehind,
     SourceError,
     WriterError,
 )
 from config_manager.io.onboard import OnboardRequest, onboard
+from config_manager.io.parsers import read_source as read_source_copy
 from config_manager.io.preflight import read_config_list
+from config_manager.io.promote import apply as apply_promotions
 from config_manager.io.scan import ScanFailure, scan
 from config_manager.io.source import Source, local_hostname, read_source
 
@@ -92,6 +101,19 @@ class ConfigInput(BaseModel):
     # 上限防過大 note 讓 import commit 以 OSError(E2BIG) 失敗、漏成裸 500（#222）。歧義確認是
     # 人看過的文字，10K 字元遠夠用、又遠低於 ARG_MAX；超過在 pydantic 就擋成 422，不進 commit。
     ambiguity_note: str = Field(default="", max_length=_MAX_AMBIGUITY_NOTE)
+
+
+class DraftInput(BaseModel):
+    """儲存草稿的請求：哪份 config（uid）與欄位表送來的改動（路徑 → 新值，#18／#21）。
+
+    送的是**改動**不是整份文字：介面是帶型別的欄位表、不是文字編輯器（ADR-00000013）；伺服器
+    拿來源複本當底、以 core/parse.set_value 套上改動再 dump，註解與未改欄位的格式因此保留。
+    路徑文法與型別樹一致（`a.b\\.c[2]`）。值由 JSON 帶進來：double 請送小數（如 1.0），
+    寫出一定帶小數點。
+    """
+
+    uid: str
+    edits: dict[str, object]
 
 
 class InspectInput(BaseModel):
@@ -163,6 +185,9 @@ def create_app(
     # 目前的身分。一次只有一個編輯階段（ADR-00000014），所以放在 app 上而不是
     # 一個模組層的全域——後者會讓同一個行程裡起兩個 app 互相看見對方的身分。
     held: dict[str, Identity] = {}
+    # 目前編輯階段裡的草稿（#18 的 D1：掛在 app 上、單一階段；階段生命週期是 #33）。與 held
+    # 分開放，是為了不把 Identity 型別的 dict 混進另一種值；同樣是 app 級、重新整理頁面不丟。
+    stage_box: dict[str, Stage] = {"stage": Stage()}
 
     @app.post("/api/session")
     def set_session(payload: SessionInput) -> dict[str, str]:
@@ -222,7 +247,44 @@ def create_app(
         return _inspect(root_prefixes(repo), payload)
 
     _register_allowed_roots(app, repo, held)
+    _register_drafts(app, repo, held, stage_box)
     return app
+
+
+def _register_drafts(
+    app: FastAPI, repo: str, held: dict[str, Identity], stage_box: dict[str, Stage]
+) -> None:
+    """把草稿與進版的端點（三段式的儲存／捨棄／進版，ADR-00000022）掛上 app（#18／#19）。
+
+    抽出來的理由同 `_register_allowed_roots`：讓 `create_app` 不因這一組路由而過度複雜（C901）。
+    `stage_box` 是目前階段的容器（不可變 `Stage` 每次換新的進去），`held` 給進版取作者。
+    """
+
+    @app.get("/api/drafts")
+    def list_drafts() -> dict[str, object]:
+        """目前階段裡的草稿（uid 與 format），供工具列顯示「進版 (N)」（#22）。"""
+        return _drafts_view(stage_box["stage"])
+
+    @app.post("/api/drafts")
+    def save_one_draft(payload: DraftInput) -> dict[str, object]:
+        """儲存草稿：把欄位表送來的改動套到來源複本上、跑第 1 層驗證、存進編輯階段（#18／#21）。
+        不產生變更紀錄、不寫到目標——那是進版的事。"""
+        return _save_draft(repo, held, stage_box, payload)
+
+    @app.delete("/api/drafts")
+    def discard_all_drafts() -> dict[str, object]:
+        """捨棄變更（全域）：清空全部草稿，來源與目標皆不動。"""
+        return _discard_drafts(stage_box, None)
+
+    @app.delete("/api/drafts/{uid}")
+    def discard_one_draft(uid: str) -> dict[str, object]:
+        """捨棄變更（單一 config）。"""
+        return _discard_drafts(stage_box, uid)
+
+    @app.post("/api/promote")
+    def promote_all_drafts() -> dict[str, object]:
+        """進版（全域動作）：全部草稿一次驗證、記錄、寫出，整批原子（#19、ADR-00000022）。"""
+        return _promote_all(repo, root_prefixes(repo), held, stage_box)
 
 
 def _register_allowed_roots(app: FastAPI, repo: str, held: dict[str, Identity]) -> None:
@@ -330,6 +392,117 @@ def _clean_note(note: str) -> str:
         for character in note
         if character in "\n\t" or ord(character) >= _FIRST_PRINTABLE_ORD
     )
+
+
+def _drafts_view(stage: Stage) -> dict[str, object]:
+    return {
+        "count": len(stage.drafts),
+        "drafts": [{"uid": draft.uid, "format": draft.fmt} for draft in stage.drafts.values()],
+    }
+
+
+def _as_problem(problem: Problem) -> dict[str, object]:
+    return {
+        "line": problem.line,
+        "message": problem.message,
+        "suggestion": problem.suggestion,
+        "severity": problem.severity,
+        "lines": list(problem.lines),
+    }
+
+
+def _save_draft(
+    repo: str, held: dict[str, Identity], stage_box: dict[str, Stage], payload: DraftInput
+) -> dict[str, object]:
+    """儲存草稿的邏輯（#18／#21）：以來源複本為底套上改動、跑第 1 層、存進階段。
+    不記錄、不寫目標——那是進版的事。"""
+    if held.get("identity") is None:
+        raise HTTPException(
+            status_code=409,
+            detail="尚未設定身分，無法儲存草稿。下一步：先 POST /api/session 設定姓名與 email",
+        )
+    entries = {entry.uid: entry for entry in read_config_list(repo).files}
+    entry = entries.get(payload.uid)
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"清單檔裡沒有 uid「{payload.uid}」的條目。"
+            "下一步：重新整理清單，確認該 config 仍在納管中",
+        )
+    try:
+        parsed = parse(read_source_copy(repo, entry.source), entry.format)
+        for path, value in payload.edits.items():
+            set_value(parsed, path, value)
+        text = dump(parsed)
+    except UnknownPath as error:
+        # 路徑指不到值：送錯的請求 → 422，訊息已含路徑與下一步。
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except (OSError, SyntaxParse) as error:
+        # 來源複本讀不到或解析不了：伺服器端資料的問題，非請求端能修——帶訊息的 500。
+        raise HTTPException(
+            status_code=500,
+            detail=f"「{entry.source}」的來源複本讀不到或解析不了：{error}。"
+            "下一步：檢查 config-repo 裡這份檔案是否被改壞或移走",
+        ) from error
+    try:
+        stage_box["stage"] = save_draft(stage_box["stage"], payload.uid, text, entry.format)
+    except DraftInvalid as error:
+        # 第 1 層沒過：422，逐條問題（行號／訊息／建議）原樣回給介面標示在那一列。
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": str(error),
+                "uid": payload.uid,
+                "problems": [_as_problem(problem) for problem in error.problems],
+            },
+        ) from error
+    return _drafts_view(stage_box["stage"])
+
+
+def _discard_drafts(stage_box: dict[str, Stage], uid: str | None) -> dict[str, object]:
+    try:
+        stage_box["stage"] = discard(stage_box["stage"], uid)
+    except DraftNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return _drafts_view(stage_box["stage"])
+
+
+def _promote_all(
+    repo: str, roots: tuple[str, ...], held: dict[str, Identity], stage_box: dict[str, Stage]
+) -> dict[str, object]:
+    """進版的邏輯（#19）：core promote 全部驗證 → io apply 寫出＋記錄（失敗整批回滾）→ 清空草稿。"""
+    identity = held.get("identity")
+    if identity is None:
+        raise HTTPException(
+            status_code=409,
+            detail="尚未設定身分，無法進版——變更紀錄需要作者。"
+            "下一步：先 POST /api/session 設定姓名與 email",
+        )
+    stage = stage_box["stage"]
+    if not stage.drafts:
+        raise HTTPException(
+            status_code=409,
+            detail="沒有草稿可進版。下一步：先儲存至少一份草稿（POST /api/drafts）",
+        )
+    try:
+        plans = promote(stage, read_config_list(repo))
+    except PromoteInvalid as error:
+        # 任一份沒過整批不進版；指出哪一份（uid）的哪些參數。
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": str(error),
+                "uid": error.uid,
+                "problems": [_as_problem(problem) for problem in error.problems],
+            },
+        ) from error
+    try:
+        promoted = apply_promotions(repo, plans, identity.git_author, roots)
+    except (PromoteLeftBehind, WriterError, CalledProcessError, OSError) as error:
+        # 寫出／記錄／回滾失敗：伺服器側的錯，帶訊息的 500（PromoteLeftBehind 指名殘留）。
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    stage_box["stage"] = discard(stage)  # 進版後草稿清空（T18）
+    return {"promoted": promoted, "count": 0}
 
 
 def _require_developer(held: dict[str, Identity], action: str) -> Identity:
