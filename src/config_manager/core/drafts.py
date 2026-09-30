@@ -94,10 +94,11 @@ class Promotion:
     uid: str
     source: str
     target: str
-    fmt: str
     text: str
     permissions: Permissions
     summary: str
+    # 變更紀錄的類型：進版是 cfg；退版把舊版內容當一筆 revert 寫回（#24），走同一條 apply。
+    kind: str = "cfg"
 
 
 def promote(stage: Stage, config_list: ConfigList) -> list[Promotion]:
@@ -132,7 +133,6 @@ def promote(stage: Stage, config_list: ConfigList) -> list[Promotion]:
                 uid=uid,
                 source=entry.source,
                 target=entry.target,
-                fmt=draft.fmt,
                 text=draft.text,
                 permissions=entry.permissions or config_list.defaults.permissions,
                 summary=f"修改參數（{entry.name}@{entry.hostname}）",
