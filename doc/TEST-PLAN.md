@@ -835,7 +835,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **白名單維護（`POST /api/allowed-roots`）：僅開發者可加一個前綴，`added_by` 取自 session、`added_at` 由伺服器蓋時間，回更新後的前綴清單、含剛加的；未設身分→409、一般使用者→403；相對／含 `..` 前綴或指向到不了的目錄→422；新增後同一個服務即刻生效、不必重啟（#202）** |
 | **白名單維護（`DELETE /api/allowed-roots`，body `{prefix, confirmed}`）：僅開發者（403）、需身分（409）；以檔案原樣 prefix 定位、定位不到→404；未帶 confirmed 先回受影響納管項目清單（`{kind:"confirm_required", affected:[{ref, target}], message}`）＋409，帶 confirmed 才真刪、回更新後的清單；受影響＝清單檔中 target（realpath）落在被移除前綴（realpath）底下的條目，資訊性、不連動解除納管（#15）** |
 | **候選數預覽（`GET /api/candidate-count?prefix=`）：僅開發者（403，角色不足）；數一個**白名單外**前綴底下的一般檔數（遞迴、不讀內容、不跟隨連結、觸及深度／項目上限回 `capped`），回 `{count, capped}`；字面 `..`／不存在／不是目錄→422，detail 為結構化 `{kind, message}`（比照 browse）。走白名單外故套白名單維護的開發者門檻（#206、T24）** |
-| **單筆內容（`GET /api/configs/{uid}`，§3.5.3 表上既有）：回 metadata（name／hostname／ref／target／source／format／groups／permissions〔條目自己的、沒寫回 defaults〕）＋`types`（欄位路徑→型別，與 inspect 同形）＋`values`（來源複本解析後的值樹），供 W3 欄位表渲染（#20）；有未進版草稿時另回 `draft_values`（草稿文字解析後的值樹，介面以它當「目前值」、`values` 當「來源值」並列，#21）；`raw`→`types` 空、`values` 為 null（不假裝 0 個欄位，§7.5.4）；uid 不在清單→404；來源複本讀不到／解析不了→帶檔名與下一步的 500** |
+| **單筆內容（`GET /api/configs/{uid}`，§3.5.3 表上既有）：回 metadata（name／hostname／ref／target／source／format／groups／permissions〔條目自己的、沒寫回 defaults〕）＋`types`（欄位路徑→型別，與 inspect 同形）＋`values`（來源複本解析後的值樹），供 W3 欄位表渲染（#20）；有未進版草稿時另回 `draft_values`（草稿文字解析後的值樹，介面以它當「目前值」、`values` 當「來源值」並列，#21）；另回 `target_values`（target 磁碟現況解析後的值樹，差異檢視據此並排，#30；target 不存在→null、讀不到／非 UTF-8／解析不了→null 並在 `target_error` 說原因——現況壞掉是要呈現的事實、不是 500）；`raw`→`types` 空、`values` 為 null（不假裝 0 個欄位，§7.5.4）；uid 不在清單→404；來源複本讀不到／解析不了→帶檔名與下一步的 500** |
 | **變更歷史（`GET /api/configs/{uid}/history?prefix=…`，§3.5.3 表上既有）：回該 uid 的紀錄、最新在前，每筆 `{sha, kind, summary, author, at, body}`；`prefix` 逗號分隔的類型清單，不給就只看內容變更（`cfg`＋`adopt`，§7.6.1／圖 7——`import`／`revert`／`meta`／`unmanage` 要明點）；含未知類型→422 列出允許值（不靜默當成沒過濾）；uid 不在清單→404（#23）** |
 | **解除納管（`DELETE /api/configs/{uid}`，§3.5.3 表上既有）：從清單檔移除條目、來源複本自 repo 拿掉、記一筆 `unmanage`；**不刪 target**（§5.5：解除管理不改變系統當前行為）；回被解除的條目、清單不再列它；有未進版草稿→409、未設身分→409、uid 不在→404；寫入失敗整批回滾、帶訊息的 500（#28）** |
 | **偏離處置（`POST /api/configs/{uid}/resolve`，body `{action}`，§3.5.3 的 resolve 動作）：`overwrite`→來源寫回目標、記一筆空 `cfg`（以來源覆蓋目標）；`adopt`→目標現況走第 1 層驗證，過→一筆 `adopt` 進版資料走 apply（來源＝現場、寫出、狀態回一致），含非法值→422 列問題、來源不動；`adopt_draft`→現況載入草稿並回 `warnings`（不擋、不碰 repo 與目標）。目標與來源一致→409（沒有偏離）、目標不存在→409 指去寫出修復、未設身分→409、uid 不在→404、目標白名單外／非 UTF-8→422。**寫出修復（`POST /api/configs/{uid}/apply`，§3.5.3 的 apply 動作）**：來源寫到目標、不留紀錄（#29）** |
@@ -902,7 +902,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | **（#22）進版失敗整批不進版：橫幅原樣列後端的結構化錯誤（指名哪一份 uid／哪些行號與建議）並打開那份，目標不變、草稿保留；「捨棄變更」（工具列＝全域、面板＝單一 config）先經確認對話框，取消不動、確認後草稿消失、來源與目標皆未改變、畫面回到來源內容** |
 | 輸入非法值 → 該列標示錯誤，**儲存按鈕停用**；int 欄輸入小數被拒 |
 | **double 型別參數存後，其值帶小數點**（`5` → `5.0`）——擋 ROS 型別錯誤的招牌行為 |
-| 外部修改目標檔案後按「檢查差異」→ 該項顯示偏離，可進入差異檢視 |
+| 外部修改目標檔案後按「檢查差異」→ 該項顯示偏離，可進入差異檢視：**（#30）偏離的欄位表上方出現橫幅（未經介面、無紀錄與作者）＋「檢視差異」，一致的沒有；差異檢視左來源右目標、每參數一列，`changed`／`same`／`added`／`removed` 與 W4 同一套；「返回欄位表」回 W3** |
 | 偏離時選「以來源覆蓋」→ 目標內容還原，狀態回到一致 |
 | 偏離時選「將目標現況納入來源」→ 來源更新且產生紀錄；**若目標內容違反驗證則被拒** |
 | 偏離時選「**先納入、待修正**」→ 目標現況載入草稿；**若含非法值，橫幅與該列即時警告（原因＋正確寫法），進版按鈕停用**，改乾淨後可進版 |

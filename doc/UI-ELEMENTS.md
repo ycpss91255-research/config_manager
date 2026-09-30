@@ -156,11 +156,17 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 
 ## W5 差異檢視
 
+只在偏離時出現（#30 的決策：不取代欄位表）。偏離的 config 其欄位表上方出現偏離橫幅＋「檢視差異」
+（`panel-diff`）→ 右側工作區切成差異檢視（`diff-<uid>`），有「返回欄位表」（`diff-back`）。資料：
+`GET /api/configs/{uid}` 的 `values`（來源）與 `target_values`（磁碟現況；壞掉時 `target_error`）。
+
 | 元素 | 選取器 | 行為 |
 |---|---|---|
-| 偏離橫幅 | `data-testid="drift-banner"` | 說明此修改未經介面進行 |
-| 來源側 / 目標側 | `data-testid="diff-source"` / `"diff-target"` | 並排參數比對 |
-| 差異列 | `data-testid="diff-row-<參數路徑>"` | 標色 |
+| 偏離橫幅 | `data-testid="drift-banner"` | 說明此修改未經介面進行、沒有對應的變更紀錄與作者資訊；欄位表與差異檢視都有 |
+| 檢視差異 | `data-testid="panel-diff"` | 欄位表橫幅內；開差異檢視 |
+| 差異檢視 | `data-testid="diff-<uid>"` | 容器；`diff-summary` 說幾個參數不同；目標現況壞掉時顯示 `diff-target-error` |
+| 來源側 / 目標側 | `data-testid="diff-source"` / `"diff-target"` | 欄首：左 repo（唯一真實來源）、右 target（磁碟現況）——並排而非合併，使用者要判斷哪一邊是對的 |
+| 差異列 | `data-testid="diff-row-<參數路徑>"` | 每參數一列，帶 `data-change`（`same`／`changed`／`added`〔目標多出〕／`removed`〔目標缺少〕）；列內 `diff-source-value`／`diff-target-value`。與 W4 同一套比對與顏色語言 |
 | 以來源覆蓋 | 文字「以來源覆蓋」 | 二次確認 |
 | 納入來源 | 文字「將目標現況納入來源」 | 走完整驗證；**含非法值則被拒** |
 | 先納入、待修正 | 文字「先納入、待修正」 | 目標現況載入草稿供修正；**含非法值則載入後警告、進版前須改正**（見 TEST-PLAN T18／A3） |

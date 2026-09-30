@@ -1704,3 +1704,62 @@ def test_reverting_while_a_draft_is_pending_shows_the_reason(open_page, browse_r
     page.wait_for_selector("[data-testid='history-revert-error']")
     assert "草稿" in page.inner_text("[data-testid='history-revert-error']")
     assert pathlib.Path(entry["target"]).read_text(encoding="utf-8") == "count: 2\n"
+
+
+# ── W5 差異檢視（#30）────────────────────────────────────────────────────────
+# 只在偏離時出現：橫幅說明目標被介面外修改、沒有紀錄與作者；來源與目標以參數為單位並排。
+
+
+def _drift(repo, source: str, target: str) -> None:
+    """一筆條目：來源複本是 source、目標檔在介面外被改成 target → 偏離。"""
+    _listing_with(repo, source)
+    (repo / "deployed" / "p.yaml").write_text(target, encoding="utf-8")
+
+
+def test_a_drifted_config_shows_a_banner_saying_the_change_bypassed_the_interface(open_page, repo):
+    # AC1：橫幅說明該修改未經介面進行、沒有對應的變更紀錄與作者資訊；一致的 config 沒有橫幅。
+    _drift(repo, "count: 3\n", "count: 9\n")
+    page = _open_panel(open_page())
+
+    banner = page.inner_text("[data-testid='panel-mfz3k9q1'] [data-testid='drift-banner']")
+    assert "未經介面" in banner and "作者" in banner
+
+
+def test_an_in_sync_config_has_no_drift_banner(open_page, repo):
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+
+    assert page.query_selector("[data-testid='drift-banner']") is None
+
+
+def test_the_diff_view_compares_source_and_target_side_by_side_per_parameter(open_page, repo):
+    # AC2／AC3／AC4：左來源、右目標，逐參數一列；沒變的標 same、改了的標 changed、目標多出的標
+    # added——與 W4 歷史差異同一套 data-change 與顏色語言。
+    _drift(repo, "count: 3\nspeed: 1.5\n", "count: 9\nspeed: 1.5\nextra: 1\n")
+    page = _open_panel(open_page())
+
+    page.click("[data-testid='panel-diff']")
+    page.wait_for_selector("[data-testid='diff-mfz3k9q1']", state="visible")
+
+    assert page.is_visible("[data-testid='diff-source']")
+    assert page.is_visible("[data-testid='diff-target']")
+    count = "[data-testid='diff-row-count']"
+    assert page.get_attribute(count, "data-change") == "changed"
+    assert page.inner_text(f"{count} [data-testid='diff-source-value']") == "3"
+    assert page.inner_text(f"{count} [data-testid='diff-target-value']") == "9"
+    assert page.get_attribute("[data-testid='diff-row-speed']", "data-change") == "same"
+    assert page.get_attribute("[data-testid='diff-row-extra']", "data-change") == "added"
+    assert "2 個參數不同" in page.inner_text("[data-testid='diff-summary']")
+    assert page.is_visible("[data-testid='diff-mfz3k9q1'] [data-testid='drift-banner']")
+
+
+def test_returning_from_the_diff_view_shows_the_parameter_table(open_page, repo):
+    _drift(repo, "count: 3\n", "count: 9\n")
+    page = _open_panel(open_page())
+    page.click("[data-testid='panel-diff']")
+    page.wait_for_selector("[data-testid='diff-mfz3k9q1']", state="visible")
+
+    page.get_by_role("button", name="返回欄位表").click()
+
+    page.wait_for_selector("[data-testid='panel-mfz3k9q1']", state="visible")
+    assert page.query_selector("[data-testid='diff-mfz3k9q1']") is None
