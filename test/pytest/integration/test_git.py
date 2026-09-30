@@ -8,6 +8,7 @@ commit 訊息格式為 `<類型>(<uid>): <說明>`，scope 只放 uid：name 與
 """
 
 import subprocess
+from datetime import datetime
 
 import pytest
 
@@ -46,6 +47,18 @@ def test_a_recorded_change_is_found_in_history_with_its_author(tmp_path):
         "調整 max_vel 至 0.8",
         AUTHOR,
     )
+
+
+def test_a_recorded_change_carries_its_author_time_in_iso_8601(tmp_path):
+    # 介面的歷史列表每筆顯示作者與時間（§7.6、#23）：at 是 ISO 8601、帶時區，能被 datetime 解析。
+    repo = _repo(tmp_path)
+    (repo / "nav2.yaml").write_text("max_vel: 0.8\n")
+    stage(str(repo), "nav2.yaml")
+    record(str(repo), "mfz3k9q1", "cfg", "調整 max_vel 至 0.8", AUTHOR)
+
+    at = history(str(repo), "mfz3k9q1")[0].at
+
+    assert datetime.fromisoformat(at).tzinfo is not None
 
 
 def test_history_does_not_crash_on_a_commit_whose_field_contains_the_separator(tmp_path):

@@ -19,8 +19,9 @@ KINDS = ("import", "cfg", "revert", "adopt", "meta", "unmanage")
 _SUBJECT = re.compile(r"^(?P<kind>[a-z]+)\((?P<uid>[^)]+)\): (?P<summary>.*)$")
 _UNIT = "\x1f"
 _RECORD = "\x1e"
-# history() 每筆切成 sha／subject／author／body 四欄（以 _UNIT 分隔）。
-_RECORD_FIELDS = 4
+# history() 每筆切成 sha／subject／author／at／body 五欄（以 _UNIT 分隔）；body 最後，
+# 吸收多出的分隔符。
+_RECORD_FIELDS = 5
 
 
 class Change(NamedTuple):
@@ -32,6 +33,8 @@ class Change(NamedTuple):
     summary: str
     author: str
     body: str = ""
+    # 作者時間，ISO 8601（`%aI`）。介面的歷史列表每筆顯示作者與時間（§7.6、#23）。
+    at: str = ""
 
 
 def _git(repo: str, *args: str) -> str:
@@ -167,7 +170,7 @@ def history(repo: str, uid: str, kind: str | None = None) -> list[Change]:
     """某個 uid 的變更紀錄，最新的在前。給了類型就只回那個類型。"""
     # 以記錄分隔符 %x1e 切 commit，而不是逐行切：commit 內文（%b）有換行，逐行解析
     # 會把一筆拆成好幾筆。%b 放在最後，它裡面的換行於是不影響前面的欄位。
-    fmt = f"%H{_UNIT}%s{_UNIT}%an <%ae>{_UNIT}%b{_RECORD}"
+    fmt = f"%H{_UNIT}%s{_UNIT}%an <%ae>{_UNIT}%aI{_UNIT}%b{_RECORD}"
     output = _git(repo, "log", f"--format={fmt}")
     changes: list[Change] = []
     for raw in output.split(_RECORD):
@@ -175,13 +178,13 @@ def history(repo: str, uid: str, kind: str | None = None) -> list[Change]:
         entry = raw.strip("\n")
         if not entry:
             continue
-        # maxsplit=3：body 是最後一欄，含分隔符的舊 commit（在寫入端擋起來之前造的、或
+        # maxsplit=4：body 是最後一欄，含分隔符的舊 commit（在寫入端擋起來之前造的、或
         # raw git／被改的 client 造的）不會切出 >4 段而崩**整庫**。段數不對的不是本工具寫的
         # 變更紀錄，略過而非炸掉——history 是唯一的帳本讀取路徑（#212）。
         parts = entry.split(_UNIT, _RECORD_FIELDS - 1)
         if len(parts) != _RECORD_FIELDS:
             continue
-        sha, subject, author, body = parts
+        sha, subject, author, at, body = parts
         matched = _SUBJECT.match(subject)
         # 不符格式的（例如 repo 的初始 commit）不是變更紀錄，略過。
         if matched is None or matched["uid"] != uid:
@@ -196,6 +199,7 @@ def history(repo: str, uid: str, kind: str | None = None) -> list[Change]:
                 summary=matched["summary"],
                 author=author,
                 body=body,
+                at=at,
             )
         )
     return changes
