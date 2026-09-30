@@ -836,6 +836,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **候選數預覽（`GET /api/candidate-count?prefix=`）：僅開發者（403，角色不足）；數一個**白名單外**前綴底下的一般檔數（遞迴、不讀內容、不跟隨連結、觸及深度／項目上限回 `capped`），回 `{count, capped}`；字面 `..`／不存在／不是目錄→422，detail 為結構化 `{kind, message}`（比照 browse）。走白名單外故套白名單維護的開發者門檻（#206、T24）** |
 | **單筆內容（`GET /api/configs/{uid}`，§3.5.3 表上既有）：回 metadata（name／hostname／ref／target／source／format／groups／permissions〔條目自己的、沒寫回 defaults〕）＋`types`（欄位路徑→型別，與 inspect 同形）＋`values`（來源複本解析後的值樹），供 W3 欄位表渲染（#20）；有未進版草稿時另回 `draft_values`（草稿文字解析後的值樹，介面以它當「目前值」、`values` 當「來源值」並列，#21）；`raw`→`types` 空、`values` 為 null（不假裝 0 個欄位，§7.5.4）；uid 不在清單→404；來源複本讀不到／解析不了→帶檔名與下一步的 500** |
 | **變更歷史（`GET /api/configs/{uid}/history?prefix=…`，§3.5.3 表上既有）：回該 uid 的紀錄、最新在前，每筆 `{sha, kind, summary, author, at, body}`；`prefix` 逗號分隔的類型清單，不給就只看內容變更（`cfg`＋`adopt`，§7.6.1／圖 7——`import`／`revert`／`meta`／`unmanage` 要明點）；含未知類型→422 列出允許值（不靜默當成沒過濾）；uid 不在清單→404（#23）** |
+| **單一版本內容（`GET /api/configs/{uid}/history/{sha}`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 GET /api/session／#122）：回那一版來源複本的 `{sha, types, values}`（形狀同單筆內容端點），供歷史檢視算參數層級差異（§7.6.2）；sha 不在這份 config 的歷史→422、uid 不在清單→404（#26） |
 | **草稿（`POST /api/drafts`，body `{uid, edits}`）：以來源複本為底套 `edits`（路徑→新值）、跑第 1 層、存進階段，回 `{count, drafts:[{uid, format}]}`；不產生變更紀錄、目標不變；第 1 層沒過→422，detail 為結構化 `{message, uid, problems:[{line, message, suggestion, severity, lines}]}`（供欄位表標示那一列）且階段不變；路徑找不到→422、uid 不在清單→404、未設身分→409。`GET /api/drafts` 回同形；`DELETE /api/drafts[/{uid}]` 捨棄全部／一份，指名的沒草稿→404（#19）** |
 | 進版端點（`POST /api/promote`）：驗證失敗時**不產生變更紀錄也不寫出**（原子性）；422 的 detail 同草稿的結構化形（指名哪一份 uid 的哪些參數）；沒草稿→409、未設身分→409；成功回 `{promoted:[uid…], count:0}`、每份各一筆 `cfg` 紀錄、作者＝session 身分、目標改變、草稿清空（#19） |
 | **退版（`POST /api/configs/{uid}/revert`，body `{version}`，§3.5.3 表上既有）：`version` 必須是這份 config 歷史裡的一筆 sha（前綴可）→ 以那一版的來源內容當一筆 `revert` 紀錄寫回並寫出目標（`revert(<uid>): rollback to <sha7>`，設計 §2.3），目標內容等於那一版、歷史多一筆而先前紀錄全在（ADR-00000005）；預設「只看內容變更」的歷史不顯示這筆；sha 不在這份的歷史→422（不把別份的內容寫進來）、這份有未進版草稿→409、未設身分→409、uid 不在清單→404；寫出／記錄失敗整批回滾、帶訊息的 500（同進版）。介面不提供 reset（#24）** |
@@ -910,7 +911,8 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | 搜尋範圍下拉選「參數名稱」後，只命中參數名稱 |
 | 修改群組並儲存 → 左側樹立即重建 |
 | list 參數可新增、移除、**以 ↑↓ 調整順序**，順序變更後儲存生效 |
-| 歷史列表**不出現 `cfg`／`revert`／`import` 等內部代號** |
+| 歷史列表**不出現 `cfg`／`revert`／`import` 等內部代號**；每筆顯示行為描述、作者與時間；篩選「只看內容變更」（預設）不列納入管理那筆、「全部」列出且仍以行為描述呈現（#25） |
+| **（#26）選一筆變更 → 右側以參數為單位列差異：哪個參數從那一版的什麼變成目前的什麼（`changed`）、沒變的標 `same`、那版沒有／現在沒有的標 `added`／`removed`，並說有幾個參數不同；「返回欄位表」回到 W3** |
 | 型別指定後該列顯示「已指定」，清除後回到推斷值 |
 | **有未進版草稿時退出 → 二次確認並說明草稿將遺失** |
 | 身分輸入頁的角色切換明顯可見（不在選單內） |
@@ -1329,7 +1331,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/candidate` | T24（候選檔案數預覽，介面議定於 #206）：不以白名單為閘門、遞迴數一般檔（不讀內容）、每層 O_NOFOLLOW 不跟隨連結、深度／項目上限觸及回部分計數＋capped | 已落地（`count_candidates`） |
 | `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202）；移除以檔案原樣 prefix 定位、找不到丟 `PrefixNotFound`、commit 失敗回滾同樣以真實 fs＋git 斷言（#15） | 已落地（`read_allowed_roots`／`add_allowed_root`／`remove_allowed_root`） |
 | `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/configs/{uid}`、`GET /api/configs/{uid}/history`、`POST /api/configs/{uid}/revert`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots`、`GET`／`POST`／`DELETE /api/drafts[/{uid}]`、`POST /api/promote` 與 CORS 中介層） |
-| `api/history` | T9 | 已落地（`GET /api/configs/{uid}/history`、`POST /api/configs/{uid}/revert`——歷史與退版的端點與邏輯，自 `api/routes` 拆出以免該模組超過千行，#24） |
+| `api/history` | T9 | 已落地（`GET /api/configs/{uid}/history`、`GET /api/configs/{uid}/history/{sha}`、`POST /api/configs/{uid}/revert`——歷史與退版的端點與邏輯，自 `api/routes` 拆出以免該模組超過千行，#24） |
 | `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 部分落地：身分（`author`）已落地；階段的 acquire／renew／release／sweep 未落地（#33） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |

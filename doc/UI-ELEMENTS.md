@@ -82,7 +82,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 儲存錯誤 | `data-testid="panel-save-error"` | 第 1 層沒過的 422 逐條列行號／原因／建議；其他錯誤原樣顯示 |
 | 捨棄變更（單一） | `data-testid="panel-discard"` | 文字「捨棄變更」；**只在該份有草稿時出現**；經 W6 確認後 `DELETE /api/drafts/{uid}`，面板重讀為來源內容（#22） |
 | 退版按鈕 | 文字「退版」 | 針對單一 config，與草稿無關 |
-| 歷史按鈕 | 文字「歷史」 | 開啟該 config 的變更紀錄 |
+| 歷史按鈕 | 文字「歷史」（`data-testid="panel-history"`） | 右側工作區切成該 config 的歷史檢視（W4），左側樹不動（#25） |
 | 屬性按鈕 | 文字「屬性」 | **僅開發者出現** |
 
 ### 屬性面板（僅開發者）
@@ -135,12 +135,19 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 
 ## W4 歷史
 
+從 W2 面板的「歷史」進入，右側工作區切成歷史檢視（#25 的決策：不另開整頁）。資料：`GET /api/configs/{uid}/history`
+（列表）與 `GET /api/configs/{uid}/history/{sha}`（選定那一版的值樹，#26）；「目前版本」＝來源複本現況。
+
 | 元素 | 選取器 | 行為 |
 |---|---|---|
-| 篩選 | `data-testid="history-filter"` | 「只看內容變更」（預設）／「全部」 |
-| 變更列 | `data-testid="history-entry-<sha>"` | 顯示**行為描述**，不顯示內部代號 |
-| 差異區 | `data-testid="history-diff"` | 以參數為單位 |
-| 退回此版本 | 文字「退回此版本」 | 二次確認 |
+| 歷史檢視 | `data-testid="history-<uid>"` | 容器；標頭有名稱、目標路徑與「返回欄位表」（`history-back`） |
+| 篩選 | `data-testid="history-filter"` | 兩個並排選項按鈕（`aria-pressed`）：「只看內容變更」（預設，`cfg`＋`adopt`）／「全部」（六種都列） |
+| 列表 | `data-testid="history-list"` | 最新在前；空時顯示 `history-empty`、讀不到顯示 `history-error` |
+| 變更列 | `data-testid="history-entry-<sha>"` | 顯示**行為描述**（內部類型→介面顯示對照表 §7.6.1），不顯示內部代號；退回舊版本附「退回到版本 <sha7>」；點選→`aria-selected="true"` 並載入差異 |
+| 作者／時間 | 列內 `data-testid="history-author"`／`"history-time"` | 姓名（email 在 title）；`<time datetime=ISO>` 顯示本地時間 |
+| 差異區 | `data-testid="history-diff"` | 以參數為單位：`history-diff-summary`（N 個參數不同）＋每參數一列 |
+| 差異列 | `data-testid="diff-row-<參數路徑>"` | 帶 `data-change`（`same`／`changed`／`added`／`removed`）；列內 `diff-from`（那一版）→`diff-to`（目前）。顏色語言與 W3／W5 一致（改動＝偏離紅） |
+| 退回此版本 | 文字「退回此版本」 | 二次確認（#27） |
 
 **測試須斷言**：列表中**不出現** `cfg`、`revert`、`import` 等字串。
 

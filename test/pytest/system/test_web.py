@@ -1535,3 +1535,106 @@ def test_discarding_one_config_leaves_the_other_draft_and_shows_the_source_again
         "?.value === '3'"
     )
     assert page.inner_text("[data-testid='promote-all']") == "進版 (1)"
+
+
+# ── W4 歷史（#25／#26）──────────────────────────────────────────────────────
+# 使用者看到的是行為，不是代號（§7.6.1）；差異以參數為單位（§7.6.2）。歷史用真的納管＋進版造出來
+# （走端點、不經頁面——這幾則要觀察的是歷史檢視，不是納管與進版的畫面）。
+
+
+def _api_json(api, method, path, payload=None):
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        f"{api}{path}", data=data, headers={"content-type": "application/json"}, method=method
+    )
+    with urllib.request.urlopen(request, timeout=_STARTUP_TIMEOUT) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _history_via_api(api, browse_root, contents: list) -> dict:
+    """納管 `contents[0]`、再依序把每個後續內容以草稿→進版寫進歷史；回納管的條目。"""
+    _api_json(api, "POST", "/api/session", {"name": _NAME, "email": _EMAIL, "role": "developer"})
+    source = browse_root / "hist.yaml"
+    source.write_text(contents[0], encoding="utf-8")
+    entry = _api_json(api, "POST", "/api/configs", {"source_path": str(source), "format": "yaml"})
+    for content in contents[1:]:
+        pairs = [line.split(":") for line in content.strip().split("\n")]
+        edits = {key: int(value) for key, value in pairs}
+        _api_json(api, "POST", "/api/drafts", {"uid": entry["uid"], "edits": edits})
+        _api_json(api, "POST", "/api/promote", {})
+    return entry
+
+
+def _open_history(page, uid: str):
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    page.click(f"[data-testid='tree-item-{uid}']")
+    page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
+    page.get_by_role("button", name="歷史").click()
+    page.wait_for_selector(f"[data-testid='history-{uid}']", state="visible")
+    page.wait_for_selector("[data-testid^='history-entry-']")
+    return page
+
+
+def test_history_lists_each_change_as_a_behaviour_with_author_and_time(open_page, browse_root, api):
+    # #25：每筆顯示行為描述（修改參數）、作者與時間；列表上不出現 cfg／revert／import 這些代號。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n", "count: 3\n"])
+    page = _open_history(open_page(), entry["uid"])
+
+    entries = page.eval_on_selector_all(
+        "[data-testid^='history-entry-']",
+        "els => els.map(e => ({kind: e.querySelector('.history-kind').textContent,"
+        " author: e.querySelector('[data-testid=\"history-author\"]').textContent,"
+        " time: e.querySelector('[data-testid=\"history-time\"]').textContent}))",
+    )
+    # 預設只看內容變更，納管那筆不列。
+    assert [e["kind"] for e in entries] == ["修改參數", "修改參數"]
+    assert all(e["author"] == _NAME and e["time"] for e in entries)
+    text = page.inner_text("[data-testid='history-list']")
+    assert not any(code in text for code in ("cfg", "revert", "import", "adopt", "meta"))
+
+
+def test_history_filter_all_shows_onboarding_as_a_behaviour(open_page, browse_root, api):
+    # #25：篩選器以行為描述呈現：「全部」列出納入管理那筆，仍不出現代號。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
+    page = _open_history(open_page(), entry["uid"])
+
+    page.click("[data-testid='history-filter'] button[data-filter='all']")
+    page.wait_for_selector("text=納入管理")
+
+    kinds = page.eval_on_selector_all(
+        "[data-testid^='history-entry-'] .history-kind", "els => els.map(e => e.textContent)"
+    )
+    assert kinds == ["修改參數", "納入管理"]
+    assert "import" not in page.inner_text("[data-testid='history-list']")
+
+
+def test_selecting_a_change_shows_which_parameters_differ_from_the_current_version(
+    open_page, browse_root, api
+):
+    # #26：差異以參數為單位——哪個參數從什麼變成什麼；沒變的標為相同，不是文字行差異。
+    entry = _history_via_api(
+        api, browse_root, ["count: 1\nspeed: 5\n", "count: 2\nspeed: 5\n", "count: 3\nspeed: 5\n"]
+    )
+    page = _open_history(open_page(), entry["uid"])
+    older = page.eval_on_selector_all(
+        "[data-testid^='history-entry-']", "els => els[els.length - 1].dataset.testid"
+    )
+
+    page.click(f"[data-testid='{older}']")
+    page.wait_for_selector("[data-testid='diff-row-count']")
+
+    assert page.get_attribute("[data-testid='diff-row-count']", "data-change") == "changed"
+    assert page.inner_text("[data-testid='diff-row-count'] [data-testid='diff-from']") == "2"
+    assert page.inner_text("[data-testid='diff-row-count'] [data-testid='diff-to']") == "3"
+    assert page.get_attribute("[data-testid='diff-row-speed']", "data-change") == "same"
+    assert "1 個參數不同" in page.inner_text("[data-testid='history-diff-summary']")
+
+
+def test_returning_from_history_shows_the_parameter_table_again(open_page, browse_root, api):
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
+    page = _open_history(open_page(), entry["uid"])
+
+    page.get_by_role("button", name="返回欄位表").click()
+
+    page.wait_for_selector(f"[data-testid='panel-{entry['uid']}']", state="visible")
+    assert page.query_selector(f"[data-testid='history-{entry['uid']}']") is None
