@@ -231,7 +231,7 @@ def create_app(
     def config_detail(uid: str) -> dict[str, object]:
         """單筆的 metadata 與內容（設計文件 §3.5.3）。欄位表（W3，#20）據 `types`＋`values`
         渲染。"""
-        return _config_detail(repo, uid)
+        return _config_detail(repo, stage_box, uid)
 
     @app.get("/api/browse")
     def browse_filesystem(path: str) -> dict[str, object]:
@@ -400,12 +400,14 @@ def _clean_note(note: str) -> str:
     )
 
 
-def _config_detail(repo: str, uid: str) -> dict[str, object]:
+def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str, object]:
     """單筆條目的 metadata 與內容（#20）：欄位表以 `types`（欄位路徑→型別，與 inspect 同形）＋
     `values`（來源複本解析後的值樹）渲染，型別與值都來自來源複本、不由前端猜（不變式 6）。
 
     `raw` 不解析：`types` 空、`values` 為 null——介面顯示「未結構化」，不假裝有 0 個欄位（§7.5.4）。
     權限回條目自己的、沒寫就回清單檔 defaults（T1 的語意，與進版寫出用的一致）。
+    有未進版的草稿時另回 `draft_values`（草稿文字解析後的值樹，#21）：介面以它當「目前值」、
+    `values` 當「來源值」並列，重開這份 config 看到的是存過的草稿，不是被丟掉的改動。
     """
     config_list = read_config_list(repo)
     entry = next((item for item in config_list.files if item.uid == uid), None)
@@ -427,6 +429,7 @@ def _config_detail(repo: str, uid: str) -> dict[str, object]:
         "permissions": _as_permissions(entry.permissions or config_list.defaults.permissions),
         "types": {},
         "values": None,
+        "draft_values": None,
     }
     if entry.format == "raw":
         return detail
@@ -434,6 +437,9 @@ def _config_detail(repo: str, uid: str) -> dict[str, object]:
         data = values(parse(read_source_copy(repo, entry.source), entry.format))
         detail["types"] = infer_types(data)
         detail["values"] = data
+        draft = stage_box["stage"].drafts.get(uid)
+        if draft is not None:
+            detail["draft_values"] = values(parse(draft.text, draft.fmt))
     except (OSError, UnicodeDecodeError, SyntaxParse, RecursionError) as error:
         # 來源複本讀不到／解析不了：伺服器端資料的問題，非請求端能修——帶檔名與下一步的 500。
         raise HTTPException(

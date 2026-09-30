@@ -146,6 +146,19 @@ def test_setting_a_double_writes_a_decimal_point_not_an_integer():
     assert dump(parsed) == "ratio: 1.0\n"
 
 
+def test_setting_an_integer_on_a_double_field_still_writes_a_decimal_point():
+    # 介面經 JSON 送來的 5.0 到後端已是 int 5；型別由原值決定——原值是 double 就寫 5.0，
+    # 不因新值的寫法把欄位降成 int（#21）。yaml／toml／json 三種都要守。
+    outputs = []
+    samples = (("ratio: 0.5\n", "yaml"), ("ratio = 0.5\n", "toml"), ('{"ratio": 0.5}', "json"))
+    for text, fmt in samples:
+        parsed = parse(text, fmt)
+        set_value(parsed, "ratio", 5)
+        outputs.append(dump(parsed))
+
+    assert outputs == ["ratio: 5.0\n", "ratio = 5.0\n", '{"ratio": 5.0}']
+
+
 def test_setting_a_nested_yaml_value_by_dotted_path_and_list_index():
     parsed = parse("a:\n  b:\n    - 1\n    - 2\n", "yaml")
 
