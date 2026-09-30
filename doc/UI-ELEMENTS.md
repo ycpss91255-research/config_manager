@@ -53,7 +53,9 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 檢查差異 | 文字「檢查差異」 | 觸發全項目掃描 |
 | 白名單 | 文字「白名單」 | **僅開發者出現**（非停用） |
 | 納管 | 文字「納管」 | 開啟納管流程 |
-| 進版 | `data-testid="promote-all"` | 文字含待進版草稿數，如「進版 (2)」。無草稿時停用 |
+| 進版 | `data-testid="promote-all"` | 文字含待進版草稿數，如「進版 (2)」。無草稿時停用。`POST /api/promote`；成功→`promote-done` 橫幅、草稿清空、重掃；失敗→`promote-error` 橫幅原樣列結構化錯誤（哪一份／哪些行號與建議）並打開那份（#22） |
+| 捨棄變更（全域） | `data-testid="discard-all"` | 文字「捨棄變更」；無草稿時停用；經 W6 確認對話框後 `DELETE /api/drafts`（#22） |
+| 進版結果橫幅 | `data-testid="promote-done"` ／ `"promote-error"` | 位於工作區上方、橫跨兩欄；下一次進版／捨棄前清掉 |
 | 退出 | 文字「退出」 | 有未進版草稿時二次確認 |
 | 目前角色 | `data-testid="current-role"` | 恆常可見於標題列 |
 
@@ -78,6 +80,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 草稿指示 | `data-testid="panel-draft-<uid>"` | 該區塊有草稿時出現（`GET /api/configs/{uid}` 回 `draft_values`） |
 | 儲存按鈕 | 文字「儲存」（`data-testid="panel-save"`） | **存為草稿**（`POST /api/drafts`，送相對來源的全部改動），不記錄也不寫出。驗證未過或沒有改動時停用 |
 | 儲存錯誤 | `data-testid="panel-save-error"` | 第 1 層沒過的 422 逐條列行號／原因／建議；其他錯誤原樣顯示 |
+| 捨棄變更（單一） | `data-testid="panel-discard"` | 文字「捨棄變更」；**只在該份有草稿時出現**；經 W6 確認後 `DELETE /api/drafts/{uid}`，面板重讀為來源內容（#22） |
 | 退版按鈕 | 文字「退版」 | 針對單一 config，與草稿無關 |
 | 歷史按鈕 | 文字「歷史」 | 開啟該 config 的變更紀錄 |
 | 屬性按鈕 | 文字「屬性」 | **僅開發者出現** |
@@ -162,9 +165,9 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 |---|---|---|
 | 唯讀橫幅 | `data-testid="readonly-banner"` | 非持有分頁顯示；含持有者姓名、email、開始時間 |
 | 逾時退出提示 | `data-testid="session-timeout"` | 部署模式閒置逾時後出現，階段已釋放 |
-| 確認對話框 | `data-testid="confirm-dialog"` | 退出丟草稿／以來源覆蓋／退回此版本／先納入待修正共用；含可見標題與後果說明 |
-| 對話框確認鈕 | 對話框內文字「確認」 | 執行該動作 |
-| 對話框取消鈕 | 對話框內文字「取消」 | 關閉、不執行 |
+| 確認對話框 | `data-testid="confirm-dialog"` | 退出丟草稿／**捨棄變更**／以來源覆蓋／退回此版本／先納入待修正共用；`<dialog>`，開啟時帶 `open`；標題 `confirm-title`、後果 `confirm-body` |
+| 對話框確認鈕 | 對話框內文字「確認」（`confirm-ok`） | 執行該動作 |
+| 對話框取消鈕 | 對話框內文字「取消」（`confirm-cancel`） | 關閉、不執行（Esc 同） |
 
 ---
 

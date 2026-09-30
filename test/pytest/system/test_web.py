@@ -1311,14 +1311,19 @@ _SECOND_UID = "mfz3k9q2"
 def _listing_many(repo, contents: dict) -> dict:
     """多筆條目（name → yaml 內容），uid 依序 mfz3k9q1、mfz3k9q2…；目標＝來源→一致。
     回 name → 目標路徑。"""
+    # 目標放在白名單根（repo 夾具種的 `targets/`）底下、權限用目前的 uid／gid：進版會真的寫出到
+    # 目標（白名單逃逸檢查＋chown），`deployed/`＋root:root 的樣本只夠比狀態、寫不出去。
+    header = _LIST_HEADER.replace('owner = "root"', f'owner = "{os.getuid()}"').replace(
+        'group = "root"', f'group = "{os.getgid()}"'
+    )
     entries, targets = "", {}
     for index, (name, content) in enumerate(contents.items(), start=1):
         (repo / "files" / f"{name}.yaml").write_text(content, encoding="utf-8")
-        target = repo / "deployed" / f"{name}.yaml"
+        target = repo / "targets" / f"{name}.yaml"
         target.write_text(content, encoding="utf-8")
         entries += _ENTRY.format(uid=f"mfz3k9q{index}", name=name, target=target, groups="")
         targets[name] = target
-    (repo / "config-list.toml").write_text(_LIST_HEADER + entries, encoding="utf-8")
+    (repo / "config-list.toml").write_text(header + entries, encoding="utf-8")
     return targets
 
 
@@ -1415,3 +1420,118 @@ def test_the_draft_marker_survives_a_reload(open_page, repo):
     page.reload()
 
     page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+
+
+# ── 進版與捨棄變更（#22）─────────────────────────────────────────────────────
+# 三段式的第三段：工具列「進版 (N)」把全部草稿一次驗證、記錄、寫出（整批原子）；「捨棄變更」清草稿、
+# 回到來源內容（全域／單一），經確認對話框。
+
+
+def _save_draft_for(page, uid: str, path: str, value: str) -> None:
+    page.click(f"[data-testid='tree-item-{uid}']")
+    page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
+    page.fill(_param_value(path), value)
+    _save(page)
+    page.wait_for_selector(_draft_dot(uid), state="visible")
+
+
+def _git_log(repo, count: int) -> list:
+    return subprocess.run(
+        ["git", "-C", str(repo), "log", f"-{count}", "--format=%s|%an"],
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+
+
+def test_the_promote_button_shows_the_pending_draft_count(open_page, repo):
+    # AC1：工具列全域按鈕顯示待進版草稿數；無草稿時停用。
+    _listing_many(repo, {"a": "count: 3\n", "b": "speed: 1.5\n"})
+    page = _enter_identity(open_page())
+
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (0)"
+    assert page.is_disabled("[data-testid='promote-all']")
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    _save_draft_for(page, _SECOND_UID, "speed", "2.5")
+
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (2)"
+    assert page.is_enabled("[data-testid='promote-all']")
+
+
+def test_pressing_promote_sends_every_draft_at_once_and_records_one_change_each(open_page, repo):
+    # AC2：按一次兩份一起送出——兩個目標都改變、各一筆變更紀錄（作者＝身分）、草稿清空。
+    targets = _listing_many(repo, {"a": "count: 3\n", "b": "speed: 1.5\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    _save_draft_for(page, _SECOND_UID, "speed", "2.5")
+
+    page.click("[data-testid='promote-all']")
+
+    page.wait_for_selector("[data-testid='promote-done']", state="visible")
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (0)"
+    assert page.query_selector(_draft_dot(_PARAM_UID)) is None
+    assert targets["a"].read_text(encoding="utf-8") == "count: 4\n"
+    assert targets["b"].read_text(encoding="utf-8") == "speed: 2.5\n"
+    assert _git_log(repo, 2) == [
+        f"cfg({_SECOND_UID}): 修改參數（b@amr01）|{_NAME}",
+        f"cfg({_PARAM_UID}): 修改參數（a@amr01）|{_NAME}",
+    ]
+
+
+def test_a_promote_that_fails_names_the_config_and_writes_nothing(open_page, repo):
+    # AC3：任一份沒過整批不進版，橫幅指名是哪一份（這裡：進版期間該 config 已被解除管理——後端
+    # 唯一能在儲存後才變壞的路徑；參數層級的指名走同一個橫幅、同一種結構化錯誤形），
+    # 目標不變、草稿保留。
+    targets = _listing_many(repo, {"a": "count: 3\n", "b": "speed: 1.5\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    _save_draft_for(page, _SECOND_UID, "speed", "2.5")
+    _listing_many(repo, {"a": "count: 3\n"})  # b 不再受管
+
+    page.click("[data-testid='promote-all']")
+
+    page.wait_for_selector("[data-testid='promote-error']", state="visible")
+    assert _SECOND_UID in page.inner_text("[data-testid='promote-error']")
+    assert targets["a"].read_text(encoding="utf-8") == "count: 3\n"  # 沒過的那份擋住了全部
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (2)"
+
+
+def test_discarding_all_drafts_asks_first_then_clears_them_leaving_the_target(open_page, repo):
+    # AC4（全域）：捨棄變更先確認；取消什麼都不變，確認後草稿消失、來源與目標皆未改變。
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+    page.fill(_param_value("count"), "4")
+    _save(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+
+    page.click("[data-testid='discard-all']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-cancel']")
+    assert page.is_visible(_draft_dot(_PARAM_UID))
+
+    page.click("[data-testid='discard-all']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="detached")
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (0)"
+    assert (repo / "files" / "p.yaml").read_text(encoding="utf-8") == "count: 3\n"
+    assert (repo / "deployed" / "p.yaml").read_text(encoding="utf-8") == "count: 3\n"
+
+
+def test_discarding_one_config_leaves_the_other_draft_and_shows_the_source_again(open_page, repo):
+    # AC4（單一）：面板的「捨棄變更」只清這份；另一份的草稿還在；畫面回到來源內容。
+    _listing_many(repo, {"a": "count: 3\n", "b": "speed: 1.5\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _SECOND_UID, "speed", "2.5")
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+
+    page.click("[data-testid='panel-discard']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="detached")
+    assert page.is_visible(_draft_dot(_SECOND_UID))
+    page.wait_for_function(
+        "() => document.querySelector(\"[data-testid='param-count'] [data-testid='param-value']\")"
+        "?.value === '3'"
+    )
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (1)"
