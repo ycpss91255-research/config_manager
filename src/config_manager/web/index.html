@@ -139,6 +139,12 @@
   .diff-head { display: flex; gap: 10px; padding: 8px 14px 0; font-size: 12px; color: var(--muted); font-weight: 600; }
   .diff-head .diff-name { flex: 1.2; }
   .diff-head .diff-side { flex: 1; }
+  /* W5 三種處置（#31）：每個出口先說後果、再按。群組節點彙總子節點最嚴重的狀態（§7.4.1）。 */
+  .resolve-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 12px 14px; border-top: 1px solid var(--line); }
+  .resolve-option { display: flex; flex-direction: column; gap: 6px; }
+  .resolve-option .why { font-size: 12px; color: var(--muted); }
+  .resolve-error { margin: 0 14px 12px; }
+  .group > h2 { display: flex; align-items: center; gap: 8px; }
   /* 進版／捨棄變更（#22） */
   .banner { grid-column: 1 / -1; }
   .banner ul { margin: 8px 0 0; padding-left: 18px; list-style: disc; }
@@ -682,14 +688,30 @@ function render() {
   }
 
   for (const [group, items] of byGroup(visible)) {
+    const worst = worstState(items);
     tree.appendChild(element("section", {
       class: "group",
       "data-testid": `tree-group-${group}`,
     }, [
-      element("h2", { text: group === UNGROUPED ? "未分群" : group }),
+      element("h2", {}, [
+        element("span", {
+          class: `dot dot-${worst}`, "data-testid": "group-status-dot", "data-state": worst,
+          title: worst === "error" ? "有一筆判不出狀態" : STATE_TEXT[worst] || worst,
+        }),
+        element("span", { text: group === UNGROUPED ? "未分群" : group }),
+      ]),
       element("ul", {}, items.map(rowNode)),
     ]));
   }
+}
+
+// 父節點彙總子節點最嚴重的狀態（§7.4.1）：偏離 > 未部署 > 一致；判不出狀態的（#214）排最前——
+// 那一筆連比都比不了，比偏離更需要人先看。
+const STATE_SEVERITY = ["error", "drift", "missing", "in_sync"];
+
+function worstState(items) {
+  const states = items.map((row) => (row.error ? "error" : row.state));
+  return STATE_SEVERITY.find((state) => states.includes(state)) || "in_sync";
 }
 
 // 後端把清單檔／白名單設定執行期讀不了包成 {detail:{message,file}}，指名壞掉的檔與下一步
@@ -747,7 +769,7 @@ tree.addEventListener("click", (event) => {
   if (item) openPanel(item.dataset.uid);
 });
 
-async function openPanel(uid) {
+async function openPanel(uid, notice) {
   const generation = ++panelGeneration;
   openUid = uid;
   workspace.replaceChildren(element("p", {
@@ -759,6 +781,7 @@ async function openPanel(uid) {
     const detail = await response.json();
     if (generation !== panelGeneration) return;
     workspace.replaceChildren(panelNode(detail));
+    if (notice) workspace.prepend(notice);  // 上一個動作的結果（如先納入、待修正的警告）放在面板上方
   } catch (error) {
     if (generation !== panelGeneration) return;
     // 大聲失敗（不變式 2）：說出讀不到，不留一個空表假裝這份 config 沒有參數。
@@ -1339,7 +1362,96 @@ function openDiffView(detail) {
       element("ul", { class: "param-table" }, rows.map((row) => diffRow(row, "diff-source-value", "diff-target-value", "｜"))),
     );
   }
+  view.appendChild(resolveActions(detail, view));
   workspace.replaceChildren(view);
+}
+
+// ── W5 三種處置（#31、§5.4、A3）──────────────────────────────────────────────
+// 偏離不自動處置（設計原則 N-2）：三個相反方向的出口由人選，後果在按下之前就寫在按鈕旁。
+// 覆蓋與先納入不可逆（丟掉現場改動／載入的草稿要人接手）→ W6 確認；納入走完整驗證，含非法值被拒。
+const RESOLVE_OPTIONS = [
+  {
+    action: "overwrite", label: "以來源覆蓋目標", testid: "resolve-overwrite",
+    why: "現場改動是不該保留的臨時測試：把 repo 的來源寫回目標、捨棄現場修改；記一筆紀錄。",
+    confirm: ["以來源覆蓋目標？", "目標檔案會被 repo 的來源覆蓋，現場的修改全部丟掉，無法復原；會記一筆變更紀錄。"],
+  },
+  {
+    action: "adopt", label: "將目標現況納入來源", testid: "resolve-adopt",
+    why: "現場改動是有效的調整：走完整驗證後成為來源、記一筆採納紀錄；含非法值會被拒。",
+    confirm: null,
+  },
+  {
+    action: "adopt_draft", label: "先納入、待修正", testid: "resolve-adopt-draft",
+    why: "現場改動含非法值但不該丟：載入草稿供修正，進版前須改正；來源與目標都先不動。",
+    confirm: ["先納入、待修正？", "目標現況會載入為這份 config 的草稿（覆蓋既有草稿），非法值以警告標示，進版前須改正。"],
+  },
+];
+
+function resolveActions(detail, view) {
+  const error = element("div", { class: "notice error resolve-error", "data-testid": "resolve-error" });
+  error.hidden = true;
+  const options = RESOLVE_OPTIONS.map((option) => {
+    const button = element("button", { type: "button", "data-testid": option.testid, text: option.label });
+    button.addEventListener("click", () => resolveDrift(detail, option, view, error));
+    return element("div", { class: "resolve-option" }, [button, element("span", { class: "why", text: option.why })]);
+  });
+  return element("div", {}, [error, element("div", { class: "resolve-actions" }, options)]);
+}
+
+async function resolveDrift(detail, option, view, errorEl) {
+  if (option.confirm) {
+    const ok = await confirmAction(option.confirm[0], option.confirm[1]);
+    if (!ok) return;
+  }
+  errorEl.hidden = true;
+  for (const button of view.querySelectorAll(".resolve-actions button")) button.disabled = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: option.action }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      // 422（納入：現況含非法值，列行號／原因／建議並指去先納入待修正）／409／500：原樣顯示，差異區保留。
+      renderSaveError(errorEl, payload.detail);
+      return;
+    }
+    clearPromoteBanners();
+    if (option.action === "adopt_draft") {
+      setDrafts(payload.drafts.map((draft) => draft.uid));
+      openPanel(detail.uid, adoptDraftNotice(payload.warnings));
+      return;
+    }
+    load();  // 覆蓋／納入後狀態回到一致，樹重掃
+    promoteDoneEl.textContent = option.action === "overwrite"
+      ? `已以來源覆蓋「${detail.name}」的目標，並記一筆變更紀錄。`
+      : `已將「${detail.name}」的目標現況納入來源（採納現場調整），並寫出。`;
+    promoteDoneEl.hidden = false;
+    openPanel(detail.uid);
+  } catch (error) {
+    renderSaveError(errorEl, `送不出去：${error && error.message ? error.message : error}`);
+  } finally {
+    for (const button of view.querySelectorAll(".resolve-actions button")) button.disabled = false;
+  }
+}
+
+function adoptDraftNotice(warnings) {
+  const notice = element("div", {
+    class: warnings.length ? "notice error" : "notice", "data-testid": "adopt-draft-notice",
+  }, [
+    element("strong", {
+      text: warnings.length
+        ? `目標現況已載入為草稿，含 ${warnings.length} 個問題——進版前須改正（整批進版會被擋）。`
+        : "目標現況已載入為草稿，沒有發現問題；儲存或進版即可。",
+    }),
+  ]);
+  if (warnings.length) {
+    notice.appendChild(element("ul", {}, warnings.map((problem) => element("li", {
+      text: `第 ${problem.line} 行：${problem.message}。建議：${problem.suggestion}`,
+    }))));
+  }
+  return notice;
 }
 
 // 目標現況沒有型別表（型別由來源推斷、不由前端猜）：只借來源的型別表走訪路徑，來源沒有的欄位
