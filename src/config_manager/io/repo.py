@@ -65,3 +65,12 @@ def _encode(target: str) -> str:
     目標一律是絕對路徑（白名單要求），所以開頭的 `/` 一定在。
     """
     return target.lstrip("/").replace("_", "_5f").replace("/", "__")
+
+
+def read_or_none(path: str) -> bytes | None:
+    """`path` 的位元組；檔案不存在回 None。進版與解除納管在動手前拍現場用（回滾據以還原）。"""
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except FileNotFoundError:
+        return None

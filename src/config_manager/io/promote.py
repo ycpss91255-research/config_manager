@@ -21,6 +21,7 @@ from config_manager.core.drafts import Promotion
 from config_manager.io.atomic import replace_atomically
 from config_manager.io.errors import PromoteLeftBehind, WriterError
 from config_manager.io.git import head, record, reset_hard, stage
+from config_manager.io.repo import read_or_none
 from config_manager.io.writer import write
 
 
@@ -36,7 +37,7 @@ def apply(
     before_targets: list[tuple[str, bytes | None]] = []
     try:
         for plan in promotions:
-            before_targets.append((plan.target, _read_or_none(plan.target)))
+            before_targets.append((plan.target, read_or_none(plan.target)))
             replace_atomically(os.path.join(repo, plan.source), plan.text.encode("utf-8"))
             stage(repo, plan.source)
             record(repo, plan.uid, plan.kind, plan.summary, author)
@@ -45,14 +46,6 @@ def apply(
         _rollback(repo, before_head, before_targets, failure)
         raise
     return [plan.uid for plan in promotions]
-
-
-def _read_or_none(path: str) -> bytes | None:
-    try:
-        with open(path, "rb") as handle:
-            return handle.read()
-    except FileNotFoundError:
-        return None
 
 
 def _restore(target: str, before: bytes | None) -> None:

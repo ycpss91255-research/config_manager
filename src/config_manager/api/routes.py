@@ -69,6 +69,8 @@ from config_manager.io.errors import (
     PreflightError,
     PromoteLeftBehind,
     SourceError,
+    UnmanageLeftBehind,
+    UnmanageNotFound,
     WriterError,
 )
 from config_manager.io.onboard import OnboardRequest, onboard
@@ -77,6 +79,7 @@ from config_manager.io.preflight import read_config_list
 from config_manager.io.promote import apply as apply_promotions
 from config_manager.io.scan import ScanFailure, scan
 from config_manager.io.source import Source, local_hostname, read_source
+from config_manager.io.unmanage import unmanage
 
 
 class SessionInput(BaseModel):
@@ -256,6 +259,7 @@ def create_app(
     _register_allowed_roots(app, repo, held)
     _register_drafts(app, repo, held, stage_box)
     register_history(app, repo, held, stage_box)
+    _register_unmanage(app, repo, held, stage_box)
     return app
 
 
@@ -293,6 +297,47 @@ def _register_drafts(
     def promote_all_drafts() -> dict[str, object]:
         """進版（全域動作）：全部草稿一次驗證、記錄、寫出，整批原子（#19、ADR-00000022）。"""
         return _promote_all(repo, root_prefixes(repo), held, stage_box)
+
+
+def _register_unmanage(
+    app: FastAPI, repo: str, held: dict[str, Identity], stage_box: dict[str, Stage]
+) -> None:
+    """解除納管的端點（§3.5.3 表上既有，#28）。抽出來的理由同 `_register_allowed_roots`（C901）。"""
+
+    @app.delete("/api/configs/{uid}")
+    def unmanage_config(uid: str) -> dict[str, object]:
+        """解除納管：從清單檔移除、來源複本自 repo 拿掉、記一筆 unmanage；**不刪 target**
+        （§5.5）。"""
+        return _unmanage_config(repo, held, stage_box, uid)
+
+
+def _unmanage_config(
+    repo: str, held: dict[str, Identity], stage_box: dict[str, Stage], uid: str
+) -> dict[str, object]:
+    """解除納管的邏輯（#28）：需要身分（紀錄要作者）、這份有未進版草稿先擋（預設落向安全），
+    再交給 `io/unmanage`。回被解除的條目，介面據此從樹上拿掉它。"""
+    identity = held.get("identity")
+    if identity is None:
+        raise HTTPException(
+            status_code=409,
+            detail="尚未設定身分，無法解除納管——變更紀錄需要作者。"
+            "下一步：先 POST /api/session 設定姓名與 email",
+        )
+    entry = require_entry(read_config_list(repo), uid)
+    if uid in stage_box["stage"].drafts:
+        raise HTTPException(
+            status_code=409,
+            detail=f"「{entry.name}@{entry.hostname}」有未進版的草稿，解除納管會讓它無處可去。"
+            "下一步：先進版或捨棄這份草稿，再解除",
+        )
+    try:
+        removed = unmanage(repo, uid, identity.git_author)
+    except UnmanageNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (UnmanageLeftBehind, WriterError, ChangeError, CalledProcessError, OSError) as error:
+        # 寫入／commit／回滾失敗：伺服器側的錯，帶訊息的 500（LeftBehind 指名殘留）。
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    return _as_entry(removed)
 
 
 def _register_allowed_roots(app: FastAPI, repo: str, held: dict[str, Identity]) -> None:
