@@ -6,8 +6,8 @@
 
 import pytest
 
-from config_manager.core.errors import SyntaxParse, UnsupportedFormat
-from config_manager.core.parse import Parsed, dump, parse, values
+from config_manager.core.errors import SyntaxParse, UnknownPath, UnsupportedFormat
+from config_manager.core.parse import Parsed, dump, parse, set_value, values
 
 
 def test_raw_format_round_trips_byte_identical():
@@ -119,3 +119,88 @@ def test_ini_values_are_extractable_for_type_inference():
     data = values(parse("[s]\nn = 3\nname = amr01\n", "ini"))
 
     assert data["s"]["n"] == "3" and data["s"]["name"] == "amr01"
+
+
+# ── 改動一個值後原樣寫回（T6 第二列，#17）──────────────────────────────────
+# 路徑文法與 core/inference 的欄位路徑一致：以 `.` 相接、鍵內字面的點寫成 `\.`；清單元素
+# 以 `[索引]` 指定（inference 用無索引的 `[]` 表「元素型別」，編輯要指到哪一個）。
+
+
+def test_setting_a_yaml_value_keeps_comments_quotes_and_order():
+    text = "# top\nspeed: 1  # fast\nname: 'x'\n"
+    parsed = parse(text, "yaml")
+
+    set_value(parsed, "speed", 2.0)
+
+    # 註解文字、引號樣式、鍵順序、其餘各行逐位元組保留。唯一的正規化：被改那一行的行內
+    # 註解前空白由 ruamel 重排成一個（重建值時不保留原本的欄位對齊）——記在 T6 第二列。
+    assert dump(parsed) == "# top\nspeed: 2.0 # fast\nname: 'x'\n"
+
+
+def test_setting_a_double_writes_a_decimal_point_not_an_integer():
+    # ROS 2 最常見的型別錯誤：1 與 1.0 是不同型別。改 double 後寫出的一定帶小數點。
+    parsed = parse("ratio: 0.5\n", "yaml")
+
+    set_value(parsed, "ratio", 1.0)
+
+    assert dump(parsed) == "ratio: 1.0\n"
+
+
+def test_setting_a_nested_yaml_value_by_dotted_path_and_list_index():
+    parsed = parse("a:\n  b:\n    - 1\n    - 2\n", "yaml")
+
+    set_value(parsed, "a.b[1]", 5)
+
+    assert dump(parsed) == "a:\n  b:\n    - 1\n    - 5\n"
+
+
+def test_a_key_containing_a_literal_dot_is_addressed_with_an_escaped_dot():
+    parsed = parse("x.y: 1\n", "yaml")
+
+    set_value(parsed, "x\\.y", 2)
+
+    assert dump(parsed) == "x.y: 2\n"
+
+
+def test_setting_a_toml_value_keeps_comments_and_sections():
+    text = "# c\nspeed = 1 # fast\n\n[s]\nname = 'x'\n"
+    parsed = parse(text, "toml")
+
+    set_value(parsed, "speed", 2.0)
+
+    assert dump(parsed) == "# c\nspeed = 2.0 # fast\n\n[s]\nname = 'x'\n"
+
+
+def test_setting_a_json_value_keeps_the_original_indent_and_key_order():
+    # json 沒有註解與引號樣式可失；偵測原檔縮排後重新序列化，保 key 順序（#17 的 D2）。
+    text = '{\n    "speed": 1,\n    "name": "x"\n}\n'
+    parsed = parse(text, "json")
+
+    set_value(parsed, "speed", 2.0)
+
+    assert dump(parsed) == '{\n    "speed": 2.0,\n    "name": "x"\n}\n'
+
+
+def test_setting_an_ini_value_splices_in_place_keeping_comment_and_spacing():
+    # configobj 寫回會毀格式（#217），所以 ini 走原地文字替換（#17 的 D2）。
+    text = "[main]\nspeed = 1  ; fast\nname = x\n"
+    parsed = parse(text, "ini")
+
+    set_value(parsed, "main.speed", 2.0)
+
+    assert dump(parsed) == "[main]\nspeed = 2.0  ; fast\nname = x\n"
+
+
+def test_setting_an_unknown_path_raises_a_named_error_naming_the_path():
+    parsed = parse("a: 1\n", "yaml")
+
+    with pytest.raises(UnknownPath) as exc:
+        set_value(parsed, "b.c", 1)
+
+    assert "b.c" in str(exc.value)
+
+
+def test_raw_cannot_be_edited_by_path():
+    # raw 不解析、沒有結構——沒有「哪個值」可改。
+    with pytest.raises(UnsupportedFormat):
+        set_value(parse("anything", "raw"), "a", 1)

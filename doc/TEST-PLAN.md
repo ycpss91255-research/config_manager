@@ -420,6 +420,7 @@ discard(階段, uid?) -> 階段
 ```
 parse(text, format) -> (資料, 原樣資訊) | 解析錯誤(行號)
 dump(資料, 原樣資訊) -> text
+set_value(資料+原樣資訊, 路徑, 值)   # 改一個值、其餘原封不動；路徑找不到 → 具名例外（#17）
 ```
 
 | 驗證的行為 | 為何重要 |
@@ -433,8 +434,12 @@ dump(資料, 原樣資訊) -> text
 
 **json 與 ini 沒有保位元組的編輯器**，故走「**存原文**」達到逐位元組往返（#217）：`parse` 驗
 語法後存原文、`dump` 回原文（未改動即逐位元組相同）；需要走訪值（型別推斷）時經 `values()`
-再 parse 一次。**改動值後的樣式保留**（上表第二列）目前由 yaml／toml 履行；json／ini 的該項
-留待 v0.3.0 參數編輯落地——那時才有人動它們的值。configobj 只作 ini 的語法檢查與取值、**不作
+再 parse 一次。**改動值後的樣式保留**（上表第二列）由 `set_value` 履行（#17，D2）：yaml／toml 改
+round-trip 物件（yaml 另在 parse 時量出清單縮排風格、dump 套回，巢狀清單才不被重排；toml 把舊項
+trivia 搬到新項，行內註解才保得住）；json 偵測原檔縮排後重新序列化（無註解可失、保 key 順序，
+空白與跳脫可能正規化）；ini 原地替換那一行的值文字。**精確的保證**：未改動的行逐位元組不動；被改
+那一行的行內註解**文字**保留，但其前空白由 ruamel 重排成一個（重建值時不保留欄位對齊）——這是
+唯一接受的正規化，改成拼接 dump 後文字去硬保空白會違背用 round-trip 函式庫的用意。configobj 只作 ini 的語法檢查與取值、**不作
 往返序列化**（它會補尾換行、去引號、壓 CRLF、吃尾隨空白，#217；ADR-00000029 據此更正）。
 
 ### T7 — 變更紀錄
@@ -1294,7 +1299,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/digest` | T20 | 已落地 |
 | `io/scan` | T21 | 已落地 |
 | `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言；`OnboardLeftBehind`（納管回滾失敗）在 `io/onboard` 的整合規格被斷言（#173）；`BrowseError` 族（瀏覽白名單外／不是目錄）在 T9 的 `GET /api/browse` 被斷言（#185） | 已落地 |
-| `io/parsers` | T6 | 未落地（#17） |
+| `io/parsers` | T6 | 已落地（#17）：`edit_source` 讀來源複本→`set_value`→`dump`→原子寫回；原樣保證由 `core/parse` 的單元規格釘住 |
 | `io/source` | T22（匯入時刻對外界的讀取，介面議定於 #177） | 已落地：路徑判定（realpath 後比對白名單、一般檔案檢查）與一次性讀取（#174）、讀取失敗的三種分類（不存在／讀不到／上層目錄無 traverse，#182）。`local_hostname` 的部署穩定性見 #178 |
 | `io/paths` | 效果透過既有介面觀察：`blocking_parent` 的「上層目錄擋住去路」分類在 T22（`io/source`）與 T20（`io/digest`）的 EACCES 規格被斷言——`source` 與 `digest` 共用的薄工具，同 `io/repo` 的處理（#214） | 已落地（`ancestors`／`blocking_parent`） |
 | `io/onboard` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔條目→T1（`load`）、匯入 commit→T7（`io/git.history`）（#12）——編排層，不算新值，同 `io/repo` 的處理。**匯入紀錄的作者＝傳入的身分、隨之而變**（以 `history()` 的 `Change.author` 驗、不同身分各對各的紀錄，#114）。重複攔在寫入前（#172）與寫入失敗即整批回滾（#173）以注入失敗＋`git status` 觀察，回滾也失敗時丟 `OnboardLeftBehind` | 已落地（`onboard`） |
