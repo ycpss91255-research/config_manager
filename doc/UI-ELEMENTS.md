@@ -64,7 +64,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 元素 | 選取器 | 行為 |
 |---|---|---|
 | 樹根 | `data-testid="config-tree"` | 階層來自 `groups`，**不是機器** |
-| 群組節點 | `data-testid="tree-group-<群組名>"` | 可折疊 |
+| 群組節點 | `data-testid="tree-group-<群組名>"` | 可折疊；標題內 `group-status-dot`（帶 `data-state`）彙總子節點最嚴重的狀態：判不出 > 偏離 > 未部署 > 一致（§7.4.1，#31） |
 | config 節點 | `data-testid="tree-item-<uid>"`（帶 `data-uid`） | 單擊選取、**雙擊展開參數**。**#20 的過渡：單擊即在右側工作區顯示該份的欄位表、一次一份**；雙擊與多開於 #35／#36 落地 |
 | 狀態色點 | 節點內 `data-testid="status-dot"` | **左側**。一致／偏離／未部署 |
 | 草稿標記 | 節點內 `data-testid="draft-dot"` | **右側**。有未進版草稿時出現。與狀態色點分開 |
@@ -167,9 +167,10 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 差異檢視 | `data-testid="diff-<uid>"` | 容器；`diff-summary` 說幾個參數不同；目標現況壞掉時顯示 `diff-target-error` |
 | 來源側 / 目標側 | `data-testid="diff-source"` / `"diff-target"` | 欄首：左 repo（唯一真實來源）、右 target（磁碟現況）——並排而非合併，使用者要判斷哪一邊是對的 |
 | 差異列 | `data-testid="diff-row-<參數路徑>"` | 每參數一列，帶 `data-change`（`same`／`changed`／`added`〔目標多出〕／`removed`〔目標缺少〕）；列內 `diff-source-value`／`diff-target-value`。與 W4 同一套比對與顏色語言 |
-| 以來源覆蓋 | 文字「以來源覆蓋」 | 二次確認 |
-| 納入來源 | 文字「將目標現況納入來源」 | 走完整驗證；**含非法值則被拒** |
-| 先納入、待修正 | 文字「先納入、待修正」 | 目標現況載入草稿供修正；**含非法值則載入後警告、進版前須改正**（見 TEST-PLAN T18／A3） |
+| 處置區 | `.resolve-actions`（差異檢視底部） | 三個出口並排，每個按鈕下方一行**後果說明**（A3：按下之前就說清楚）；失敗原樣顯示於 `resolve-error` |
+| 以來源覆蓋 | 文字「以來源覆蓋目標」（`resolve-overwrite`） | W6 二次確認 → `resolve {action: overwrite}`；成功→`promote-done` 橫幅、重掃、回欄位表 |
+| 納入來源 | 文字「將目標現況納入來源」（`resolve-adopt`） | 走完整驗證，不另確認；**含非法值則被拒**（`resolve-error` 列行號／原因／建議並指去先納入待修正）；成功→`promote-done`、重掃、回欄位表 |
+| 先納入、待修正 | 文字「先納入、待修正」（`resolve-adopt-draft`） | W6 二次確認 → 目標現況載入草稿；回欄位表並在上方顯示 `adopt-draft-notice`（**含非法值則列出警告、進版前須改正**，見 TEST-PLAN T18／A3） |
 
 ---
 

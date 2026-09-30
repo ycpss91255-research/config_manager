@@ -1763,3 +1763,121 @@ def test_returning_from_the_diff_view_shows_the_parameter_table(open_page, repo)
 
     page.wait_for_selector("[data-testid='panel-mfz3k9q1']", state="visible")
     assert page.query_selector("[data-testid='diff-mfz3k9q1']") is None
+
+
+# ── W5 三種處置（#31）────────────────────────────────────────────────────────
+# 偏離不自動處置：三個出口由人選、後果先說；覆蓋後回到一致、納入後來源更新且有採納紀錄、先納入
+# 載成草稿並警告。目標放在白名單根底下、權限用目前 uid／gid（寫出要過得了白名單與 chown）。
+
+
+def _drift_in_root(repo, source: str, target_text: str):
+    """一筆條目（uid mfz3k9q1，目標在白名單根 targets/ 底下）；目標在介面外被改成 target_text。"""
+    targets = _listing_many(repo, {"a": source})
+    targets["a"].write_text(target_text, encoding="utf-8")
+    return targets["a"]
+
+
+def _open_diff(page):
+    _open_panel(page)
+    page.click("[data-testid='panel-diff']")
+    page.wait_for_selector(f"[data-testid='diff-{_PARAM_UID}']", state="visible")
+    return page
+
+
+def test_the_three_outlets_state_their_consequences_before_being_pressed(open_page, repo):
+    # A3：三個選項的後果在按下之前就說明清楚。
+    _drift_in_root(repo, "count: 3\n", "count: 9\n")
+    page = _open_diff(open_page())
+
+    text = page.inner_text(".resolve-actions")
+    assert "以來源覆蓋目標" in text and "捨棄現場修改" in text
+    assert "將目標現況納入來源" in text and "含非法值會被拒" in text
+    assert "先納入、待修正" in text and "進版前須改正" in text
+
+
+def test_overwrite_from_the_diff_view_puts_the_source_back_and_returns_to_in_sync(open_page, repo):
+    # AC1／AC5：以來源覆蓋目標（經確認）→ 目標回到來源、樹上狀態回到一致。
+    target = _drift_in_root(repo, "count: 3\n", "count: 9\n")
+    page = _open_diff(open_page())
+
+    page.click("[data-testid='resolve-overwrite']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+
+    page.wait_for_selector("[data-testid='promote-done']", state="visible")
+    assert target.read_text(encoding="utf-8") == "count: 3\n"
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'] [data-state='in_sync']")
+
+
+def test_adopt_from_the_diff_view_updates_the_source_and_records_an_adoption(open_page, repo):
+    # AC2／AC5：將目標現況納入來源 → 來源複本更新、狀態一致、歷史多一筆「採納現場調整」。
+    _drift_in_root(repo, "count: 3\n", "count: 9\n")
+    page = _open_diff(open_page())
+
+    page.click("[data-testid='resolve-adopt']")
+
+    page.wait_for_selector("[data-testid='promote-done']", state="visible")
+    assert (repo / "files" / "a.yaml").read_text(encoding="utf-8") == "count: 9\n"
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'] [data-state='in_sync']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.get_by_role("button", name="歷史").click()
+    page.wait_for_selector("text=採納現場調整")
+
+
+def test_adopting_an_invalid_target_is_refused_with_the_reason(open_page, repo):
+    # AC2：含非法值則被拒並說明原因（行號＋建議＋改走先納入待修正）；來源不動。
+    _drift_in_root(repo, "count: 3\n", "enabled: yes\ncount: 9\n")
+    page = _open_diff(open_page())
+
+    page.click("[data-testid='resolve-adopt']")
+
+    page.wait_for_selector("[data-testid='resolve-error']", state="visible")
+    text = page.inner_text("[data-testid='resolve-error']")
+    assert "第 1 行" in text and "先納入、待修正" in text
+    assert (repo / "files" / "a.yaml").read_text(encoding="utf-8") == "count: 3\n"
+
+
+def test_adopt_draft_loads_the_target_as_a_draft_and_warns(open_page, repo):
+    # AC3：先納入、待修正 → 目標現況成為草稿（樹上有標記、欄位表顯示現況值）、警告列出問題。
+    _drift_in_root(repo, "count: 3\n", "enabled: yes\ncount: 9\n")
+    page = _open_diff(open_page())
+
+    page.click("[data-testid='resolve-adopt-draft']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+
+    page.wait_for_selector("[data-testid='adopt-draft-notice']", state="visible")
+    assert "進版前須改正" in page.inner_text("[data-testid='adopt-draft-notice']")
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    assert page.input_value(_param_value("count")) == "9"
+    assert (repo / "files" / "a.yaml").read_text(encoding="utf-8") == "count: 3\n"
+
+
+def test_editing_a_target_behind_the_interface_shows_the_right_diff(open_page, repo):
+    # AC4：以 vim 直接改目標檔 → 「檢查差異」後判定為偏離，且差異內容正確。
+    targets = _listing_many(repo, {"a": "count: 3\n"})
+    page = _open_panel(open_page())
+    assert page.query_selector("[data-testid='drift-banner']") is None
+
+    targets["a"].write_text("count: 4\n", encoding="utf-8")  # 介面外的修改
+    page.get_by_role("button", name="檢查差異").click()
+
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'] [data-state='drift']")
+    page.click(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector("[data-testid='panel-diff']")
+    page.click("[data-testid='panel-diff']")
+    page.wait_for_selector("[data-testid='diff-row-count']")
+    target_value = "[data-testid='diff-row-count'] [data-testid='diff-target-value']"
+    assert page.inner_text(target_value) == "4"
+
+
+def test_group_nodes_roll_up_the_most_severe_state_of_their_children(open_page, listing):
+    # AC6：父節點彙總子節點最嚴重的狀態（偏離 > 未部署 > 一致）：navigation 只有 a（一致）→ 一致；
+    # 未分群有 b（偏離）與 c（未部署）→ 偏離。
+    listing("a", "b", "c")
+    page = _enter_identity(open_page())
+
+    dot = "[data-testid='group-status-dot']"
+    nav = page.get_attribute(f"[data-testid='tree-group-navigation'] {dot}", "data-state")
+    ungrouped = page.get_attribute(f"[data-testid='tree-group-ungrouped'] {dot}", "data-state")
+    assert (nav, ungrouped) == ("in_sync", "drift")
