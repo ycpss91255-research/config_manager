@@ -101,13 +101,27 @@ def record(repo: str, uid: str, kind: str, message: str, author: str) -> None:
     取回。納管把歧義值的確認放內文——主旨已被 `<name>@<hostname>` 占滿（設計 §2.3），
     而確認清單可能有好幾行（#12 的 D6）。沒有內文時（大多數變更）就只有主旨。
     """
+    _do_commit(repo, author, _record_parts(uid, kind, message))
+
+
+def record_empty(repo: str, uid: str, kind: str, message: str, author: str) -> None:
+    """沒有任何 staged 變更也記一筆（`--allow-empty`）。
+
+    只給「以來源覆蓋目標」用（#29）：repo 內容沒變、但誰在何時決定丟掉現場修改要留在歷史上
+    （A3）。其餘呼叫端用 `record`——一筆什麼都沒動的變更紀錄本不該存在，`record` 遇到沒東西
+    可記會失敗，那是對的。
+    """
+    _do_commit(repo, author, ["--allow-empty", *_record_parts(uid, kind, message)])
+
+
+def _record_parts(uid: str, kind: str, message: str) -> list[str]:
+    """變更紀錄的 `-m` 參數：類型先驗過，主旨進 `<kind>(<uid>): …`。"""
     if kind not in KINDS:
         raise UnknownKind(
             f"不是允許的變更類型：{kind}。允許的是 {'／'.join(KINDS)}。"
             f"下一步：改用其中一個；介面上顯示的行為描述由上層對應，不進 commit 訊息。"
         )
-
-    _do_commit(repo, author, _message_parts(message, f"{kind}({uid}): "))
+    return _message_parts(message, f"{kind}({uid}): ")
 
 
 def commit(repo: str, message: str, author: str) -> None:
