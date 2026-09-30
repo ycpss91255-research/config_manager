@@ -16,6 +16,13 @@ from config_manager.core.parse import dump, parse, set_value
 from config_manager.io.atomic import replace_atomically
 
 
+def read_source(repo: str, source: str) -> str:
+    """讀 repo 內來源複本的原文（UTF-8）。API 層存草稿前拿它當 set_value 的底——讀檔是 I/O，
+    不該在 routes 裡做（CLAUDE.md 分層）。"""
+    with open(os.path.join(repo, source), encoding="utf-8") as handle:
+        return handle.read()
+
+
 def edit_source(repo: str, source: str, fmt: str, edits: dict[str, object]) -> str:
     """把 `edits`（路徑 → 新值）套到 repo 內的來源複本 `source` 並原子寫回，回傳寫出的新文字。
 

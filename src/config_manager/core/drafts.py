@@ -21,7 +21,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-from config_manager.core.errors import DraftInvalid, DraftNotFound
+from config_manager.core.errors import DraftInvalid, DraftNotFound, PromoteInvalid
+from config_manager.core.models import ConfigList, Permissions
 from config_manager.core.validate import ERROR, Problem, check
 
 
@@ -76,3 +77,65 @@ def discard(stage: Stage, uid: str | None = None) -> Stage:
 
 def _with(stage: Stage, draft: Draft) -> Stage:
     return Stage(MappingProxyType({**stage.drafts, draft.uid: draft}))
+
+
+# ── 進版（promote，#19）──────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Promotion:
+    """一份要進版的 config：寫回哪裡（repo 內來源複本與部署目標）、寫什麼、用什麼權限、紀錄怎麼說。
+
+    核心 `promote` 只產生這批資料並保證「全部驗證才進版」；實際寫出、記錄與失敗回復牽涉 I/O，
+    在 `io/promote`（T9 系統層驗批次回滾）。`summary` 進變更紀錄主旨（kind `cfg`，介面顯示為
+    「修改參數」，CONTEXT.md 變更紀錄類型）。
+    """
+
+    uid: str
+    source: str
+    target: str
+    fmt: str
+    text: str
+    permissions: Permissions
+    summary: str
+
+
+def promote(stage: Stage, config_list: ConfigList) -> list[Promotion]:
+    """把階段裡**全部**草稿一次驗證，回傳每份的進版資料；任一份沒過就丟 `PromoteInvalid`。
+
+    進版是全域動作、整批原子（ADR-00000022、ADR-00000006）：不做「先進通過的那幾份」，所以
+    先把每一份都驗完才回傳任何東西。adopt_draft 撈進來的壞內容在這裡被擋——改乾淨才進得了版，
+    且作者記為進版者（偏離內容因此重新掛到真人身上，由呼叫端傳作者）。權限用條目自己的、
+    沒寫就用清單檔的 defaults（T1 的語意）。沒有草稿時回空清單，要不要當錯由呼叫端決定。
+    """
+    entries = {entry.uid: entry for entry in config_list.files}
+    plans: list[Promotion] = []
+    for uid, draft in stage.drafts.items():
+        entry = entries.get(uid)
+        if entry is None:
+            raise PromoteInvalid(
+                f"草稿「{uid}」對應的條目已不在清單檔裡，整批不進版。"
+                "下一步：捨棄這份草稿，或確認該 config 是否已被解除管理",
+                uid,
+            )
+        problems = [p for p in check(draft.text, draft.fmt) if p.severity == ERROR]
+        if problems:
+            first = problems[0]
+            raise PromoteInvalid(
+                f"「{entry.name}@{entry.hostname}」（{uid}）第 {first.line} 行沒通過驗證："
+                f"{first.message}，整批不進版。下一步：{first.suggestion}；修正後再進版",
+                uid,
+                problems,
+            )
+        plans.append(
+            Promotion(
+                uid=uid,
+                source=entry.source,
+                target=entry.target,
+                fmt=draft.fmt,
+                text=draft.text,
+                permissions=entry.permissions or config_list.defaults.permissions,
+                summary=f"修改參數（{entry.name}@{entry.hostname}）",
+            )
+        )
+    return plans

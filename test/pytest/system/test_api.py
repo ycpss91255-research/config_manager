@@ -27,6 +27,8 @@ import pytest
 import config_manager
 from config_manager.core.allowed_roots import load as load_allowed_roots
 from config_manager.core.errors import UidHorizonReached
+from config_manager.io import promote as promote_io
+from config_manager.io.errors import TargetNotWritable
 
 _TIMEOUT = 5
 # 422：輸入的形狀對、值不合法。端點刻意不用 400——那會把「你送錯格式」與
@@ -1134,3 +1136,203 @@ def test_onboard_after_the_uid_horizon_is_a_500_with_a_message(api, sources_root
 
     assert exc.value.code == _SERVER_ERROR
     assert "2059" in _detail(exc.value)  # identity 的可行動訊息保住，不是裸 500
+
+
+# ── T9：草稿與進版（#19；T18 移出的批次原子性在此）──────────────────────────
+
+
+def _clear_drafts(api):
+    # 階段掛在 app 上、跨規格存活；每則自己清，不靠「前一則有清」（#153）。
+    _delete(api, "/api/drafts", {})
+
+
+def _onboard(api, sources_root, name, content=b"max_vel: 0.8\n", note=""):
+    _set_session(api)
+    source = _write_source(sources_root, name, content)
+    payload = {"source_path": source, "format": "yaml", "ambiguity_note": note}
+    return _post(api, "/api/configs", payload)
+
+
+def _head(repo):
+    return subprocess.run(
+        ["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def test_saving_a_draft_lists_it_and_leaves_the_target_untouched(api, sources_root):
+    # 儲存草稿不寫到目標位置：草稿只存在編輯階段（T18）。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "draft_keep.yaml")
+
+    saved = _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"max_vel": 1.2}})
+
+    assert [d["uid"] for d in saved["drafts"]] == [entry["uid"]]
+    assert _get(api, "/api/drafts")["count"] == 1
+    assert pathlib.Path(entry["target"]).read_bytes() == b"max_vel: 0.8\n"
+
+
+def test_saving_a_draft_records_no_change(api, sources_root, repo):
+    # 儲存草稿不產生變更紀錄（T18）——就地比 HEAD。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地讀 config-repo 的 HEAD")
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "draft_norecord.yaml")
+    before = _head(repo)
+
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"max_vel": 1.2}})
+
+    assert _head(repo) == before
+
+
+def test_a_draft_failing_layer_one_is_a_structured_422_and_is_not_kept(api, sources_root):
+    # 納管時確認過的歧義值（`no`）仍在來源複本裡；改別的參數存草稿時第 1 層擋下、逐條回
+    # 行號／訊息／建議（結構化，不是純字串），且階段不變。
+    _clear_drafts(api)
+    entry = _onboard(
+        api, sources_root, "draft_bad.yaml", b"enabled: no\nmax_vel: 0.8\n", note="no 讀作 false"
+    )
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"max_vel": 1.2}})
+
+    detail = _detail(exc.value)
+    assert exc.value.code == _UNPROCESSABLE
+    assert (detail["uid"], detail["problems"][0]["line"]) == (entry["uid"], 1)
+    assert detail["problems"][0]["suggestion"]
+    assert _get(api, "/api/drafts")["count"] == 0
+
+
+def test_saving_a_draft_with_an_unknown_path_is_unprocessable(api, sources_root):
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "draft_path.yaml")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"nope": 1}})
+
+    assert exc.value.code == _UNPROCESSABLE
+    assert "nope" in _detail(exc.value)
+
+
+def test_saving_a_draft_for_an_unknown_uid_is_not_found(api):
+    _set_session(api)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/drafts", {"uid": "zzzzzzz9", "edits": {"a": 1}})
+
+    assert exc.value.code == _NOT_FOUND
+
+
+def test_discarding_one_draft_leaves_the_other_and_an_unknown_uid_is_not_found(api, sources_root):
+    _clear_drafts(api)
+    first = _onboard(api, sources_root, "discard_a.yaml")
+    second = _onboard(api, sources_root, "discard_b.yaml")
+    _post(api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.2}})
+    _post(api, "/api/drafts", {"uid": second["uid"], "edits": {"max_vel": 1.5}})
+
+    left = _delete(api, f"/api/drafts/{first['uid']}", {})
+
+    assert [d["uid"] for d in left["drafts"]] == [second["uid"]]
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _delete(api, f"/api/drafts/{first['uid']}", {})
+    assert exc.value.code == _NOT_FOUND
+
+
+def test_promote_writes_every_target_and_clears_the_drafts(api, sources_root):
+    # 進版是全域動作：兩份草稿一起送出、各自的目標改變、進版後草稿清空（T18）。
+    _clear_drafts(api)
+    first = _onboard(api, sources_root, "promote_a.yaml")
+    second = _onboard(api, sources_root, "promote_b.yaml", b"speed: 1\n")
+    _post(api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.2}})
+    _post(api, "/api/drafts", {"uid": second["uid"], "edits": {"speed": 2}})
+
+    result = _post(api, "/api/promote", {})
+
+    assert result["promoted"] == [first["uid"], second["uid"]]
+    assert pathlib.Path(first["target"]).read_bytes() == b"max_vel: 1.2\n"
+    assert pathlib.Path(second["target"]).read_bytes() == b"speed: 2\n"
+    assert _get(api, "/api/drafts")["count"] == 0
+
+
+def test_promote_records_one_cfg_change_per_config_authored_by_the_session(api, sources_root, repo):
+    # 每份 config 各一筆變更紀錄、同一次操作、作者＝進版者（T18）。就地讀 git log 驗。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地讀 config-repo 的 git log")
+    _clear_drafts(api)
+    first = _onboard(api, sources_root, "record_a.yaml")
+    second = _onboard(api, sources_root, "record_b.yaml")
+    _post(api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.2}})
+    _post(api, "/api/drafts", {"uid": second["uid"], "edits": {"max_vel": 1.5}})
+
+    _post(api, "/api/promote", {})
+
+    log = subprocess.run(
+        ["git", "-C", repo, "log", "-2", "--format=%s|%an <%ae>"],
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    assert log == [
+        f"cfg({second['uid']}): 修改參數（{second['name']}@{second['hostname']}）"
+        "|陳小明 <ming@example.com>",
+        f"cfg({first['uid']}): 修改參數（{first['name']}@{first['hostname']}）"
+        "|陳小明 <ming@example.com>",
+    ]
+
+
+def test_promote_with_a_draft_whose_entry_left_the_list_writes_nothing(api, sources_root, listing):
+    # 驗證失敗（草稿的條目已不在清單檔）→ 整批不進版：不寫出、不記錄，錯誤指名那一份。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "promote_gone.yaml")
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"max_vel": 1.2}})
+    listing()  # 清單檔換成空的：該 uid 不再受管
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/promote", {})
+
+    assert exc.value.code == _UNPROCESSABLE
+    assert _detail(exc.value)["uid"] == entry["uid"]
+    assert pathlib.Path(entry["target"]).read_bytes() == b"max_vel: 0.8\n"
+
+
+def test_promote_without_drafts_is_a_conflict(api):
+    _clear_drafts(api)
+    _set_session(api)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/promote", {})
+
+    assert exc.value.code == _CONFLICT
+
+
+def test_promote_kth_write_failure_restores_targets_and_withdraws_records(
+    api, sources_root, repo, monkeypatch
+):
+    # T9：寫出 N 份、第 k 份失敗 → 前 k−1 份目標還原為進版前內容、已產生的紀錄一併撤銷，
+    # 最終狀態與進版前逐位元組相同；回帶訊息的 500、草稿保留供重試。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地 monkeypatch 寫出並讀 HEAD，外部映像控不了 server 端模組")
+    _clear_drafts(api)
+    first = _onboard(api, sources_root, "rollback_a.yaml")
+    second = _onboard(api, sources_root, "rollback_b.yaml", b"speed: 1\n")
+    _post(api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.2}})
+    _post(api, "/api/drafts", {"uid": second["uid"], "edits": {"speed": 2}})
+    before = _head(repo)
+    real_write = promote_io.write
+    calls = []
+    failing_call = 2  # 第 k 份（k=2）：第 1 份已寫出、已記錄，回滾才有東西可還原
+
+    def _second_write_fails(target, content, permissions, roots):
+        calls.append(target)
+        if len(calls) == failing_call:
+            raise TargetNotWritable(f"注入：{target} 寫不進去。下一步：無")
+        real_write(target, content, permissions, roots)
+
+    monkeypatch.setattr(promote_io, "write", _second_write_fails)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/promote", {})
+
+    assert exc.value.code == _SERVER_ERROR
+    assert "注入" in _detail(exc.value)
+    assert pathlib.Path(first["target"]).read_bytes() == b"max_vel: 0.8\n"  # 第 1 份已寫出→還原
+    assert pathlib.Path(second["target"]).read_bytes() == b"speed: 1\n"
+    assert _head(repo) == before  # 第 1 份的紀錄撤銷
+    assert _get(api, "/api/drafts")["count"] == failing_call  # 兩份草稿都保留，修好後可重試

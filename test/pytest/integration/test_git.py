@@ -12,7 +12,7 @@ import subprocess
 import pytest
 
 from config_manager.io.errors import RecordFieldUnsafe, UnknownKind
-from config_manager.io.git import history, record, revert, stage
+from config_manager.io.git import head, history, record, reset_hard, revert, stage
 
 AUTHOR = "劉宇盈 <yy@example.invalid>"
 
@@ -181,3 +181,23 @@ def test_the_body_does_not_leak_into_the_summary(tmp_path):
     record(str(repo), "mfz3k9q1", "import", "docker-daemon@amr01\n\n附註一行", AUTHOR)
 
     assert history(str(repo), "mfz3k9q1")[0].summary == "docker-daemon@amr01"
+
+
+# ── 進版回滾用的 head／reset_hard（T7 加行為，#19）──────────────────────────
+
+
+def test_head_names_the_latest_recorded_change(tmp_path):
+    repo, _ = _two_versions(tmp_path)
+
+    assert head(str(repo)) == history(str(repo), "mfz3k9q1")[0].sha
+
+
+def test_reset_hard_withdraws_the_records_after_that_point_and_restores_the_content(tmp_path):
+    # 進版第 k 份失敗 → 前 k−1 筆紀錄一併撤銷、來源複本回到進版前：以 history() 與檔案內容驗，
+    # 不直接跑 git log。
+    repo, first = _two_versions(tmp_path)
+
+    reset_hard(str(repo), first)
+
+    assert [entry.sha for entry in history(str(repo), "mfz3k9q1")] == [first]
+    assert (repo / "nav2.yaml").read_text() == "max_vel: 0.8\n"

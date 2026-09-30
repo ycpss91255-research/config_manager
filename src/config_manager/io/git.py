@@ -70,6 +70,22 @@ def unstage(repo: str, *paths: str) -> None:
     _git(repo, "reset", "-q", "--", *paths)
 
 
+def head(repo: str) -> str:
+    """目前 HEAD 的 sha。進版動 repo 之前先拍下，失敗時 `reset_hard` 回到這裡（#19）。"""
+    return _git(repo, "rev-parse", "HEAD").strip()
+
+
+def reset_hard(repo: str, sha: str) -> None:
+    """把 HEAD、索引與工作區一併退回 `sha`（`git reset --hard`）。
+
+    只給進版回滾用（#19）：進版每份 config 各一筆 commit，第 k 份失敗時前 k−1 筆紀錄已在
+    HEAD 上；T18 要「全部已產生的變更紀錄一併撤銷」，逐筆 `revert` 會各留一筆「退回」紀錄、
+    與「整批不進版」的語意不符，reset 回進版前的 sha 才是乾淨的撤銷。工作區一併還原，來源
+    複本也回到進版前。**不在其他地方用**——它會丟掉未提交的工作區變更。
+    """
+    _git(repo, "reset", "-q", "--hard", sha)
+
+
 def record(repo: str, uid: str, kind: str, message: str, author: str) -> None:
     """把**已 staged** 的變更記成一筆 commit。
 

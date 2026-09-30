@@ -241,3 +241,16 @@ class DraftInvalid(DraftError):
 class DraftNotFound(DraftError):
     """`discard` 指名的 uid 在階段裡沒有草稿。具名而非靜默略過：叫人捨棄一份不存在的草稿，
     多半是 uid 拿錯了（不變式 2）。"""
+
+
+class PromoteInvalid(DraftError):
+    """`promote` 發現某份草稿沒通過驗證，**整批不進版**（T18：不做「先進通過的那幾份」）。
+
+    `uid` 指出是哪一份、`problems` 指出是哪些參數（各帶行號與建議）——介面據此把人帶到那一列。
+    也涵蓋草稿指到的 uid 已不在清單檔（進版期間被解除管理）的情況。
+    """
+
+    def __init__(self, message: str, uid: str, problems: Sequence[Problem] = ()) -> None:
+        super().__init__(message)
+        self.uid = uid
+        self.problems = tuple(problems)
