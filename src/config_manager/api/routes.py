@@ -76,6 +76,7 @@ from config_manager.io.errors import (
 )
 from config_manager.io.onboard import OnboardRequest, onboard
 from config_manager.io.parsers import read_source as read_source_copy
+from config_manager.io.repo import read_or_none
 from config_manager.io.preflight import read_config_list
 from config_manager.io.promote import apply as apply_promotions
 from config_manager.io.scan import ScanFailure, scan
@@ -457,6 +458,9 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
     權限回條目自己的、沒寫就回清單檔 defaults（T1 的語意，與進版寫出用的一致）。
     有未進版的草稿時另回 `draft_values`（草稿文字解析後的值樹，#21）：介面以它當「目前值」、
     `values` 當「來源值」並列，重開這份 config 看到的是存過的草稿，不是被丟掉的改動。
+    另回 `target_values`（target 磁碟現況解析後的值樹，#30）：差異檢視據此把來源與現況以參數為
+    單位並排；target 不存在→null；讀不到／不是 UTF-8／解析不了→null 並在 `target_error` 說原因
+    （現況壞掉是要呈現的事實、不是 500）。
     """
     config_list = read_config_list(repo)
     entry = require_entry(config_list, uid)
@@ -473,9 +477,12 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
         "types": {},
         "values": None,
         "draft_values": None,
+        "target_values": None,
+        "target_error": None,
     }
     if entry.format == "raw":
         return detail
+    detail["target_values"], detail["target_error"] = _target_values(entry)
     try:
         data = values(parse(read_source_copy(repo, entry.source), entry.format))
         detail["types"] = infer_types(data)
@@ -491,6 +498,21 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
             "下一步：檢查 config-repo 裡這份檔案是否被改壞或移走",
         ) from error
     return detail
+
+
+def _target_values(entry: FileEntry) -> tuple[object, str | None]:
+    """target 現況的值樹；不存在→(None, None)；讀不到／解析不了→(None, 原因)。
+
+    不走白名單：target 是清單檔裡的絕對路徑，比對與寫出都不靠白名單（§7.9、scan 亦然）——
+    白名單管的是納管與瀏覽可以碰哪些目錄，不是已納管目標在哪。
+    """
+    try:
+        content = read_or_none(entry.target)
+        if content is None:
+            return None, None
+        return values(parse(content.decode("utf-8"), entry.format)), None
+    except (OSError, UnicodeDecodeError, SyntaxParse, RecursionError) as error:
+        return None, f"目標現況讀不到或解析不了：{error}"
 
 
 def _save_draft(
