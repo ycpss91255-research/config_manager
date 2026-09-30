@@ -1290,7 +1290,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `core/inference` | T12 | 部分落地：型別推斷（`infer_types`）已落地（#9）；`draft_schema` 與人工指定型別未落地——v0.2.0 只做推斷這一層 |
 | `core/attributes` | T16 | 未落地 |
 | `core/roles` | T17 | 未落地 |
-| `core/drafts` | T18 | 未落地（#18） |
+| `core/drafts` | T18 | 部分落地：草稿（`save_draft`／`adopt_draft`／`discard`，不可變 `Stage`）已落地（#18）；`promote` 未落地（#19） |
 | `io/writer` | T8 | 已落地 |
 | `io/atomic` | T8——原子替換的共用核心，行為由 `io/writer` 的 T8 規格擋著（#186） | 已落地 |
 | `io/repo` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔可讀→T1（`load`）（#186） | 已落地（`place_source`／`write_config_list`） |
