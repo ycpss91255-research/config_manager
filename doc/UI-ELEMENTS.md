@@ -75,8 +75,9 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 工作區 | `data-testid="workspace"` | 右側容器；尚未點選時顯示 `workspace-empty` 提示 |
 | 展開區塊 | `data-testid="panel-<uid>"` | **可同時存在多個**（#36；#20 先一次一份）。讀不到內容時顯示 `panel-error-<uid>`（原樣錯誤，不留空表） |
 | 狀態標籤 | `data-testid="panel-status-<uid>"` | 文字為一致／偏離／未部署 |
-| 草稿指示 | `data-testid="panel-draft-<uid>"` | 該區塊有草稿時出現 |
-| 儲存按鈕 | 文字「儲存」 | **存為草稿**，不記錄也不寫出 |
+| 草稿指示 | `data-testid="panel-draft-<uid>"` | 該區塊有草稿時出現（`GET /api/configs/{uid}` 回 `draft_values`） |
+| 儲存按鈕 | 文字「儲存」（`data-testid="panel-save"`） | **存為草稿**（`POST /api/drafts`，送相對來源的全部改動），不記錄也不寫出。驗證未過或沒有改動時停用 |
+| 儲存錯誤 | `data-testid="panel-save-error"` | 第 1 層沒過的 422 逐條列行號／原因／建議；其他錯誤原樣顯示 |
 | 退版按鈕 | 文字「退版」 | 針對單一 config，與草稿無關 |
 | 歷史按鈕 | 文字「歷史」 | 開啟該 config 的變更紀錄 |
 | 屬性按鈕 | 文字「屬性」 | **僅開發者出現** |

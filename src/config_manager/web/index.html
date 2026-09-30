@@ -107,6 +107,15 @@
   .param-row .param-validation { flex: 1; font-size: 12px; color: var(--drift); }
   .param-row[data-valid="false"] { background: color-mix(in srgb, var(--drift) 8%, transparent); }
   .param-row.is-collapsed-child { display: none; }
+  /* 草稿標記（#21）：樹節點右側的橘點與狀態色點分開（§7.4.3）；面板標頭的「草稿」字樣同色。 */
+  .dot-draft { background: #e69b2e; margin-left: 4px; }
+  .panel-draft { flex: none; font-size: 12px; color: #e69b2e; font-weight: 600; }
+  .panel-actions { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line); }
+  .panel-actions .hint { flex: 1; font-size: 12px; color: var(--muted); }
+  .panel-save:disabled { opacity: .5; cursor: not-allowed; }
+  .panel-save-error { margin: 0 14px 12px; }
+  .panel-save-error ul { margin: 8px 0 0; padding-left: 18px; list-style: disc; }
+  .panel-save-error li { display: list-item; padding: 2px 0; border: 0; font-size: 13px; }
   .group { margin-bottom: 22px; }
   .group > h2 {
     font-size: 13px;
@@ -465,6 +474,26 @@ let loadError = null;
 // 每次載入遞增；回應回來時若世代已變（使用者又按了「檢查差異」、或啟動載入與手動重掃交錯），
 // 丟棄這個過時回應——否則晚到的舊回應會把新結果覆蓋，或把該顯示的錯誤靜默蓋掉／反之黏住假錯誤（#252）。
 let loadGeneration = 0;
+// 目前有草稿的 uid（#21）。掛在 app 上的階段是唯一來源：每次載入清單一併重讀，儲存成功時以回應更新。
+let draftUids = new Set();
+
+async function loadDrafts() {
+  try {
+    const response = await fetch(`${API_BASE}/api/drafts`);
+    if (!response.ok) throw new Error(await loadErrorText(response));
+    const payload = await response.json();
+    draftUids = new Set(payload.drafts.map((draft) => draft.uid));
+    render();
+  } catch (error) {
+    // 讀不到草稿清單不該悄悄把標記藏掉（不變式 2）：在工作區說出來，樹照常顯示。
+    workspace.replaceChildren(element("div", {
+      class: "notice error", "data-testid": "drafts-error",
+    }, [
+      element("strong", { text: "讀不到草稿清單，樹上的草稿標記可能不準。" }),
+      element("pre", { text: String(error && error.message ? error.message : error) }),
+    ]));
+  }
+}
 
 function groupsOf(row) {
   return row.groups && row.groups.length ? row.groups : [UNGROUPED];
@@ -503,7 +532,7 @@ function element(tag, attributes, children) {
   return node;
 }
 
-function rowNode(row) {
+function rowNodeBase(row) {
   if (row.error) {
     // 判不出狀態的那一列（目標是 FIFO／裝置／不可 traverse，#214）：標「錯誤」並把原因放進
     // title，不畫一個偽裝的狀態點——把「比不了」講成某個狀態就是靜默失敗（不變式 2）。
@@ -538,6 +567,18 @@ function rowNode(row) {
     element("span", { class: "target", text: row.target }),
     element("span", { class: "state", text: STATE_TEXT[row.state] || row.state }),
   ]);
+}
+
+// 草稿標記在節點右側，與左側的狀態色點分開（§7.4.3、UI-ELEMENTS W2）：草稿與四種狀態正交，
+// 一份「一致」的 config 可以同時有草稿。有沒有草稿以 GET /api/drafts 為準（#21）。
+function rowNode(row) {
+  const node = rowNodeBase(row);
+  if (draftUids.has(row.uid)) {
+    node.appendChild(element("span", {
+      class: "dot dot-draft", "data-testid": "draft-dot", title: "有未進版的草稿",
+    }));
+  }
+  return node;
 }
 
 function render() {
@@ -607,6 +648,7 @@ async function load() {
     rows = data;
     loadError = null;
     render();
+    loadDrafts();
   } catch (error) {
     // 大聲失敗（不變式 2）：說出是什麼壞了，不是顯示一份空清單假裝沒事——空清單與「讀不到
     // 清單」看起來一樣，而那兩件事該做的處置完全不同。旗標讓錯誤黏住，經 render 重畫（見上）。
@@ -671,8 +713,13 @@ function panelNode(detail) {
       element("span", { class: "name", text: detail.name }),
       element("span", { class: "target", text: detail.target }),
       element("span", { class: "state", "data-testid": `panel-status-${detail.uid}`, text: state }),
+      element("span", {
+        class: "panel-draft", "data-testid": `panel-draft-${detail.uid}`, text: "● 草稿",
+      }),
     ]),
   ]);
+  const draftMark = panel.querySelector(`[data-testid='panel-draft-${detail.uid}']`);
+  draftMark.hidden = !detail.draft_values;
   const structured = detail.values && typeof detail.values === "object" && !Array.isArray(detail.values);
   if (detail.format === "raw" || !structured) {
     // §7.5.4：沒有結構就明說「未結構化」——使用者看得到自己失去了型別保護（不變式 2）。
@@ -684,6 +731,21 @@ function panelNode(detail) {
     }));
     return panel;
   }
+  // 儲存＝存為草稿：不記錄、不寫出（§7.4.3、T18）。驗證未過時停用；沒有任何改動也停用。
+  const saveButton = element("button", {
+    type: "button", class: "panel-save", "data-testid": "panel-save", text: "儲存",
+  });
+  saveButton.disabled = true;
+  const saveError = element("div", {
+    class: "notice error panel-save-error", "data-testid": "panel-save-error",
+  });
+  saveError.hidden = true;
+  const entries = [];
+  const refreshSave = () => {
+    const invalid = entries.some((entry) => entry.node.dataset.valid === "false");
+    const dirty = entries.some((entry) => entry.node.dataset.dirty === "true");
+    saveButton.disabled = invalid || !dirty;
+  };
   const list = element("ul", { class: "param-table", "data-testid": "param-table" }, [
     element("li", { class: "param-row param-head" }, [
       element("span", { class: "param-name", text: "參數" }),
@@ -692,14 +754,72 @@ function panelNode(detail) {
       element("span", { class: "param-source", text: "來源值" }),
       element("span", { class: "param-validation", text: "驗證" }),
     ]),
-    ...paramRows(detail).map(paramRow),
+    ...paramRows(detail).map((row) => paramRow(row, entries, refreshSave)),
   ]);
   list.addEventListener("click", (event) => {
     const container = event.target.closest("li[data-container='true']");
     if (container) toggleCollapse(list, container);
   });
-  panel.appendChild(list);
+  saveButton.addEventListener("click", () => {
+    saveDraft(detail, entries, { save: saveButton, error: saveError, draft: draftMark });
+  });
+  panel.append(list, saveError, element("div", { class: "panel-actions" }, [
+    element("span", { class: "hint", text: "「儲存」只是存為草稿——不記錄、不寫到目標；工具列的「進版」才會。" }),
+    saveButton,
+  ]));
+  refreshSave();
   return panel;
+}
+
+// 送出的是相對**來源**的全部改動（後端以來源複本為底重建草稿文字），不是相對上一份草稿的差量。
+async function saveDraft(detail, entries, ui) {
+  const edits = {};
+  for (const { row, control } of entries) {
+    const current = currentValue(control, row);
+    if (displayValue(current, row.type) !== displayValue(row.value, row.type)) edits[row.path] = current;
+  }
+  ui.error.hidden = true;
+  ui.save.disabled = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/drafts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ uid: detail.uid, edits }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      renderSaveError(ui.error, payload.detail);
+      ui.save.disabled = false;
+      return;
+    }
+    draftUids = new Set(payload.drafts.map((draft) => draft.uid));
+    render();  // 樹上的草稿標記
+    for (const entry of entries) entry.row.baseline = currentValue(entry.control, entry.row);
+    for (const entry of entries) entry.refresh();  // 畫面＝已存的草稿：不再 dirty、儲存回到停用
+    ui.draft.hidden = !draftUids.has(detail.uid);
+  } catch (error) {
+    renderSaveError(ui.error, `送不出去：${error && error.message ? error.message : error}`);
+    ui.save.disabled = false;
+  }
+}
+
+// 第 1 層沒過的 422 是結構化的 {message, uid, problems:[{line, message, suggestion}]}；逐條列出
+// 行號／原因／建議（三要素），不改寫。其他形狀（字串、FastAPI 驗證 list）原樣顯示。
+function renderSaveError(target, detail) {
+  target.replaceChildren();
+  if (detail && typeof detail === "object" && !Array.isArray(detail) && detail.message) {
+    target.appendChild(element("strong", { text: detail.message }));
+    target.appendChild(element("ul", {}, (detail.problems || []).map((problem) => element("li", {
+      text: `第 ${problem.line} 行：${problem.message}。建議：${problem.suggestion}`,
+    }))));
+  } else if (Array.isArray(detail)) {
+    target.appendChild(element("strong", {
+      text: detail.map((item) => item.msg || JSON.stringify(item)).join("；"),
+    }));
+  } else {
+    target.appendChild(element("strong", { text: String(detail) }));
+  }
+  target.hidden = false;
 }
 
 // 前序走訪值樹，配上 types 裡的型別（list 元素的型別鍵是 `path[]`，值的路徑是 `path[i]`）。
@@ -707,20 +827,29 @@ function panelNode(detail) {
 function paramRows(detail) {
   const out = [];
   const escape = (key) => String(key).replace(/\./g, "\\.");
-  const walk = (value, path, typePath, depth, name, readonly) => {
+  // value 是來源值（「來源值」欄、改動的比較基準）；draft 是草稿裡對應的值（有草稿時當「目前值」的
+  // 起點，#21）。兩棵樹並行走訪，草稿樹缺該路徑就退回來源值。
+  const drafts = detail.draft_values;
+  const walk = (value, draft, path, typePath, depth, name, readonly) => {
     const type = detail.types[typePath] || "unknown";
     const container = type === "dict" || type === "list";
-    out.push({ path, type, value, depth, name, container, readonly });
+    const baseline = draft === undefined ? value : draft;
+    out.push({ path, type, value, baseline, depth, name, container, readonly });
     if (type === "dict") {
       for (const [key, child] of Object.entries(value)) {
-        walk(child, `${path}.${escape(key)}`, `${typePath}.${escape(key)}`, depth + 1, key, readonly);
+        const draftChild = draft && typeof draft === "object" ? draft[key] : undefined;
+        walk(child, draftChild, `${path}.${escape(key)}`, `${typePath}.${escape(key)}`, depth + 1, key, readonly);
       }
     } else if (type === "list") {
-      value.forEach((child, index) => walk(child, `${path}[${index}]`, `${typePath}[]`, depth + 1, `[${index}]`, true));
+      value.forEach((child, index) => {
+        const draftChild = Array.isArray(draft) ? draft[index] : undefined;
+        walk(child, draftChild, `${path}[${index}]`, `${typePath}[]`, depth + 1, `[${index}]`, true);
+      });
     }
   };
   for (const [key, value] of Object.entries(detail.values)) {
-    walk(value, escape(key), escape(key), 0, key, false);
+    const draft = drafts && typeof drafts === "object" ? drafts[key] : undefined;
+    walk(value, draft, escape(key), escape(key), 0, key, false);
   }
   return out;
 }
@@ -741,25 +870,25 @@ function valueControl(row) {
   switch (row.type) {
     case "bool":
       control = element("input", { type: "checkbox" });
-      control.checked = row.value === true;
+      control.checked = row.baseline === true;
       break;
     case "int":
-      control = element("input", { type: "number", step: "1", value: String(row.value) });
+      control = element("input", { type: "number", step: "1", value: String(row.baseline) });
       break;
     case "float":
-      control = element("input", { type: "number", step: "any", value: formatDouble(row.value) });
+      control = element("input", { type: "number", step: "any", value: formatDouble(row.baseline) });
       break;
     case "enum":
       control = element("select", {}, (row.options || []).map((option) =>
         element("option", { value: String(option), text: String(option) })));
-      control.value = String(row.value);
+      control.value = String(row.baseline);
       break;
     case "string":
-      control = element("input", { type: "text", value: row.value });  // 引號由系統處理
+      control = element("input", { type: "text", value: row.baseline });  // 引號由系統處理
       break;
     default:
       // 型別未知（null／空陣列元素…）：唯讀顯示原樣，標示未結構化（§7.5.4），不假裝可編輯。
-      control = element("input", { type: "text", value: displayValue(row.value, row.type), readonly: "" });
+      control = element("input", { type: "text", value: displayValue(row.baseline, row.type), readonly: "" });
   }
   control.setAttribute("data-testid", "param-value");
   if (row.readonly) {
@@ -771,7 +900,7 @@ function valueControl(row) {
   return control;
 }
 
-function paramRow(row) {
+function paramRow(row, entries, onChange) {
   const attributes = {
     class: "param-row",
     "data-testid": `param-${row.path}`,
@@ -794,7 +923,11 @@ function paramRow(row) {
   });
   const validation = element("span", { class: "param-validation", "data-testid": "param-validation" });
   node.append(element("span", { class: "param-value-wrap" }, [control]), source, validation);
-  const refresh = () => refreshParamRow(node, control, row, source, validation);
+  const refresh = () => {
+    refreshParamRow(node, control, row, source, validation);
+    if (onChange) onChange();
+  };
+  if (entries) entries.push({ row, control, node, refresh });
   control.addEventListener("input", refresh);
   control.addEventListener("change", () => {
     // double：離開欄位時把整數樣子的輸入正規化成帶小數點（打字中不動，否則沒法打出 52）。
@@ -824,8 +957,10 @@ function refreshParamRow(node, control, row, source, validation) {
   }
   validation.textContent = problem;
   node.dataset.valid = problem ? "false" : "true";
-  const changed = displayValue(currentValue(control, row), row.type) !== displayValue(row.value, row.type);
+  const current = displayValue(currentValue(control, row), row.type);
+  const changed = current !== displayValue(row.value, row.type);  // 相對來源（「來源值」欄標色）
   node.dataset.changed = String(changed);
+  node.dataset.dirty = String(current !== displayValue(row.baseline, row.type));  // 相對已存的草稿
   if (changed) source.setAttribute("data-changed", "true");
   else source.removeAttribute("data-changed");
 }

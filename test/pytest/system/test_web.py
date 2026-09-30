@@ -1300,3 +1300,118 @@ def test_a_raw_config_shows_an_unstructured_notice_not_an_empty_table(open_page,
 
     assert page.is_visible("[data-testid='panel-unstructured']")
     assert page.query_selector("[data-testid='param-table']") is None
+
+
+# ── W3 儲存草稿（#21）────────────────────────────────────────────────────────
+# 三段式：編輯 → 儲存（草稿）→ 進版。「儲存」只存為草稿：不記錄、不寫到目標（§7.4.3、T18）。
+
+_SECOND_UID = "mfz3k9q2"
+
+
+def _listing_many(repo, contents: dict) -> dict:
+    """多筆條目（name → yaml 內容），uid 依序 mfz3k9q1、mfz3k9q2…；目標＝來源→一致。
+    回 name → 目標路徑。"""
+    entries, targets = "", {}
+    for index, (name, content) in enumerate(contents.items(), start=1):
+        (repo / "files" / f"{name}.yaml").write_text(content, encoding="utf-8")
+        target = repo / "deployed" / f"{name}.yaml"
+        target.write_text(content, encoding="utf-8")
+        entries += _ENTRY.format(uid=f"mfz3k9q{index}", name=name, target=target, groups="")
+        targets[name] = target
+    (repo / "config-list.toml").write_text(_LIST_HEADER + entries, encoding="utf-8")
+    return targets
+
+
+def _save(page):
+    page.get_by_role("button", name="儲存").click()
+
+
+def _draft_dot(uid: str) -> str:
+    return f"[data-testid='tree-item-{uid}'] [data-testid='draft-dot']"
+
+
+def test_saving_stores_a_draft_marks_the_tree_and_leaves_the_target_alone(open_page, repo):
+    # AC1／AC3／AC4：儲存 → 樹節點右側出現草稿標記（與左側狀態色點分開、狀態仍一致），目標檔未變。
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+    page.fill(_param_value("count"), "4")
+
+    _save(page)
+
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    assert page.get_attribute(
+        f"[data-testid='tree-item-{_PARAM_UID}'] [data-testid='status-dot']", "data-state"
+    ) == "in_sync"
+    assert page.is_visible(f"[data-testid='panel-draft-{_PARAM_UID}']")
+    assert (repo / "deployed" / "p.yaml").read_text(encoding="utf-8") == "count: 3\n"
+
+
+def test_two_configs_saved_as_drafts_leave_both_targets_unchanged(open_page, repo):
+    # AC3：修改兩份 config 各存為草稿後，兩個目標檔案都沒改變；兩份都帶草稿標記。
+    targets = _listing_many(repo, {"a": "count: 3\n", "b": "speed: 1.5\n"})
+    page = _enter_identity(open_page())
+    for uid, path, value in ((_PARAM_UID, "count", "4"), (_SECOND_UID, "speed", "2.5")):
+        page.click(f"[data-testid='tree-item-{uid}']")
+        page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
+        page.fill(_param_value(path), value)
+        _save(page)
+        page.wait_for_selector(_draft_dot(uid), state="visible")
+
+    assert targets["a"].read_text(encoding="utf-8") == "count: 3\n"
+    assert targets["b"].read_text(encoding="utf-8") == "speed: 1.5\n"
+
+
+def test_a_draft_that_fails_layer_one_is_refused_with_the_line_and_the_fix(open_page, repo):
+    # AC2：第 1 層驗證繞不過——來源裡納管時確認過的 `yes` 還在，存草稿時被擋、指出行號與建議，
+    # 樹上不出現草稿標記。
+    _listing_with(repo, "enabled: yes\ncount: 3\n")
+    page = _open_panel(open_page())
+    page.fill(_param_value("count"), "4")
+
+    _save(page)
+
+    page.wait_for_selector("[data-testid='panel-save-error']", state="visible")
+    text = page.inner_text("[data-testid='panel-save-error']")
+    assert "第 1 行" in text and "建議" in text
+    assert page.query_selector(_draft_dot(_PARAM_UID)) is None
+
+
+def test_save_is_disabled_until_something_valid_changed(open_page, repo):
+    # W3：驗證未過時「儲存」停用；沒有改動也停用；改成合法值才啟用。
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+
+    assert page.is_disabled("[data-testid='panel-save']")
+    page.fill(_param_value("count"), "1.5")
+    assert page.is_disabled("[data-testid='panel-save']")
+    page.fill(_param_value("count"), "4")
+    assert page.is_enabled("[data-testid='panel-save']")
+
+
+def test_reopening_a_config_shows_its_saved_draft_beside_the_source_value(open_page, repo):
+    # 重開這份 config 看到的是存過的草稿（目前值 4），來源值仍是 3、該列標示已改動。
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+    page.fill(_param_value("count"), "4")
+    _save(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+
+    page.click(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(_param_value("count"))
+
+    assert page.input_value(_param_value("count")) == "4"
+    assert page.inner_text("[data-testid='param-count'] [data-testid='param-source-value']") == "3"
+    assert page.get_attribute("[data-testid='param-count']", "data-changed") == "true"
+
+
+def test_the_draft_marker_survives_a_reload(open_page, repo):
+    # 草稿掛在 app 的階段上，不在瀏覽器：重新整理後樹上的標記還在（ADR-00000014）。
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+    page.fill(_param_value("count"), "4")
+    _save(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+
+    page.reload()
+
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
