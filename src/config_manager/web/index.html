@@ -133,6 +133,12 @@
   .diff-row[data-change="same"] { color: var(--muted); }
   .diff-row[data-change="changed"] .diff-to, .diff-row[data-change="added"] .diff-to { color: var(--drift); font-weight: 600; }
   .diff-row[data-change="removed"] .diff-from { color: var(--drift); text-decoration: line-through; }
+  /* W5 差異檢視（#30）：偏離橫幅＋來源／目標並排；顏色語言同 W4。 */
+  .drift-banner { margin: 12px 14px 0; }
+  .drift-banner .actions { margin-top: 8px; display: flex; gap: 8px; }
+  .diff-head { display: flex; gap: 10px; padding: 8px 14px 0; font-size: 12px; color: var(--muted); font-weight: 600; }
+  .diff-head .diff-name { flex: 1.2; }
+  .diff-head .diff-side { flex: 1; }
   /* 進版／捨棄變更（#22） */
   .banner { grid-column: 1 / -1; }
   .banner ul { margin: 8px 0 0; padding-left: 18px; list-style: disc; }
@@ -780,6 +786,7 @@ function panelNode(detail) {
   ]);
   const draftMark = panel.querySelector(`[data-testid='panel-draft-${detail.uid}']`);
   draftMark.hidden = !detail.draft_values;
+  if (row && row.state === "drift") panel.appendChild(driftBanner(detail, true));
   const structured = detail.values && typeof detail.values === "object" && !Array.isArray(detail.values);
   if (detail.format === "raw" || !structured) {
     // §7.5.4：沒有結構就明說「未結構化」——使用者看得到自己失去了型別保護（不變式 2）。
@@ -1184,29 +1191,10 @@ async function selectChange(view, detail, change, node) {
 
 // 那一版 vs 目前版本，以參數為單位（§7.6.2）：same／changed／added（那版沒有、現在有）／removed。
 function renderDiff(target, version, detail, view) {
-  const leaves = (payload) => new Map(
-    paramRows({ types: payload.types || {}, values: payload.values || {}, draft_values: null })
-      .filter((row) => !row.container)
-      .map((row) => [row.path, displayValue(row.value, row.type)]),
-  );
-  const older = leaves(version);
-  const current = leaves(detail);
-  const paths = [...current.keys(), ...[...older.keys()].filter((path) => !current.has(path))];
-  const rows = paths.map((path) => {
-    const from = older.get(path);
-    const to = current.get(path);
-    let change = "same";
-    if (from === undefined) change = "added";
-    else if (to === undefined) change = "removed";
-    else if (from !== to) change = "changed";
-    return element("li", { class: "diff-row", "data-testid": `diff-row-${path}`, "data-change": change }, [
-      element("span", { class: "diff-name", text: path.replace(/\\\./g, ".") }),
-      element("span", { class: "diff-from", "data-testid": "diff-from", text: from === undefined ? "（無）" : from }),
-      element("span", { text: "→" }),
-      element("span", { class: "diff-to", "data-testid": "diff-to", text: to === undefined ? "（無）" : to }),
-    ]);
-  });
-  const differing = rows.filter((row) => row.dataset.change !== "same").length;
+  // 那一版（左）vs 目前版本（右），與 W5 共用同一套比對與列（paramDiff／diffRow）。
+  const compared = paramDiff(version, detail);
+  const rows = compared.map((row) => diffRow(row, "diff-from", "diff-to", "→"));
+  const differing = compared.filter((row) => row.change !== "same").length;
   // 退回此版本（#27、§5.3 圖 7）：看過差異才退；不可逆（會產生一筆新紀錄並寫出目標）→ W6 確認對話框。
   const revertButton = element("button", {
     type: "button", "data-testid": "history-revert", text: "退回此版本",
@@ -1262,6 +1250,112 @@ async function revertTo(view, detail, version, differing) {
       element("pre", { text: `送不出去：${error && error.message ? error.message : error}` }),
     ]));
   }
+}
+
+// ── W5 差異檢視（#30）────────────────────────────────────────────────────────
+// 只在偏離時出現（§7.7、ADR-00000008）：橫幅說明目標被介面外修改、沒有對應紀錄與作者；主區域是
+// 來源（repo，唯一真實來源）與目標（磁碟現況）的並排參數比對——使用者要做的是「判斷哪一邊是對的」，
+// 並排比合併差異更貼這個決策。呈現與 W4 歷史差異同一套（參數為單位、同樣的 data-change 與顏色）。
+// 處置的三個按鈕是 #31。
+function driftBanner(detail, withEntry) {
+  const banner = element("div", { class: "notice error drift-banner", "data-testid": "drift-banner" }, [
+    element("strong", { text: "偏離：目標檔案內容與 repo 不一致。" }),
+    element("p", {
+      text: "此修改未經介面進行，因此沒有對應的變更紀錄與作者資訊。請比對兩邊，判斷哪一邊是對的。",
+    }),
+  ]);
+  if (withEntry) {
+    const open = element("button", { type: "button", "data-testid": "panel-diff", text: "檢視差異" });
+    open.addEventListener("click", () => openDiffView(detail));
+    banner.appendChild(element("div", { class: "actions" }, [open]));
+  }
+  return banner;
+}
+
+// 兩棵值樹以參數為單位比：same／changed／added（右邊有、左邊沒有）／removed（左邊有、右邊沒有）。
+// W4（那一版 vs 目前）與 W5（來源 vs 目標）共用，顏色語言因此一致。
+function paramDiff(left, right) {
+  const leaves = (payload) => new Map(
+    paramRows({ types: payload.types || {}, values: payload.values || {}, draft_values: null })
+      .filter((row) => !row.container)
+      .map((row) => [row.path, displayValue(row.value, row.type)]),
+  );
+  const older = leaves(left);
+  const current = leaves(right);
+  const paths = [...current.keys(), ...[...older.keys()].filter((path) => !current.has(path))];
+  return paths.map((path) => {
+    const from = older.get(path);
+    const to = current.get(path);
+    let change = "same";
+    if (from === undefined) change = "added";
+    else if (to === undefined) change = "removed";
+    else if (from !== to) change = "changed";
+    return { path, from, to, change };
+  });
+}
+
+function diffRow(row, fromTestid, toTestid, separator) {
+  return element("li", { class: "diff-row", "data-testid": `diff-row-${row.path}`, "data-change": row.change }, [
+    element("span", { class: "diff-name", text: row.path.replace(/\\\./g, ".") }),
+    element("span", { class: "diff-from", "data-testid": fromTestid, text: row.from === undefined ? "（無）" : row.from }),
+    element("span", { text: separator }),
+    element("span", { class: "diff-to", "data-testid": toTestid, text: row.to === undefined ? "（無）" : row.to }),
+  ]);
+}
+
+function openDiffView(detail) {
+  const back = element("button", { type: "button", "data-testid": "diff-back", text: "返回欄位表" });
+  back.addEventListener("click", () => openPanel(detail.uid));
+  const view = element("section", { class: "panel", "data-testid": `diff-${detail.uid}` }, [
+    element("div", { class: "panel-head" }, [
+      element("span", { class: "name", text: `差異檢視　${detail.name}` }),
+      element("span", { class: "target", text: detail.target }),
+      back,
+    ]),
+    driftBanner(detail, false),
+  ]);
+  if (detail.target_error) {
+    view.appendChild(element("div", { class: "notice error", "data-testid": "diff-target-error" }, [
+      element("strong", { text: "目標現況無法比對。" }),
+      element("pre", { text: detail.target_error }),
+    ]));
+  } else {
+    // 左＝來源（repo，唯一真實來源）、右＝目標（磁碟現況）：來源在 paramDiff 的 left。
+    const rows = paramDiff(
+      { types: detail.types, values: detail.values },
+      { types: infer(detail.target_values), values: detail.target_values },
+    );
+    const differing = rows.filter((row) => row.change !== "same").length;
+    view.append(
+      element("p", {
+        class: "diff-summary", "data-testid": "diff-summary",
+        text: `${differing} 個參數不同（左邊是 repo 的來源，右邊是目標的磁碟現況）`,
+      }),
+      element("div", { class: "diff-head" }, [
+        element("span", { class: "diff-name", text: "參數" }),
+        element("span", { class: "diff-side", "data-testid": "diff-source", text: "repo（唯一真實來源）" }),
+        element("span", { class: "diff-side", "data-testid": "diff-target", text: "target（磁碟現況）" }),
+      ]),
+      element("ul", { class: "param-table" }, rows.map((row) => diffRow(row, "diff-source-value", "diff-target-value", "｜"))),
+    );
+  }
+  workspace.replaceChildren(view);
+}
+
+// 目標現況沒有型別表（型別由來源推斷、不由前端猜）：只借來源的型別表走訪路徑，來源沒有的欄位
+// 以值的樣子給個粗略型別讓它顯示得出來——這裡只是「顯示」，不是判定。
+function infer(values) {
+  const out = {};
+  const walk = (value, path) => {
+    if (path) out[path] = value === null ? "null" : Array.isArray(value) ? "list" : typeof value === "object" ? "dict" : typeof value === "boolean" ? "bool" : typeof value === "number" ? (Number.isInteger(value) ? "int" : "float") : "string";
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      for (const [key, child] of Object.entries(value)) walk(child, path ? `${path}.${String(key).replace(/\./g, "\\.")}` : String(key).replace(/\./g, "\\."));
+    } else if (Array.isArray(value)) {
+      value.forEach((child) => walk(child, `${path}[]`));
+    }
+  };
+  walk(values || {}, "");
+  return out;
 }
 
 // ── 進版與捨棄變更（#22）─────────────────────────────────────────────────────

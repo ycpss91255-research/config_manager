@@ -1715,3 +1715,31 @@ def test_resolving_a_missing_target_points_to_apply_instead(api, sources_root):
 
     assert exc.value.code == _CONFLICT
     assert "apply" in _detail(exc.value)
+
+
+# ── T9：單筆內容帶目標現況（target_values，#30）──────────────────────────────
+
+
+def test_config_detail_carries_the_target_values_when_the_target_drifted(api, sources_root):
+    # 差異檢視據此把來源與現況以參數為單位並排；target 不存在→null、壞掉→null＋原因。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "detail_target.yaml", b"count: 1\n")
+    pathlib.Path(entry["target"]).write_bytes(b"count: 9\nextra: 1\n")
+
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+
+    assert (detail["values"], detail["target_values"]) == ({"count": 1}, {"count": 9, "extra": 1})
+    assert detail["target_error"] is None
+
+
+def test_config_detail_reports_a_missing_or_broken_target_without_failing(api, sources_root):
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "detail_target_bad.yaml", b"count: 1\n")
+    pathlib.Path(entry["target"]).write_bytes(b"count: [1, 2\n")  # 語法壞掉
+
+    broken = _get(api, f"/api/configs/{entry['uid']}")
+    pathlib.Path(entry["target"]).unlink()
+    missing = _get(api, f"/api/configs/{entry['uid']}")
+
+    assert broken["target_values"] is None and "解析" in broken["target_error"]
+    assert (missing["target_values"], missing["target_error"]) == (None, None)
