@@ -29,3 +29,7 @@ class ServePortInvalid(Exception):
     handler 接不到）炸成裸 traceback（違反不變式 2）。與 ConfigRepoMissing 同屬啟動
     接線問題，訊息帶原因與下一步。
     """
+
+
+class SessionTimeoutInvalid(Exception):
+    """`CM_SESSION_TIMEOUT` 不是正數（秒）（#33）。寫錯的值不能靜默當成不逾時。"""

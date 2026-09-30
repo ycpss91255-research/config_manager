@@ -84,3 +84,96 @@ def test_a_name_with_a_nul_byte_is_rejected():
     # （非 OSError，端點 except 接不到）而成裸 500。在輸入這關具名拒絕，比照 `<`。
     with pytest.raises(InvalidAuthor):
         author("a\x00b", "ming@example.com", USER)
+
+
+# ── 編輯階段（T13 後半，#33）────────────────────────────────────────────────────
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from config_manager.api.session import (  # noqa: E402
+    Identity,
+    SessionExpired,
+    SessionHeld,
+    SessionLock,
+)
+
+_T0 = datetime(2026, 9, 30, 8, 0, tzinfo=timezone.utc)
+_MING = Identity("陳小明", "ming@example.com", "developer")
+_LIN = Identity("林巡檢", "lin@example.com", "user")
+
+
+def _lock(timeout_minutes=10):
+    counter = iter(f"token-{n}" for n in range(1, 100))
+    timeout = None if timeout_minutes is None else timedelta(minutes=timeout_minutes)
+    return SessionLock(timeout, tokens=lambda: next(counter))
+
+
+def test_the_session_can_be_acquired_when_nobody_holds_it():
+    session = _lock().acquire(_MING, _T0)
+
+    assert (session.holder, session.started_at, session.token) == (_MING, _T0, "token-1")
+
+
+def test_a_second_acquire_is_refused_naming_the_holder_and_the_start_time():
+    lock = _lock()
+    lock.acquire(_MING, _T0)
+
+    with pytest.raises(SessionHeld) as caught:
+        lock.acquire(_LIN, _T0 + timedelta(minutes=1))
+
+    assert (caught.value.holder, caught.value.started_at) == (_MING, _T0)
+
+
+def test_after_release_someone_else_can_acquire_immediately():
+    lock = _lock()
+    session = lock.acquire(_MING, _T0)
+
+    assert lock.release(session.token) is True
+    assert lock.acquire(_LIN, _T0).holder == _LIN
+
+
+def test_an_idle_session_is_swept_after_the_timeout_and_others_can_acquire():
+    # 部署模式：閒置達設定時間後回收；被回收的那份回給呼叫端（API 據此清草稿並回報）。
+    lock = _lock(timeout_minutes=10)
+    lock.acquire(_MING, _T0)
+
+    swept = lock.sweep(_T0 + timedelta(minutes=10, seconds=1))
+
+    assert [s.holder for s in swept] == [_MING]
+    assert lock.acquire(_LIN, _T0 + timedelta(minutes=11)).holder == _LIN
+
+
+def test_renewing_keeps_the_session_alive_past_the_original_timeout():
+    lock = _lock(timeout_minutes=10)
+    session = lock.acquire(_MING, _T0)
+
+    lock.renew(session.token, _T0 + timedelta(minutes=9))
+
+    assert lock.sweep(_T0 + timedelta(minutes=15)) == []
+
+
+def test_renewing_an_expired_session_fails_loudly_instead_of_reacquiring():
+    lock = _lock(timeout_minutes=10)
+    session = lock.acquire(_MING, _T0)
+
+    with pytest.raises(SessionExpired):
+        lock.renew(session.token, _T0 + timedelta(minutes=30))
+
+    assert lock.current is None  # 沒有替它悄悄重新取得
+
+
+def test_development_mode_never_sweeps_an_idle_session():
+    lock = _lock(timeout_minutes=None)
+    lock.acquire(_MING, _T0)
+
+    assert lock.sweep(_T0 + timedelta(days=3)) == []
+    with pytest.raises(SessionHeld):
+        lock.acquire(_LIN, _T0 + timedelta(days=3))
+
+
+def test_release_with_the_wrong_token_does_nothing():
+    lock = _lock()
+    lock.acquire(_MING, _T0)
+
+    assert lock.release("someone-elses-token") is False
+    assert lock.current is not None
