@@ -1179,11 +1179,11 @@ def _listing_with(repo, content: str, fmt: str = "yaml") -> None:
 
 
 def _open_panel(page, developer: bool = False):
-    """輸入身分 → 單擊樹上那筆 → 等右側欄位表出現。"""
+    """輸入身分 → 雙擊樹上那筆 → 等右側欄位表出現（單擊只是選取，#35）。"""
     if developer:
         page.click("[data-testid='role-toggle'] button[data-role='developer']")
     _enter_identity(page)
-    page.click(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
     page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
     return page
 
@@ -1333,8 +1333,9 @@ def _listing_many(repo, contents: dict) -> dict:
     return targets
 
 
-def _save(page):
-    page.get_by_role("button", name="儲存").click()
+def _save(page, uid: str = _PARAM_UID):
+    # 多份可同時展開（#36），儲存要指名哪一塊——各區塊各自儲存。
+    page.click(f"[data-testid='panel-{uid}'] [data-testid='panel-save']")
 
 
 def _draft_dot(uid: str) -> str:
@@ -1362,10 +1363,10 @@ def test_two_configs_saved_as_drafts_leave_both_targets_unchanged(open_page, rep
     targets = _listing_many(repo, {"a": "count: 3\n", "b": "speed: 1.5\n"})
     page = _enter_identity(open_page())
     for uid, path, value in ((_PARAM_UID, "count", "4"), (_SECOND_UID, "speed", "2.5")):
-        page.click(f"[data-testid='tree-item-{uid}']")
+        page.dblclick(f"[data-testid='tree-item-{uid}']")
         page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
         page.fill(_param_value(path), value)
-        _save(page)
+        _save(page, uid)
         page.wait_for_selector(_draft_dot(uid), state="visible")
 
     assert targets["a"].read_text(encoding="utf-8") == "count: 3\n"
@@ -1407,7 +1408,7 @@ def test_reopening_a_config_shows_its_saved_draft_beside_the_source_value(open_p
     _save(page)
     page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
 
-    page.click(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
     page.wait_for_selector(_param_value("count"))
 
     assert page.input_value(_param_value("count")) == "4"
@@ -1434,10 +1435,10 @@ def test_the_draft_marker_survives_a_reload(open_page, repo):
 
 
 def _save_draft_for(page, uid: str, path: str, value: str) -> None:
-    page.click(f"[data-testid='tree-item-{uid}']")
+    page.dblclick(f"[data-testid='tree-item-{uid}']")
     page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
     page.fill(_param_value(path), value)
-    _save(page)
+    _save(page, uid)
     page.wait_for_selector(_draft_dot(uid), state="visible")
 
 
@@ -1573,7 +1574,7 @@ def _history_via_api(api, browse_root, contents: list) -> dict:
 
 def _open_history(page, uid: str):
     page.wait_for_selector("[data-testid='config-tree']", state="visible")
-    page.click(f"[data-testid='tree-item-{uid}']")
+    page.dblclick(f"[data-testid='tree-item-{uid}']")
     page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
     page.get_by_role("button", name="歷史").click()
     page.wait_for_selector(f"[data-testid='history-{uid}']", state="visible")
@@ -1869,7 +1870,7 @@ def test_editing_a_target_behind_the_interface_shows_the_right_diff(open_page, r
     page.get_by_role("button", name="檢查差異").click()
 
     page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'] [data-state='drift']")
-    page.click(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
     page.wait_for_selector("[data-testid='panel-diff']")
     page.click("[data-testid='panel-diff']")
     page.wait_for_selector("[data-testid='diff-row-count']")
@@ -1906,7 +1907,7 @@ def test_a_second_tab_is_read_only_and_names_the_holder(open_page, listing):
     banner = second.inner_text("[data-testid='readonly-banner']")
     assert "陳小明" in banner and "ming@example.com" in banner and "起編輯中" in banner
     assert second.is_hidden("[data-testid='promote-all']")
-    second.click("[data-testid='tree-item-mfz3k9q1']")
+    second.dblclick("[data-testid='tree-item-mfz3k9q1']")
     second.wait_for_selector("[data-testid='panel-mfz3k9q1']", state="visible")
     assert second.is_hidden("[data-testid='panel-save']")
     assert holder.is_visible("[data-testid='promote-all']")  # 持有者不受影響
@@ -2014,3 +2015,78 @@ def test_switching_back_to_group_layout_removes_the_host_layer(open_page, repo):
     page.wait_for_selector("[data-testid^='tree-host-']", state="detached")
     ungrouped_b = "[data-testid='tree-group-ungrouped'] [data-testid='tree-item-mfz3k9q2']"
     assert page.is_visible(ungrouped_b)
+
+
+# ── W2 雙擊展開與多開堆疊（#35／#36）─────────────────────────────────────────
+# 單擊＝選取（高亮），雙擊＝展開到右側；右側可同時堆疊多份、各自儲存／捨棄；折疊與關閉逐塊。
+
+
+def test_a_single_click_selects_and_only_a_double_click_expands(open_page, listing):
+    listing("a", "b")
+    page = _enter_identity(open_page())
+
+    page.click("[data-testid='tree-item-mfz3k9q1']")
+
+    assert page.get_attribute("[data-testid='tree-item-mfz3k9q1']", "aria-selected") == "true"
+    assert page.query_selector("[data-testid='panel-mfz3k9q1']") is None
+    page.dblclick("[data-testid='tree-item-mfz3k9q1']")
+    page.wait_for_selector("[data-testid='panel-mfz3k9q1']", state="visible")
+
+
+def test_three_configs_can_be_expanded_at_once_and_saved_independently(open_page, repo):
+    # #36：三份以上同時展開、各自儲存；新開的在最上面。
+    _listing_many(repo, {"a": "count: 1\n", "b": "speed: 2\n", "c": "ratio: 0.5\n"})
+    page = _enter_identity(open_page())
+    for uid in ("mfz3k9q1", "mfz3k9q2", "mfz3k9q3"):
+        page.dblclick(f"[data-testid='tree-item-{uid}']")
+        page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
+
+    order = page.eval_on_selector_all(
+        "[data-testid^='panel-mfz']", "els => els.map(e => e.dataset.uid)"
+    )
+    assert order == ["mfz3k9q3", "mfz3k9q2", "mfz3k9q1"]
+
+    speed = "[data-testid='panel-mfz3k9q2'] [data-testid='param-speed'] [data-testid='param-value']"
+    page.fill(speed, "3")
+    page.click("[data-testid='panel-mfz3k9q2'] [data-testid='panel-save']")
+    page.wait_for_selector(_draft_dot("mfz3k9q2"), state="visible")
+
+    assert page.query_selector(_draft_dot("mfz3k9q1")) is None  # 其他區塊不受影響
+    assert page.is_visible("[data-testid='panel-mfz3k9q1']")
+    assert page.is_visible("[data-testid='panel-mfz3k9q3']")
+
+
+def test_a_panel_collapses_on_its_header_and_can_be_closed(open_page, listing):
+    listing("a", "b")
+    page = _enter_identity(open_page())
+    for uid in ("mfz3k9q1", "mfz3k9q2"):
+        page.dblclick(f"[data-testid='tree-item-{uid}']")
+        page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
+
+    page.click("[data-testid='panel-mfz3k9q1'] [data-testid='panel-head']")
+    assert page.get_attribute("[data-testid='panel-mfz3k9q1']", "data-collapsed") == "true"
+    assert page.is_hidden("[data-testid='panel-mfz3k9q1'] [data-testid='param-table']")
+    assert page.is_visible("[data-testid='panel-mfz3k9q2'] [data-testid='param-table']")
+
+    page.click("[data-testid='panel-mfz3k9q2'] [data-testid='panel-close']")
+    page.wait_for_selector("[data-testid='panel-mfz3k9q2']", state="detached")
+    assert page.is_visible("[data-testid='panel-mfz3k9q1']")
+
+
+def test_returning_from_history_keeps_the_other_expanded_panels(open_page, listing):
+    # #35：返回時保留已展開的區塊——歷史只換自己那一槽。
+    listing("a", "b")
+    page = _enter_identity(open_page())
+    for uid in ("mfz3k9q1", "mfz3k9q2"):
+        page.dblclick(f"[data-testid='tree-item-{uid}']")
+        page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
+
+    page.click("[data-testid='panel-mfz3k9q1'] [data-testid='panel-history']")
+    page.wait_for_selector("[data-testid='history-mfz3k9q1']", state="visible")
+    assert page.is_visible("[data-testid='panel-mfz3k9q2']")
+
+    page.get_by_role("button", name="返回欄位表").click()
+
+    page.wait_for_selector("[data-testid='panel-mfz3k9q1']", state="visible")
+    assert page.is_visible("[data-testid='panel-mfz3k9q2']")
+    assert page.query_selector("[data-testid='history-mfz3k9q1']") is None

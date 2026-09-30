@@ -147,6 +147,12 @@
   .group > h2 { display: flex; align-items: center; gap: 8px; }
   /* 單一編輯階段（#33、ADR-00000014）：非持有分頁唯讀——會寫入的控制項不出現，而不是停用。 */
   body[data-readonly="true"] .editing-only { display: none !important; }
+  /* 右側工作區堆疊（#35／#36）：一份 config 一個槽，可折疊、可關閉；樹上單擊＝選取（高亮）。 */
+  .panel + .panel, .panel + .history, .workspace-stack > * + * { margin-top: 14px; }
+  .panel-head { cursor: pointer; user-select: none; }
+  .panel[data-collapsed="true"] > :not(.panel-head) { display: none !important; }
+  .panel-close { margin-left: 4px; padding: 2px 8px; font-size: 13px; line-height: 1.2; }
+  li[aria-selected="true"] { outline: 2px solid var(--fg); outline-offset: -2px; }
   /* 樹的排列（#34） */
   .tree-layout { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
   .tree-layout select { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
@@ -553,8 +559,6 @@ let loadError = null;
 let loadGeneration = 0;
 // 目前有草稿的 uid（#21）。掛在 app 上的階段是唯一來源：每次載入清單一併重讀，儲存成功時以回應更新。
 let draftUids = new Set();
-// 目前在右側工作區打開的那份（進版／捨棄後要重讀它，畫面才與階段一致）。
-let openUid = null;
 
 const promoteButton = document.querySelector("[data-testid='promote-all']");
 const discardAllButton = document.querySelector("[data-testid='discard-all']");
@@ -578,7 +582,7 @@ async function loadDrafts() {
     setDrafts(payload.drafts.map((draft) => draft.uid));
   } catch (error) {
     // 讀不到草稿清單不該悄悄把標記藏掉（不變式 2）：在工作區說出來，樹照常顯示。
-    workspace.replaceChildren(element("div", {
+    mountNotice(element("div", {
       class: "notice error", "data-testid": "drafts-error",
     }, [
       element("strong", { text: "讀不到草稿清單，樹上的草稿標記可能不準。" }),
@@ -812,28 +816,77 @@ const TYPE_LABEL = {
 // 每次開啟遞增；晚到的舊回應不覆蓋新開的那份（同 load／browse 的世代守門，#252）。
 let panelGeneration = 0;
 
+// 單擊＝選取（高亮），雙擊＝展開到右側工作區堆疊（§7.4.1、#35）。
 tree.addEventListener("click", (event) => {
+  const item = event.target.closest("li[data-uid]");
+  if (!item) return;
+  for (const node of tree.querySelectorAll("li[aria-selected='true']")) node.removeAttribute("aria-selected");
+  item.setAttribute("aria-selected", "true");
+});
+tree.addEventListener("dblclick", (event) => {
   const item = event.target.closest("li[data-uid]");
   if (item) openPanel(item.dataset.uid);
 });
 
+// ── 右側工作區的堆疊（#36）：每份 config 一個槽（data-uid），槽裡是欄位表／歷史／差異檢視之一，
+// 新開的在最上面；各槽各自儲存／捨棄變更。返回（從歷史／差異回欄位表）只換那一槽，其餘不動。
+const workspaceEmpty = document.querySelector("[data-testid='workspace-empty']");
+
+function slotFor(uid) {
+  return [...workspace.querySelectorAll("[data-uid]")].find((node) => node.dataset.uid === uid) || null;
+}
+
+function mountView(uid, view, kind) {
+  view.dataset.uid = uid;
+  view.dataset.view = kind;
+  const existing = slotFor(uid);
+  if (existing) existing.replaceWith(view);
+  else workspace.prepend(view);
+  refreshWorkspaceEmpty();
+}
+
+function closeSlot(uid) {
+  const existing = slotFor(uid);
+  if (existing) existing.remove();
+  refreshWorkspaceEmpty();
+}
+
+function openUids() {
+  return [...workspace.querySelectorAll("[data-uid][data-view='panel']")].map((node) => node.dataset.uid);
+}
+
+function refreshWorkspaceEmpty() {
+  workspaceEmpty.hidden = workspace.querySelector("[data-uid]") !== null;
+}
+
+function mountNotice(node) {
+  const previous = workspace.querySelector(`[data-testid='${node.dataset.testid}']`);
+  if (previous) previous.replaceWith(node);
+  else workspace.prepend(node);
+}
+
+const panelGenerations = new Map();  // 每份 config 自己的世代（晚到的舊回應不覆蓋新開的）
+
 async function openPanel(uid, notice) {
-  const generation = ++panelGeneration;
-  openUid = uid;
-  workspace.replaceChildren(element("p", {
-    class: "notice", "data-testid": "panel-loading", text: "載入中…",
-  }));
+  const generation = (panelGenerations.get(uid) || 0) + 1;
+  panelGenerations.set(uid, generation);
+  if (!slotFor(uid)) {
+    mountView(uid, element("p", {
+      class: "notice", "data-testid": "panel-loading", text: "載入中…",
+    }), "loading");
+  }
   try {
     const response = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(uid)}`);
     if (!response.ok) throw new Error(await loadErrorText(response));
     const detail = await response.json();
-    if (generation !== panelGeneration) return;
-    workspace.replaceChildren(panelNode(detail));
-    if (notice) workspace.prepend(notice);  // 上一個動作的結果（如先納入、待修正的警告）放在面板上方
+    if (generation !== panelGenerations.get(uid)) return;
+    const panel = panelNode(detail);
+    if (notice) panel.insertBefore(notice, panel.children[1] || null);  // 上一個動作的結果放在標頭下
+    mountView(uid, panel, "panel");
   } catch (error) {
-    if (generation !== panelGeneration) return;
+    if (generation !== panelGenerations.get(uid)) return;
     // 大聲失敗（不變式 2）：說出讀不到，不留一個空表假裝這份 config 沒有參數。
-    workspace.replaceChildren(element("div", {
+    mountView(uid, element("div", {
       class: "notice error", "data-testid": `panel-error-${uid}`,
     }, [
       element("strong", { text: "讀不到這份 config 的內容。" }),
@@ -845,16 +898,25 @@ async function openPanel(uid, notice) {
 function panelNode(detail) {
   const row = rows.find((item) => item.uid === detail.uid);
   const state = row ? (row.error ? "錯誤" : STATE_TEXT[row.state] || row.state) : "";
-  const panel = element("section", { class: "panel", "data-testid": `panel-${detail.uid}` }, [
-    element("div", { class: "panel-head" }, [
-      element("span", { class: "name", text: detail.name }),
-      element("span", { class: "target", text: detail.target }),
-      element("span", { class: "state", "data-testid": `panel-status-${detail.uid}`, text: state }),
-      element("span", {
-        class: "panel-draft", "data-testid": `panel-draft-${detail.uid}`, text: "● 草稿",
-      }),
-    ]),
+  const close = element("button", {
+    type: "button", class: "panel-close", "data-testid": "panel-close", title: "關閉這個區塊", text: "×",
+  });
+  const head = element("div", { class: "panel-head", "data-testid": "panel-head" }, [
+    element("span", { class: "name", text: detail.name }),
+    element("span", { class: "target", text: detail.target }),
+    element("span", { class: "state", "data-testid": `panel-status-${detail.uid}`, text: state }),
+    element("span", {
+      class: "panel-draft", "data-testid": `panel-draft-${detail.uid}`, text: "● 草稿",
+    }),
+    close,
   ]);
+  const panel = element("section", { class: "panel", "data-testid": `panel-${detail.uid}` }, [head]);
+  // 標頭單擊折疊／展開這一塊（右側以可折疊區塊堆疊，§7.4.1）；× 關閉這一槽。
+  head.addEventListener("click", (event) => {
+    if (event.target.closest("button")) return;
+    panel.dataset.collapsed = panel.dataset.collapsed === "true" ? "false" : "true";
+  });
+  close.addEventListener("click", () => closeSlot(detail.uid));
   const draftMark = panel.querySelector(`[data-testid='panel-draft-${detail.uid}']`);
   draftMark.hidden = !detail.draft_values;
   if (row && row.state === "drift") panel.appendChild(driftBanner(detail, true));
@@ -1190,7 +1252,7 @@ function openHistory(detail, notice) {
     loadHistory(view, detail, button.dataset.filter, ++historyGeneration);
   });
   view.querySelector("[data-testid='history-notice']").hidden = !notice;
-  workspace.replaceChildren(view);
+  mountView(detail.uid, view, "history");
   loadHistory(view, detail, "content", generation);
 }
 
@@ -1411,7 +1473,7 @@ function openDiffView(detail) {
     );
   }
   view.appendChild(resolveActions(detail, view));
-  workspace.replaceChildren(view);
+  mountView(detail.uid, view, "diff");
 }
 
 // ── W5 三種處置（#31、§5.4、A3）──────────────────────────────────────────────
@@ -1568,7 +1630,7 @@ async function promoteAll() {
     promoteDoneEl.textContent = `已進版 ${payload.promoted.length} 份，各記一筆變更紀錄並寫出至目標。`;
     promoteDoneEl.hidden = false;
     load();  // 目標變了，重掃狀態
-    if (openUid) openPanel(openUid);  // 打開的那份現在來源＝剛進版的內容
+    for (const uid of openUids()) openPanel(uid);  // 打開的那幾份現在來源＝剛進版的內容
   } catch (error) {
     renderSaveError(promoteErrorEl, `送不出去：${error && error.message ? error.message : error}`);
     setDrafts(draftUids);
@@ -1592,7 +1654,9 @@ async function discardDrafts(uid, name) {
       return;
     }
     setDrafts(payload.drafts.map((draft) => draft.uid));
-    if (openUid && (!uid || uid === openUid)) openPanel(openUid);  // 畫面回到來源內容
+    for (const open of openUids()) {
+      if (!uid || uid === open) openPanel(open);  // 畫面回到來源內容
+    }
   } catch (error) {
     renderSaveError(promoteErrorEl, `送不出去：${error && error.message ? error.message : error}`);
   }

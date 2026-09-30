@@ -66,7 +66,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 樹根 | `data-testid="config-tree"` | 階層來自 `groups`，**不是機器** |
 | 排列 | `data-testid="tree-layout"` | 下拉：依群組（預設）／依主機。依主機時第一層是 `tree-host-<hostname>`（標題帶彙總色點）、第二層群組節點（#34；單機部署只有一個主機節點） |
 | 群組節點 | `data-testid="tree-group-<群組名>"` | 可折疊；標題內 `group-status-dot`（帶 `data-state`）彙總子節點最嚴重的狀態：判不出 > 偏離 > 未部署 > 一致（§7.4.1，#31） |
-| config 節點 | `data-testid="tree-item-<uid>"`（帶 `data-uid`） | 單擊選取、**雙擊展開參數**。**#20 的過渡：單擊即在右側工作區顯示該份的欄位表、一次一份**；雙擊與多開於 #35／#36 落地 |
+| config 節點 | `data-testid="tree-item-<uid>"`（帶 `data-uid`） | 單擊選取（`aria-selected="true"`）、**雙擊展開參數**到右側工作區堆疊（#35） |
 | 狀態色點 | 節點內 `data-testid="status-dot"` | **左側**。一致／偏離／未部署 |
 | 草稿標記 | 節點內 `data-testid="draft-dot"` | **右側**。有未進版草稿時出現。與狀態色點分開 |
 | 未分群節點 | `data-testid="tree-group-ungrouped"` | 無 `groups` 的項目集中於此 |
@@ -76,7 +76,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 元素 | 選取器 | 行為 |
 |---|---|---|
 | 工作區 | `data-testid="workspace"` | 右側容器；尚未點選時顯示 `workspace-empty` 提示 |
-| 展開區塊 | `data-testid="panel-<uid>"` | **可同時存在多個**（#36；#20 先一次一份）。讀不到內容時顯示 `panel-error-<uid>`（原樣錯誤，不留空表） |
+| 展開區塊 | `data-testid="panel-<uid>"` | **可同時存在多個**（#36），新開的在最上面；工作區每份 config 一個槽（`data-uid`／`data-view`＝panel／history／diff），歷史與差異檢視只換自己那一槽。標頭（`panel-head`）單擊折疊／展開（`data-collapsed`），`panel-close` 關閉。讀不到內容時顯示 `panel-error-<uid>`（原樣錯誤，不留空表） |
 | 狀態標籤 | `data-testid="panel-status-<uid>"` | 文字為一致／偏離／未部署 |
 | 草稿指示 | `data-testid="panel-draft-<uid>"` | 該區塊有草稿時出現（`GET /api/configs/{uid}` 回 `draft_values`） |
 | 儲存按鈕 | 文字「儲存」（`data-testid="panel-save"`） | **存為草稿**（`POST /api/drafts`，送相對來源的全部改動），不記錄也不寫出。驗證未過或沒有改動時停用 |
