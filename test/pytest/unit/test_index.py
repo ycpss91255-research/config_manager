@@ -10,9 +10,11 @@ from config_manager.core.index import (
     SCOPE_ALL,
     SCOPE_NAME,
     SCOPE_VALUE,
+    Hit,
     index,
     reindex,
     search,
+    search_configs,
     unindex,
 )
 
@@ -98,3 +100,44 @@ def test_search_with_an_unknown_scope_raises_naming_the_allowed_values():
 
     message = str(exc.value)
     assert all(allowed in message for allowed in (SCOPE_NAME, SCOPE_VALUE, SCOPE_ALL))
+
+
+# ── 五檔範圍（設計 §7.4.2；#32）───────────────────────────────────────────────
+
+_CONFIGS = [("u1", "nav2-params", "/opt/robot/nav2.yaml"), ("u2", "camera", "/etc/cam.yaml")]
+_INDEX = [("u1", "max_vel", 0.8), ("u1", "camera.fps", 30), ("u2", "exposure", 0.55)]
+
+
+def test_search_all_hits_config_name_and_parameter_name_for_the_same_word():
+    # 「全部」是四種範圍的聯集：camera 同時命中 u2 的 config 名稱與 u1 的參數名稱。
+    hits = search_configs(_CONFIGS, _INDEX, "camera", "全部")
+
+    assert [(hit.uid, hit.matched) for hit in hits] == [
+        ("u1", ("參數名稱",)), ("u2", ("config 名稱",)),
+    ]
+
+
+def test_config_name_scope_excludes_parameter_matches():
+    # 指定範圍的用途是降噪：只看 config 名稱時，u1 的參數 camera.fps 不命中。
+    hits = search_configs(_CONFIGS, _INDEX, "camera", "config 名稱")
+
+    assert [hit.uid for hit in hits] == ["u2"]
+
+
+def test_target_path_scope_hits_by_path_only():
+    hits = search_configs(_CONFIGS, _INDEX, "/opt/robot", "目標路徑")
+
+    assert [(hit.uid, hit.matched) for hit in hits] == [("u1", ("目標路徑",))]
+
+
+def test_parameter_value_scope_returns_the_matching_parameters():
+    hits = search_configs(_CONFIGS, _INDEX, "0.55", "參數值")
+
+    assert hits == [Hit(uid="u2", matched=("參數值",), params=(("exposure", 0.55),))]
+
+
+def test_search_configs_with_an_unknown_scope_names_all_five_allowed_values():
+    with pytest.raises(UnknownScope) as caught:
+        search_configs(_CONFIGS, _INDEX, "x", "主機")
+
+    assert "config 名稱／目標路徑／參數名稱／參數值／全部" in str(caught.value)

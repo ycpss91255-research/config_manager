@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from config_manager.api.errors import InvalidAuthor
 from config_manager.api.drift import register_drift
 from config_manager.api.history import register_history, require_entry
+from config_manager.api.search import register_search
 from config_manager.api.shapes import as_problem, drafts_view
 from config_manager.api.session import DEVELOPER, USER, Identity, author
 from config_manager.core.drafts import Stage, discard, promote, save_draft
@@ -263,6 +264,7 @@ def create_app(
     register_history(app, repo, held, stage_box)
     _register_unmanage(app, repo, held, stage_box)
     register_drift(app, repo, held, stage_box)
+    register_search(app, repo)
     return app
 
 
