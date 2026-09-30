@@ -116,6 +116,23 @@
   .panel-save-error { margin: 0 14px 12px; }
   .panel-save-error ul { margin: 8px 0 0; padding-left: 18px; list-style: disc; }
   .panel-save-error li { display: list-item; padding: 2px 0; border: 0; font-size: 13px; }
+  /* W4 歷史（#25／#26）：左列表／右差異（圖 13）。 */
+  .history-filter { display: flex; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .history-filter button[aria-pressed="true"] { border-color: var(--fg); background: var(--bg); font-weight: 600; }
+  .history-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; padding: 12px 14px; align-items: start; }
+  .history-entry { flex-direction: column; align-items: flex-start; gap: 2px; cursor: pointer; }
+  .history-entry[aria-selected="true"] { background: var(--bg); outline: 1px solid var(--muted); }
+  .history-kind { font-weight: 600; font-size: 13px; }
+  .history-summary { font-size: 13px; overflow-wrap: anywhere; }
+  .history-meta { font-size: 12px; color: var(--muted); display: flex; gap: 8px; }
+  .history-diff .notice { margin: 0; }
+  .diff-summary { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
+  .diff-row { align-items: baseline; font-size: 13px; }
+  .diff-row .diff-name { flex: 1.2; font-family: ui-monospace, "SF Mono", Menlo, monospace; overflow-wrap: anywhere; }
+  .diff-row .diff-from, .diff-row .diff-to { flex: 1; overflow-wrap: anywhere; }
+  .diff-row[data-change="same"] { color: var(--muted); }
+  .diff-row[data-change="changed"] .diff-to, .diff-row[data-change="added"] .diff-to { color: var(--drift); font-weight: 600; }
+  .diff-row[data-change="removed"] .diff-from { color: var(--drift); text-decoration: line-through; }
   /* 進版／捨棄變更（#22） */
   .banner { grid-column: 1 / -1; }
   .banner ul { margin: 8px 0 0; padding-left: 18px; list-style: disc; }
@@ -814,7 +831,13 @@ function panelNode(detail) {
       save: saveButton, error: saveError, draft: draftMark, discard: discardButton,
     });
   });
+  // 歷史（W4，#25）：這份 config 的變更紀錄，右側工作區切成歷史檢視、左側樹不動。
+  const historyButton = element("button", {
+    type: "button", "data-testid": "panel-history", text: "歷史",
+  });
+  historyButton.addEventListener("click", () => openHistory(detail));
   panel.append(list, saveError, element("div", { class: "panel-actions" }, [
+    historyButton,
     element("span", { class: "hint", text: "「儲存」只是存為草稿——不記錄、不寫到目標；工具列的「進版」才會。" }),
     discardButton,
     saveButton,
@@ -1030,6 +1053,165 @@ function toggleCollapse(list, container) {
     );
     node.classList.toggle("is-collapsed-child", hidden);
   }
+}
+
+// ── W4 歷史（#25／#26）───────────────────────────────────────────────────────
+// 使用者看到的是行為，不是代號（§7.6.1）：內部類型只在這張表裡對應成中文，列表上不出現
+// cfg／revert／import 這些字。左列表／右差異（圖 13）；差異以參數為單位（§7.6.2）：哪個參數從什麼
+// 變成什麼，與 W3 的欄位表語言、顏色一致（改動＝偏離紅）。「當前版本」＝來源複本現況。
+const KIND_TEXT = {
+  import: "納入管理", cfg: "修改參數", revert: "退回舊版本",
+  adopt: "採納現場調整", meta: "調整設定", unmanage: "解除管理",
+};
+const ALL_KINDS = Object.keys(KIND_TEXT).join(",");
+let historyGeneration = 0;
+
+function formatTime(iso) {
+  const parsed = new Date(iso);
+  return Number.isNaN(parsed.getTime()) ? iso : parsed.toLocaleString("zh-TW", { hour12: false });
+}
+
+// 行為描述之外的說明：退回舊版本附「退回到哪一版」（§7.6.1），其餘直接用紀錄的說明。
+function describeChange(change) {
+  if (change.kind === "revert") {
+    const matched = /rollback to ([0-9a-f]+)/.exec(change.summary);
+    if (matched) return `退回到版本 ${matched[1]}`;
+  }
+  return change.summary;
+}
+
+function openHistory(detail) {
+  const generation = ++historyGeneration;
+  const back = element("button", { type: "button", "data-testid": "history-back", text: "返回欄位表" });
+  back.addEventListener("click", () => openPanel(detail.uid));
+  const filter = element("div", { class: "history-filter", "data-testid": "history-filter", role: "group" }, [
+    element("button", { type: "button", "data-filter": "content", "aria-pressed": "true", text: "只看內容變更" }),
+    element("button", { type: "button", "data-filter": "all", "aria-pressed": "false", text: "全部" }),
+  ]);
+  const view = element("section", { class: "panel history", "data-testid": `history-${detail.uid}` }, [
+    element("div", { class: "panel-head" }, [
+      element("span", { class: "name", text: `歷史　${detail.name}` }),
+      element("span", { class: "target", text: detail.target }),
+      back,
+    ]),
+    filter,
+    element("div", { class: "history-body" }, [
+      element("ul", { class: "history-list", "data-testid": "history-list" }),
+      element("div", { class: "history-diff", "data-testid": "history-diff" }, [
+        element("p", { class: "notice", text: "選一筆變更，這裡顯示它與目前版本的差異（以參數為單位）。" }),
+      ]),
+    ]),
+  ]);
+  filter.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-filter]");
+    if (!button) return;
+    for (const option of filter.querySelectorAll("button[data-filter]")) {
+      option.setAttribute("aria-pressed", String(option === button));
+    }
+    loadHistory(view, detail, button.dataset.filter, ++historyGeneration);
+  });
+  workspace.replaceChildren(view);
+  loadHistory(view, detail, "content", generation);
+}
+
+async function loadHistory(view, detail, filter, generation) {
+  const list = view.querySelector("[data-testid='history-list']");
+  list.replaceChildren(element("li", { class: "notice", text: "載入中…" }));
+  const query = filter === "all" ? `?prefix=${ALL_KINDS}` : "";
+  try {
+    const response = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/history${query}`);
+    if (!response.ok) throw new Error(await loadErrorText(response));
+    const changes = await response.json();
+    if (generation !== historyGeneration) return;
+    list.replaceChildren(...changes.map((change) => historyEntry(change, detail, view)));
+    if (!changes.length) {
+      list.appendChild(element("li", {
+        class: "notice", "data-testid": "history-empty",
+        text: filter === "all"
+          ? "這份 config 還沒有任何變更紀錄。"
+          : "沒有內容變更的紀錄；切到「全部」可看到其他類型（納入管理、退回舊版本…）。",
+      }));
+    }
+  } catch (error) {
+    if (generation !== historyGeneration) return;
+    list.replaceChildren(element("li", { class: "notice error", "data-testid": "history-error" }, [
+      element("strong", { text: "讀不到變更歷史。" }),
+      element("pre", { text: String(error && error.message ? error.message : error) }),
+    ]));
+  }
+}
+
+function historyEntry(change, detail, view) {
+  const author = change.author.replace(/\s*<[^>]*>$/, "");  // 列表只顯示姓名；email 在 title
+  const node = element("li", {
+    class: "history-entry", "data-testid": `history-entry-${change.sha}`, "aria-selected": "false",
+  }, [
+    element("span", { class: "history-kind", text: KIND_TEXT[change.kind] || "變更" }),
+    element("span", { class: "history-summary", text: describeChange(change) }),
+    element("span", { class: "history-meta" }, [
+      element("span", { "data-testid": "history-author", text: author, title: change.author }),
+      element("time", { "data-testid": "history-time", datetime: change.at, text: formatTime(change.at) }),
+    ]),
+  ]);
+  node.addEventListener("click", () => selectChange(view, detail, change, node));
+  return node;
+}
+
+async function selectChange(view, detail, change, node) {
+  const generation = ++historyGeneration;
+  for (const entry of view.querySelectorAll("li[data-testid^='history-entry-']")) {
+    entry.setAttribute("aria-selected", String(entry === node));
+  }
+  const diff = view.querySelector("[data-testid='history-diff']");
+  diff.replaceChildren(element("p", { class: "notice", text: "載入中…" }));
+  try {
+    const url = `${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/history/${change.sha}`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(await loadErrorText(response));
+    const version = await response.json();
+    if (generation !== historyGeneration) return;
+    renderDiff(diff, version, detail);
+  } catch (error) {
+    if (generation !== historyGeneration) return;
+    diff.replaceChildren(element("div", { class: "notice error", "data-testid": "history-diff-error" }, [
+      element("strong", { text: "讀不到這一版的內容。" }),
+      element("pre", { text: String(error && error.message ? error.message : error) }),
+    ]));
+  }
+}
+
+// 那一版 vs 目前版本，以參數為單位（§7.6.2）：same／changed／added（那版沒有、現在有）／removed。
+function renderDiff(target, version, detail) {
+  const leaves = (payload) => new Map(
+    paramRows({ types: payload.types || {}, values: payload.values || {}, draft_values: null })
+      .filter((row) => !row.container)
+      .map((row) => [row.path, displayValue(row.value, row.type)]),
+  );
+  const older = leaves(version);
+  const current = leaves(detail);
+  const paths = [...current.keys(), ...[...older.keys()].filter((path) => !current.has(path))];
+  const rows = paths.map((path) => {
+    const from = older.get(path);
+    const to = current.get(path);
+    let change = "same";
+    if (from === undefined) change = "added";
+    else if (to === undefined) change = "removed";
+    else if (from !== to) change = "changed";
+    return element("li", { class: "diff-row", "data-testid": `diff-row-${path}`, "data-change": change }, [
+      element("span", { class: "diff-name", text: path.replace(/\\\./g, ".") }),
+      element("span", { class: "diff-from", "data-testid": "diff-from", text: from === undefined ? "（無）" : from }),
+      element("span", { text: "→" }),
+      element("span", { class: "diff-to", "data-testid": "diff-to", text: to === undefined ? "（無）" : to }),
+    ]);
+  });
+  const differing = rows.filter((row) => row.dataset.change !== "same").length;
+  target.replaceChildren(
+    element("p", {
+      class: "diff-summary", "data-testid": "history-diff-summary",
+      text: differing ? `與目前版本相比：${differing} 個參數不同（左邊是那一版，右邊是目前）` : "與目前版本沒有參數不同。",
+    }),
+    element("ul", {}, rows),
+  );
 }
 
 // ── 進版與捨棄變更（#22）─────────────────────────────────────────────────────
