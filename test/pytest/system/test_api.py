@@ -1396,3 +1396,57 @@ def test_a_double_edited_through_json_still_promotes_with_a_decimal_point(api, s
     _post(api, "/api/promote", {})
 
     assert pathlib.Path(entry["target"]).read_bytes() == b"max_vel: 5.0\n"
+
+
+# ── T9：變更歷史（GET /api/configs/{uid}/history，#23）─────────────────────
+
+
+def _history(api, uid, prefix=None):
+    query = f"?prefix={prefix}" if prefix else ""
+    return _get(api, f"/api/configs/{uid}/history{query}")
+
+
+def test_history_defaults_to_content_changes_only_newest_first(api, sources_root):
+    # 預設只看內容變更（cfg＋adopt）：納管的 import 不出現；兩次進版各一筆、最新在前、帶作者與時間。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "hist.yaml", b"count: 1\n")
+    for value in (2, 3):
+        _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": value}})
+        _post(api, "/api/promote", {})
+
+    changes = _history(api, entry["uid"])
+
+    assert [change["kind"] for change in changes] == ["cfg", "cfg"]
+    assert changes[0]["author"] == "陳小明 <ming@example.com>"
+    assert changes[0]["at"] >= changes[1]["at"]  # ISO 8601 可直接比大小
+    assert changes[0]["summary"].startswith("修改參數")
+
+
+def test_history_prefix_picks_the_kinds_to_show(api, sources_root):
+    # ?prefix=import,cfg 把納管那筆也列出來（「全部」就是六種都給）。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "hist_prefix.yaml", b"count: 1\n")
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
+    _post(api, "/api/promote", {})
+
+    kinds = [change["kind"] for change in _history(api, entry["uid"], "import,cfg")]
+
+    assert kinds == ["cfg", "import"]
+    assert [c["kind"] for c in _history(api, entry["uid"], "import")] == ["import"]
+
+
+def test_history_with_an_unknown_prefix_is_unprocessable_not_unfiltered(api, sources_root):
+    entry = _onboard(api, sources_root, "hist_bad.yaml", b"count: 1\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _history(api, entry["uid"], "cfg,bogus")
+
+    assert exc.value.code == _UNPROCESSABLE
+    assert "bogus" in _detail(exc.value)
+
+
+def test_history_for_an_unknown_uid_is_not_found(api):
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _history(api, "zzzzzzz9")
+
+    assert exc.value.code == _NOT_FOUND

@@ -460,7 +460,7 @@ head() / reset_hard(sha)   # 進版回滾用（#19）
 
 | 驗證的行為 |
 |---|
-| 記錄後可於歷史中查得，作者正確 |
+| 記錄後可於歷史中查得，作者正確；**每筆帶作者時間 `at`（ISO 8601、含時區）**——介面的歷史列表每筆顯示作者與時間（§7.6、#23） |
 | 主旨格式為 `<類型>(<uid>): <說明>`，`<說明>` 是訊息的第一段 |
 | **訊息第一個空行之後的內文，透過 `history()` 的 `Change.body` 取回；有換行也整段保留，不漏進主旨**（納管把歧義確認放內文，#12 的 D6） |
 | **主旨或作者含欄位分隔符（`\x1f`／`\x1e`）→ `record`／`commit` 大聲失敗（`RecordFieldUnsafe`），不清洗**；且既存含分隔符的 commit 不讓 `history()` 崩整庫（`split` 有 maxsplit＋欄位數驗證，段數不對者略過）——被納管檔名或身分注入分隔符即讓帳本讀不出來（#212） |
@@ -832,6 +832,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **白名單維護（`DELETE /api/allowed-roots`，body `{prefix, confirmed}`）：僅開發者（403）、需身分（409）；以檔案原樣 prefix 定位、定位不到→404；未帶 confirmed 先回受影響納管項目清單（`{kind:"confirm_required", affected:[{ref, target}], message}`）＋409，帶 confirmed 才真刪、回更新後的清單；受影響＝清單檔中 target（realpath）落在被移除前綴（realpath）底下的條目，資訊性、不連動解除納管（#15）** |
 | **候選數預覽（`GET /api/candidate-count?prefix=`）：僅開發者（403，角色不足）；數一個**白名單外**前綴底下的一般檔數（遞迴、不讀內容、不跟隨連結、觸及深度／項目上限回 `capped`），回 `{count, capped}`；字面 `..`／不存在／不是目錄→422，detail 為結構化 `{kind, message}`（比照 browse）。走白名單外故套白名單維護的開發者門檻（#206、T24）** |
 | **單筆內容（`GET /api/configs/{uid}`，§3.5.3 表上既有）：回 metadata（name／hostname／ref／target／source／format／groups／permissions〔條目自己的、沒寫回 defaults〕）＋`types`（欄位路徑→型別，與 inspect 同形）＋`values`（來源複本解析後的值樹），供 W3 欄位表渲染（#20）；有未進版草稿時另回 `draft_values`（草稿文字解析後的值樹，介面以它當「目前值」、`values` 當「來源值」並列，#21）；`raw`→`types` 空、`values` 為 null（不假裝 0 個欄位，§7.5.4）；uid 不在清單→404；來源複本讀不到／解析不了→帶檔名與下一步的 500** |
+| **變更歷史（`GET /api/configs/{uid}/history?prefix=…`，§3.5.3 表上既有）：回該 uid 的紀錄、最新在前，每筆 `{sha, kind, summary, author, at, body}`；`prefix` 逗號分隔的類型清單，不給就只看內容變更（`cfg`＋`adopt`，§7.6.1／圖 7——`import`／`revert`／`meta`／`unmanage` 要明點）；含未知類型→422 列出允許值（不靜默當成沒過濾）；uid 不在清單→404（#23）** |
 | **草稿（`POST /api/drafts`，body `{uid, edits}`）：以來源複本為底套 `edits`（路徑→新值）、跑第 1 層、存進階段，回 `{count, drafts:[{uid, format}]}`；不產生變更紀錄、目標不變；第 1 層沒過→422，detail 為結構化 `{message, uid, problems:[{line, message, suggestion, severity, lines}]}`（供欄位表標示那一列）且階段不變；路徑找不到→422、uid 不在清單→404、未設身分→409。`GET /api/drafts` 回同形；`DELETE /api/drafts[/{uid}]` 捨棄全部／一份，指名的沒草稿→404（#19）** |
 | 進版端點（`POST /api/promote`）：驗證失敗時**不產生變更紀錄也不寫出**（原子性）；422 的 detail 同草稿的結構化形（指名哪一份 uid 的哪些參數）；沒草稿→409、未設身分→409；成功回 `{promoted:[uid…], count:0}`、每份各一筆 `cfg` 紀錄、作者＝session 身分、目標改變、草稿清空（#19） |
 | **進版寫出 N 份、第 k 份失敗 → 前 k-1 份已寫出的目標檔案還原為進版前內容、全部已產生的變更紀錄一併撤銷**，容器內最終狀態與進版前逐位元組相同（承接 T18 移出的批次原子性）；回帶訊息的 500、草稿保留供重試。**以注入第 k 次寫出失敗觀察**（比照 `io/onboard` 對 #173 的處理）；回滾本身失敗丟 `PromoteLeftBehind`（同時說出原本的失敗與未還原的目標） |
@@ -1323,7 +1324,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath 與列目錄——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185） | 已落地（`browse`） |
 | `io/candidate` | T24（候選檔案數預覽，介面議定於 #206）：不以白名單為閘門、遞迴數一般檔（不讀內容）、每層 O_NOFOLLOW 不跟隨連結、深度／項目上限觸及回部分計數＋capped | 已落地（`count_candidates`） |
 | `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202）；移除以檔案原樣 prefix 定位、找不到丟 `PrefixNotFound`、commit 失敗回滾同樣以真實 fs＋git 斷言（#15） | 已落地（`read_allowed_roots`／`add_allowed_root`／`remove_allowed_root`） |
-| `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/configs/{uid}`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots`、`GET`／`POST`／`DELETE /api/drafts[/{uid}]`、`POST /api/promote` 與 CORS 中介層） |
+| `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/configs/{uid}`、`GET /api/configs/{uid}/history`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots`、`GET`／`POST`／`DELETE /api/drafts[/{uid}]`、`POST /api/promote` 與 CORS 中介層） |
 | `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 部分落地：身分（`author`）已落地；階段的 acquire／renew／release／sweep 未落地（#33） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |
