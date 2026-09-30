@@ -178,7 +178,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 
 | 元素 | 選取器 | 行為 |
 |---|---|---|
-| 唯讀橫幅 | `data-testid="readonly-banner"` | 非持有分頁顯示；含持有者姓名、email、開始時間 |
+| 唯讀橫幅 | `data-testid="readonly-banner"` | 非持有分頁顯示；含持有者姓名、email、開始時間；階段失效（續期 410）時也用它說明。唯讀時 `body[data-readonly="true"]`，所有會寫入的控制項（`.editing-only`：納管、白名單、捨棄變更、進版、面板儲存／捨棄、退回此版本、處置三鍵）**不出現於 DOM 流程**（不是停用）；工具列 `current-role` 顯示「唯讀」（#33） |
 | 逾時退出提示 | `data-testid="session-timeout"` | 部署模式閒置逾時後出現，階段已釋放 |
 | 確認對話框 | `data-testid="confirm-dialog"` | 退出丟草稿／**捨棄變更**／以來源覆蓋／退回此版本／先納入待修正共用；`<dialog>`，開啟時帶 `open`；標題 `confirm-title`、後果 `confirm-body` |
 | 對話框確認鈕 | 對話框內文字「確認」（`confirm-ok`） | 執行該動作 |
