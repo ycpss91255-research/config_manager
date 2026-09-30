@@ -1545,3 +1545,62 @@ def test_version_detail_of_another_configs_sha_is_refused(api, sources_root):
         _get(api, f"/api/configs/{entry['uid']}/history/{foreign}")
 
     assert exc.value.code == _UNPROCESSABLE
+
+
+# ── T9：解除納管（DELETE /api/configs/{uid}，#28）──────────────────────────────
+
+
+def test_unmanaging_removes_the_config_from_the_list_and_keeps_the_target_file(api, sources_root):
+    # §5.5：解除納管回到未納管、不刪 target；回被解除的條目，清單不再列它。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "unmanage.yaml", b"count: 1\n")
+
+    request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
+    with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+        removed = json.loads(response.read().decode("utf-8"))
+
+    assert removed["uid"] == entry["uid"]
+    assert entry["uid"] not in [row["uid"] for row in _get(api, "/api/configs")]
+    assert pathlib.Path(entry["target"]).read_bytes() == b"count: 1\n"
+
+
+def test_unmanaging_records_an_unmanage_change_by_the_session_identity(api, sources_root, repo):
+    # 解除納管本身留紀錄、作者＝身分。條目已不在清單、歷史端點以 404 擋，故就地讀 git log。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地讀 config-repo 的 git log")
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "unmanage_rec.yaml", b"count: 1\n")
+
+    request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
+    with urllib.request.urlopen(request, timeout=_TIMEOUT):
+        pass
+
+    latest = subprocess.run(
+        ["git", "-C", repo, "log", "-1", "--format=%s|%an <%ae>"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subject = f"unmanage({entry['uid']}): 解除管理（{entry['name']}@{entry['hostname']}）"
+    assert latest == f"{subject}|陳小明 <ming@example.com>"
+
+
+def test_unmanaging_with_a_pending_draft_is_a_conflict(api, sources_root):
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "unmanage_draft.yaml", b"count: 1\n")
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
+
+    request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(request, timeout=_TIMEOUT)
+
+    assert exc.value.code == _CONFLICT
+    _clear_drafts(api)
+
+
+def test_unmanaging_an_unknown_uid_is_not_found(api):
+    _set_session(api)
+    request = urllib.request.Request(f"{api}/api/configs/zzzzzzz9", method="DELETE")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(request, timeout=_TIMEOUT)
+
+    assert exc.value.code == _NOT_FOUND

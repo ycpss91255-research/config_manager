@@ -299,3 +299,15 @@ class PromoteLeftBehind(Exception):
     已被改成新內容、紀錄卻被撤銷」這種半套狀態悄悄留著——那正是 ADR-00000006 要防的
     「已記錄未套用／已套用未記錄」。訊息同時說出原本的失敗與哪些目標沒還原。
     """
+
+
+class UnmanageNotFound(Exception):
+    """要解除納管的 uid 不在清單檔裡（#28）：定位不到，不是衝突也不是格式錯。"""
+
+
+class UnmanageLeftBehind(Exception):
+    """解除納管中途失敗、回滾也失敗，repo 沒能回到解除前（#28）。
+
+    與 `OnboardLeftBehind` 同構：同時說出原本的失敗與清理的失敗、指名殘留了什麼，
+    `__cause__` 指向原本的失敗。
+    """
