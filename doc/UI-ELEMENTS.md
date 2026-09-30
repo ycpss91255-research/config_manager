@@ -48,8 +48,8 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 
 | 元素 | 選取器 | 行為 |
 |---|---|---|
-| 搜尋範圍 | `data-testid="search-scope"` | 全部（預設）／config 名稱／目標路徑／參數名稱／參數值 |
-| 搜尋框 | `data-testid="search-input"` | 即時過濾 |
+| 搜尋範圍 | `data-testid="search-scope"` | 全部（預設）／config 名稱／目標路徑／參數名稱／參數值；選項值即 `GET /api/search` 的 `scope`（#37） |
+| 搜尋框 | `data-testid="search-input"` | 即時過濾（150ms 去抖後走 `GET /api/search`，命中的 config 留在樹上）；無結果→`no-matches`；搜尋失敗→`search-error`（不靜默顯示成沒有結果）。展開命中的 config 時，命中的參數列帶 `data-hit="true"` 並捲進視野（#37） |
 | 檢查差異 | 文字「檢查差異」 | 觸發全項目掃描 |
 | 白名單 | 文字「白名單」 | **僅開發者出現**（非停用） |
 | 納管 | 文字「納管」 | 開啟納管流程 |

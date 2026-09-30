@@ -387,9 +387,13 @@ def test_search_keeps_only_the_entries_that_match(open_page, listing):
     listing("a", "b", "c")
     page = _enter_identity(open_page())
 
-    page.fill("[data-testid='search-input']", "b@amr01")
+    page.select_option("[data-testid='search-scope']", "config 名稱")
+    page.fill("[data-testid='search-input']", "b")
 
-    assert page.locator("[data-testid='status-dot']").count() == 1
+    page.wait_for_function(
+        "() => document.querySelectorAll(\"[data-testid='status-dot']\").length === 1"
+    )
+    assert page.is_visible("[data-testid='tree-item-mfz3k9q2']")
 
 
 def test_search_says_so_when_nothing_matches(open_page, listing):
@@ -400,6 +404,7 @@ def test_search_says_so_when_nothing_matches(open_page, listing):
 
     page.fill("[data-testid='search-input']", "沒有這個東西")
 
+    page.wait_for_selector("[data-testid='no-matches']")
     assert page.inner_text("[data-testid='no-matches']") == "沒有符合的項目。"
 
 
@@ -2090,3 +2095,84 @@ def test_returning_from_history_keeps_the_other_expanded_panels(open_page, listi
     page.wait_for_selector("[data-testid='panel-mfz3k9q1']", state="visible")
     assert page.is_visible("[data-testid='panel-mfz3k9q2']")
     assert page.query_selector("[data-testid='history-mfz3k9q1']") is None
+
+
+# ── W2 參數層級搜尋（#37）───────────────────────────────────────────────────
+# 搜尋框左側有範圍下拉，預設「全部」（四種範圍的聯集），指定範圍是為了降噪（§7.4.2）。
+# 走 GET /api/search（#32）：命中的 config 留在樹上，命中的參數在展開時標示並定位。
+
+
+def _search_three(repo):
+    return _listing_many(repo, {
+        "nav2": "max_vel: 0.8\nrate: 10\n",
+        "camera": "exposure: 0.55\nnav2_topic: x\n",
+        "plain": "count: 1\n",
+    })
+
+
+def test_searching_a_parameter_name_lists_the_configs_that_have_it_and_locates_the_row(
+    open_page, repo
+):
+    # AC1：搜尋 max_vel 列出含該參數的 config，展開時定位到那一列（標示 data-hit）。
+    _search_three(repo)
+    page = _enter_identity(open_page())
+
+    page.fill("[data-testid='search-input']", "max_vel")
+
+    page.wait_for_selector("[data-testid='tree-item-mfz3k9q2']", state="detached")
+    assert page.is_visible("[data-testid='tree-item-mfz3k9q1']")
+    page.dblclick("[data-testid='tree-item-mfz3k9q1']")
+    page.wait_for_selector("[data-testid='param-max_vel'][data-hit='true']")
+    assert page.get_attribute("[data-testid='param-rate']", "data-hit") is None
+
+
+def test_searching_a_value_finds_the_parameter_holding_it(open_page, repo):
+    # AC2：搜尋 0.55 找到值符合的參數（camera 的 exposure）。
+    _search_three(repo)
+    page = _enter_identity(open_page())
+
+    page.fill("[data-testid='search-input']", "0.55")
+
+    page.wait_for_selector("[data-testid='tree-item-mfz3k9q1']", state="detached")
+    assert page.is_visible("[data-testid='tree-item-mfz3k9q2']")
+    assert page.query_selector("[data-testid='tree-item-mfz3k9q3']") is None
+
+
+def test_the_config_name_scope_only_hits_names(open_page, repo):
+    # AC3：nav2 在「全部」同時命中 nav2（名稱）與 camera（參數 nav2_topic）；指定「config 名稱」
+    # 只剩 nav2。
+    _search_three(repo)
+    page = _enter_identity(open_page())
+    page.fill("[data-testid='search-input']", "nav2")
+    page.wait_for_selector("[data-testid='tree-item-mfz3k9q3']", state="detached")
+    assert page.is_visible("[data-testid='tree-item-mfz3k9q2']")
+
+    page.select_option("[data-testid='search-scope']", "config 名稱")
+
+    page.wait_for_selector("[data-testid='tree-item-mfz3k9q2']", state="detached")
+    assert page.is_visible("[data-testid='tree-item-mfz3k9q1']")
+
+
+def test_the_target_path_scope_only_hits_paths(open_page, repo):
+    # AC4：「目標路徑」範圍以路徑命中——搜檔名只剩那一份；同一個字在「config 名稱」範圍下不中。
+    _search_three(repo)
+    page = _enter_identity(open_page())
+
+    page.select_option("[data-testid='search-scope']", "目標路徑")
+    page.fill("[data-testid='search-input']", "plain.yaml")
+
+    page.wait_for_selector("[data-testid='tree-item-mfz3k9q1']", state="detached")
+    assert page.is_visible("[data-testid='tree-item-mfz3k9q3']")
+    page.select_option("[data-testid='search-scope']", "config 名稱")
+    page.wait_for_selector("[data-testid='no-matches']")
+
+
+def test_search_with_no_hits_shows_the_empty_state(open_page, repo):
+    # AC5：搜尋無結果有明確提示，不是一片空白。
+    _search_three(repo)
+    page = _enter_identity(open_page())
+
+    page.fill("[data-testid='search-input']", "zzz-nothing")
+
+    page.wait_for_selector("[data-testid='no-matches']")
+    assert "沒有符合" in page.inner_text("[data-testid='no-matches']")

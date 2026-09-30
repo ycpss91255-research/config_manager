@@ -67,6 +67,11 @@
     cursor: pointer;
   }
   button:hover { border-color: var(--muted); }
+  header select {
+    font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--bg); color: var(--fg);
+  }
+  .param-row[data-hit="true"] { background: color-mix(in srgb, var(--in-sync) 14%, transparent); }
   input[type="search"] {
     font: inherit;
     padding: 6px 10px;
@@ -413,6 +418,14 @@
 
 <header hidden>
   <h1>config_manager</h1>
+  <!-- 搜尋範圍（#37、§7.4.2）：預設「全部」＝四種範圍的聯集；指定範圍是為了降噪。 -->
+  <select data-testid="search-scope" aria-label="搜尋範圍">
+    <option>全部</option>
+    <option>config 名稱</option>
+    <option>目標路徑</option>
+    <option>參數名稱</option>
+    <option>參數值</option>
+  </select>
   <input type="search" data-testid="search-input" placeholder="搜尋" aria-label="搜尋">
   <span class="grow"></span>
   <span class="who" data-testid="current-role"></span>
@@ -611,11 +624,49 @@ function byGroup(items) {
   });
 }
 
-function matches(row, query) {
-  if (!query) return true;
-  const needle = query.toLowerCase();
-  return [row.name, row.hostname, row.target, row.ref]
-    .some((field) => String(field).toLowerCase().includes(needle));
+// ── 參數層級搜尋（#37、§7.4.2）：走 GET /api/search（#32），不在前端自己比對——「哪些 config 有
+// max_vel」是索引層級的問題，前端只拿到清單列。命中的 config 留在樹上，命中的參數在展開時標示並定位。
+const searchScope = document.querySelector("[data-testid='search-scope']");
+let searchHits = null;  // null＝沒有查詢（全部顯示）；否則是命中的 uid 集合
+let hitParams = new Map();  // uid → 命中的參數路徑
+let searchError = null;
+let searchGeneration = 0;
+let searchTimer = null;
+
+function scheduleSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(runSearch, 150);  // 打字中不每字打一次端點
+}
+
+async function runSearch() {
+  const generation = ++searchGeneration;
+  const query = search.value.trim();
+  if (!query) {
+    searchHits = null;
+    hitParams = new Map();
+    searchError = null;
+    render();
+    return;
+  }
+  try {
+    const params = new URLSearchParams({ q: query, scope: searchScope.value });
+    const response = await fetch(`${API_BASE}/api/search?${params}`);
+    if (!response.ok) throw new Error(await loadErrorText(response));
+    const payload = await response.json();
+    if (generation !== searchGeneration) return;
+    searchHits = new Set(payload.hits.map((hit) => hit.uid));
+    hitParams = new Map(payload.hits.map((hit) => [hit.uid, hit.params.map((param) => param.path)]));
+    searchError = null;
+  } catch (error) {
+    if (generation !== searchGeneration) return;
+    // 搜尋失敗不能靜默顯示成「沒有符合的項目」——那會讓人以為參數不存在（不變式 2、T14）。
+    searchError = String(error && error.message ? error.message : error);
+  }
+  render();
+}
+
+function matches(row) {
+  return searchHits === null || searchHits.has(row.uid);
 }
 
 function element(tag, attributes, children) {
@@ -691,8 +742,15 @@ function render() {
     return;
   }
 
-  const visible = rows.filter((row) => matches(row, search.value.trim()));
+  const visible = rows.filter(matches);
   tree.replaceChildren();
+  if (searchError !== null) {
+    tree.appendChild(element("div", { class: "notice error", "data-testid": "search-error" }, [
+      element("strong", { text: "搜尋失敗。" }),
+      element("pre", { text: searchError }),
+    ]));
+    return;
+  }
 
   if (!rows.length) {
     // 什麼都還沒納管是合法狀態，不是錯誤——說出來，而不是留一片空白讓人以為壞了。
@@ -797,7 +855,8 @@ async function load() {
   }
 }
 
-search.addEventListener("input", render);
+search.addEventListener("input", scheduleSearch);
+searchScope.addEventListener("change", scheduleSearch);
 document.querySelector("[data-testid='rescan']").addEventListener("click", load);
 
 // ── W3 參數欄位表（#20）──────────────────────────────────────────────────────
@@ -976,6 +1035,16 @@ function panelNode(detail) {
     type: "button", "data-testid": "panel-history", text: "歷史",
   });
   historyButton.addEventListener("click", () => openHistory(detail));
+  // 搜尋命中的參數：標示那幾列，並把第一列捲進視野（「展開時定位到該列」，§7.4.2）。
+  const hits = hitParams.get(detail.uid) || [];
+  let firstHit = null;
+  for (const path of hits) {
+    const hitRow = [...list.querySelectorAll("li[data-name]")].find((node) => node.dataset.name === path);
+    if (!hitRow) continue;
+    hitRow.dataset.hit = "true";
+    firstHit = firstHit || hitRow;
+  }
+  if (firstHit) queueMicrotask(() => firstHit.scrollIntoView({ block: "center" }));
   panel.append(list, saveError, element("div", { class: "panel-actions" }, [
     historyButton,
     element("span", { class: "hint", text: "「儲存」只是存為草稿——不記錄、不寫到目標；工具列的「進版」才會。" }),
