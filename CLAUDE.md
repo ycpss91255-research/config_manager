@@ -52,7 +52,9 @@
 - **只有 type 與 scope 維持英文**——那兩個是給工具讀的識別碼（ADR-00000028）
 - scope 與 issue 回指建議附上；長度不檢查
 
-commit 內文結尾加 `Co-Authored-By:` trailer；PR 描述結尾加 Claude Code 那一行。
+**不加 Claude Code 署名**（#269）：commit 內文不加 `Co-Authored-By:` trailer，PR 說明、issue 與留言不加
+「Generated with Claude Code」那一行，也不放 claude.ai 的 session 連結。共同作者行會讓 GitHub 把一個
+與本專案無關的 `@claude` 帳號列進 repo 的 Contributors；工具預設會加，所以這條要明寫。
 
 ## 品質閘門（本機與 CI 同一組）
 
