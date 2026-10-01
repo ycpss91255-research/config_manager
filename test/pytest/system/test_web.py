@@ -2077,6 +2077,88 @@ def test_when_the_holder_leaves_the_next_person_can_edit(open_page, listing):
     assert second.inner_text("[data-testid='current-role']").startswith("林巡檢")
 
 
+# ── W2 解除納管的介面入口（#287）────────────────────────────────────────────
+# 後端端點是 #28；這裡是介面上的入口。不可逆操作先二次確認、寫出實際會發生的事（設計原則 2）。
+
+_UNMANAGE = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-unmanage']"
+
+
+def _commit_listing(repo) -> None:
+    """把夾具直接寫進 repo 的清單與來源複本提交進 git——真實流程裡納管一定有這一筆，
+    解除納管要從索引拿掉來源複本，沒被追蹤的檔案拿不掉。"""
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=seed", "-c", "user.email=s@e.x",
+         "commit", "-q", "-m", "chore: 種下夾具"],
+        check=True,
+    )
+
+
+def test_unmanaging_asks_first_then_removes_the_config_and_keeps_the_target(open_page, repo):
+    targets = _listing_many(repo, {"p": "count: 3\n", "q": "count: 5\n"})
+    _commit_listing(repo)
+    page = _open_panel(open_page())
+
+    page.click(_UNMANAGE)
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    said = page.inner_text("[data-testid='confirm-body']")
+    assert "目標檔案" in said and "保留" in said and "歷史" in said
+    page.click("[data-testid='confirm-cancel']")
+    assert page.is_visible(f"[data-testid='tree-item-{_PARAM_UID}']")
+
+    page.click(_UNMANAGE)
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}']", state="detached")
+    assert page.query_selector(f"[data-testid='panel-{_PARAM_UID}']") is None
+    assert page.is_visible(f"[data-testid='tree-item-{_SECOND_UID}']")  # 另一份不受影響
+    assert str(targets["p"]) in page.inner_text("[data-testid='promote-done']")
+    assert targets["p"].read_text(encoding="utf-8") == "count: 3\n"  # 目標一個位元組都不動
+    assert _PARAM_UID not in (repo / "config-list.toml").read_text(encoding="utf-8")
+    assert _git_log(repo, 1) == [f"unmanage({_PARAM_UID}): 解除管理（p@amr01）|陳小明"]
+
+
+def test_unmanaging_a_config_with_a_pending_draft_is_refused_with_the_reason(open_page, repo):
+    # 有未進版的草稿時擋下、說明要先進版或捨棄；項目仍在樹上。
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = _open_panel(open_page())
+    page.fill(_param_value("count"), "4")
+    _save(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+
+    page.click(_UNMANAGE)
+    page.click("[data-testid='confirm-ok']")
+
+    page.wait_for_selector("[data-testid='promote-error']", state="visible")
+    assert "草稿" in page.inner_text("[data-testid='promote-error']")
+    assert page.is_visible(f"[data-testid='tree-item-{_PARAM_UID}']")
+    assert _PARAM_UID in (repo / "config-list.toml").read_text(encoding="utf-8")
+
+
+def test_a_raw_config_can_be_unmanaged_too(open_page, repo):
+    # 入口在區塊標頭：沒有欄位表的 raw 也拿得到。
+    _listing_with(repo, "whatever: [not parsed\n", fmt="raw")
+    page = _open_panel(open_page())
+
+    assert page.is_visible(_UNMANAGE)
+
+
+def test_the_unmanage_entry_is_absent_while_read_only(open_page, listing):
+    # 沒拿到編輯階段的分頁是唯讀：會寫入的控制項不出現（不是停用）。
+    listing("a")
+    holder = _enter_identity(open_page())
+    holder.wait_for_selector("[data-testid='promote-all']", state="visible")
+    second = open_page()
+    second.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+
+    second.dblclick("[data-testid='tree-item-mfz3k9q1']")
+    second.wait_for_selector("[data-testid='panel-mfz3k9q1']", state="visible")
+
+    assert second.is_hidden("[data-testid='panel-mfz3k9q1'] [data-testid='panel-unmanage']")
+    assert holder.is_hidden("[data-testid='readonly-banner']")
+
+
 # ── W2 左側樹依主機分層（#34）───────────────────────────────────────────────
 
 

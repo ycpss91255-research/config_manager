@@ -117,6 +117,7 @@
   .panel-draft { flex: none; font-size: 12px; color: #e69b2e; font-weight: 600; }
   .panel-schema, .panel-unvalidated { flex: none; font-size: 12px; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); }
   .panel-unvalidated { color: #b3261e; border-color: #b3261e; }
+  .panel-unmanage { flex: none; font-size: 12px; }
   .panel-actions { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line); }
   .panel-actions .hint { flex: 1; font-size: 12px; color: var(--muted); }
   .panel-save:disabled { opacity: .5; cursor: not-allowed; }
@@ -962,6 +963,11 @@ function panelNode(detail) {
   const close = element("button", {
     type: "button", class: "panel-close", "data-testid": "panel-close", title: "關閉這個區塊", text: "×",
   });
+  // 解除納管（#287）：放在標頭，沒有欄位表的 raw 也拿得到；唯讀時不出現。
+  const unmanageButton = element("button", {
+    type: "button", class: "panel-unmanage editing-only", "data-testid": "panel-unmanage",
+    title: "不再管理這份檔案（目標檔案保留）", text: "解除納管",
+  });
   const head = element("div", { class: "panel-head", "data-testid": "panel-head" }, [
     element("span", { class: "name", text: detail.name }),
     element("span", { class: "target", text: detail.target }),
@@ -969,6 +975,7 @@ function panelNode(detail) {
     element("span", {
       class: "panel-draft", "data-testid": `panel-draft-${detail.uid}`, text: "● 草稿",
     }),
+    unmanageButton,
     close,
   ]);
   const panel = element("section", { class: "panel", "data-testid": `panel-${detail.uid}` }, [head]);
@@ -978,6 +985,7 @@ function panelNode(detail) {
     panel.dataset.collapsed = panel.dataset.collapsed === "true" ? "false" : "true";
   });
   close.addEventListener("click", () => closeSlot(detail.uid));
+  unmanageButton.addEventListener("click", () => unmanageConfig(detail));
   const draftMark = panel.querySelector(`[data-testid='panel-draft-${detail.uid}']`);
   draftMark.hidden = !detail.draft_values;
   if (detail.format === "raw") {
@@ -1796,6 +1804,34 @@ async function discardDrafts(uid, name) {
     for (const open of openUids()) {
       if (!uid || uid === open) openPanel(open);  // 畫面回到來源內容
     }
+  } catch (error) {
+    renderSaveError(promoteErrorEl, `送不出去：${error && error.message ? error.message : error}`);
+  }
+}
+
+// 解除納管（#287，後端 #28）：不可逆，先說實際會發生的事再做（設計原則 2）。成功後這份從樹與
+// 工作區消失；目標檔案不動。後端拒絕（有草稿、寫入失敗）時原因原樣顯示，項目留在原處。
+async function unmanageConfig(detail) {
+  const ok = await confirmAction(
+    `解除「${detail.name}」的納管？`,
+    `系統不再追蹤這份檔案，它會從清單消失。目標檔案 ${detail.target} 保留、內容不動；`
+      + "過去的變更歷史仍留在設定庫裡。之後要再管理它，得重新納管。",
+  );
+  if (!ok) return;
+  clearPromoteBanners();
+  try {
+    const response = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`, {
+      method: "DELETE",
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      renderSaveError(promoteErrorEl, payload.detail);
+      return;
+    }
+    closeSlot(detail.uid);
+    promoteDoneEl.textContent = `已解除「${detail.name}」的納管，並記一筆變更紀錄。目標檔案保留在 ${detail.target}。`;
+    promoteDoneEl.hidden = false;
+    load();
   } catch (error) {
     renderSaveError(promoteErrorEl, `送不出去：${error && error.message ? error.message : error}`);
   }
