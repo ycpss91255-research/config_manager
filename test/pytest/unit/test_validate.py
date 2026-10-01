@@ -129,6 +129,47 @@ def test_duplicate_detection_is_scoped_to_the_same_parent_in_yaml():
     assert check(text, "yaml") == []
 
 
+def test_the_same_key_in_different_list_items_is_not_a_duplicate():
+    # 清單的每個項目各自是一個物件：`topic` 在兩個項目裡各出現一次，不是重複。先前只有項目的
+    # 第一個鍵（緊接在 `- ` 後面那個）被算進項目的範圍，其餘的鍵落到清單的父層而互撞，
+    # 合法的內容因此存不了草稿。
+    text = "sources:\n  - name: scan\n    topic: /scan\n  - name: cam\n    topic: /cam\n"
+
+    assert check(text, "yaml") == []
+
+
+def test_list_items_written_at_the_parent_indent_are_scoped_the_same_way():
+    # 清單項目與父鍵同一層縮排（`sources:` 下一行直接 `- `）也是合法 YAML。
+    text = "sources:\n- name: scan\n  topic: /scan\n- name: cam\n  topic: /cam\nlast: 1\n"
+
+    assert check(text, "yaml") == []
+
+
+def test_a_key_repeated_inside_one_list_item_is_still_a_duplicate():
+    text = "sources:\n  - name: scan\n    topic: /scan\n    topic: /other\n"
+
+    problems = check(text, "yaml")
+
+    assert len(problems) == 1
+    assert problems[0].lines == (3, 4)
+
+
+def test_a_list_item_whose_keys_start_on_the_next_line_has_its_own_scope():
+    # `-` 單獨一行、鍵從下一行開始，同樣是一個獨立的項目。
+    text = "sources:\n  -\n    topic: /scan\n  -\n    topic: /cam\n"
+
+    assert check(text, "yaml") == []
+
+
+def test_nested_keys_under_a_list_item_do_not_collide_across_items():
+    text = (
+        "sources:\n  - name: scan\n    qos:\n      depth: 5\n"
+        "  - name: cam\n    qos:\n      depth: 10\n"
+    )
+
+    assert check(text, "yaml") == []
+
+
 # ── 其他格式：解析＋重複 key＋尾隨空白；縮排規則不套（D3）─────────────────
 
 

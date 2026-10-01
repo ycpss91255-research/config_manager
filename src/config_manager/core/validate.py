@@ -140,6 +140,8 @@ _YAML_KEY = re.compile(
     r"^(?P<indent>[ \t]*)(?P<item>- )?(?P<key>[^\s#'\"\[{&*!|>-][^:#]*?):(?:\s|$)"
 )
 _YAML_BLOCK = re.compile(r":\s*[|>][+-]?\d*\s*(?:#.*)?$")
+# 破折號單獨一行：項目的鍵從下一行開始。
+_YAML_BARE_ITEM = re.compile(r"^[ \t]*-\s*(?:#.*)?$")
 
 
 def _yaml_keys(lines: list[str]) -> dict[tuple[_Scope, str], list[int]]:
@@ -156,21 +158,36 @@ def _yaml_keys(lines: list[str]) -> dict[tuple[_Scope, str], list[int]]:
                 continue
             block_indent = None
         match = _YAML_KEY.match(line)
+        on_item_line = match is not None and bool(match.group("item"))
+        if on_item_line or _YAML_BARE_ITEM.match(line):
+            _open_item(stack, indent, number)
         if match is None:
             continue
-        if match.group("item"):
-            indent += 2  # `- key: v` 的鍵落在破折號之後；每個項目自成一個範圍
-        while stack and stack[-1][0] >= indent:
+        # `- key: v` 的鍵落在破折號之後兩格；項目的其餘鍵寫在同一個縮排。
+        key_indent = indent + 2 if on_item_line else indent
+        while stack and stack[-1][0] >= key_indent:
             stack.pop()
-        scope: _Scope = tuple(name for _, name in stack)
-        if match.group("item"):
-            scope = (*scope, ("item", number))
         key = match.group("key").strip()
-        _record(seen, scope, key, number)
-        stack.append((indent, key))
+        _record(seen, tuple(name for _, name in stack), key, number)
+        stack.append((key_indent, key))
         if _YAML_BLOCK.search(line):
-            block_indent = indent - (2 if match.group("item") else 0)
+            block_indent = indent
     return seen
+
+
+def _open_item(stack: list[tuple[int, object]], dash_indent: int, number: int) -> None:
+    """清單項目開始：收掉比破折號深的層與同一層的上一個項目，放上這個項目自己的範圍標記。
+
+    標記留在堆疊上，直到這個項目結束——項目裡**每一個**鍵（不只緊接在 `- ` 後面那個）都落在
+    它的範圍裡，不同項目的同名鍵才不會被當成重複。與破折號同縮排的**鍵**不收：那是清單的父鍵
+    （YAML 允許項目與父鍵寫在同一層），項目仍在它底下。
+    """
+    while stack and (
+        stack[-1][0] > dash_indent
+        or (stack[-1][0] == dash_indent and isinstance(stack[-1][1], tuple))
+    ):
+        stack.pop()
+    stack.append((dash_indent, ("item", number)))
 
 
 # toml：範圍是同一個表。`[[陣列表]]` 每次出現都是新的一筆，以表頭行號區分。
