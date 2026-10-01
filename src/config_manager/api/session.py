@@ -110,15 +110,27 @@ class SessionExpired(Exception):
     """續期的階段已失效（逾時被回收、已釋放、或識別碼不對）：明確失敗，不靜默重新取得。"""
 
 
+# 續期逾時的預設值：頁面每 30 秒續期一次，瀏覽器會把背景分頁的計時器節流到約每分鐘一次，
+# 所以留兩次節流後的心跳再多一點——短到異常中斷後幾分鐘內就釋放，長到背景分頁不被誤收。
+DEFAULT_RENEW_TIMEOUT = timedelta(seconds=150)
+
+
 class SessionLock:
-    """單一編輯階段（ADR-00000014）。`timeout` 為 None 是開發模式：不因閒置回收。
+    """單一編輯階段（ADR-00000014）。
+
+    `timeout` 是**續期逾時**：持有者超過這麼久沒續期（分頁異常中斷、沒走到釋放）就回收——
+    開發與部署模式**都有**，否則一次異常中斷就讓之後所有人永遠唯讀（§7.2.2）。頁面開著時
+    會一直續期，所以「開發模式不因閒置回收」仍成立；部署模式的閒置逾時（使用者沒操作）是
+    另一件事，由 #48 在這之上加。
 
     所有操作先 `sweep(now)`：逾時的階段在任何人碰它之前就被回收，被回收的那份回給呼叫端
     ——API 層據此清草稿並回報「有 N 份草稿被清除」而非靜默丟棄（T13）。
     """
 
     def __init__(
-        self, timeout: timedelta | None, tokens: Callable[[], str] = secrets.token_urlsafe
+        self,
+        timeout: timedelta = DEFAULT_RENEW_TIMEOUT,
+        tokens: Callable[[], str] = secrets.token_urlsafe,
     ) -> None:
         self.timeout = timeout
         self._tokens = tokens
@@ -151,8 +163,8 @@ class SessionLock:
         return True
 
     def sweep(self, now: datetime) -> list[EditingSession]:
-        """回收逾時的階段（部署模式：閒置達 timeout）。回被回收的那幾份（最多一份）。"""
-        if self.timeout is None or self.current is None:
+        """回收續期逾時的階段。回被回收的那幾份（最多一份）。"""
+        if self.current is None:
             return []
         if now - self.current.renewed_at <= self.timeout:
             return []

@@ -61,7 +61,7 @@ class ServePlan:
     host: str
     port: int
     allowed_origins: tuple[str, ...]
-    # 編輯階段閒置逾時（秒）；None＝開發模式不逾時（#33；模式判定是 #47）。
+    # 編輯階段的續期逾時（秒）；None＝用預設值（#33）。部署模式的閒置逾時是 #48。
     session_timeout: float | None = None
 
 
@@ -96,8 +96,9 @@ def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
 
 
 def _session_timeout(environ: Mapping[str, str]) -> float | None:
-    """`CM_SESSION_TIMEOUT`（秒）：設了就是部署模式的閒置逾時；未設＝開發模式不逾時（§7.2.3.2）。
-    不是正數就具名拒絕——寫錯的值靜默當成不逾時，等於部署模式失去逾時而沒人知道。"""
+    """`CM_SESSION_TIMEOUT`（秒）：編輯階段的續期逾時——持有者這麼久沒續期就回收。未設＝用預設值
+    （`api.session.DEFAULT_RENEW_TIMEOUT`），**不是不逾時**：異常中斷的分頁兩種模式都要收得回來。
+    不是正數就具名拒絕——寫錯的值不能靜默當成別的意思。"""
     raw = environ.get("CM_SESSION_TIMEOUT", "").strip()
     if not raw:
         return None
@@ -108,7 +109,7 @@ def _session_timeout(environ: Mapping[str, str]) -> float | None:
     if seconds <= 0:
         raise SessionTimeoutInvalid(
             f"CM_SESSION_TIMEOUT 必須是正數（秒），現在是 {raw!r}。"
-            "下一步：改成如 600（10 分鐘），或取消設定表示不逾時（開發模式）"
+            "下一步：改成如 150（秒），或取消設定改用預設值"
         )
     return seconds
 

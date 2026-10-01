@@ -24,7 +24,7 @@ from config_manager.api.history import register_history, require_entry
 from config_manager.api.search import register_search
 from config_manager.api.lock import LockBox, register_session, utc_now
 from config_manager.api.shapes import as_problem, drafts_view
-from config_manager.api.session import DEVELOPER, Identity, SessionLock
+from config_manager.api.session import DEFAULT_RENEW_TIMEOUT, DEVELOPER, Identity, SessionLock
 from config_manager.core.drafts import Stage, discard, promote, save_draft
 from config_manager.core.errors import (
     ConfigListError,
@@ -190,8 +190,9 @@ def create_app(
     # 目前編輯階段裡的草稿（#18 的 D1：掛在 app 上、單一階段；階段生命週期是 #33）。與 held
     # 分開放，是為了不把 Identity 型別的 dict 混進另一種值；同樣是 app 級、重新整理頁面不丟。
     stage_box: dict[str, Stage] = {"stage": Stage()}
-    # 單一編輯階段（#33、ADR-00000014）：timeout None＝開發模式不逾時；時鐘可注入（T13）。
-    lock_box = LockBox(SessionLock(session_timeout), clock)
+    # 單一編輯階段（#33、ADR-00000014）：session_timeout 是續期逾時，沒給就用預設（兩種模式都有，
+    # 異常中斷的分頁才收得回來）；時鐘可注入（T13）。
+    lock_box = LockBox(SessionLock(session_timeout or DEFAULT_RENEW_TIMEOUT), clock)
 
     @app.get("/api/configs")
     def list_configs() -> list[dict[str, object]]:

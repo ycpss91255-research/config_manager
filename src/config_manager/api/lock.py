@@ -11,11 +11,12 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from config_manager.api.errors import InvalidAuthor
@@ -127,6 +128,20 @@ def register_lock(
             raise HTTPException(status_code=410, detail=str(error)) from error
         return _session_view(session)
 
+    @app.post("/api/session/lock/release")
+    async def release_lock_beacon(request: Request) -> dict[str, object]:
+        """頁面關閉時以 `navigator.sendBeacon` 釋放。beacon 只能 POST，且為了不觸發跨來源預檢
+        （關頁當下預檢多半來不及）以 text/plain 送——所以這裡自己把 body 當 JSON 解析。"""
+        try:
+            token = json.loads(await request.body())["token"]
+        except (ValueError, KeyError, TypeError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail="釋放編輯階段的請求內容讀不出識別碼（需要 {\"token\": …}）。"
+                "下一步：送出這個分頁取得階段時拿到的 token",
+            ) from error
+        return {"released": box.lock.release(str(token))}
+
     @app.delete("/api/session/lock")
     def release_lock(payload: TokenInput) -> dict[str, object]:
         """持有者主動釋放（正常關閉頁面）。身分留著：重新整理也會觸發釋放，同一個人回來不必再填。"""
@@ -213,8 +228,8 @@ def _status(box: LockBox) -> dict[str, object]:
     return {"held": True, **_session_view(current), "timeout_seconds": _timeout_seconds(box)}
 
 
-def _timeout_seconds(box: LockBox) -> float | None:
-    return None if box.lock.timeout is None else box.lock.timeout.total_seconds()
+def _timeout_seconds(box: LockBox) -> float:
+    return box.lock.timeout.total_seconds()
 
 
 __all__ = [

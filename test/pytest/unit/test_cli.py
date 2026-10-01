@@ -355,14 +355,14 @@ def test_serve_plan_reads_the_session_timeout_in_seconds():
     assert plan.session_timeout == float(ten_minutes)
 
 
-def test_serve_plan_without_a_session_timeout_is_development_mode():
-    # 未設＝開發模式：不因閒置回收（§7.2.3.2）。
+def test_serve_plan_without_a_session_timeout_leaves_the_default_in_charge():
+    # 未設＝用預設的續期逾時（不是不逾時）：計畫上是 None，create_app 換成預設值。
     plan = serve_plan("0.0.0.0", 9000, {"CM_CONFIG_REPO": "/srv/r"})
 
     assert plan.session_timeout is None
 
 
 def test_serve_plan_refuses_a_non_positive_session_timeout_by_name():
-    # 寫錯的值不能靜默當成不逾時——部署模式會失去逾時而沒人知道。
+    # 寫錯的值不能靜默當成別的意思。
     with pytest.raises(SessionTimeoutInvalid, match="CM_SESSION_TIMEOUT"):
         serve_plan("0.0.0.0", 9000, {"CM_CONFIG_REPO": "/srv/r", "CM_SESSION_TIMEOUT": "abc"})

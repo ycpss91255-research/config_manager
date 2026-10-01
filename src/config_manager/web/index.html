@@ -1848,14 +1848,20 @@ async function renewSession(token) {
   }
 }
 
+// 關頁（或重新整理）時主動釋放。用 sendBeacon＋text/plain：瀏覽器保證在頁面卸載後仍送出，且不必
+// 跨來源預檢（關頁當下預檢多半來不及）。萬一這發也沒送到，後端的續期逾時會把階段收回（§7.2.2）。
 window.addEventListener("pagehide", () => {
   if (!sessionToken) return;
-  fetch(`${API_BASE}/api/session/lock`, {
-    method: "DELETE",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token: sessionToken }),
-    keepalive: true,
-  }).catch(() => {});
+  const body = new Blob([JSON.stringify({ token: sessionToken })], { type: "text/plain" });
+  const sent = navigator.sendBeacon && navigator.sendBeacon(`${API_BASE}/api/session/lock/release`, body);
+  if (!sent) {
+    fetch(`${API_BASE}/api/session/lock`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: sessionToken }),
+      keepalive: true,
+    }).catch(() => {});
+  }
 });
 
 // ── W1 身分輸入 ──────────────────────────────────────────────────────────────
