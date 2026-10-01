@@ -1913,3 +1913,42 @@ def _find_lock_box():
     boxes = [obj for obj in gc.get_objects() if isinstance(obj, LockBox)]
     assert len(boxes) == 1, f"預期恰好一個 LockBox，找到 {len(boxes)}"
     return boxes[0]
+
+
+def test_an_abandoned_session_is_released_once_its_renewals_stop(api):
+    # U38 的回歸：持有分頁異常中斷（沒走到釋放）→ 心跳停了，預設的續期逾時就回收，下一個人能取得；
+    # 不必設定任何逾時、也不必重啟服務。時鐘就地注入。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地注入時鐘，外部映像控不了 server 端模組")
+    _set_session(api)
+    _lock(api)  # 取得後就再也不續期、也不釋放
+    box = _find_lock_box()
+    real_clock = box.clock
+    try:
+        box.clock = lambda: real_clock() + datetime.timedelta(minutes=10)
+        other = {"name": "林巡檢", "email": "lin@example.com", "role": "user"}
+        _post(api, "/api/session", other)  # 階段已回收：換身分不再被擋
+        acquired = _lock(api)
+        assert acquired["holder"]["name"] == "林巡檢"
+        _lock(api, "DELETE", payload={"token": acquired["token"]})
+    finally:
+        box.clock = real_clock
+        _set_session(api)
+
+
+def test_the_page_can_release_its_session_with_a_plain_text_beacon(api):
+    # 頁面關閉時用 sendBeacon 釋放：只能 POST、為免跨來源預檢用 text/plain——後端自己解析 body。
+    _set_session(api)
+    session = _lock(api)
+    request = urllib.request.Request(
+        f"{api}/api/session/lock/release",
+        data=json.dumps({"token": session["token"]}).encode("utf-8"),
+        headers={"content-type": "text/plain;charset=UTF-8"},
+        method="POST",
+    )
+
+    with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+        released = json.loads(response.read().decode("utf-8"))
+
+    assert released == {"released": True}
+    assert _lock(api, "GET")["held"] is False

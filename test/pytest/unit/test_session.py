@@ -91,6 +91,7 @@ def test_a_name_with_a_nul_byte_is_rejected():
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
 from config_manager.api.session import (  # noqa: E402
+    DEFAULT_RENEW_TIMEOUT,
     Identity,
     SessionExpired,
     SessionHeld,
@@ -104,8 +105,7 @@ _LIN = Identity("林巡檢", "lin@example.com", "user")
 
 def _lock(timeout_minutes=10):
     counter = iter(f"token-{n}" for n in range(1, 100))
-    timeout = None if timeout_minutes is None else timedelta(minutes=timeout_minutes)
-    return SessionLock(timeout, tokens=lambda: next(counter))
+    return SessionLock(timedelta(minutes=timeout_minutes), tokens=lambda: next(counter))
 
 
 def test_the_session_can_be_acquired_when_nobody_holds_it():
@@ -162,13 +162,30 @@ def test_renewing_an_expired_session_fails_loudly_instead_of_reacquiring():
     assert lock.current is None  # 沒有替它悄悄重新取得
 
 
-def test_development_mode_never_sweeps_an_idle_session():
-    lock = _lock(timeout_minutes=None)
+def test_a_session_whose_renewals_stop_is_swept_even_when_no_timeout_was_configured():
+    # 續期逾時兩種模式都有：分頁異常中斷（沒走到釋放）後心跳停了，階段要自動回收，否則之後
+    # 進來的人永遠唯讀（§7.2.2「異常中斷則靠續期逾時自動釋放」）。沒設定就用預設值，不是「不逾時」。
+    lock = SessionLock()
     lock.acquire(_MING, _T0)
 
-    assert lock.sweep(_T0 + timedelta(days=3)) == []
+    swept = lock.sweep(_T0 + DEFAULT_RENEW_TIMEOUT + timedelta(seconds=1))
+
+    assert [session.holder for session in swept] == [_MING]
+    assert lock.acquire(_LIN, _T0 + DEFAULT_RENEW_TIMEOUT + timedelta(seconds=2)).holder == _LIN
+
+
+def test_a_session_that_keeps_renewing_is_never_swept_however_long_it_lives():
+    # 開發模式不因閒置回收：頁面開著、心跳還在，放三天也不回收（閒置逾時是部署模式的事，#48）。
+    lock = SessionLock()
+    session = lock.acquire(_MING, _T0)
+    now = _T0
+    while now < _T0 + timedelta(days=3):
+        now += DEFAULT_RENEW_TIMEOUT / 2
+        lock.renew(session.token, now)
+
+    assert lock.sweep(now) == []
     with pytest.raises(SessionHeld):
-        lock.acquire(_LIN, _T0 + timedelta(days=3))
+        lock.acquire(_LIN, now)
 
 
 def test_release_with_the_wrong_token_does_nothing():
