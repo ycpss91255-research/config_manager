@@ -1313,6 +1313,105 @@ def test_a_raw_config_shows_an_unstructured_notice_not_an_empty_table(open_page,
     assert page.query_selector("[data-testid='param-table']") is None
 
 
+# ── W3 schema 骨架（#38）─────────────────────────────────────────────────────
+# 骨架由開發者手動產生（納管時不自動產生）：推斷只看得到當下的值，由人看過再開啟把關。
+
+_SCHEMA_DRAFT = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-schema-draft']"
+_SCHEMA_BADGE = f"[data-testid='panel-schema-{_PARAM_UID}']"
+
+
+def test_a_developer_drafts_a_schema_after_confirming_what_it_does(open_page, repo):
+    # 先說後果再做：取消什麼都不變；確認後骨架存進 `.schemas/`、標頭標示已有 schema、按鈕消失。
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = _open_panel(open_page(), developer=True)
+    stored = repo / ".schemas" / f"{_PARAM_UID}.json"
+
+    page.click(_SCHEMA_DRAFT)
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    assert "型別" in page.inner_text("[data-testid='confirm-body']")
+    page.click("[data-testid='confirm-cancel']")
+    assert not stored.exists()
+
+    page.click(_SCHEMA_DRAFT)
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+
+    page.wait_for_selector(_SCHEMA_BADGE, state="visible")
+    assert page.query_selector(_SCHEMA_DRAFT) is None
+    assert f".schemas/{_PARAM_UID}.json" in page.inner_text("[data-testid='schema-drafted-notice']")
+    assert json.loads(stored.read_text(encoding="utf-8"))["properties"] == {
+        "count": {"type": "integer"}
+    }
+
+
+def test_a_config_that_already_has_a_schema_shows_the_badge_and_no_draft_button(open_page, repo):
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = _open_panel(open_page(), developer=True)
+    page.click(_SCHEMA_DRAFT)
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_selector(_SCHEMA_BADGE, state="visible")
+
+    page.click(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-close']")
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+
+    assert page.is_visible(_SCHEMA_BADGE)
+    assert page.query_selector(_SCHEMA_DRAFT) is None
+
+
+def test_drafting_a_schema_keeps_the_edits_not_yet_saved(open_page, repo):
+    # 產生 schema 不重畫欄位表：還沒儲存的改動不能因此悄悄消失（不變式 2）。
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = _open_panel(open_page(), developer=True)
+    page.fill(_param_value("count"), "4")
+
+    page.click(_SCHEMA_DRAFT)
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_selector(_SCHEMA_BADGE, state="visible")
+
+    assert page.input_value(_param_value("count")) == "4"
+    assert page.get_attribute("[data-testid='param-count']", "data-changed") == "true"
+
+
+def test_the_draft_schema_button_is_absent_for_a_normal_user(open_page, repo):
+    # 僅開發者（ADR-00000020）：一般使用者模式下按鈕不存在於 DOM，不是停用。
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = _open_panel(open_page())
+
+    assert page.query_selector("[data-testid='panel-schema-draft']") is None
+    assert page.query_selector(_SCHEMA_BADGE) is None
+
+
+def test_a_refused_schema_draft_shows_the_reason_in_the_panel(open_page, repo):
+    # 面板開著的期間清單檔被別處加上了 schema：後端擋下（不覆寫），原因原樣顯示、不靜默。
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = _open_panel(open_page(), developer=True)
+    listing = repo / "config-list.toml"
+    listing.write_text(
+        listing.read_text(encoding="utf-8").replace(
+            'hostname = "amr01"\n', 'hostname = "amr01"\nschema = ".schemas/elsewhere.json"\n'
+        ),
+        encoding="utf-8",
+    )
+
+    page.click(_SCHEMA_DRAFT)
+    page.click("[data-testid='confirm-ok']")
+
+    error = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save-error']"
+    page.wait_for_selector(error, state="visible")
+    assert ".schemas/elsewhere.json" in page.inner_text(error)
+    assert page.query_selector(_SCHEMA_BADGE) is None
+
+
+def test_a_raw_config_is_marked_unvalidated_and_offers_no_schema(open_page, repo):
+    # raw 是唯一不受把關的格式——介面明確標示「未驗證」，使用者看得到自己放棄了什麼（§3.4）。
+    _listing_with(repo, "whatever: [not parsed\n", fmt="raw")
+    page = _open_panel(open_page(), developer=True)
+
+    assert page.inner_text(f"[data-testid='panel-unvalidated-{_PARAM_UID}']") == "未驗證"
+    assert page.query_selector("[data-testid='panel-schema-draft']") is None
+
+
 # ── W3 儲存草稿（#21）────────────────────────────────────────────────────────
 # 三段式：編輯 → 儲存（草稿）→ 進版。「儲存」只存為草稿：不記錄、不寫到目標（§7.4.3、T18）。
 

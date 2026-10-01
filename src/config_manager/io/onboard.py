@@ -54,18 +54,14 @@ import os
 import subprocess
 from dataclasses import dataclass
 
-from pydantic import ValidationError
-from tomlkit.exceptions import TOMLKitError
-
-from config_manager.core.config_list import dump, load
-from config_manager.core.errors import ConfigListError
+from config_manager.core.config_list import dump
 from config_manager.core.identity import derive_name, new_uid
-from config_manager.core.models import ConfigList, FileEntry, Permissions
+from config_manager.core.models import FileEntry, Permissions
 from config_manager.io.atomic import replace_atomically
-from config_manager.io.errors import ConfigListUnparsable, OnboardLeftBehind, WriterError
+from config_manager.io.errors import OnboardLeftBehind, WriterError
 from config_manager.io.git import record, stage, unstage
 from config_manager.io.preflight import CONFIG_LIST_NAME
-from config_manager.io.repo import place_source, source_relpath, write_config_list
+from config_manager.io.repo import load_list, place_source, source_relpath, write_config_list
 from config_manager.io.source import local_hostname, read_source, service_identity
 
 
@@ -108,32 +104,6 @@ class _WritePreState:
 def _read_bytes(path: str) -> bytes:
     with open(path, "rb") as handle:
         return handle.read()
-
-
-def _read_list(repo: str) -> str:
-    """讀 repo 的清單檔原文。"""
-    with open(os.path.join(repo, CONFIG_LIST_NAME), encoding="utf-8") as handle:
-        return handle.read()
-
-
-def _load_existing_list(repo: str) -> tuple[str, ConfigList]:
-    """讀＋載入既有清單，回（原文, 已驗證模型）。讀（非 UTF-8）與載入（壞 TOML／未知欄位／不符
-    模型／既有就重複）的失敗都是伺服器端資料損壞，映成 ConfigListUnparsable（結構化 500，與
-    scan／preflight 一致，#248/#257）。
-
-    讀檔也要包在這裡：非 UTF-8 的 UnicodeDecodeError 在 open().read() 就發生，先前若只包 load
-    會逃逸成裸 500。tomlkit 對壞 TOML 丟 TOMLKitError（非 core.ParseError——接那個是死碼，#257）；
-    load 的形狀／未知欄位／完整性丟 ConfigListError；model_validate 丟 ValidationError。
-    """
-    try:
-        text = _read_list(repo)
-        return text, load(text)
-    except (UnicodeDecodeError, TOMLKitError, ValidationError, ConfigListError) as error:
-        raise ConfigListUnparsable(
-            f"清單檔無法解析：{os.path.join(repo, CONFIG_LIST_NAME)}——{error}。"
-            "下一步：依訊息指出的位置修正該檔，或以 UTF-8 重新存檔",
-            file=os.path.join(repo, CONFIG_LIST_NAME),
-        ) from error
 
 
 def _requires_privilege(
@@ -225,7 +195,7 @@ def onboard(repo: str, request: OnboardRequest, author: str) -> FileEntry:
     # 4. 先驗證再寫，此刻 repo 還沒動（#172 AC2）。兩步失敗映到不同狀態（#257）：
     #    (a) 載入既有清單失敗＝伺服器端資料損壞 → ConfigListUnparsable（結構化 500）；
     #    (b) dump 的完整性檢查對「新條目與既有衝突」丟 ConfigListError，屬輸入衝突、下游映 409。
-    original_text, current = _load_existing_list(repo)
+    original_text, current = load_list(repo)
     new_list_text = dump(
         current.model_copy(update={"files": [*current.files, entry]}),
         original_text,

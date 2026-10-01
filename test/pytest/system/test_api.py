@@ -1952,3 +1952,67 @@ def test_the_page_can_release_its_session_with_a_plain_text_beacon(api):
 
     assert released == {"released": True}
     assert _lock(api, "GET")["held"] is False
+
+
+# ── T9：產生 schema 骨架（POST /api/configs/{uid}/schema，#38）─────────────────
+
+
+def test_a_developer_drafts_a_schema_skeleton_for_a_managed_config(api, sources_root):
+    # 骨架存進 config-repo 的 `.schemas/`、條目記下路徑；記一筆 meta、作者＝身分。
+    entry = _onboard(api, sources_root, "schema_ok.yaml", b"max_vel: 0.8\nretries: 3\n")
+    assert _get(api, f"/api/configs/{entry['uid']}")["schema"] is None
+
+    drafted = _post(api, f"/api/configs/{entry['uid']}/schema", {})
+
+    assert drafted == {"uid": entry["uid"], "schema": f".schemas/{entry['uid']}.json"}
+    assert _get(api, f"/api/configs/{entry['uid']}")["schema"] == drafted["schema"]
+    latest = _history(api, entry["uid"], "meta")[0]
+    assert (latest["kind"], latest["summary"]) == ("meta", "產生 schema 骨架")
+    assert latest["author"] == "陳小明 <ming@example.com>"
+
+
+def test_drafting_a_schema_is_for_developers_only(api, sources_root):
+    # 骨架一產生就會擋人（#39 的硬擋依它檢查），所以由開發者決定要不要開（ADR-00000020）。
+    entry = _onboard(api, sources_root, "schema_role.yaml", b"count: 1\n")
+    _post(api, "/api/session", {"name": "王小美", "email": "mei@example.com", "role": "user"})
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, f"/api/configs/{entry['uid']}/schema", {})
+
+    assert exc.value.code == _FORBIDDEN
+    assert _get(api, f"/api/configs/{entry['uid']}")["schema"] is None
+    _set_session(api)
+
+
+def test_drafting_twice_does_not_overwrite_the_existing_schema(api, sources_root):
+    entry = _onboard(api, sources_root, "schema_twice.yaml", b"count: 1\n")
+    _post(api, f"/api/configs/{entry['uid']}/schema", {})
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, f"/api/configs/{entry['uid']}/schema", {})
+
+    assert exc.value.code == _CONFLICT
+    assert f".schemas/{entry['uid']}.json" in json.loads(exc.value.read())["detail"]
+
+
+def test_a_raw_config_cannot_get_a_schema(api, sources_root):
+    # raw 不解析：沒有結構可推導，說出原因（422），不產生一份空的假裝有把關。
+    _set_session(api)
+    source = _write_source(sources_root, "schema_raw.bin", b"\x00\x01\x02")
+    entry = _post(api, "/api/configs", {"source_path": source, "format": "raw",
+                                        "ambiguity_note": ""})
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, f"/api/configs/{entry['uid']}/schema", {})
+
+    assert exc.value.code == _UNPROCESSABLE
+    assert "raw" in json.loads(exc.value.read())["detail"]
+
+
+def test_drafting_a_schema_for_an_unknown_uid_is_not_found(api):
+    _set_session(api)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/configs/zzzzzzz9/schema", {})
+
+    assert exc.value.code == _NOT_FOUND

@@ -85,6 +85,10 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 退版按鈕 | 文字「退版」 | 針對單一 config，與草稿無關 |
 | 歷史按鈕 | 文字「歷史」（`data-testid="panel-history"`） | 右側工作區切成該 config 的歷史檢視（W4），左側樹不動（#25） |
 | 屬性按鈕 | 文字「屬性」 | **僅開發者出現** |
+| 產生 schema 按鈕 | 文字「產生 schema」（`data-testid="panel-schema-draft"`） | **僅開發者出現**，且只在這份還沒有 schema 時；經 W6 確認後 `POST /api/configs/{uid}/schema`，成功後就地換成「有 schema」標示、不重畫欄位表（#38） |
+| 有 schema 標示 | `data-testid="panel-schema-<uid>"` | 這份 config 有 schema 時出現在標頭（`GET /api/configs/{uid}` 回 `schema`） |
+| 未驗證標示 | `data-testid="panel-unvalidated-<uid>"` | 文字「未驗證」；**僅 `raw`**——唯一不受把關的格式（§3.4） |
+| schema 已產生通知 | `data-testid="schema-drafted-notice"` | 產生成功後出現在標頭下，寫出 schema 的路徑 |
 
 ### 屬性面板（僅開發者）
 
@@ -300,6 +304,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 |---|---|---|
 | 白名單按鈕 | 不存在 | 存在 |
 | 屬性按鈕 | 不存在 | 存在 |
+| 產生 schema 按鈕 | 不存在 | 存在（還沒有 schema 時） |
 | 型別欄 | 純文字 | 下拉選單 |
 | 清除指定 | 不存在 | 存在 |
 | 瀏覽拒絕的「加入白名單」入口（W7，`outside_roots`） | 不存在（改看唯讀允許範圍） | 存在 |
