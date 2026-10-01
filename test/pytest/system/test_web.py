@@ -1434,6 +1434,166 @@ def test_a_value_the_schema_rejects_is_refused_with_the_reason_in_the_panel(open
     assert not page.is_visible(_draft_dot(_PARAM_UID))
 
 
+# ── W3 欄位表套用 schema（#40）───────────────────────────────────────────────
+# 範圍、步進、列舉選項、說明都來自 schema。前端的即時回饋是體驗，不是保證——保證在後端（N-3）；
+# 所以這裡也驗「介面沒擋到、後端擋下」時原因標在那一列。
+
+
+def _listing_with_schema(repo, content: str, properties: dict) -> None:
+    """一筆條目（uid＝_PARAM_UID）加上一份手寫的 schema：`properties` 是各欄位的規則。"""
+    _listing_many(repo, {"p": content})
+    listing = repo / "config-list.toml"
+    listing.write_text(
+        listing.read_text(encoding="utf-8").replace(
+            'hostname = "amr01"\n',
+            f'hostname = "amr01"\nschema = ".schemas/{_PARAM_UID}.json"\n',
+        ),
+        encoding="utf-8",
+    )
+    (repo / ".schemas").mkdir(exist_ok=True)
+    (repo / ".schemas" / f"{_PARAM_UID}.json").write_text(
+        json.dumps({"type": "object", "properties": properties}), encoding="utf-8"
+    )
+
+
+def _row(path: str) -> str:
+    return f"[data-testid='param-{path}']"
+
+
+def _validation(page, path: str) -> str:
+    return page.inner_text(f"{_row(path)} [data-testid='param-validation']")
+
+
+def test_a_number_with_a_range_gets_min_max_and_flags_a_value_outside_it(open_page, repo):
+    # AC1：輸入框套用 min／max／step；超出範圍在輸入當下就標示，儲存停用；改回範圍內恢復。
+    _listing_with_schema(repo, "max_vel: 0.8\n", {
+        "max_vel": {"type": "number", "minimum": 0, "maximum": 2, "multipleOf": 0.1},
+    })
+    page = _open_panel(open_page())
+    control = _param_value("max_vel")
+
+    attributes = [page.get_attribute(control, name) for name in ("min", "max", "step")]
+    assert attributes == ["0", "2", "0.1"]
+
+    page.fill(control, "2.5")
+    assert "不可大於 2" in _validation(page, "max_vel")
+    assert page.get_attribute(_row("max_vel"), "data-valid") == "false"
+    assert page.is_disabled(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save']")
+
+    page.fill(control, "0.25")
+    assert "0.1 的倍數" in _validation(page, "max_vel")
+
+    page.fill(control, "0.3")
+    assert _validation(page, "max_vel") == ""
+    assert page.get_attribute(_row("max_vel"), "data-valid") == "true"
+
+
+def test_an_integer_typed_into_a_double_field_stays_a_double(open_page, repo):
+    # AC2：把 double 參數改成整數樣子的值，在輸入當下就被擋回 double——離開欄位即補上小數點，
+    # 寫出去的是 `2.0` 不是 `2`（ROS 的 1 vs 1.0）。
+    targets = _listing_many(repo, {"p": "max_vel: 0.8\n"})
+    _listing_with_schema(repo, "max_vel: 0.8\n", {"max_vel": {"type": "number"}})
+    page = _open_panel(open_page())
+
+    page.fill(_param_value("max_vel"), "2")
+    page.dispatch_event(_param_value("max_vel"), "change")
+    assert page.input_value(_param_value("max_vel")) == "2.0"
+
+    _save(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector("[data-testid='promote-done']", state="visible")
+    assert targets["p"].read_text(encoding="utf-8") == "max_vel: 2.0\n"
+
+
+def test_an_enum_field_offers_only_the_choices_from_the_schema(open_page, repo):
+    # AC3：選項來自 schema，結構上選不到不存在的值；選了之後存得成草稿、型別不變（整數仍是整數）。
+    _listing_with_schema(repo, "mode: auto\nlevel: 1\n", {
+        "mode": {"enum": ["auto", "manual", "off"]},
+        "level": {"type": "integer", "enum": [1, 2, 3]},
+    })
+    page = _open_panel(open_page())
+
+    options = page.eval_on_selector_all(
+        f"{_param_value('mode')} option", "els => els.map(e => e.textContent)"
+    )
+    assert options == ["auto", "manual", "off"]
+    assert page.inner_text(f"{_row('mode')} [data-testid='param-type']") == "enum"
+
+    page.select_option(_param_value("mode"), label="manual")
+    page.select_option(_param_value("level"), label="3")
+    _save(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+
+    assert (repo / "files" / "p.yaml").read_text(encoding="utf-8") == "mode: auto\nlevel: 1\n"
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector("[data-testid='promote-done']", state="visible")
+    assert (repo / "files" / "p.yaml").read_text(encoding="utf-8") == "mode: manual\nlevel: 3\n"
+
+
+def test_a_current_value_outside_the_enum_is_shown_and_flagged_not_silently_replaced(
+    open_page, repo
+):
+    # schema 是後來才收緊的：目前的值不在選項裡。照實顯示並標成有問題，不悄悄換成第一個選項。
+    _listing_with_schema(repo, "mode: turbo\n", {"mode": {"enum": ["auto", "manual"]}})
+    page = _open_panel(open_page())
+
+    shown = page.eval_on_selector(_param_value("mode"), "e => e.selectedOptions[0].textContent")
+    assert shown.startswith("turbo") and "不在允許的值裡" in shown
+    assert page.get_attribute(_row("mode"), "data-valid") == "false"
+
+    page.select_option(_param_value("mode"), label="auto")
+    assert page.get_attribute(_row("mode"), "data-valid") == "true"
+
+
+def test_the_schema_description_is_shown_beside_the_field(open_page, repo):
+    # AC4：schema 的 description 顯示在欄位旁，滑鼠停留看得到全文。沒有說明的欄位沒有這個標記。
+    _listing_with_schema(repo, "max_vel: 0.8\nretries: 3\n", {
+        "max_vel": {"type": "number", "description": "最大線速度（m/s）"},
+        "retries": {"type": "integer"},
+    })
+    page = _open_panel(open_page())
+
+    marker = f"{_row('max_vel')} [data-testid='param-description']"
+    assert page.get_attribute(marker, "title") == "最大線速度（m/s）"
+    assert page.query_selector(f"{_row('retries')} [data-testid='param-description']") is None
+
+
+def test_a_problem_the_backend_finds_is_marked_on_that_row_with_the_fix(open_page, repo):
+    # AC5：介面沒擋到、後端擋下的（這裡是 schema 的 pattern）——那一列標紅並寫出原因與修正建議；
+    # 再改動那一列時標記清掉。
+    _listing_with_schema(repo, "name: amr01\ncount: 3\n", {
+        "name": {"type": "string", "pattern": "^amr"},
+    })
+    page = _open_panel(open_page())
+
+    page.fill(_param_value("name"), "robot7")
+    _save(page)
+
+    page.wait_for_selector(f"{_row('name')}[data-valid='false']")
+    assert "pattern" in _validation(page, "name") and "建議" in _validation(page, "name")
+    assert page.get_attribute(_row("count"), "data-valid") == "true"  # 別列不受牽連
+    assert not page.is_visible(_draft_dot(_PARAM_UID))
+
+    page.fill(_param_value("name"), "amr02")
+    assert page.get_attribute(_row("name"), "data-valid") == "true"
+    _save(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+
+
+def test_a_broken_schema_is_announced_in_the_panel_while_the_values_stay_visible(open_page, repo):
+    # schema 讀不出來：值照樣看得到，面板明說修好之前存不了、指名那份檔案。
+    _listing_with_schema(repo, "count: 3\n", {"count": {"type": "integer"}})
+    (repo / ".schemas" / f"{_PARAM_UID}.json").write_text("{ not json", encoding="utf-8")
+    page = _open_panel(open_page())
+
+    banner = page.inner_text(
+        f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-schema-error']"
+    )
+    assert "存不了" in banner and f".schemas/{_PARAM_UID}.json" in banner
+    assert page.input_value(_param_value("count")) == "3"
+
+
 # ── W3 儲存草稿（#21）────────────────────────────────────────────────────────
 # 三段式：編輯 → 儲存（草稿）→ 進版。「儲存」只存為草稿：不記錄、不寫到目標（§7.4.3、T18）。
 

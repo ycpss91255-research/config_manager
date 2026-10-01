@@ -2185,3 +2185,39 @@ def test_a_revert_that_does_not_touch_the_schema_says_so(api, sources_root):
 
     assert reverted["schema_effect"] is None
     assert _get(api, f"/api/configs/{entry['uid']}")["schema"] == entry["schema"]
+
+
+# ── T9：單筆內容帶 schema 的欄位提示（constraints，#40）────────────────────────
+
+
+def test_the_detail_carries_the_schema_hints_for_each_field(api, sources_root, repo):
+    # 欄位表據此設輸入框的範圍與選項。只鎖型別的骨架沒有東西要提示；收緊之後才有。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地改 config-repo 裡的 schema 檔")
+    entry = _with_schema(api, sources_root, "hints.yaml")
+    assert _get(api, f"/api/configs/{entry['uid']}")["constraints"] == {}
+    schema_file = pathlib.Path(repo) / entry["schema"]
+    schema = json.loads(schema_file.read_text(encoding="utf-8"))
+    schema["properties"]["count"].update({"minimum": 1, "maximum": 5, "description": "重試次數"})
+    schema_file.write_text(json.dumps(schema), encoding="utf-8")
+
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+
+    assert detail["constraints"] == {
+        "count": {"minimum": 1, "maximum": 5, "description": "重試次數"}
+    }
+    assert detail["schema_error"] is None
+
+
+def test_a_broken_schema_still_shows_the_values_and_says_what_is_wrong(api, sources_root, repo):
+    # schema 壞了不讓整份內容跟著讀不到——值要看得到才能退版或解除納管；錯誤以文字帶回。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地改 config-repo 裡的 schema 檔")
+    entry = _with_schema(api, sources_root, "hints_broken.yaml")
+    (pathlib.Path(repo) / entry["schema"]).write_text("{ not json", encoding="utf-8")
+
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+
+    assert detail["values"] == {"count": 3}
+    assert detail["constraints"] == {}
+    assert entry["schema"] in detail["schema_error"] and "下一步" in detail["schema_error"]

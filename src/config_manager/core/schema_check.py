@@ -71,6 +71,40 @@ def check_schema(text: str, fmt: str, schema: Mapping[str, object]) -> list[Prob
     return list(dict.fromkeys(problems))
 
 
+# 介面用得上的 schema 關鍵字：範圍、步進、列舉選項、說明（#40）。
+_HINT_KEYS = (
+    "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "enum",
+    "description",
+)
+
+
+def field_hints(schema: Mapping[str, object]) -> dict[str, dict[str, object]]:
+    """schema 裡每個欄位給介面的提示（範圍、步進、列舉選項、說明），沒有提示的欄位不列。
+
+    鍵是欄位路徑，與 `infer_types` 同一套文法（`.` 相接、`[]` 標清單元素、key 內的字面點跳脫成
+    `\\.`），欄位表才對得到那一列。這只是**提示**：讓介面在輸入當下就說得出問題；保證在
+    `check_schema`，介面不擋的後端照擋（設計原則 N-3）。只跟著 `properties` 與 `items` 往下走。
+    """
+    found: dict[str, dict[str, object]] = {}
+    _collect_hints(schema, "", found)
+    return found
+
+
+def _collect_hints(node: object, path: str, found: dict[str, dict[str, object]]) -> None:
+    if not isinstance(node, Mapping):
+        return
+    hints = {key: node[key] for key in _HINT_KEYS if key in node}
+    if path and hints:
+        found[path] = hints
+    properties = node.get("properties")
+    if isinstance(properties, Mapping):
+        for key, child in properties.items():
+            escaped = str(key).replace(".", "\\.")
+            _collect_hints(child, f"{path}.{escaped}" if path else escaped, found)
+    if "items" in node:
+        _collect_hints(node["items"], f"{path}[]", found)
+
+
 @dataclass(frozen=True)
 class _Broken:
     """一條沒過的規則，從 jsonschema 的錯誤取出這裡用得到的欄位。

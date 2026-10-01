@@ -13,6 +13,7 @@ yaml／toml／json 的等價內容，結果一致。每個問題除了行號與�
 核心層：純函式，收字串、回問題清單，不碰檔案。
 """
 
+from config_manager.core.schema_check import field_hints
 from config_manager.core.validate import check
 
 
@@ -417,3 +418,60 @@ def test_every_schema_problem_carries_a_path_a_line_and_a_suggestion():
         "robot.extra", "robot.max_vel", "robot.mode", "robot.name", "robot.retries",
     ]
     assert all(p.line and p.suggestion for p in problems)
+
+
+# ── schema 給介面的提示（#40）────────────────────────────────────────────────
+# 欄位表依 schema 套範圍、步進、列舉選項與說明。保證仍在後端（第 2 層）；這份提示只讓介面在
+# 輸入當下就說得出問題。鍵與 `infer_types` 同一套路徑文法，介面才對得到那一列。
+
+
+def test_hints_carry_range_step_choices_and_description_per_field():
+    schema = {
+        "type": "object",
+        "properties": {
+            "max_vel": {"type": "number", "minimum": 0, "maximum": 2, "multipleOf": 0.1,
+                        "description": "最大線速度（m/s）"},
+            "mode": {"enum": ["auto", "manual"]},
+            "ratio": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+        },
+    }
+
+    assert field_hints(schema) == {
+        "max_vel": {"minimum": 0, "maximum": 2, "multipleOf": 0.1,
+                    "description": "最大線速度（m/s）"},
+        "mode": {"enum": ["auto", "manual"]},
+        "ratio": {"exclusiveMinimum": 0, "exclusiveMaximum": 1},
+    }
+
+
+def test_hints_follow_nested_objects_and_list_elements():
+    schema = {
+        "type": "object",
+        "properties": {
+            "robot": {"type": "object", "properties": {"speed": {"maximum": 3}}},
+            "servers": {
+                "type": "array",
+                "items": {"type": "object", "properties": {"port": {"minimum": 1}}},
+            },
+            "ids": {"type": "array", "items": {"minimum": 0}},
+        },
+    }
+
+    assert field_hints(schema) == {
+        "robot.speed": {"maximum": 3},
+        "servers[].port": {"minimum": 1},
+        "ids[]": {"minimum": 0},
+    }
+
+
+def test_fields_without_any_hint_are_not_listed():
+    # 只鎖型別的骨架沒有東西要提示——回空的，不是每個欄位一個空殼。
+    schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
+
+    assert field_hints(schema) == {}
+
+
+def test_a_key_containing_a_dot_is_escaped_in_the_hint_path():
+    schema = {"type": "object", "properties": {"a.b": {"maximum": 1}}}
+
+    assert field_hints(schema) == {"a\\.b": {"maximum": 1}}

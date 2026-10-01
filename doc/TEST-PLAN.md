@@ -851,6 +851,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **搜尋（`GET /api/search?q=&scope=`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：五檔範圍、預設「全部」；回以 config 為單位的命中 `{uid, name, target, matched:[範圍…], params:[{path, value}]}` 與 `unindexed`（來源複本壞掉、參數沒進索引的那幾份）；索引每次請求從真實來源重建，所以修改後舊值不再命中、解除納管後索引移除；未知範圍→422 列五個允許值、`q` 空→422（#32） |
 | **產生 schema 骨架（`POST /api/configs/{uid}/schema`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：僅開發者（403）、需身分（409）；骨架存進 config-repo 的 `.schemas/<uid>.json`、條目記下 `schema`、記一筆 `meta`，回 `{uid, schema}`；`GET /api/configs/{uid}` 另回 `schema`（路徑或 null）；已有 schema→409（不覆寫）、`raw`／頂層不是物件→422 說原因、uid 不在→404（#38） |
 | **第 2 層接在三個寫入點上（#39）**：儲存草稿（`POST /api/drafts`）、進版（`POST /api/promote`，依**此刻**的 schema 重驗）、將現況納入來源（`resolve` 的 `adopt`）——不符 schema→422，detail 另帶 `file`（驗的是哪一份：存草稿與進版是 repo 內的來源複本，納入現況是目標路徑），`problems` 每筆另帶 `path`（欄位路徑；第 1 層為 null）；`adopt_draft` 照載、schema 的問題列成警告；清單檔指到的 schema 讀不出來（不在、不是 JSON、不是合法 schema、指到 `.schemas/` 外）→結構化的 500 `{message, file}`，**不當成沒有 schema 放行** |
+| **單筆內容帶 schema 的欄位提示（#40）**：`GET /api/configs/{uid}` 另回 `constraints`（欄位路徑→`minimum`／`maximum`／`exclusiveMinimum`／`exclusiveMaximum`／`multipleOf`／`enum`／`description`，鍵與 `types` 同一套路徑文法；只鎖型別的骨架回空）；schema 讀不出來→值照回、`constraints` 空、`schema_error` 說原因與下一步（不讓整份內容跟著讀不到） |
 | **編輯階段（`GET`／`POST`／`DELETE /api/session/lock`、`POST /api/session/lock/renew`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 GET /api/session／#122）：頁面載入時以目前身分取得（回識別碼、持有者、開始時間、上次逾時清了幾份草稿）；已被占用→409 `{kind:"held", holder{name,email}, started_at}`；續期用識別碼，階段已失效→410（不替你重新取得）；釋放不清身分（重新整理也會觸發釋放，同一個人回來不必再填）。**別人持有時 `POST /api/session` 換身分→409**（否則持有者接下來的紀錄會掛到別人頭上）；同一個人再設不擋。**續期逾時兩種模式都有**（`CM_SESSION_TIMEOUT` 秒；未設＝預設值，不是不逾時）：持有分頁異常中斷、心跳停了就回收，否則之後的人永遠唯讀；由注入的時鐘判定，回收時草稿一併清除、下一個取得者被告知清了 N 份。頁面關閉時以 `POST /api/session/lock/release`（sendBeacon、text/plain，不必跨來源預檢）釋放（#33；部署模式的閒置逾時是 #48） |
 | **單一版本內容（`GET /api/configs/{uid}/history/{sha}`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 GET /api/session／#122）：回那一版來源複本的 `{sha, types, values}`（形狀同單筆內容端點），供歷史檢視算參數層級差異（§7.6.2）；sha 不在這份 config 的歷史→422、uid 不在清單→404（#26） |
 | **草稿（`POST /api/drafts`，body `{uid, edits}`）：以來源複本為底套 `edits`（路徑→新值）、跑第 1 層、存進階段，回 `{count, drafts:[{uid, format}]}`；不產生變更紀錄、目標不變；第 1 層沒過→422，detail 為結構化 `{message, uid, problems:[{line, message, suggestion, severity, lines}]}`（供欄位表標示那一列）且階段不變；路徑找不到→422、uid 不在清單→404、未設身分→409。`GET /api/drafts` 回同形；`DELETE /api/drafts[/{uid}]` 捨棄全部／一份，指名的沒草稿→404（#19）** |
@@ -932,6 +933,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | 搜尋範圍下拉選「參數名稱」後，只命中參數名稱；**（#37）搜尋參數名稱列出含該參數的 config、展開時該列標示並定位；搜尋值找到持有它的參數；「config 名稱」只命中名稱、「目標路徑」只命中路徑；無結果有明確提示；搜尋走 `GET /api/search`，失敗顯示原因而非空結果** |
 | **（#38）開發者的面板有「產生 schema」：先經確認框說明後果，取消什麼都不變；確認後標頭出現「有 schema」、按鈕消失、未儲存的改動仍在；已有 schema 的不再出現按鈕；一般使用者模式下按鈕不存在於 DOM；後端拒絕時原因原樣顯示；`raw` 標頭標示「未驗證」且不提供產生** |
 | **（#39）schema 不收的值存不成草稿：面板的儲存錯誤列出原因（行號、欄位、建議），草稿標記不出現** |
+| **（#40）欄位表套用 schema**：有範圍的數字輸入框帶 `min`／`max`／`step`，超出範圍或不是倍數在輸入當下標示、儲存停用；double 欄位打整數離開即補小數點、寫出仍是 double；`enum` 欄位是下拉選單、選項來自 schema、型別欄顯示 enum、選了之後值的型別不變；目前的值不在選項裡時照實顯示並標成有問題、不悄悄換掉；`description` 顯示在欄位旁（`param-description`，滑鼠停留）；**介面沒擋到、後端擋下的問題標在那一列**（標紅＋原因＋建議），再改動即清掉；schema 讀不出來時面板明說存不了、值照樣看得到 |
 | **（#287）區塊標頭有「解除納管」：先經確認框（寫明目標檔案保留、歷史仍在），取消什麼都不變；確認後該項目從樹與工作區消失、其他項目不受影響、目標檔案內容不變、留一筆 `unmanage` 紀錄；有未進版草稿時擋下並顯示原因；`raw` 也有入口；唯讀時不出現** |
 | 修改群組並儲存 → 左側樹立即重建 |
 | list 參數可新增、移除、**以 ↑↓ 調整順序**，順序變更後儲存生效 |
@@ -1333,7 +1335,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `core/parse` | T6（格式解析與原樣寫回） | 已落地（yaml／json／toml／ini／raw；#8） |
 | `core/models` | 無獨立測試介面——見「刻意的空格」 | 已落地 |
 | `core/validate` | T3 | 已落地：第 1 層（語法、正規形式白名單、縮排／尾隨空白、重複 key 列全部行號，#16）；`check` 收到 schema 時併入第 2 層的問題（#39）。第 3 層未落地（#41） |
-| `core/schema_check` | T3 | 已落地（第 2 層：`check_schema` 把 jsonschema 的錯誤轉成帶欄位路徑／行號／建議的問題；整數不收浮點；`ensure_valid_schema` 擋壞掉的 schema，#39） |
+| `core/schema_check` | T3 | 已落地（第 2 層：`check_schema` 把 jsonschema 的錯誤轉成帶欄位路徑／行號／建議的問題；整數不收浮點；`ensure_valid_schema` 擋壞掉的 schema，#39；`field_hints` 取出給介面的範圍／步進／列舉選項／說明，#40） |
 | `core/locate` | T3 | 已落地（欄位路徑→原文行號：yaml／json 走 ruamel 的位置資訊，toml／ini 逐行掃；效果由 T3 第 2 層的行號斷言觀察，#39） |
 | `core/problem` | T3 | 已落地（`Problem` 的形狀與嚴重度常數——三層驗證共用，從 `core/validate` 抽出以免第 2 層反向 import 成環；無行為，由 T3 的規格觀察，#39） |
 | `core/whitelist` | T4（正規化比對）＋ T8（符號連結逃逸） | 已落地：T4 的 `decide` 正規化比對（#11）；符號連結逃逸在**寫出**時點以 realpath 判定，落在 `io/writer`（#5，已 CLOSED）。**納管的讀取路徑上沒有這一層**——見 #174 |
@@ -1364,7 +1366,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `api/drift` | T9 | 已落地（`POST /api/configs/{uid}/resolve`、`POST /api/configs/{uid}/apply`——偏離處置與寫出修復，#29） |
 | `api/shapes` | 無獨立測試介面——`api/routes` 與 `api/drift` 共用的回應形狀（草稿檢視、驗證問題），行為由 T9 的草稿與處置端點擋著（#29） | 已落地 |
 | `api/search` | T9 | 已落地（`GET /api/search`——參數層級搜尋，索引每次請求重建，#32） |
-| `api/schema` | T9 | 已落地（`POST /api/configs/{uid}/schema`——僅開發者，產生 schema 骨架，#38） |
+| `api/schema` | T9 | 已落地（`POST /api/configs/{uid}/schema`——僅開發者，產生 schema 骨架，#38；`schema_hints` 供單筆內容帶欄位提示與 schema 的錯誤，#40） |
 | `api/history` | T9 | 已落地（`GET /api/configs/{uid}/history`、`GET /api/configs/{uid}/history/{sha}`、`POST /api/configs/{uid}/revert`——歷史與退版的端點與邏輯，自 `api/routes` 拆出以免該模組超過千行，#24） |
 | `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 已落地：身分（`author`）；階段 `SessionLock` 的 acquire／renew／release／sweep，時鐘注入（#33） |

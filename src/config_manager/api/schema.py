@@ -18,15 +18,18 @@ from fastapi import FastAPI, HTTPException
 from config_manager.api.lock import require_developer
 from config_manager.api.session import Identity
 from config_manager.core.errors import SyntaxParse
+from config_manager.core.models import FileEntry
+from config_manager.core.schema_check import field_hints
 from config_manager.io.errors import (
     ChangeError,
     SchemaExists,
     SchemaLeftBehind,
     SchemaNotFound,
     SchemaUnavailable,
+    SchemaUnreadable,
     WriterError,
 )
-from config_manager.io.schema import draft_skeleton
+from config_manager.io.schema import draft_skeleton, read_schema
 
 
 def register_schema(app: FastAPI, repo: str, held: dict[str, Identity]) -> None:
@@ -62,3 +65,17 @@ def _draft(repo: str, held: dict[str, Identity], uid: str) -> dict[str, object]:
     except (SchemaLeftBehind, WriterError, ChangeError, CalledProcessError, OSError) as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
     return {"uid": entry.uid, "schema": entry.schema_path}
+
+
+def schema_hints(repo: str, entry: FileEntry) -> tuple[dict[str, dict[str, object]], str | None]:
+    """單筆內容要帶的（欄位提示, schema 的錯誤）（#40）。
+
+    提示是欄位路徑 → 範圍／步進／列舉選項／說明，欄位表據此設輸入框。schema 讀不出來時**不讓
+    整份內容跟著讀不到**——值還是要看得到（才能退版、解除納管），所以提示回空、錯誤以文字帶回，
+    介面明說這份在 schema 修好前存不了（存的時候後端照樣擋，#39）。
+    """
+    try:
+        schema = read_schema(repo, entry)
+    except SchemaUnreadable as error:
+        return {}, str(error)
+    return (field_hints(schema) if schema else {}), None
