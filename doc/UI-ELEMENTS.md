@@ -89,6 +89,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 有 schema 標示 | `data-testid="panel-schema-<uid>"` | 這份 config 有 schema 時出現在標頭（`GET /api/configs/{uid}` 回 `schema`） |
 | 未驗證標示 | `data-testid="panel-unvalidated-<uid>"` | 文字「未驗證」；**僅 `raw`**——唯一不受把關的格式（§3.4） |
 | schema 已產生通知 | `data-testid="schema-drafted-notice"` | 產生成功後出現在標頭下，寫出 schema 的路徑 |
+| 解除納管按鈕 | 文字「解除納管」（`data-testid="panel-unmanage"`） | 在區塊標頭（`raw` 也有）；唯讀時不出現。經 W6 確認（寫明目標檔案保留、歷史仍在）後 `DELETE /api/configs/{uid}`；成功後這份從樹與工作區消失、`promote-done` 寫出目標路徑；後端拒絕（有草稿、寫入失敗）時原因顯示在 `promote-error`（#287） |
 
 ### 屬性面板（僅開發者）
 
