@@ -12,39 +12,24 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from collections.abc import Callable
+from functools import partial
 
-from pydantic import ValidationError
-from tomlkit.exceptions import TOMLKitError
-
-from config_manager.core.config_list import dump, load
-from config_manager.core.errors import ConfigListError
+from config_manager.core.config_list import dump
 from config_manager.core.models import FileEntry
 from config_manager.io.atomic import replace_atomically
 from config_manager.io.errors import (
-    ConfigListUnparsable,
     UnmanageLeftBehind,
     UnmanageNotFound,
-    WriterError,
 )
 from config_manager.io.git import record, stage, unstage
 from config_manager.io.preflight import CONFIG_LIST_NAME
-from config_manager.io.repo import read_or_none, write_config_list
+from config_manager.io.repo import load_list, read_or_none, undo, write_config_list
 
 
 def unmanage(repo: str, uid: str, author: str) -> FileEntry:
     """把 `uid` 那筆從管理中解除，回傳被解除的條目。target 一個位元組都不動。"""
-    list_path = os.path.join(repo, CONFIG_LIST_NAME)
-    try:
-        with open(list_path, encoding="utf-8") as handle:
-            original = handle.read()
-        current = load(original)
-    except (UnicodeDecodeError, TOMLKitError, ValidationError, ConfigListError) as error:
-        raise ConfigListUnparsable(
-            f"清單檔無法解析：{list_path}——{error}。下一步：依訊息指出的位置修正該檔",
-            file=list_path,
-        ) from error
+    original, current = load_list(repo)
     entry = next((item for item in current.files if item.uid == uid), None)
     if entry is None:
         raise UnmanageNotFound(
@@ -55,38 +40,37 @@ def unmanage(repo: str, uid: str, author: str) -> FileEntry:
     kept = [item for item in current.files if item.uid != uid]
     new_text = dump(current.model_copy(update={"files": kept}), original)
 
-    source_path = os.path.join(repo, entry.source)
-    # 來源複本已經不在（repo 被手動動過）時仍該能解除，回滾時也沒有東西要放回。
-    source_bytes = read_or_none(source_path)
+    # 這份 config 在 repo 裡的檔案：來源複本，以及它的 schema（有的話，#38）——不再追蹤這份
+    # config，它的 schema 也不留在工作區當孤兒。已經不在的（repo 被手動動過）仍該能解除，
+    # 回滾時也沒有東西要放回。
+    owned = [entry.source, *([entry.schema_path] if entry.schema_path else [])]
+    snapshots = {path: read_or_none(os.path.join(repo, path)) for path in owned}
     try:
         write_config_list(repo, new_text)
-        if source_bytes is not None:
-            os.remove(source_path)
-        stage(repo, entry.source, CONFIG_LIST_NAME)
+        for path, content in snapshots.items():
+            if content is not None:
+                os.remove(os.path.join(repo, path))
+        stage(repo, *owned, CONFIG_LIST_NAME)
         record(repo, uid, "unmanage", f"解除管理（{entry.name}@{entry.hostname}）", author)
     except BaseException as failure:
-        _rollback(repo, entry.source, original, source_bytes, failure)
+        _rollback(repo, original, snapshots, failure)
         raise
     return entry
 
 
 def _rollback(
-    repo: str, source: str, list_text: str, source_bytes: bytes | None, failure: BaseException
+    repo: str, list_text: str, snapshots: dict[str, bytes | None], failure: BaseException
 ) -> None:
-    """還原到解除前：索引退回 HEAD、清單檔寫回原文、來源複本放回。還原不了的逐一記下、大聲失敗。"""
+    """還原到解除前：索引退回 HEAD、清單檔寫回原文、拿掉的檔案（來源複本、schema）放回。
+    還原不了的逐一記下、大聲失敗。"""
     steps: list[tuple[str, Callable[[], None]]] = [
-        ("索引", lambda: unstage(repo, source, CONFIG_LIST_NAME)),
+        ("索引", lambda: unstage(repo, *snapshots, CONFIG_LIST_NAME)),
         (CONFIG_LIST_NAME, lambda: write_config_list(repo, list_text)),
     ]
-    if source_bytes is not None:
-        restore = source_bytes
-        steps.append((source, lambda: replace_atomically(os.path.join(repo, source), restore)))
-    leftover = []
-    for label, step in steps:
-        try:
-            step()
-        except (OSError, WriterError, subprocess.CalledProcessError) as error:
-            leftover.append(f"{label}（{error}）")
+    for path, content in snapshots.items():
+        if content is not None:
+            steps.append((path, partial(replace_atomically, os.path.join(repo, path), content)))
+    leftover = undo(steps)
     if leftover:
         raise UnmanageLeftBehind(
             f"解除納管中途失敗後回滾未竟，殘留：{'；'.join(leftover)}。原本的失敗：{failure}。"

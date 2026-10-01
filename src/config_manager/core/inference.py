@@ -4,8 +4,10 @@
 型別**，作為日後修改時的一致性依據（#9）——不是作者原意，那無從得知，人工指定存在的
 理由正是推斷做不到這件事（T12「不測」那一段）。
 
-**v0.2.0 只做這一層，不產生完整 JSON Schema**（#9）：T12 的 `draft_schema` 與人工
-指定型別留待之後的 milestone。
+`draft_schema(型別對照)` 把那張對照轉成 JSON Schema 骨架（#38）。骨架**只鎖型別**：不寫
+必填、不擋多出來的 key、不寫範圍——現場多加一個參數後「納入現況」仍要走得通，要更嚴由
+開發者自己編輯 schema 檔。看不出型別的欄位（空陣列的元素、null、日期）不鎖，不是猜一個。
+人工指定型別是 #285。
 
 欄位路徑的寫法：巢狀以 `.` 相接（`outer.inner`），陣列元素以 `[]` 標記
 （`items[]`、`servers[].host`）。這樣一個路徑字串就定位得到任一層的值，納管介面
@@ -63,10 +65,28 @@ def _walk(value: object, path: str, out: dict[str, str]) -> None:
             # 空陣列推不出元素型別——標示為未知，不是猜一個（T12）。
             out[element] = _UNKNOWN
             return
-        # 以第一個元素代表整個陣列的元素型別。異質陣列以第一個為準，這是刻意的
-        # 簡化：T12 只要求「推斷出元素型別」，統一多種型別是 schema 的工作，而
-        # schema 不在 v0.2.0（#9）。
-        _walk(items[0], element, out)
+        # 每個元素都看：只看第一個的話，`[0, 0.5]` 會記成 int，骨架就擋掉 0.5（#38）。
+        # 同一路徑在不同元素上型別不同時由 `_unify` 決定——能說是同一種就說，說不了標未知。
+        merged: dict[str, str] = {}
+        for item in items:
+            found: dict[str, str] = {}
+            _walk(item, element, found)
+            for key, name in found.items():
+                merged[key] = _unify(merged.get(key), name)
+        out.update(merged)
+
+
+def _unify(seen: str | None, name: str) -> str:
+    """同一欄位在陣列的不同元素上出現的兩個型別，合成一個。
+
+    一樣就沿用；整數與浮點混用是浮點陣列（`[0, 0.5]`）；其餘對不起來的標未知——不拿其中
+    一個代表全部。
+    """
+    if seen is None or seen == name:
+        return name
+    if {seen, name} == {"int", "float"}:
+        return "float"
+    return _UNKNOWN
 
 
 # 比對順序就是這張表的順序，而順序是有意義的：**bool 必須排在 int 前面**，因為 Python
@@ -90,6 +110,57 @@ def _type_name(value: object) -> str:
     if isinstance(value, Sequence) and not isinstance(value, bytes):
         return "list"
     return _UNKNOWN
+
+
+# ── schema 骨架（T12 的 draft_schema，#38）────────────────────────────────────
+
+_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+
+# 推斷的型別名 → JSON Schema 的型別名。不在表上的（null、unknown）不鎖型別：當下的值看
+# 不出作者要什麼，鎖了就是替人猜。資料，不是邏輯。
+_JSON_TYPES: dict[str, str] = {
+    "bool": "boolean",
+    "int": "integer",
+    "float": "number",
+    "string": "string",
+    "dict": "object",
+    "list": "array",
+}
+
+# 路徑裡「沒被跳脫的點」才是階層分隔；`\.` 是 key 本身的字面點（#219）。
+_SEGMENT_DOT = re.compile(r"(?<!\\)\.")
+
+
+def draft_schema(types: Mapping[str, str]) -> dict[str, object]:
+    """由「欄位路徑 → 型別」產生 JSON Schema 骨架。`types` 是 `infer_types` 的結果（前序：
+    父層先於子層），頂層是物件。
+    """
+    root: dict[str, object] = {"$schema": _SCHEMA_DIALECT, "type": "object"}
+    nodes: dict[str, dict[str, object]] = {"": root}
+    for path, name in types.items():
+        node: dict[str, object] = {}
+        if name in _JSON_TYPES:
+            node["type"] = _JSON_TYPES[name]
+        parent, key = _split_parent(path)
+        if key is None:
+            nodes[parent]["items"] = node
+        else:
+            properties = nodes[parent].get("properties")
+            if not isinstance(properties, dict):
+                properties = nodes[parent]["properties"] = {}
+            properties[key] = node
+        nodes[path] = node
+    return root
+
+
+def _split_parent(path: str) -> tuple[str, str | None]:
+    """把欄位路徑拆成（父層路徑, 自己的 key）；陣列元素（`…[]`）沒有 key，回 None。"""
+    if path.endswith("[]"):
+        return path[:-2], None
+    dots = [match.start() for match in _SEGMENT_DOT.finditer(path)]
+    # `a[].b` 的父層是 `a[]`；最後一個階層分隔之前的整段就是父層路徑。
+    parent, leaf = (path[: dots[-1]], path[dots[-1] + 1 :]) if dots else ("", path)
+    return parent, leaf.replace("\\.", ".")
 
 
 # ── 歧義偵測（T12 的 find_ambiguous，#10）─────────────────────────────────────

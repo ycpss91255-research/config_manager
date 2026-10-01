@@ -13,8 +13,17 @@ group／mode）。寫進 repo 內部是另一件事——受信任的路徑、�
 from __future__ import annotations
 
 import os
+import subprocess
+from collections.abc import Callable
 
+from pydantic import ValidationError
+from tomlkit.exceptions import TOMLKitError
+
+from config_manager.core.config_list import load
+from config_manager.core.errors import ConfigListError
+from config_manager.core.models import ConfigList
 from config_manager.io.atomic import replace_atomically
+from config_manager.io.errors import ConfigListUnparsable, WriterError
 from config_manager.io.preflight import CONFIG_LIST_NAME
 
 _SOURCES_DIR = "files"
@@ -42,6 +51,28 @@ def place_source(repo: str, hostname: str, target: str, content: bytes) -> str:
     os.makedirs(os.path.dirname(absolute), exist_ok=True)
     replace_atomically(absolute, content)
     return relative
+
+
+def load_list(repo: str) -> tuple[str, ConfigList]:
+    """讀＋載入既有清單，回（原文, 已驗證模型）。讀（非 UTF-8）與載入（壞 TOML／未知欄位／不符
+    模型／既有就重複）的失敗都是伺服器端資料損壞，映成 ConfigListUnparsable（結構化 500，與
+    scan／preflight 一致，#248/#257）。會改寫清單檔的編排（納管、解除納管、產生 schema）共用。
+
+    讀檔也要包在這裡：非 UTF-8 的 UnicodeDecodeError 在 open().read() 就發生，先前若只包 load
+    會逃逸成裸 500。tomlkit 對壞 TOML 丟 TOMLKitError（非 core.ParseError——接那個是死碼，#257）；
+    load 的形狀／未知欄位／完整性丟 ConfigListError；model_validate 丟 ValidationError。
+    """
+    path = os.path.join(repo, CONFIG_LIST_NAME)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        return text, load(text)
+    except (UnicodeDecodeError, TOMLKitError, ValidationError, ConfigListError) as error:
+        raise ConfigListUnparsable(
+            f"清單檔無法解析：{path}——{error}。"
+            "下一步：依訊息指出的位置修正該檔，或以 UTF-8 重新存檔",
+            file=path,
+        ) from error
 
 
 def write_config_list(repo: str, text: str) -> None:
@@ -74,3 +105,18 @@ def read_or_none(path: str) -> bytes | None:
             return handle.read()
     except FileNotFoundError:
         return None
+
+
+def undo(steps: list[tuple[str, Callable[[], None]]]) -> list[str]:
+    """逐步執行回滾的還原步驟，回傳還原不了的那幾步（「標籤（原因）」）。
+
+    一步失敗不中途停——能還原多少算多少，沒還原的由呼叫端指名、大聲失敗（`…LeftBehind`）。
+    改寫 repo 的編排（解除納管、產生 schema）共用這一份，回滾的寬容度才不會各自漂移。
+    """
+    leftover = []
+    for label, step in steps:
+        try:
+            step()
+        except (OSError, WriterError, subprocess.CalledProcessError) as error:
+            leftover.append(f"{label}（{error}）")
+    return leftover

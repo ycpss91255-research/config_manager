@@ -311,3 +311,31 @@ class UnmanageLeftBehind(Exception):
     與 `OnboardLeftBehind` 同構：同時說出原本的失敗與清理的失敗、指名殘留了什麼，
     `__cause__` 指向原本的失敗。
     """
+
+
+class SchemaNotFound(Exception):
+    """要產生 schema 骨架的 uid 不在清單檔裡（#38）：定位不到，不是衝突也不是格式錯。"""
+
+
+class SchemaExists(Exception):
+    """這份 config 已經有 schema（#38）。
+
+    再產生一次會蓋掉開發者在那份檔案裡收緊過的內容（必填、範圍、人工指定的型別），所以擋下、
+    不覆寫——預設落向安全（不變式 4）。
+    """
+
+
+class SchemaUnavailable(Exception):
+    """這份 config 沒有可以推導 schema 的結構（#38）。
+
+    `raw` 是刻意宣告「不解析、只做版控」；頂層不是物件的內容（整份是一個陣列或純量）沒有
+    欄位路徑可言。兩者都產生不了骨架——說出原因，不產生一份空的假裝有把關（不變式 2）。
+    """
+
+
+class SchemaLeftBehind(Exception):
+    """產生 schema 骨架中途失敗、回滾也失敗，repo 沒能回到產生前（#38）。
+
+    與 `OnboardLeftBehind` 同構：同時說出原本的失敗與清理的失敗、指名殘留了什麼，
+    `__cause__` 指向原本的失敗。
+    """

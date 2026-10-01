@@ -3,8 +3,8 @@
 涵蓋 T12 的兩半：`infer_types(資料) -> {欄位路徑: 型別}`（#9），以及
 `find_ambiguous(原文, format) -> [歧義]`（#10）。
 
-`draft_schema` 與人工指定型別**不**在這裡：它們不在 v0.2.0 的範圍（#9 明寫「只做這
-一層，不產生完整 JSON Schema」），寫規格會是寫在還沒議定要落地的行為上。
+`draft_schema(型別對照) -> JSON Schema 骨架` 也在這裡（#38）：骨架**只鎖型別**——不寫必填、
+不擋多出來的 key、不寫範圍（#38 動工前定案）。人工指定型別是 #285，不在這裡。
 
 核心層測試在無檔案系統、無 git、無網路下執行（CLAUDE.md）：資料直接以 Python 結構
 餵進去。
@@ -12,8 +12,10 @@
 
 import datetime
 
-from config_manager.core.inference import find_ambiguous, infer_types
-from config_manager.core.parse import parse
+import jsonschema
+
+from config_manager.core.inference import draft_schema, find_ambiguous, infer_types
+from config_manager.core.parse import parse, values
 
 
 def test_basic_scalar_types_are_inferred():
@@ -59,6 +61,30 @@ def test_list_of_dicts_yields_paths_for_element_fields():
         "servers[]": "dict",
         "servers[].host": "string",
         "servers[].port": "int",
+    }
+
+
+def test_a_list_mixing_int_and_float_is_a_float_list():
+    # `[0, 0.5]` 的作者要的是浮點陣列；只看第一個元素會記成 int，骨架就會擋掉 0.5（#38）。
+    types = infer_types({"gains": [0, 0.5, 1]})
+    assert types == {"gains": "list", "gains[]": "float"}
+
+
+def test_a_list_mixing_unrelated_types_has_an_unknown_element_type():
+    # 元素型別對不起來時標未知，不是拿第一個元素代表全部（#38）。
+    types = infer_types({"mixed": [1, "two"]})
+    assert types == {"mixed": "list", "mixed[]": "unknown"}
+
+
+def test_list_of_dicts_collects_fields_from_every_element():
+    # 第二個元素才出現的欄位也要有型別；同名欄位型別不一致時照同一套規則處理（#38）。
+    types = infer_types({"servers": [{"host": "a", "port": 80}, {"host": "b", "weight": 0.5}]})
+    assert types == {
+        "servers": "list",
+        "servers[]": "dict",
+        "servers[].host": "string",
+        "servers[].port": "int",
+        "servers[].weight": "float",
     }
 
 
@@ -217,3 +243,89 @@ def test_ambiguous_scalar_inside_a_flow_mapping_flags_the_line():
 def test_a_flow_collection_without_ambiguous_tokens_is_not_flagged():
     # [80, 443] 是純十進位、無跨版本歧義——fail-closed 只在含疑似 token 時才標，不誤報（#258）。
     assert find_ambiguous("ports: [80, 443]\n", "yaml") == []
+
+
+# ── schema 骨架（T12 的 draft_schema，#38）────────────────────────────────────
+
+_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+
+
+def test_skeleton_maps_each_scalar_type_to_its_json_schema_type():
+    schema = draft_schema({"name": "string", "count": "int", "ratio": "float", "on": "bool"})
+    assert schema == {
+        "$schema": _DIALECT,
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "count": {"type": "integer"},
+            "ratio": {"type": "number"},
+            "on": {"type": "boolean"},
+        },
+    }
+
+
+def test_skeleton_nests_objects_under_their_parent():
+    schema = draft_schema({"outer": "dict", "outer.inner": "int"})
+    assert schema["properties"] == {
+        "outer": {"type": "object", "properties": {"inner": {"type": "integer"}}}
+    }
+
+
+def test_skeleton_describes_list_elements_under_items():
+    schema = draft_schema(
+        {"servers": "list", "servers[]": "dict", "servers[].host": "string", "ids": "list",
+         "ids[]": "int"}
+    )
+    assert schema["properties"] == {
+        "servers": {
+            "type": "array",
+            "items": {"type": "object", "properties": {"host": {"type": "string"}}},
+        },
+        "ids": {"type": "array", "items": {"type": "integer"}},
+    }
+
+
+def test_skeleton_leaves_unknown_and_null_fields_unconstrained():
+    # 空陣列、null、日期都看不出作者要的型別——不鎖，不是猜一個（#38：骨架只鎖看得出來的型別）。
+    schema = draft_schema({"empty": "list", "empty[]": "unknown", "missing": "null",
+                           "when": "unknown"})
+    assert schema["properties"] == {
+        "empty": {"type": "array", "items": {}},
+        "missing": {},
+        "when": {},
+    }
+
+
+def test_skeleton_restores_a_literal_dot_in_a_key():
+    # infer_types 把 key 裡的字面點跳脫成 `\.`（#219）；骨架的屬性名要還原成原本的 key。
+    schema = draft_schema({"a\\.b": "string", "a": "dict", "a.b": "int"})
+    assert schema["properties"] == {
+        "a.b": {"type": "string"},
+        "a": {"type": "object", "properties": {"b": {"type": "integer"}}},
+    }
+
+
+def test_skeleton_validates_the_data_it_was_drafted_from():
+    # T12：產生的骨架可被 schema 驗證器載入，且能驗過原始資料。
+    data = values(parse(
+        "robot:\n  name: amr01\n  max_vel: 0.8\n  retries: 3\n  sim: false\n"
+        "  frames: [base, odom]\n  gains: [0, 0.5]\n  spare:\n",
+        "yaml",
+    ))
+    schema = draft_schema(infer_types(data))
+    jsonschema.Draft202012Validator.check_schema(schema)
+    jsonschema.validate(data, schema)
+
+
+def test_skeleton_rejects_a_value_of_another_type():
+    schema = draft_schema(infer_types({"retries": 3, "name": "amr01"}))
+    errors = list(jsonschema.Draft202012Validator(schema).iter_errors(
+        {"retries": "three", "name": "amr01"}
+    ))
+    assert [list(error.absolute_path) for error in errors] == [["retries"]]
+
+
+def test_skeleton_tolerates_added_and_removed_fields():
+    # 只鎖型別（#38 定案）：現場多加一個參數、或少一個，都不被骨架擋——納入現況才走得通。
+    schema = draft_schema(infer_types({"retries": 3, "name": "amr01"}))
+    jsonschema.validate({"retries": 5, "extra": True}, schema)

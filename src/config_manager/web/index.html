@@ -115,6 +115,8 @@
   /* 草稿標記（#21）：樹節點右側的橘點與狀態色點分開（§7.4.3）；面板標頭的「草稿」字樣同色。 */
   .dot-draft { background: #e69b2e; margin-left: 4px; }
   .panel-draft { flex: none; font-size: 12px; color: #e69b2e; font-weight: 600; }
+  .panel-schema, .panel-unvalidated { flex: none; font-size: 12px; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); }
+  .panel-unvalidated { color: #b3261e; border-color: #b3261e; }
   .panel-actions { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line); }
   .panel-actions .hint { flex: 1; font-size: 12px; color: var(--muted); }
   .panel-save:disabled { opacity: .5; cursor: not-allowed; }
@@ -978,6 +980,15 @@ function panelNode(detail) {
   close.addEventListener("click", () => closeSlot(detail.uid));
   const draftMark = panel.querySelector(`[data-testid='panel-draft-${detail.uid}']`);
   draftMark.hidden = !detail.draft_values;
+  if (detail.format === "raw") {
+    // raw 是唯一不受把關的格式——明確標示「未驗證」，使用者看得到自己放棄了什麼（§3.4）。
+    head.insertBefore(element("span", {
+      class: "panel-unvalidated", "data-testid": `panel-unvalidated-${detail.uid}`,
+      title: "raw：只版控、不解析——內容不經任何檢查", text: "未驗證",
+    }), close);
+  } else if (detail.schema) {
+    head.insertBefore(schemaBadge(detail.uid, detail.schema), close);
+  }
   if (row && row.state === "drift") panel.appendChild(driftBanner(detail, true));
   const structured = detail.values && typeof detail.values === "object" && !Array.isArray(detail.values);
   if (detail.format === "raw" || !structured) {
@@ -1035,6 +1046,17 @@ function panelNode(detail) {
     type: "button", "data-testid": "panel-history", text: "歷史",
   });
   historyButton.addEventListener("click", () => openHistory(detail));
+  // 產生 schema 骨架（#38）：僅開發者、還沒有 schema 的才出現——不在 DOM 裡，不是停用（ADR-00000020）。
+  const actions = [historyButton];
+  if (!detail.schema && currentIdentity && currentIdentity.role === "developer") {
+    const schemaButton = element("button", {
+      type: "button", class: "editing-only", "data-testid": "panel-schema-draft", text: "產生 schema",
+    });
+    schemaButton.addEventListener("click", () => {
+      draftSchema(detail, { button: schemaButton, error: saveError, head, close });
+    });
+    actions.push(schemaButton);
+  }
   // 搜尋命中的參數：標示那幾列，並把第一列捲進視野（「展開時定位到該列」，§7.4.2）。
   const hits = hitParams.get(detail.uid) || [];
   let firstHit = null;
@@ -1046,13 +1068,54 @@ function panelNode(detail) {
   }
   if (firstHit) queueMicrotask(() => firstHit.scrollIntoView({ block: "center" }));
   panel.append(list, saveError, element("div", { class: "panel-actions" }, [
-    historyButton,
+    ...actions,
     element("span", { class: "hint", text: "「儲存」只是存為草稿——不記錄、不寫到目標；工具列的「進版」才會。" }),
     discardButton,
     saveButton,
   ]));
   refreshSave();
   return panel;
+}
+
+function schemaBadge(uid, path) {
+  return element("span", {
+    class: "panel-schema", "data-testid": `panel-schema-${uid}`,
+    title: `修改會依 ${path} 檢查型別`, text: "有 schema",
+  });
+}
+
+// 產生 schema 骨架（#38）。不可悄悄開啟一道把關：先說會發生什麼。成功後就地換上標示、拿掉按鈕，
+// **不重畫欄位表**——還沒儲存的改動不能因此消失（不變式 2）。
+async function draftSchema(detail, ui) {
+  const ok = await confirmAction(
+    `替「${detail.name}」產生 schema？`,
+    "會依目前的值記下每個參數的型別，存進設定庫的 .schemas/ 並留一筆變更紀錄。"
+      + "之後這份 config 的修改會依它檢查型別。只記型別，不限制必填、多出來的參數或數值範圍。",
+  );
+  if (!ok) return;
+  ui.error.hidden = true;
+  ui.button.disabled = true;
+  try {
+    const response = await fetch(
+      `${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/schema`, { method: "POST" },
+    );
+    const payload = await response.json();
+    if (!response.ok) {
+      renderSaveError(ui.error, payload.detail);
+      return;
+    }
+    detail.schema = payload.schema;
+    ui.button.remove();
+    ui.head.insertBefore(schemaBadge(detail.uid, payload.schema), ui.close);
+    ui.head.after(element("p", {
+      class: "notice", "data-testid": "schema-drafted-notice",
+      text: `已產生 schema（${payload.schema}），並記一筆變更紀錄。`,
+    }));
+  } catch (error) {
+    renderSaveError(ui.error, `送不出去：${error && error.message ? error.message : error}`);
+  } finally {
+    ui.button.disabled = false;
+  }
 }
 
 // 送出的是相對**來源**的全部改動（後端以來源複本為底重建草稿文字），不是相對上一份草稿的差量。
