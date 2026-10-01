@@ -72,6 +72,7 @@ from config_manager.io.errors import (
     OnboardLeftBehind,
     PreflightError,
     PromoteLeftBehind,
+    SchemaUnreadable,
     SourceError,
     UnmanageLeftBehind,
     UnmanageNotFound,
@@ -83,6 +84,7 @@ from config_manager.io.repo import read_or_none
 from config_manager.io.preflight import read_config_list
 from config_manager.io.promote import apply as apply_promotions
 from config_manager.io.scan import ScanFailure, scan
+from config_manager.io.schema import read_schema
 from config_manager.io.source import Source, local_hostname, read_source
 from config_manager.io.unmanage import unmanage
 
@@ -184,6 +186,8 @@ def create_app(
     # 清單檔／白名單設定檔在執行期讀不了（被改壞／刪除、掛載漂移）時，PreflightError 家族
     # 會從請求路徑冒出。一處統一映射成帶檔名與下一步的結構化 500，不讓它們變裸 500（#209）。
     app.add_exception_handler(PreflightError, _preflight_error)
+    # 清單檔指到的 schema 讀不出來：同樣是伺服器側資料的問題，同一種結構化 500（#39）。
+    app.add_exception_handler(SchemaUnreadable, _preflight_error)
 
     # 目前的身分。一次只有一個編輯階段（ADR-00000014），所以放在 app 上而不是
     # 一個模組層的全域——後者會讓同一個行程裡起兩個 app 互相看見對方的身分。
@@ -500,8 +504,8 @@ def _target_values(entry: FileEntry) -> tuple[object, str | None]:
 def _save_draft(
     repo: str, held: dict[str, Identity], stage_box: dict[str, Stage], payload: DraftInput
 ) -> dict[str, object]:
-    """儲存草稿的邏輯（#18／#21）：以來源複本為底套上改動、跑第 1 層、存進階段。
-    不記錄、不寫目標——那是進版的事。"""
+    """儲存草稿的邏輯（#18／#21）：以來源複本為底套上改動、跑驗證（第 1 層；這份有 schema 再跑
+    第 2 層，#39）、存進階段。不記錄、不寫目標——那是進版的事。"""
     if held.get("identity") is None:
         raise HTTPException(
             status_code=409,
@@ -524,14 +528,17 @@ def _save_draft(
             "下一步：檢查 config-repo 裡這份檔案是否被改壞或移走",
         ) from error
     try:
-        stage_box["stage"] = save_draft(stage_box["stage"], payload.uid, text, entry.format)
+        stage_box["stage"] = save_draft(
+            stage_box["stage"], payload.uid, text, entry.format, read_schema(repo, entry)
+        )
     except DraftInvalid as error:
-        # 第 1 層沒過：422，逐條問題（行號／訊息／建議）原樣回給介面標示在那一列。
+        # 驗證沒過：422，逐條問題（行號／欄位路徑／訊息／建議）原樣回給介面標示在那一列。
         raise HTTPException(
             status_code=422,
             detail={
                 "message": str(error),
                 "uid": payload.uid,
+                "file": entry.source,
                 "problems": [as_problem(problem) for problem in error.problems],
             },
         ) from error
@@ -563,8 +570,15 @@ def _promote_all(
             status_code=409,
             detail="沒有草稿可進版。下一步：先儲存至少一份草稿（POST /api/drafts）",
         )
+    config_list = read_config_list(repo)
+    # 進版時依**此刻**的 schema 重驗（#39）：草稿存下之後 schema 被收緊的，在這裡被擋。
+    schemas = {
+        entry.uid: schema
+        for entry in config_list.files
+        if entry.uid in stage.drafts and (schema := read_schema(repo, entry)) is not None
+    }
     try:
-        plans = promote(stage, read_config_list(repo))
+        plans = promote(stage, config_list, schemas)
     except PromoteInvalid as error:
         # 任一份沒過整批不進版；指出哪一份（uid）的哪些參數。
         raise HTTPException(
@@ -572,6 +586,7 @@ def _promote_all(
             detail={
                 "message": str(error),
                 "uid": error.uid,
+                "file": next((e.source for e in config_list.files if e.uid == error.uid), None),
                 "problems": [as_problem(problem) for problem in error.problems],
             },
         ) from error

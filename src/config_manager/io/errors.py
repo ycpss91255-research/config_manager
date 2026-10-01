@@ -339,3 +339,16 @@ class SchemaLeftBehind(Exception):
     與 `OnboardLeftBehind` 同構：同時說出原本的失敗與清理的失敗、指名殘留了什麼，
     `__cause__` 指向原本的失敗。
     """
+
+
+class SchemaUnreadable(Exception):
+    """清單檔指到的 schema 讀不出一份可用的 schema（#39）：檔案不在、不是 JSON、不是合法的
+    JSON Schema，或路徑指到 `.schemas/` 以外。
+
+    **不當成「沒有 schema」**：那會讓第 2 層的把關悄悄消失，而使用者以為還在（不變式 2／4）。
+    `file` 是那份 schema 檔的路徑，與 `PreflightError` 同形，API 層回結構化的 500。
+    """
+
+    def __init__(self, message: str, file: str) -> None:
+        super().__init__(message)
+        self.file = file

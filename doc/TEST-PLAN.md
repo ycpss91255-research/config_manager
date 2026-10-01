@@ -168,7 +168,12 @@ check(content, format, rules, schema?) -> [問題]   # 空清單 = 通過
 | 第 1 層 | 重複 key → 問題，**列出該 key 的所有出現行號** |
 | 第 1 層 | **yaml 清單的每個項目各自是一個範圍**：不同項目的同名 key 不是重複（項目裡每一個 key 都算，不只緊接在 `- ` 後面那個）；同一個項目內重複才是 |
 | 第 2 層 | 型別不符 schema → 問題，指出欄位 |
-| 第 2 層 | 超出數值範圍 → 問題 |
+| 第 2 層 | 超出數值範圍 → 問題，說出界限 |
+| 第 2 層 | 缺少必填欄位 → 問題，指到它該在的那個物件；**拼錯的 key → 問題，建議最接近的已知 key** |
+| 第 2 層 | 不在列舉裡的值 → 問題，列出允許的值；沒有專屬說法的規則（如 `pattern`）照樣回報、指名規則 |
+| 第 2 層 | **整數欄位不收浮點**（`3.0` 不是整數——ROS 區分 `1` 與 `1.0`；比 JSON Schema 的預設嚴）；數字欄位收整數 |
+| 第 2 層 | **每個問題帶欄位路徑**（文法與欄位表的參數列一致）**與行號**（清單元素指到那個元素；定位不到確切位置時退回最近的上層） |
+| 第 2 層 | 沒給 schema 不跑第 2 層；`raw` 一律不驗；解析不過時只回第 1 層的語法問題 |
 | 第 2 層 | **人工指定的型別優先於推斷型別** |
 | 第 2 層 | **同一份 schema 驗 YAML / TOML / JSON 三種格式的等價內容，結果一致** |
 | 第 3 層 | 跨欄位規則違反 → 警示（非錯誤），可 override |
@@ -845,6 +850,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **偏離處置（`POST /api/configs/{uid}/resolve`，body `{action}`，§3.5.3 的 resolve 動作）：`overwrite`→來源寫回目標、記一筆空 `cfg`（以來源覆蓋目標）；`adopt`→目標現況走第 1 層驗證，過→一筆 `adopt` 進版資料走 apply（來源＝現場、寫出、狀態回一致），含非法值→422 列問題、來源不動；`adopt_draft`→現況載入草稿並回 `warnings`（不擋、不碰 repo 與目標）。目標與來源一致→409（沒有偏離）、目標不存在→409 指去寫出修復、未設身分→409、uid 不在→404、目標白名單外／非 UTF-8→422。**寫出修復（`POST /api/configs/{uid}/apply`，§3.5.3 的 apply 動作）**：來源寫到目標、不留紀錄（#29）** |
 | **搜尋（`GET /api/search?q=&scope=`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：五檔範圍、預設「全部」；回以 config 為單位的命中 `{uid, name, target, matched:[範圍…], params:[{path, value}]}` 與 `unindexed`（來源複本壞掉、參數沒進索引的那幾份）；索引每次請求從真實來源重建，所以修改後舊值不再命中、解除納管後索引移除；未知範圍→422 列五個允許值、`q` 空→422（#32） |
 | **產生 schema 骨架（`POST /api/configs/{uid}/schema`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：僅開發者（403）、需身分（409）；骨架存進 config-repo 的 `.schemas/<uid>.json`、條目記下 `schema`、記一筆 `meta`，回 `{uid, schema}`；`GET /api/configs/{uid}` 另回 `schema`（路徑或 null）；已有 schema→409（不覆寫）、`raw`／頂層不是物件→422 說原因、uid 不在→404（#38） |
+| **第 2 層接在三個寫入點上（#39）**：儲存草稿（`POST /api/drafts`）、進版（`POST /api/promote`，依**此刻**的 schema 重驗）、將現況納入來源（`resolve` 的 `adopt`）——不符 schema→422，detail 另帶 `file`（驗的是哪一份：存草稿與進版是 repo 內的來源複本，納入現況是目標路徑），`problems` 每筆另帶 `path`（欄位路徑；第 1 層為 null）；`adopt_draft` 照載、schema 的問題列成警告；清單檔指到的 schema 讀不出來（不在、不是 JSON、不是合法 schema、指到 `.schemas/` 外）→結構化的 500 `{message, file}`，**不當成沒有 schema 放行** |
 | **編輯階段（`GET`／`POST`／`DELETE /api/session/lock`、`POST /api/session/lock/renew`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 GET /api/session／#122）：頁面載入時以目前身分取得（回識別碼、持有者、開始時間、上次逾時清了幾份草稿）；已被占用→409 `{kind:"held", holder{name,email}, started_at}`；續期用識別碼，階段已失效→410（不替你重新取得）；釋放不清身分（重新整理也會觸發釋放，同一個人回來不必再填）。**別人持有時 `POST /api/session` 換身分→409**（否則持有者接下來的紀錄會掛到別人頭上）；同一個人再設不擋。**續期逾時兩種模式都有**（`CM_SESSION_TIMEOUT` 秒；未設＝預設值，不是不逾時）：持有分頁異常中斷、心跳停了就回收，否則之後的人永遠唯讀；由注入的時鐘判定，回收時草稿一併清除、下一個取得者被告知清了 N 份。頁面關閉時以 `POST /api/session/lock/release`（sendBeacon、text/plain，不必跨來源預檢）釋放（#33；部署模式的閒置逾時是 #48） |
 | **單一版本內容（`GET /api/configs/{uid}/history/{sha}`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 GET /api/session／#122）：回那一版來源複本的 `{sha, types, values}`（形狀同單筆內容端點），供歷史檢視算參數層級差異（§7.6.2）；sha 不在這份 config 的歷史→422、uid 不在清單→404（#26） |
 | **草稿（`POST /api/drafts`，body `{uid, edits}`）：以來源複本為底套 `edits`（路徑→新值）、跑第 1 層、存進階段，回 `{count, drafts:[{uid, format}]}`；不產生變更紀錄、目標不變；第 1 層沒過→422，detail 為結構化 `{message, uid, problems:[{line, message, suggestion, severity, lines}]}`（供欄位表標示那一列）且階段不變；路徑找不到→422、uid 不在清單→404、未設身分→409。`GET /api/drafts` 回同形；`DELETE /api/drafts[/{uid}]` 捨棄全部／一份，指名的沒草稿→404（#19）** |
@@ -923,6 +929,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | 切換為開發者後，上述元素出現 |
 | 搜尋範圍下拉選「參數名稱」後，只命中參數名稱；**（#37）搜尋參數名稱列出含該參數的 config、展開時該列標示並定位；搜尋值找到持有它的參數；「config 名稱」只命中名稱、「目標路徑」只命中路徑；無結果有明確提示；搜尋走 `GET /api/search`，失敗顯示原因而非空結果** |
 | **（#38）開發者的面板有「產生 schema」：先經確認框說明後果，取消什麼都不變；確認後標頭出現「有 schema」、按鈕消失、未儲存的改動仍在；已有 schema 的不再出現按鈕；一般使用者模式下按鈕不存在於 DOM；後端拒絕時原因原樣顯示；`raw` 標頭標示「未驗證」且不提供產生** |
+| **（#39）schema 不收的值存不成草稿：面板的儲存錯誤列出原因（行號、欄位、建議），草稿標記不出現** |
 | 修改群組並儲存 → 左側樹立即重建 |
 | list 參數可新增、移除、**以 ↑↓ 調整順序**，順序變更後儲存生效 |
 | 歷史列表**不出現 `cfg`／`revert`／`import` 等內部代號**；每筆顯示行為描述、作者與時間；篩選「只看內容變更」（預設）不列納入管理那筆、「全部」列出且仍以行為描述呈現（#25） |
@@ -1322,12 +1329,15 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `core/index` | T14 | 已落地（`search_configs` 五檔範圍於 #32 加入） |
 | `core/parse` | T6（格式解析與原樣寫回） | 已落地（yaml／json／toml／ini／raw；#8） |
 | `core/models` | 無獨立測試介面——見「刻意的空格」 | 已落地 |
-| `core/validate` | T3 | 部分落地：第 1 層（語法、正規形式白名單、縮排／尾隨空白、重複 key 列全部行號）已落地（#16）；第 2／3 層未落地（#39、#41） |
+| `core/validate` | T3 | 已落地：第 1 層（語法、正規形式白名單、縮排／尾隨空白、重複 key 列全部行號，#16）；`check` 收到 schema 時併入第 2 層的問題（#39）。第 3 層未落地（#41） |
+| `core/schema_check` | T3 | 已落地（第 2 層：`check_schema` 把 jsonschema 的錯誤轉成帶欄位路徑／行號／建議的問題；整數不收浮點；`ensure_valid_schema` 擋壞掉的 schema，#39） |
+| `core/locate` | T3 | 已落地（欄位路徑→原文行號：yaml／json 走 ruamel 的位置資訊，toml／ini 逐行掃；效果由 T3 第 2 層的行號斷言觀察，#39） |
+| `core/problem` | T3 | 已落地（`Problem` 的形狀與嚴重度常數——三層驗證共用，從 `core/validate` 抽出以免第 2 層反向 import 成環；無行為，由 T3 的規格觀察，#39） |
 | `core/whitelist` | T4（正規化比對）＋ T8（符號連結逃逸） | 已落地：T4 的 `decide` 正規化比對（#11）；符號連結逃逸在**寫出**時點以 realpath 判定，落在 `io/writer`（#5，已 CLOSED）。**納管的讀取路徑上沒有這一層**——見 #174 |
 | `core/inference` | T12 | 已落地：型別推斷（`infer_types`，#9）、歧義偵測（`find_ambiguous`，#10）、schema 骨架（`draft_schema`，#38）；人工指定型別未落地（#285） |
 | `core/attributes` | T16 | 未落地 |
 | `core/roles` | T17 | 未落地 |
-| `core/drafts` | T18 | 已落地：草稿（`save_draft`／`adopt_draft`／`discard`，不可變 `Stage`，#18）；`promote` 全部驗證才回 `[Promotion]`、任一沒過丟 `PromoteInvalid`（#19） |
+| `core/drafts` | T18 | 已落地：草稿（`save_draft`／`adopt_draft`／`discard`，不可變 `Stage`，#18）；`promote` 全部驗證才回 `[Promotion]`、任一沒過丟 `PromoteInvalid`（#19）；儲存、納入、進版都可帶 schema 跑第 2 層（#39） |
 | `io/writer` | T8 | 已落地 |
 | `io/atomic` | T8——原子替換的共用核心，行為由 `io/writer` 的 T8 規格擋著（#186） | 已落地 |
 | `io/repo` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔可讀→T1（`load`）（#186） | 已落地（`place_source`／`write_config_list`／`load_list`——會改寫清單檔的編排共用的讀＋載入，失敗映成 `ConfigListUnparsable`，#257） |
@@ -1342,7 +1352,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/paths` | 效果透過既有介面觀察：`blocking_parent` 的「上層目錄擋住去路」分類在 T22（`io/source`）與 T20（`io/digest`）的 EACCES 規格被斷言——`source` 與 `digest` 共用的薄工具，同 `io/repo` 的處理（#214） | 已落地（`ancestors`／`blocking_parent`） |
 | `io/onboard` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔條目→T1（`load`）、匯入 commit→T7（`io/git.history`）（#12）——編排層，不算新值，同 `io/repo` 的處理。**匯入紀錄的作者＝傳入的身分、隨之而變**（以 `history()` 的 `Change.author` 驗、不同身分各對各的紀錄，#114）。重複攔在寫入前（#172）與寫入失敗即整批回滾（#173）以注入失敗＋`git status` 觀察，回滾也失敗時丟 `OnboardLeftBehind` | 已落地（`onboard`） |
 | `io/unmanage` | 效果透過既有介面觀察：清單檔條目→T1（`load`）、`unmanage` 紀錄→T7（`history`）、來源複本、schema 檔（有的話一併拿掉，#38）與 target 直接看檔案系統——編排層，同 `io/onboard` 的處理；寫入中途失敗整批回滾、回滾也失敗丟 `UnmanageLeftBehind`（#28） | 已落地（`unmanage`） |
-| `io/schema` | 效果透過既有介面觀察：清單檔條目的 `schema`→T1（`load`）、`meta` 紀錄→T7（`history`）、骨架檔直接看 `.schemas/`（內容由 T12 的 `draft_schema` 決定）——編排層，同 `io/unmanage` 的處理；已有 schema 不覆寫、`raw`／頂層不是物件說原因；寫入中途失敗整批回滾、回滾也失敗丟 `SchemaLeftBehind`（#38） | 已落地（`draft_skeleton`） |
+| `io/schema` | 效果透過既有介面觀察：清單檔條目的 `schema`→T1（`load`）、`meta` 紀錄→T7（`history`）、骨架檔直接看 `.schemas/`（內容由 T12 的 `draft_schema` 決定）——編排層，同 `io/unmanage` 的處理；已有 schema 不覆寫、`raw`／頂層不是物件說原因；寫入中途失敗整批回滾、回滾也失敗丟 `SchemaLeftBehind`（#38） `read_schema` 讀第 2 層要用的那一份：讀不出可用的 schema 一律丟 `SchemaUnreadable`、不退回「沒有 schema」（#39） | 已落地（`draft_skeleton`／`read_schema`） |
 | `io/drift` | 效果透過 T9 觀察：`overwrite`（寫出＋空 `cfg` 紀錄，紀錄沒成把目標還原）、`adopt`（走 `io/promote.apply`，kind `adopt`）——編排層，同 `io/onboard`／`io/promote` 的處理（#29） | 已落地（`overwrite`／`adopt`） |
 | `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath 與列目錄——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185） | 已落地（`browse`） |
 | `io/candidate` | T24（候選檔案數預覽，介面議定於 #206）：不以白名單為閘門、遞迴數一般檔（不讀內容）、每層 O_NOFOLLOW 不跟隨連結、深度／項目上限觸及回部分計數＋capped | 已落地（`count_candidates`） |

@@ -21,15 +21,18 @@ import os
 from collections.abc import Callable, Mapping
 
 from config_manager.core.config_list import dump
+from config_manager.core.errors import SchemaInvalid
 from config_manager.core.inference import draft_schema, infer_types
 from config_manager.core.models import FileEntry
 from config_manager.core.parse import parse, values
+from config_manager.core.schema_check import ensure_valid_schema
 from config_manager.io.atomic import replace_atomically
 from config_manager.io.errors import (
     SchemaExists,
     SchemaLeftBehind,
     SchemaNotFound,
     SchemaUnavailable,
+    SchemaUnreadable,
 )
 from config_manager.io.git import record, stage, unstage
 from config_manager.io.parsers import read_source
@@ -78,6 +81,50 @@ def draft_skeleton(repo: str, uid: str, author: str) -> FileEntry:
         _rollback(repo, relative, original, stray, failure)
         raise
     return updated
+
+
+def read_schema(repo: str, entry: FileEntry) -> dict[str, object] | None:
+    """`entry` 那份 config 的 schema（第 2 層驗證用，#39）；沒有 schema 回 None。
+
+    清單檔指到了 schema、卻讀不出一份可用的——檔案不在、不是 JSON、不是合法的 JSON Schema、
+    路徑指到 `.schemas/` 以外——一律丟 `SchemaUnreadable`，不退回「沒有 schema」。
+    """
+    if entry.schema_path is None:
+        return None
+    absolute = os.path.join(repo, entry.schema_path)
+    label = f"「{entry.name}@{entry.hostname}」的 schema（{entry.schema_path}）"
+    fix = "修好之前這份 config 不能修改；請開發者處理"
+    home = os.path.realpath(os.path.join(repo, SCHEMAS_DIR))
+    if os.path.commonpath([home, os.path.realpath(absolute)]) != home:
+        raise SchemaUnreadable(
+            f"{label}指到 {SCHEMAS_DIR}/ 以外，不讀。"
+            f"下一步：把清單檔裡這一筆的 schema 改回 {SCHEMAS_DIR}/ 底下的檔案。{fix}",
+            absolute,
+        )
+    try:
+        with open(absolute, encoding="utf-8") as handle:
+            schema = json.load(handle)
+        ensure_valid_schema(schema)
+    except FileNotFoundError as error:
+        raise SchemaUnreadable(
+            f"{label}不存在。下一步：從 git 歷史還原該檔，或拿掉清單檔裡這一筆的 schema。{fix}",
+            absolute,
+        ) from error
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SchemaUnreadable(
+            f"{label}讀不出來，不是合法的 JSON：{error}。下一步：依訊息修正該檔。{fix}", absolute
+        ) from error
+    except SchemaInvalid as error:
+        raise SchemaUnreadable(
+            f"{label}不是合法的 JSON Schema（{error.reason}）。下一步：依訊息修正該檔。{fix}",
+            absolute,
+        ) from error
+    if not isinstance(schema, dict):
+        raise SchemaUnreadable(
+            f"{label}的頂層不是物件，不能拿來檢查欄位。下一步：改成以 {{ }} 包起來的 schema。{fix}",
+            absolute,
+        )
+    return schema
 
 
 def _skeleton(repo: str, entry: FileEntry) -> dict[str, object]:

@@ -80,7 +80,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 狀態標籤 | `data-testid="panel-status-<uid>"` | 文字為一致／偏離／未部署 |
 | 草稿指示 | `data-testid="panel-draft-<uid>"` | 該區塊有草稿時出現（`GET /api/configs/{uid}` 回 `draft_values`） |
 | 儲存按鈕 | 文字「儲存」（`data-testid="panel-save"`） | **存為草稿**（`POST /api/drafts`，送相對來源的全部改動），不記錄也不寫出。驗證未過或沒有改動時停用 |
-| 儲存錯誤 | `data-testid="panel-save-error"` | 第 1 層沒過的 422 逐條列行號／原因／建議；其他錯誤原樣顯示 |
+| 儲存錯誤 | `data-testid="panel-save-error"` | 驗證沒過的 422（第 1 層；有 schema 時含第 2 層，#39）逐條列行號／原因／建議——給不出行號的不印行號，訊息已指名欄位；其他錯誤原樣顯示 |
 | 捨棄變更（單一） | `data-testid="panel-discard"` | 文字「捨棄變更」；**只在該份有草稿時出現**；經 W6 確認後 `DELETE /api/drafts/{uid}`，面板重讀為來源內容（#22） |
 | 退版按鈕 | 文字「退版」 | 針對單一 config，與草稿無關 |
 | 歷史按鈕 | 文字「歷史」（`data-testid="panel-history"`） | 右側工作區切成該 config 的歷史檢視（W4），左側樹不動（#25） |
