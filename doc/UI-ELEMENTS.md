@@ -153,7 +153,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 作者／時間 | 列內 `data-testid="history-author"`／`"history-time"` | 姓名（email 在 title）；`<time datetime=ISO>` 顯示本地時間 |
 | 差異區 | `data-testid="history-diff"` | 以參數為單位：`history-diff-summary`（N 個參數不同）＋每參數一列 |
 | 差異列 | `data-testid="diff-row-<參數路徑>"` | 帶 `data-change`（`same`／`changed`／`added`／`removed`）；列內 `diff-from`（那一版）→`diff-to`（目前）。顏色語言與 W3／W5 一致（改動＝偏離紅） |
-| 退回此版本 | 文字「退回此版本」（`data-testid="history-revert"`） | 選定一版、看過差異後才出現在差異區下方；與目前相同（0 個參數不同）時停用。點擊→W6 確認對話框（標題「退回此版本？」、後果：幾個參數會改變、產生新紀錄並寫出、歷史不改寫）→ `POST /api/configs/{uid}/revert`；成功→重開歷史並顯示 `history-notice`（已退回到版本 X）、左側樹重掃；被擋（有草稿 409 等）→ `history-revert-error` 原樣顯示原因與下一步（#27） |
+| 退回此版本 | 文字「退回此版本」（`data-testid="history-revert"`） | 選定一版、看過差異後才出現在差異區下方；與目前相同（0 個參數不同）時停用。點擊→W6 確認對話框（標題「退回此版本？」、後果：幾個參數會改變、產生新紀錄並寫出、歷史不改寫；**退版會動到 schema 時另寫明**——回到那一版當時的 schema，或那一版還沒有 schema 所以拿掉，#39）→ `POST /api/configs/{uid}/revert`；成功→重開歷史並顯示 `history-notice`（已退回到版本 X）、左側樹重掃；被擋（有草稿 409 等）→ `history-revert-error` 原樣顯示原因與下一步（#27） |
 | 通知 | `data-testid="history-notice"` | 退版成功等訊息；空時隱藏 |
 
 **測試須斷言**：列表中**不出現** `cfg`、`revert`、`import` 等字串。

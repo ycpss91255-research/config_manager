@@ -2121,3 +2121,67 @@ def test_a_broken_schema_file_blocks_saving_and_names_the_file(api, sources_root
     detail = json.loads(exc.value.read())["detail"]
     assert detail["file"] == str(schema_file) and "下一步" in detail["message"]
     assert _get(api, "/api/drafts")["count"] == 0
+
+
+# ── T9：退版時 schema 跟著回到那一版（#39 的定案，ADR-00000021）────────────────
+
+
+def test_reverting_to_a_version_from_before_the_schema_removes_the_schema(api, sources_root):
+    # 那一版當時還沒有 schema：退回去之後這份就沒有 schema。版本內容端點先說會這樣（確認框要用）。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "revert_schema_gone.yaml", b"count: 3\n")
+    imported = _history(api, entry["uid"], "import")[0]["sha"]
+    _promote_value(api, entry["uid"], "count", 4)
+    _post(api, f"/api/configs/{entry['uid']}/schema", {})
+    before = _get(api, f"/api/configs/{entry['uid']}/history/{imported}")
+
+    reverted = _post(api, f"/api/configs/{entry['uid']}/revert", {"version": imported})
+
+    assert (before["schema_effect"], reverted["schema_effect"]) == ("remove", "remove")
+    assert _get(api, f"/api/configs/{entry['uid']}")["schema"] is None
+    # 沒有 schema 了，原本會被擋的值（整數欄位填文字）現在只過第 1 層。
+    saved = _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": "many"}})
+    assert [draft["uid"] for draft in saved["drafts"]] == [entry["uid"]]
+    _clear_drafts(api)
+
+
+def test_reverting_restores_the_schema_of_that_version_not_todays(api, sources_root, repo):
+    # 開發者後來收緊了 schema（上限 5）；退回收緊之前的版本，schema 也回到當時——不拿今天的擋舊內容。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地改 config-repo 裡的 schema 檔並提交")
+    _clear_drafts(api)
+    entry = _with_schema(api, sources_root, "revert_schema_back.yaml", b"count: 9\n")
+    _promote_value(api, entry["uid"], "count", 8)
+    older = _history(api, entry["uid"])[0]["sha"]
+    schema_file = pathlib.Path(repo) / entry["schema"]
+    schema = json.loads(schema_file.read_text(encoding="utf-8"))
+    schema["properties"]["count"]["maximum"] = 5
+    schema_file.write_text(json.dumps(schema), encoding="utf-8")
+    subprocess.run(["git", "-C", repo, "add", "--", entry["schema"]], check=True)
+    subprocess.run(
+        ["git", "-C", repo, "-c", "user.name=dev", "-c", "user.email=d@e.x", "commit", "-q",
+         "-m", f"meta({entry['uid']}): 收緊 count 的上限"],
+        check=True,
+    )
+    _promote_value(api, entry["uid"], "count", 4)
+
+    reverted = _post(api, f"/api/configs/{entry['uid']}/revert", {"version": older})
+
+    assert reverted["schema_effect"] == "restore"
+    restored = json.loads(schema_file.read_text(encoding="utf-8"))
+    assert "maximum" not in restored["properties"]["count"]
+    # 8 超過今天的上限 5，照樣退得回去。
+    assert pathlib.Path(entry["target"]).read_bytes() == b"count: 8\n"
+
+
+def test_a_revert_that_does_not_touch_the_schema_says_so(api, sources_root):
+    _clear_drafts(api)
+    entry = _with_schema(api, sources_root, "revert_schema_same.yaml", b"count: 3\n")
+    _promote_value(api, entry["uid"], "count", 4)
+    older = _history(api, entry["uid"])[0]["sha"]
+    _promote_value(api, entry["uid"], "count", 5)
+
+    reverted = _post(api, f"/api/configs/{entry['uid']}/revert", {"version": older})
+
+    assert reverted["schema_effect"] is None
+    assert _get(api, f"/api/configs/{entry['uid']}")["schema"] == entry["schema"]

@@ -1495,12 +1495,23 @@ function renderDiff(target, version, detail, view) {
   );
 }
 
+// 退版時 schema 跟著回到那一版（#39 的定案）。會改到開發者設的限制，所以確認框先說、完成後再說一次，
+// 不讓它悄悄發生。沒有影響（null）就不提。
+const SCHEMA_EFFECT_TEXT = {
+  restore: "這份的 schema 也會回到那一版當時的內容——之後才加上的限制會一併退掉。",
+  remove: "那一版當時還沒有 schema：退回後這份不再有 schema，修改不再依它檢查。",
+};
+const SCHEMA_DONE_TEXT = {
+  restore: "schema 也回到了那一版當時的內容。",
+  remove: "這份現在沒有 schema。",
+};
+
 async function revertTo(view, detail, version, differing) {
   const short = version.sha.slice(0, 7);
   const ok = await confirmAction(
     "退回此版本？",
     `「${detail.name}」會回到版本 ${short} 的內容：${differing} 個參數會改變、並寫出到目標。` +
-    "這會產生一筆新的變更紀錄；歷史不會被改寫，之後仍可再退。",
+    "這會產生一筆新的變更紀錄；歷史不會被改寫，之後仍可再退。" + (SCHEMA_EFFECT_TEXT[version.schema_effect] || ""),
   );
   if (!ok) return;
   const diff = view.querySelector("[data-testid='history-diff']");
@@ -1523,7 +1534,7 @@ async function revertTo(view, detail, version, differing) {
     load();
     const fresh = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`);
     const freshDetail = fresh.ok ? await fresh.json() : detail;
-    openHistory(freshDetail, `已退回到版本 ${short}，並寫出到目標。`);
+    openHistory(freshDetail, `已退回到版本 ${short}，並寫出到目標。${SCHEMA_DONE_TEXT[payload.schema_effect] || ""}`);
   } catch (error) {
     diff.prepend(element("div", { class: "notice error", "data-testid": "history-revert-error" }, [
       element("strong", { text: "沒有退版。" }),
