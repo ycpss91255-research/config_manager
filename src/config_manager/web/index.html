@@ -1152,12 +1152,19 @@ async function saveDraft(detail, entries, ui) {
 
 // 第 1 層沒過的 422 是結構化的 {message, uid, problems:[{line, message, suggestion}]}；逐條列出
 // 行號／原因／建議（三要素），不改寫。其他形狀（字串、FastAPI 驗證 list）原樣顯示。
+// 一個驗證問題的一行說明。第 2 層（schema）的問題不一定給得出行號——給不出就不印「第 null 行」，
+// 訊息本身已經指名欄位（#39）。
+function problemText(problem) {
+  const where = problem.line === null || problem.line === undefined ? "" : `第 ${problem.line} 行：`;
+  return `${where}${problem.message}。建議：${problem.suggestion}`;
+}
+
 function renderSaveError(target, detail) {
   target.replaceChildren();
   if (detail && typeof detail === "object" && !Array.isArray(detail) && detail.message) {
     target.appendChild(element("strong", { text: detail.message }));
     target.appendChild(element("ul", {}, (detail.problems || []).map((problem) => element("li", {
-      text: `第 ${problem.line} 行：${problem.message}。建議：${problem.suggestion}`,
+      text: problemText(problem),
     }))));
   } else if (Array.isArray(detail)) {
     target.appendChild(element("strong", {
@@ -1690,7 +1697,7 @@ function adoptDraftNotice(warnings) {
   ]);
   if (warnings.length) {
     notice.appendChild(element("ul", {}, warnings.map((problem) => element("li", {
-      text: `第 ${problem.line} 行：${problem.message}。建議：${problem.suggestion}`,
+      text: problemText(problem),
     }))));
   }
   return notice;

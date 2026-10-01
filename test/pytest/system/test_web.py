@@ -1412,6 +1412,28 @@ def test_a_raw_config_is_marked_unvalidated_and_offers_no_schema(open_page, repo
     assert page.query_selector("[data-testid='panel-schema-draft']") is None
 
 
+def test_a_value_the_schema_rejects_is_refused_with_the_reason_in_the_panel(open_page, repo):
+    # 第 2 層硬擋（#39）：schema 不收的值存不成草稿，面板說出原因（哪一行、哪個欄位、怎麼改）。
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = _open_panel(open_page(), developer=True)
+    page.click(_SCHEMA_DRAFT)
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_selector(_SCHEMA_BADGE, state="visible")
+    schema_file = repo / ".schemas" / f"{_PARAM_UID}.json"
+    schema = json.loads(schema_file.read_text(encoding="utf-8"))
+    schema["properties"]["count"]["maximum"] = 5
+    schema_file.write_text(json.dumps(schema), encoding="utf-8")
+
+    page.fill(_param_value("count"), "9")
+    _save(page)
+
+    error = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save-error']"
+    page.wait_for_selector(error, state="visible")
+    shown = page.inner_text(error)
+    assert "第 1 行" in shown and "count" in shown and "超出範圍" in shown
+    assert not page.is_visible(_draft_dot(_PARAM_UID))
+
+
 # ── W3 儲存草稿（#21）────────────────────────────────────────────────────────
 # 三段式：編輯 → 儲存（草稿）→ 進版。「儲存」只存為草稿：不記錄、不寫到目標（§7.4.3、T18）。
 

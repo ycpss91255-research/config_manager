@@ -121,6 +121,34 @@ def test_save_blocks_what_adopt_merely_warns_about():
     assert "mfz3k9q1" in stage.drafts and warnings
 
 
+# ── 第 2 層：schema（#39）────────────────────────────────────────────────────
+
+_COUNT_IS_INT = {"type": "object", "properties": {"count": {"type": "integer"}}}
+
+
+def test_saving_is_refused_when_the_content_does_not_fit_the_schema():
+    # 第 2 層是硬擋：型別不符 schema 的內容存不成草稿，問題指名欄位。
+    with pytest.raises(DraftInvalid) as exc:
+        save_draft(Stage(), "mfz3k9q1", "count: many\n", "yaml", schema=_COUNT_IS_INT)
+
+    assert [problem.path for problem in exc.value.problems] == ["count"]
+    assert "第 1 行" in str(exc.value)
+
+
+def test_saving_without_a_schema_only_runs_the_first_layer():
+    stage = save_draft(Stage(), "mfz3k9q1", "count: many\n", "yaml")
+
+    assert "mfz3k9q1" in stage.drafts
+
+
+def test_adopting_reports_schema_problems_as_warnings_without_refusing():
+    # 偏離處置的「先納入、待修正」：內容照載，schema 的問題也列成警告，進版前要改正。
+    stage, warnings = adopt_draft(Stage(), "mfz3k9q1", "count: many\n", "yaml", _COUNT_IS_INT)
+
+    assert "mfz3k9q1" in stage.drafts
+    assert [problem.path for problem in warnings] == ["count"]
+
+
 # ── 進版（promote，#19）────────────────────────────────────────────────────────
 
 _DEFAULTS = Permissions(owner="root", group="root", mode="0644")
@@ -203,3 +231,16 @@ def test_promotions_are_recorded_as_cfg_changes():
     plans = promote(stage, _config_list(_entry("aaaaaaa1", "a")))
 
     assert [p.kind for p in plans] == ["cfg"]
+
+
+def test_promotion_checks_each_draft_against_its_own_schema():
+    # 進版時重驗：草稿存下之後 schema 被收緊，或 adopt 進來的內容不符 schema，都在這裡被擋。
+    # 只有 bbbbbbb2 有 schema；aaaaaaa1 沒有，照舊只過第 1 層。
+    stage = save_draft(Stage(), "aaaaaaa1", "count: many\n", "yaml")
+    stage = save_draft(stage, "bbbbbbb2", "count: many\n", "yaml")
+    listing = _config_list(_entry("aaaaaaa1", "a"), _entry("bbbbbbb2", "b"))
+
+    with pytest.raises(PromoteInvalid) as exc:
+        promote(stage, listing, schemas={"bbbbbbb2": _COUNT_IS_INT})
+
+    assert (exc.value.uid, exc.value.problems[0].path) == ("bbbbbbb2", "count")

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     # 只給型別檢查用：validate 匯入 errors（SyntaxParse），執行期反向匯入會循環。
-    from config_manager.core.validate import Problem
+    from config_manager.core.problem import Problem
 
 
 class ConfigListError(Exception):
@@ -254,3 +254,16 @@ class PromoteInvalid(DraftError):
         super().__init__(message)
         self.uid = uid
         self.problems = tuple(problems)
+
+
+class SchemaInvalid(Exception):
+    """一份 schema 本身不是合法的 JSON Schema（#39）。
+
+    schema 檔可以手改（收緊必填、範圍），也就可能改壞。壞掉的 schema 驗出來的「沒問題」是假的，
+    所以不拿它驗、大聲失敗（不變式 2／4）。`reason` 是「哪裡不合法」那一段（位置與驗證器的說法），
+    I/O 層把它接上檔名與下一步。
+    """
+
+    def __init__(self, message: str, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason

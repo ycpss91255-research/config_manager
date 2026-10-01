@@ -1,4 +1,4 @@
-"""core/validate — T3 驗證。v0.3.0 只落地第 1 層（#16）。
+"""core/validate — T3 驗證。第 1 層（#16）在這裡，第 2 層（#39）在 `core/schema_check`。
 
 第 1 層是**硬擋**（CONTEXT.md「驗證層級」）：能否解析，以及所有值是否符合正規形式白名單。
 `check(text, fmt) -> [Problem]`，空清單＝通過。每個問題帶行號與修正建議——三要素的
@@ -16,46 +16,32 @@ configobj 遇重複直接拋錯、只帶第二次出現的行；json.loads 更�
 逐行掃描是刻意選的鈍工具（與 core/inference 同一個理由）：行號只有原文拿得到。
 只按 `\n` 切行（不用 str.splitlines()），行號才與解析器和編輯器一致（#257）。
 
-第 2 層（schema）與第 3 層（跨欄位規則）分別是 #39 與 #41；`rules`／`schema` 參數先收下
-但不用，讓 T3 的簽章一次定好。核心層不做 I/O。
+第 2 層（schema，#39）在 `core/schema_check`：`check` 收到 `schema` 才跑，問題與第 1 層的
+併在同一張清單。第 3 層（跨欄位規則）是 #41；`rules` 參數先收下但不用，讓 T3 的簽章一次定好。
+核心層不做 I/O。
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
 
 from config_manager.core.errors import SyntaxParse
 from config_manager.core.parse import parse
+from config_manager.core.problem import ERROR, WARNING, Problem
+from config_manager.core.schema_check import check_schema
 
-ERROR = "error"
-WARNING = "warning"
-
-
-@dataclass(frozen=True)
-class Problem:
-    """一個驗證問題。
-
-    `line` 是主要行號（1 起算；解析器給不出行號時為 None）；`lines` 在重複 key 這類
-    「同一個問題出現在多行」時列出全部行號。`severity` 是 error（硬擋）或 warning（列出來
-    讓人確認、不擋）。訊息與建議皆為中文（ADR-00000028）。
-    """
-
-    line: int | None
-    message: str
-    suggestion: str
-    severity: str = ERROR
-    lines: tuple[int, ...] = ()
+__all__ = ["ERROR", "WARNING", "Problem", "check"]
 
 
 def check(
     text: str,
     fmt: str,
     rules: object | None = None,  # 第 3 層（#41）才用；T3 簽章先定好
-    schema: object | None = None,  # 第 2 層（#39）才用
+    schema: Mapping[str, object] | None = None,  # 第 2 層（#39）：給了就依它檢查
 ) -> list[Problem]:
-    """第 1 層驗證。回傳依行號排序的問題清單，空清單＝通過。"""
-    del rules, schema
+    """第 1 層驗證，給了 `schema` 再加第 2 層。回傳依行號排序的問題清單，空清單＝通過。"""
+    del rules
     if fmt == "raw":
         return []
 
@@ -76,6 +62,10 @@ def check(
     if fmt == "yaml":
         problems += _yaml_indentation(lines)
         problems += _yaml_canonical_forms(lines)
+    if schema is not None:
+        # 解析得過才有值可以驗；第 1 層的其他問題（尾隨空白、正規形式）不影響第 2 層照跑，
+        # 兩層的問題一次列完，不必修一輪才看得到下一輪。
+        problems += check_schema(text, fmt, schema)
     return sorted(problems, key=lambda p: (p.line or 0, p.message))
 
 

@@ -21,11 +21,12 @@ from config_manager.io.errors import (
     SchemaLeftBehind,
     SchemaNotFound,
     SchemaUnavailable,
+    SchemaUnreadable,
 )
 from config_manager.io.git import history
 from config_manager.io.onboard import OnboardRequest, onboard
 from config_manager.io.preflight import CONFIG_LIST_NAME
-from config_manager.io.schema import draft_skeleton
+from config_manager.io.schema import draft_skeleton, read_schema
 from config_manager.io.unmanage import unmanage
 
 _AUTHOR = "陳小明 <ming@example.com>"
@@ -248,3 +249,65 @@ def test_a_failed_unmanage_puts_the_schema_file_back(tmp_path, monkeypatch):
 
     assert _git_state(repo) == before
     assert schema_file.read_bytes() == original
+
+
+# ── 讀 schema（第 2 層驗證要用的那一份，#39）──────────────────────────────────
+# 讀不到或不合法一律大聲失敗：把壞掉的 schema 當成「沒有 schema」會讓把關悄悄消失（不變式 2／4）。
+
+
+def test_an_entry_without_a_schema_reads_as_none(tmp_path):
+    repo = _repo(tmp_path)
+    entry = _managed(tmp_path, repo)
+
+    assert read_schema(str(repo), entry) is None
+
+
+def test_the_drafted_skeleton_reads_back_as_the_schema(tmp_path):
+    repo = _repo(tmp_path)
+    entry = draft_skeleton(str(repo), _managed(tmp_path, repo).uid, _AUTHOR)
+
+    schema = read_schema(str(repo), entry)
+
+    assert schema["properties"]["retries"] == {"type": "integer"}
+
+
+def test_a_schema_file_that_went_missing_fails_loudly_naming_the_file(tmp_path):
+    repo = _repo(tmp_path)
+    entry = draft_skeleton(str(repo), _managed(tmp_path, repo).uid, _AUTHOR)
+    (repo / entry.schema_path).unlink()
+
+    with pytest.raises(SchemaUnreadable, match="不存在") as caught:
+        read_schema(str(repo), entry)
+
+    assert caught.value.file == str(repo / entry.schema_path)
+
+
+def test_a_schema_file_that_is_not_json_fails_loudly(tmp_path):
+    repo = _repo(tmp_path)
+    entry = draft_skeleton(str(repo), _managed(tmp_path, repo).uid, _AUTHOR)
+    (repo / entry.schema_path).write_text("{ not json", encoding="utf-8")
+
+    with pytest.raises(SchemaUnreadable, match="JSON"):
+        read_schema(str(repo), entry)
+
+
+@pytest.mark.parametrize("content", ['{"type": "nonsense"}', "[1, 2]", "true"])
+def test_a_schema_file_that_is_not_a_usable_schema_fails_loudly(tmp_path, content):
+    # 語法是 JSON、但不是一份可用的 schema（未知的型別名、頂層不是物件）。
+    repo = _repo(tmp_path)
+    entry = draft_skeleton(str(repo), _managed(tmp_path, repo).uid, _AUTHOR)
+    (repo / entry.schema_path).write_text(content, encoding="utf-8")
+
+    with pytest.raises(SchemaUnreadable):
+        read_schema(str(repo), entry)
+
+
+def test_a_schema_path_outside_the_schemas_directory_is_refused(tmp_path):
+    # `schema` 是清單檔的欄位、可以手改；指到 `.schemas/` 以外的檔案不讀（比照 source 的逃逸檢查）。
+    repo = _repo(tmp_path)
+    entry = _managed(tmp_path, repo)
+    (tmp_path / "outside.json").write_text('{"type": "object"}', encoding="utf-8")
+    escaped = entry.model_copy(update={"schema_path": "../outside.json"})
+
+    with pytest.raises(SchemaUnreadable, match=".schemas"):
+        read_schema(str(repo), escaped)

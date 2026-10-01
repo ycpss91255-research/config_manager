@@ -28,6 +28,7 @@ from config_manager.io.parsers import read_source as read_source_copy
 from config_manager.io.preflight import read_config_list
 from config_manager.io.promote import apply as apply_promotions
 from config_manager.io.repo import read_or_none
+from config_manager.io.schema import read_schema
 from config_manager.io.writer import write
 
 
@@ -114,14 +115,16 @@ def _resolve(
             overwrite(repo, entry, permissions, identity.git_author, roots)
             return {"uid": uid, "action": action, "record": _latest(repo, uid)}
         if action == "adopt":
-            _reject_invalid(entry, target_text)
+            _reject_invalid(repo, entry, target_text)
             plan = adoption(entry, permissions, target_text)
             apply_promotions(repo, [plan], identity.git_author, roots)
             return {"uid": uid, "action": action, "record": _latest(repo, uid)}
     except (PromoteLeftBehind, WriterError, CalledProcessError, OSError) as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
     # adopt_draft：內容照載，每個問題當警告回去；進版前須改正（T18）。不碰 repo、不碰 target。
-    stage, warnings = adopt_draft(stage_box["stage"], uid, target_text, entry.format)
+    stage, warnings = adopt_draft(
+        stage_box["stage"], uid, target_text, entry.format, read_schema(repo, entry)
+    )
     stage_box["stage"] = stage
     return {
         "uid": uid,
@@ -131,17 +134,21 @@ def _resolve(
     }
 
 
-def _reject_invalid(entry: FileEntry, target_text: str) -> None:
-    """將現況納入來源要走完整驗證：第 1 層有 error 級問題就拒，說明原因與下一步（A3）。"""
-    problems = [p for p in check(target_text, entry.format) if p.severity == ERROR]
+def _reject_invalid(repo: str, entry: FileEntry, target_text: str) -> None:
+    """將現況納入來源要走完整驗證：第 1 層、以及這份有 schema 時的第 2 層（#39），有 error 級
+    問題就拒，說明原因與下一步（A3）。"""
+    found = check(target_text, entry.format, schema=read_schema(repo, entry))
+    problems = [p for p in found if p.severity == ERROR]
     if problems:
         first = problems[0]
         raise HTTPException(
             status_code=422,
             detail={
-                "message": f"目標現況沒通過驗證（第 {first.line} 行：{first.message}），"
-                f"不納入來源。下一步：{first.suggestion}；或改走「先納入、待修正」把現況載入草稿修正",
+                "message": f"目標現況沒通過驗證（{first.where}：{first.message}），"
+                f"不納入來源。下一步：{first.suggestion}；"
+                "或改走「先納入、待修正」把現況載入草稿修正",
                 "uid": entry.uid,
+                "file": entry.target,
                 "problems": [as_problem(problem) for problem in problems],
             },
         )

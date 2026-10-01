@@ -19,3 +19,6 @@ pylint>=3.2
 # 這是 pip 套件；瀏覽器二進位由 docker/Dockerfile.test-tools 另外裝，因為它
 # 不是 pip 的東西，而且只有跑檢查的那份映像需要它。
 playwright>=1.49
+
+# jsonschema 沒有附型別標註；mypy --strict 要這份 stub 才讀得懂它（#39）。
+types-jsonschema>=4.18

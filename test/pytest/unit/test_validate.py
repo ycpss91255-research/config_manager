@@ -1,4 +1,4 @@
-"""core/validate — T3 第 1 層：語法、正規形式白名單、重複 key（#16）。
+"""core/validate — T3 第 1 層：語法、正規形式白名單、重複 key（#16）；第 2 層：結構描述（#39）。
 
 第 1 層是**硬擋**（CONTEXT.md「驗證層級」）：能否解析，以及所有值是否符合正規形式白名單。
 每個問題都要含行號與修正建議（三要素的「在哪裡」與「該怎麼改」；「檔案」由呼叫端補上，
@@ -6,6 +6,9 @@
 
 依格式套有意義的規則（D3）：yaml 全套；toml／json／ini 只套「能否解析＋重複 key＋尾隨空白」，
 縮排規則不套。重複 key 須**列出所有出現行號**，不是只報第二次。
+
+第 2 層依 schema 檢查**解析後的資料**：型別、必填、拼錯的 key、數值範圍。同一份 schema 驗
+yaml／toml／json 的等價內容，結果一致。每個問題除了行號與建議，另帶**欄位路徑**。
 
 核心層：純函式，收字串、回問題清單，不碰檔案。
 """
@@ -223,3 +226,194 @@ def test_every_problem_carries_a_line_and_a_suggestion():
     for problem in check(text, "yaml"):
         assert problem.line is not None
         assert problem.suggestion
+
+
+# ── 第 2 層：結構描述（#39）──────────────────────────────────────────────────
+
+_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "robot": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "max_vel": {"type": "number", "minimum": 0, "maximum": 2},
+                "retries": {"type": "integer"},
+                "mode": {"enum": ["auto", "manual"]},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+_YAML_BAD = "robot:\n  max_vel: fast\n  retries: 3\n  name: amr01\n"
+_TOML_BAD = '[robot]\nmax_vel = "fast"\nretries = 3\nname = "amr01"\n'
+_JSON_BAD = (
+    '{\n  "robot": {\n    "max_vel": "fast",\n'
+    '    "retries": 3,\n    "name": "amr01"\n  }\n}\n'
+)
+
+
+def _found(problems):
+    return [(p.path, p.line) for p in problems]
+
+
+def test_content_that_fits_the_schema_passes():
+    text = "robot:\n  name: amr01\n  max_vel: 0.8\n  retries: 3\n  mode: auto\n"
+
+    assert check(text, "yaml", schema=_SCHEMA) == []
+
+
+def test_without_a_schema_the_second_layer_does_not_run():
+    assert check(_YAML_BAD, "yaml") == []
+
+
+def test_a_value_of_the_wrong_type_names_the_field_and_its_line():
+    problems = check(_YAML_BAD, "yaml", schema=_SCHEMA)
+
+    assert _found(problems) == [("robot.max_vel", 2)]
+    assert "robot.max_vel" in problems[0].message and "數字" in problems[0].message
+    assert problems[0].suggestion
+
+
+def test_the_same_schema_judges_yaml_toml_and_json_alike():
+    # JSON Schema 驗的是解析後的資料結構，不是 JSON 檔：三種格式的等價內容，結果一致。
+    results = [
+        check(text, fmt, schema=_SCHEMA)
+        for text, fmt in ((_YAML_BAD, "yaml"), (_TOML_BAD, "toml"), (_JSON_BAD, "json"))
+    ]
+
+    assert [[p.path for p in found] for found in results] == [["robot.max_vel"]] * 3
+    assert len({found[0].message for found in results}) == 1
+    assert [found[0].line for found in results] == [2, 2, 3]
+
+
+def test_a_number_out_of_range_is_a_problem_stating_the_limit():
+    text = "robot:\n  name: amr01\n  max_vel: 2.5\n"
+
+    problems = check(text, "yaml", schema=_SCHEMA)
+
+    assert _found(problems) == [("robot.max_vel", 3)]
+    assert "2.5" in problems[0].message and "2" in problems[0].suggestion
+
+
+def test_a_missing_required_field_is_named_at_its_parent():
+    text = "robot:\n  max_vel: 0.8\n"
+
+    problems = check(text, "yaml", schema=_SCHEMA)
+
+    assert _found(problems) == [("robot.name", 1)]
+    assert "必填" in problems[0].message
+
+
+def test_a_misspelled_key_is_named_with_the_closest_known_key():
+    text = "robot:\n  name: amr01\n  max_vell: 0.8\n"
+
+    problems = check(text, "yaml", schema=_SCHEMA)
+
+    assert _found(problems) == [("robot.max_vell", 3)]
+    assert "max_vel" in problems[0].suggestion
+
+
+def test_a_value_outside_the_enum_lists_the_allowed_values():
+    text = "robot:\n  name: amr01\n  mode: turbo\n"
+
+    problems = check(text, "yaml", schema=_SCHEMA)
+
+    assert _found(problems) == [("robot.mode", 3)]
+    assert "auto" in problems[0].suggestion and "manual" in problems[0].suggestion
+
+
+def test_a_float_is_not_accepted_where_an_integer_is_required():
+    # ROS 區分 1 與 1.0：整數參數寫成 3.0 會讓 node 啟動失敗，所以這裡比 JSON Schema 的預設嚴。
+    text = "robot:\n  name: amr01\n  retries: 3.0\n"
+
+    problems = check(text, "yaml", schema=_SCHEMA)
+
+    assert _found(problems) == [("robot.retries", 3)]
+    assert "整數" in problems[0].message
+
+
+def test_an_integer_is_accepted_where_a_number_is_required():
+    text = "robot:\n  name: amr01\n  max_vel: 1\n"
+
+    assert check(text, "yaml", schema=_SCHEMA) == []
+
+
+def test_a_problem_inside_a_list_element_points_at_that_element():
+    schema = {
+        "type": "object",
+        "properties": {
+            "servers": {
+                "type": "array",
+                "items": {"type": "object", "properties": {"port": {"type": "integer"}}},
+            }
+        },
+    }
+    yaml_text = "servers:\n  - host: a\n  - host: b\n    port: eighty\n"
+    toml_text = (
+        '[[servers]]\nhost = "a"\nport = 80\n\n'
+        '[[servers]]\nhost = "b"\nport = "eighty"\n'
+    )
+    json_text = (
+        '{"servers": [\n  {"host": "a", "port": 80},\n'
+        '  {"host": "b",\n   "port": "eighty"}\n]}\n'
+    )
+
+    assert _found(check(yaml_text, "yaml", schema=schema)) == [("servers[1].port", 4)]
+    assert _found(check(toml_text, "toml", schema=schema)) == [("servers[1].port", 7)]
+    assert _found(check(json_text, "json", schema=schema)) == [("servers[1].port", 4)]
+
+
+def test_a_key_containing_a_dot_is_escaped_in_the_path():
+    # 路徑文法與欄位表的參數列一致：key 內的字面點跳脫成 `\.`，介面才對得到那一列。
+    schema = {"type": "object", "properties": {"a.b": {"type": "integer"}}}
+
+    problems = check('"a.b": text\n', "yaml", schema=schema)
+
+    assert [p.path for p in problems] == ["a\\.b"]
+
+
+def test_an_ini_value_is_located_by_section_and_key():
+    schema = {
+        "type": "object",
+        "properties": {"net": {"type": "object", "properties": {"mode": {"enum": ["dhcp"]}}}},
+    }
+
+    problems = check("[net]\nmode = static\n", "ini", schema=schema)
+
+    assert _found(problems) == [("net.mode", 2)]
+
+
+def test_a_rule_this_layer_has_no_wording_for_is_still_reported():
+    # schema 用了這裡沒有專屬訊息的關鍵字（如 pattern）：照樣回報、指名規則，不靜默放行。
+    schema = {"type": "object", "properties": {"name": {"type": "string", "pattern": "^amr"}}}
+
+    problems = check("name: robot7\n", "yaml", schema=schema)
+
+    assert _found(problems) == [("name", 1)]
+    assert "pattern" in problems[0].message
+
+
+def test_syntax_that_does_not_parse_is_only_a_first_layer_problem():
+    # 解析不下去就沒有值可以驗——第 2 層不跑，回第 1 層的語法問題。
+    problems = check("robot: [unclosed\n", "yaml", schema=_SCHEMA)
+
+    assert len(problems) == 1 and problems[0].path is None
+
+
+def test_raw_is_never_checked_against_a_schema():
+    assert check("anything at all", "raw", schema=_SCHEMA) == []
+
+
+def test_every_schema_problem_carries_a_path_a_line_and_a_suggestion():
+    text = "robot:\n  max_vel: fast\n  retries: 3.5\n  mode: turbo\n  extra: 1\n"
+
+    problems = check(text, "yaml", schema=_SCHEMA)
+
+    # 五種問題各一：型別、整數、列舉、多出來的 key、缺必填。
+    assert sorted(p.path for p in problems) == [
+        "robot.extra", "robot.max_vel", "robot.mode", "robot.name", "robot.retries",
+    ]
+    assert all(p.line and p.suggestion for p in problems)

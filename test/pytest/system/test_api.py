@@ -2016,3 +2016,108 @@ def test_drafting_a_schema_for_an_unknown_uid_is_not_found(api):
         _post(api, "/api/configs/zzzzzzz9/schema", {})
 
     assert exc.value.code == _NOT_FOUND
+
+
+# ── T9：第 2 層驗證接在儲存、進版與納入現況上（#39）────────────────────────────
+
+
+def _with_schema(api, sources_root, name, content=b"count: 3\n"):
+    """納管一份並替它產生 schema 骨架，回條目（含 `schema` 路徑）。"""
+    entry = _onboard(api, sources_root, name, content)
+    drafted = _post(api, f"/api/configs/{entry['uid']}/schema", {})
+    return {**entry, "schema": drafted["schema"]}
+
+
+def test_saving_a_value_of_the_wrong_type_is_refused_naming_the_field(api, sources_root):
+    # 第 2 層硬擋：型別不符 schema 的改動存不成草稿；問題帶欄位路徑、行號、建議。
+    _clear_drafts(api)
+    entry = _with_schema(api, sources_root, "layer2_type.yaml")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": "many"}})
+
+    assert exc.value.code == _UNPROCESSABLE
+    detail = json.loads(exc.value.read())["detail"]
+    problem = detail["problems"][0]
+    # 結構化的四個要素：檔案（repo 內的來源複本）、行號、欄位、修正建議。
+    assert detail["file"] == entry["source"]
+    assert (problem["path"], problem["line"]) == ("count", 1)
+    assert problem["suggestion"] and "count" in problem["message"]
+    assert _get(api, "/api/drafts")["count"] == 0
+
+
+def test_a_value_that_fits_the_schema_still_saves(api, sources_root):
+    _clear_drafts(api)
+    entry = _with_schema(api, sources_root, "layer2_ok.yaml")
+
+    saved = _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 4}})
+
+    assert [draft["uid"] for draft in saved["drafts"]] == [entry["uid"]]
+    _clear_drafts(api)
+
+
+def test_promoting_rechecks_against_the_schema_as_it_is_now(api, sources_root, repo):
+    # 草稿存下之後 schema 被收緊：進版時依此刻的 schema 重驗、整批不進版，目標不動。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地改 config-repo 裡的 schema 檔")
+    _clear_drafts(api)
+    entry = _with_schema(api, sources_root, "layer2_promote.yaml")
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 9}})
+    schema_file = pathlib.Path(repo) / entry["schema"]
+    schema = json.loads(schema_file.read_text(encoding="utf-8"))
+    schema["properties"]["count"]["maximum"] = 5
+    schema_file.write_text(json.dumps(schema), encoding="utf-8")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/promote", {})
+
+    assert exc.value.code == _UNPROCESSABLE
+    detail = json.loads(exc.value.read())["detail"]
+    assert (detail["uid"], detail["problems"][0]["path"]) == (entry["uid"], "count")
+    assert detail["file"] == entry["source"]
+    assert pathlib.Path(entry["target"]).read_bytes() == b"count: 3\n"
+    _clear_drafts(api)
+
+
+def test_adopting_a_target_that_breaks_the_schema_is_refused(api, sources_root):
+    # 「將目標現況納入來源」走完整驗證：現場把整數改成文字，不符 schema → 拒絕並指名欄位。
+    _clear_drafts(api)
+    entry = _with_schema(api, sources_root, "layer2_adopt.yaml")
+    pathlib.Path(entry["target"]).write_bytes(b"count: many\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
+
+    assert exc.value.code == _UNPROCESSABLE
+    detail = json.loads(exc.value.read())["detail"]
+    # 驗的是目標現況，所以「檔案」是目標路徑——要改的是那一份。
+    assert (detail["file"], detail["problems"][0]["path"]) == (entry["target"], "count")
+
+
+def test_adopting_as_a_draft_lists_the_schema_problems_as_warnings(api, sources_root):
+    _clear_drafts(api)
+    entry = _with_schema(api, sources_root, "layer2_adopt_draft.yaml")
+    pathlib.Path(entry["target"]).write_bytes(b"count: many\n")
+
+    loaded = _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt_draft"})
+
+    assert [warning["path"] for warning in loaded["warnings"]] == ["count"]
+    _clear_drafts(api)
+
+
+def test_a_broken_schema_file_blocks_saving_and_names_the_file(api, sources_root, repo):
+    # schema 檔被改壞：不當成「沒有 schema」放行，回結構化的 500、指名那份檔案（不變式 2／4）。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地改 config-repo 裡的 schema 檔")
+    _clear_drafts(api)
+    entry = _with_schema(api, sources_root, "layer2_broken.yaml")
+    schema_file = pathlib.Path(repo) / entry["schema"]
+    schema_file.write_text("{ not json", encoding="utf-8")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 4}})
+
+    assert exc.value.code == _SERVER_ERROR
+    detail = json.loads(exc.value.read())["detail"]
+    assert detail["file"] == str(schema_file) and "下一步" in detail["message"]
+    assert _get(api, "/api/drafts")["count"] == 0

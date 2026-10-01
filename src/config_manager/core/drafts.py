@@ -42,25 +42,32 @@ class Stage:
     drafts: Mapping[str, Draft] = field(default_factory=lambda: MappingProxyType({}))
 
 
-def save_draft(stage: Stage, uid: str, text: str, fmt: str) -> Stage:
-    """存一份草稿。第 1 層驗證有 error 級問題就丟 `DraftInvalid`、**不存**（階段不變）。"""
-    problems = [problem for problem in check(text, fmt) if problem.severity == ERROR]
+def save_draft(
+    stage: Stage, uid: str, text: str, fmt: str, schema: Mapping[str, object] | None = None
+) -> Stage:
+    """存一份草稿。驗證有 error 級問題就丟 `DraftInvalid`、**不存**（階段不變）。
+
+    第 1 層一律跑；這份 config 有 schema（`schema`）時再跑第 2 層（#39），兩層都是硬擋。
+    """
+    problems = [p for p in check(text, fmt, schema=schema) if p.severity == ERROR]
     if problems:
         first = problems[0]
         raise DraftInvalid(
-            f"草稿「{uid}」沒通過第 1 層驗證（第 {first.line} 行：{first.message}），沒有存下。"
+            f"草稿「{uid}」沒通過驗證（{first.where}：{first.message}），沒有存下。"
             f"下一步：{first.suggestion}；共 {len(problems)} 處，逐條修正後再儲存",
             problems,
         )
     return _with(stage, Draft(uid, text, fmt))
 
 
-def adopt_draft(stage: Stage, uid: str, target_text: str, fmt: str) -> tuple[Stage, list[Problem]]:
+def adopt_draft(
+    stage: Stage, uid: str, target_text: str, fmt: str, schema: Mapping[str, object] | None = None
+) -> tuple[Stage, list[Problem]]:
     """把目標現況載入草稿（偏離處置的「先納入、待修正」）。內容照載，回傳每個問題當警告。
 
-    不因非法而拒載——但這份草稿仍受進版約束：含非法值時整批不進版（#19）。
+    不因非法而拒載——但這份草稿仍受進版約束：含非法值（含不符 schema，#39）時整批不進版（#19）。
     """
-    return _with(stage, Draft(uid, target_text, fmt)), check(target_text, fmt)
+    return _with(stage, Draft(uid, target_text, fmt)), check(target_text, fmt, schema=schema)
 
 
 def discard(stage: Stage, uid: str | None = None) -> Stage:
@@ -101,14 +108,22 @@ class Promotion:
     kind: str = "cfg"
 
 
-def promote(stage: Stage, config_list: ConfigList) -> list[Promotion]:
+def promote(
+    stage: Stage,
+    config_list: ConfigList,
+    schemas: Mapping[str, Mapping[str, object]] | None = None,
+) -> list[Promotion]:
     """把階段裡**全部**草稿一次驗證，回傳每份的進版資料；任一份沒過就丟 `PromoteInvalid`。
 
     進版是全域動作、整批原子（ADR-00000022、ADR-00000006）：不做「先進通過的那幾份」，所以
     先把每一份都驗完才回傳任何東西。adopt_draft 撈進來的壞內容在這裡被擋——改乾淨才進得了版，
     且作者記為進版者（偏離內容因此重新掛到真人身上，由呼叫端傳作者）。權限用條目自己的、
     沒寫就用清單檔的 defaults（T1 的語意）。沒有草稿時回空清單，要不要當錯由呼叫端決定。
+
+    `schemas` 是 uid → 那份 config **此刻**的 schema（#39）：進版時重驗，草稿存下之後 schema 被
+    收緊、或 adopt 進來的內容不符 schema，都在這裡被擋。沒列到的 uid 只過第 1 層。
     """
+    schemas = schemas or {}
     entries = {entry.uid: entry for entry in config_list.files}
     plans: list[Promotion] = []
     for uid, draft in stage.drafts.items():
@@ -119,11 +134,12 @@ def promote(stage: Stage, config_list: ConfigList) -> list[Promotion]:
                 "下一步：捨棄這份草稿，或確認該 config 是否已被解除管理",
                 uid,
             )
-        problems = [p for p in check(draft.text, draft.fmt) if p.severity == ERROR]
+        found = check(draft.text, draft.fmt, schema=schemas.get(uid))
+        problems = [p for p in found if p.severity == ERROR]
         if problems:
             first = problems[0]
             raise PromoteInvalid(
-                f"「{entry.name}@{entry.hostname}」（{uid}）第 {first.line} 行沒通過驗證："
+                f"「{entry.name}@{entry.hostname}」（{uid}）{first.where}沒通過驗證："
                 f"{first.message}，整批不進版。下一步：{first.suggestion}；修正後再進版",
                 uid,
                 problems,
