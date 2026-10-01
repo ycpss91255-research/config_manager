@@ -228,3 +228,15 @@ def show(repo: str, sha: str, path: str) -> str:
     版本或路徑不存在時 git 非零退出，CalledProcessError 帶著它的說法。
     """
     return _git(repo, "show", f"{sha}:{path}")
+
+
+def show_or_none(repo: str, sha: str, path: str) -> str | None:
+    """`sha` 那一版裡 `path` 的內容；那一版還沒有這個檔案時回 None。
+
+    退版要連 schema 一起回到那一版（#39）——而那一版當時可能還沒有 schema。`sha` 由呼叫端
+    從這份 config 的歷史取得（一定存在），所以 git 非零退出就是「那一版沒有這個路徑」。
+    """
+    try:
+        return show(repo, sha, path)
+    except subprocess.CalledProcessError:
+        return None

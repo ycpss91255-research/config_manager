@@ -34,7 +34,7 @@ from config_manager.io.errors import (
     SchemaUnavailable,
     SchemaUnreadable,
 )
-from config_manager.io.git import record, stage, unstage
+from config_manager.io.git import record, show_or_none, stage, unstage
 from config_manager.io.parsers import read_source
 from config_manager.io.preflight import CONFIG_LIST_NAME
 from config_manager.io.repo import load_list, read_or_none, undo, write_config_list
@@ -125,6 +125,42 @@ def read_schema(repo: str, entry: FileEntry) -> dict[str, object] | None:
             absolute,
         )
     return schema
+
+
+# 退版對 schema 的影響：回到那一版的內容／那一版還沒有 schema 所以拿掉。沒有影響是 None。
+RESTORE = "restore"
+REMOVE = "remove"
+
+
+def schema_revert(repo: str, uid: str, sha: str) -> tuple[str | None, list[tuple[str, str | None]]]:
+    """退版到 `sha` 時 schema 要怎麼跟著回去（#39 的定案，ADR-00000021）。
+
+    回（影響, 要一起寫回 repo 的檔案）。檔案是（repo 內相對路徑, 新內容；None＝拿掉），交給
+    `io/promote.apply` 放進退版的同一筆紀錄。內容與 schema 是一對：退到舊內容而留著今天的
+    schema，舊內容可能不符、之後連改都改不了；所以 schema 回到那一版的樣子，那一版還沒有
+    schema 就拿掉、清單檔的條目也不再指到它。那一版與現在一樣時什麼都不用做。
+    """
+    original, current = load_list(repo)
+    entry = next((item for item in current.files if item.uid == uid), None)
+    if entry is None:
+        raise SchemaNotFound(
+            f"清單檔裡沒有 uid「{uid}」的條目，無從決定退版時 schema 怎麼處理。"
+            "下一步：重新整理清單，確認該 config 仍在納管中"
+        )
+    relative = entry.schema_path or schema_relpath(uid)
+    then = show_or_none(repo, sha, relative)
+    now_bytes = read_or_none(os.path.join(repo, relative))
+    now = None if now_bytes is None else now_bytes.decode("utf-8", errors="replace")
+    if then == now:
+        return None, []
+    companions: list[tuple[str, str | None]] = [(relative, then)]
+    wanted = None if then is None else relative
+    if entry.schema_path != wanted:
+        updated = entry.model_copy(update={"schema_path": wanted})
+        files = [updated if item.uid == uid else item for item in current.files]
+        new_text = dump(current.model_copy(update={"files": files}), original)
+        companions.append((CONFIG_LIST_NAME, new_text))
+    return (REMOVE if then is None else RESTORE), companions
 
 
 def _skeleton(repo: str, entry: FileEntry) -> dict[str, object]:

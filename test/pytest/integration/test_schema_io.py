@@ -22,11 +22,15 @@ from config_manager.io.errors import (
     SchemaNotFound,
     SchemaUnavailable,
     SchemaUnreadable,
+    TargetOutsideRoots,
 )
+from config_manager.core.drafts import Promotion
+from config_manager.core.models import Permissions
 from config_manager.io.git import history
 from config_manager.io.onboard import OnboardRequest, onboard
 from config_manager.io.preflight import CONFIG_LIST_NAME
-from config_manager.io.schema import draft_skeleton, read_schema
+from config_manager.io.promote import apply
+from config_manager.io.schema import draft_skeleton, read_schema, schema_revert
 from config_manager.io.unmanage import unmanage
 
 _AUTHOR = "陳小明 <ming@example.com>"
@@ -311,3 +315,134 @@ def test_a_schema_path_outside_the_schemas_directory_is_refused(tmp_path):
 
     with pytest.raises(SchemaUnreadable, match=".schemas"):
         read_schema(str(repo), escaped)
+
+
+# ── 退版時 schema 跟著回到那一版（#39 的定案，ADR-00000021）───────────────────
+# 內容與 schema 是一對：退到上週的內容，schema 也回到上週的樣子。拿今天的 schema 擋上週的內容，
+# 退版就成了路障。`schema_revert` 算出要一起寫回的檔案；`io/promote.apply` 把它們放進同一筆紀錄。
+
+
+def _commit(repo, message):
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=dev", "-c", "user.email=d@e.x",
+         "commit", "-q", "-m", message],
+        check=True,
+    )
+
+
+def _sha_of(repo, uid, kind):
+    return next(change.sha for change in history(str(repo), uid) if change.kind == kind)
+
+
+def test_reverting_to_a_version_from_before_the_schema_existed_removes_it(tmp_path):
+    repo = _repo(tmp_path)
+    entry = _managed(tmp_path, repo)
+    imported = _sha_of(repo, entry.uid, "import")
+    draft_skeleton(str(repo), entry.uid, _AUTHOR)
+
+    effect, companions = schema_revert(str(repo), entry.uid, imported)
+
+    assert effect == "remove"
+    assert dict(companions)[f".schemas/{entry.uid}.json"] is None
+    # 清單檔也要一起改：那一版當時沒有 schema，條目不再指到它。
+    assert "schema" not in dict(companions)[CONFIG_LIST_NAME]
+
+
+def test_reverting_to_a_version_with_an_older_schema_restores_that_schema(tmp_path):
+    repo = _repo(tmp_path)
+    entry = draft_skeleton(str(repo), _managed(tmp_path, repo).uid, _AUTHOR)
+    schema_file = repo / entry.schema_path
+    older = schema_file.read_text(encoding="utf-8")
+    drafted = _sha_of(repo, entry.uid, "meta")
+    schema_file.write_text('{"type": "object", "required": ["max_vel"]}\n', encoding="utf-8")
+    _commit(repo, f"meta({entry.uid}): 收緊 schema")
+
+    effect, companions = schema_revert(str(repo), entry.uid, drafted)
+
+    assert effect == "restore"
+    assert companions == [(entry.schema_path, older)]  # 條目本來就指到它，清單檔不用動
+
+
+def test_reverting_when_the_schema_is_the_same_then_and_now_changes_nothing(tmp_path):
+    repo = _repo(tmp_path)
+    plain = _managed(tmp_path, repo, "plain.yaml")
+    with_schema = draft_skeleton(str(repo), _managed(tmp_path, repo, "s.yaml").uid, _AUTHOR)
+
+    assert schema_revert(str(repo), plain.uid, _sha_of(repo, plain.uid, "import")) == (None, [])
+    drafted = _sha_of(repo, with_schema.uid, "meta")
+    assert schema_revert(str(repo), with_schema.uid, drafted) == (None, [])
+
+
+def _revert_plan(tmp_path, entry, text):
+    target = tmp_path / "managed" / "nav2.yaml"
+    permissions = Permissions(owner=str(target.stat().st_uid), group=str(target.stat().st_gid),
+                              mode="0644")
+    return Promotion(
+        uid=entry.uid, source=entry.source, target=str(target), text=text,
+        permissions=permissions, summary="rollback to 0000000", kind="revert",
+    )
+
+
+def test_the_schema_change_lands_in_the_same_record_as_the_reverted_content(tmp_path):
+    repo = _repo(tmp_path)
+    entry = _managed(tmp_path, repo)
+    imported = _sha_of(repo, entry.uid, "import")
+    draft_skeleton(str(repo), entry.uid, _AUTHOR)
+    _, companions = schema_revert(str(repo), entry.uid, imported)
+
+    apply(str(repo), [_revert_plan(tmp_path, entry, "max_vel: 0.8\n")], _AUTHOR,
+          [str(tmp_path / "managed")], {entry.uid: companions})
+
+    assert not (repo / ".schemas" / f"{entry.uid}.json").exists()
+    assert _entry(repo, entry.uid).schema_path is None
+    assert [change.kind for change in history(str(repo), entry.uid)][0] == "revert"
+    assert _git_state(repo)[1] == ""  # 內容、schema、清單檔都進了同一筆，工作區乾淨
+
+
+def test_a_failed_revert_puts_the_schema_back(tmp_path):
+    # 目標寫不出去（落在允許範圍外）→ 整批回滾：schema 檔與清單檔回到退版前。
+    repo = _repo(tmp_path)
+    entry = _managed(tmp_path, repo)
+    imported = _sha_of(repo, entry.uid, "import")
+    draft_skeleton(str(repo), entry.uid, _AUTHOR)
+    schema_file = repo / ".schemas" / f"{entry.uid}.json"
+    before = (_git_state(repo), schema_file.read_bytes())
+    _, companions = schema_revert(str(repo), entry.uid, imported)
+
+    with pytest.raises(TargetOutsideRoots):
+        apply(str(repo), [_revert_plan(tmp_path, entry, "max_vel: 0.1\n")], _AUTHOR,
+              [str(tmp_path / "elsewhere")], {entry.uid: companions})
+
+    assert (_git_state(repo), schema_file.read_bytes()) == before
+    assert _entry(repo, entry.uid).schema_path == f".schemas/{entry.uid}.json"
+
+
+def test_a_revert_that_fails_before_recording_leaves_no_newly_written_schema(tmp_path, monkeypatch):
+    # 退回「當時有 schema」的版本、而現在沒有：schema 檔是這次才新寫的。寫了之後還沒進索引就
+    # 失敗的話，git 的 reset 不會動到它（沒被追蹤）——要靠回滾自己把它拿掉，不留殘骸。
+    repo = _repo(tmp_path)
+    entry = _managed(tmp_path, repo)
+    imported = _sha_of(repo, entry.uid, "import")
+    draft_skeleton(str(repo), entry.uid, _AUTHOR)
+    drafted = _sha_of(repo, entry.uid, "meta")
+    _, removal = schema_revert(str(repo), entry.uid, imported)
+    roots = [str(tmp_path / "managed")]
+    apply(str(repo), [_revert_plan(tmp_path, entry, "max_vel: 0.8\n")], _AUTHOR, roots,
+          {entry.uid: removal})
+    schema_file = repo / ".schemas" / f"{entry.uid}.json"
+    before = _git_state(repo)
+    effect, companions = schema_revert(str(repo), entry.uid, drafted)
+    assert effect == "restore" and not schema_file.exists()
+
+    def _stage_boom(*_args, **_kwargs):
+        raise RuntimeError("索引寫不進去")
+
+    monkeypatch.setattr("config_manager.io.promote.stage", _stage_boom)
+
+    with pytest.raises(RuntimeError, match="索引寫不進去"):
+        apply(str(repo), [_revert_plan(tmp_path, entry, "max_vel: 0.2\n")], _AUTHOR, roots,
+              {entry.uid: companions})
+
+    assert not schema_file.exists()
+    assert _git_state(repo) == before

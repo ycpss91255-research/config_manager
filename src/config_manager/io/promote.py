@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 from config_manager.core.drafts import Promotion
 from config_manager.io.atomic import replace_atomically
@@ -25,27 +25,55 @@ from config_manager.io.repo import read_or_none
 from config_manager.io.writer import write
 
 
+# 一份 config 進版時要一起寫回 repo 的其他檔案：（repo 內相對路徑, 新內容；None＝拿掉）。
+Companions = Sequence[tuple[str, str | None]]
+
+
 def apply(
-    repo: str, promotions: Sequence[Promotion], author: str, allowed_roots: Iterable[str]
+    repo: str,
+    promotions: Sequence[Promotion],
+    author: str,
+    allowed_roots: Iterable[str],
+    companions: Mapping[str, Companions] | None = None,
 ) -> list[str]:
     """逐份寫出並記錄；任一步失敗就整批回滾後重拋原本的例外。回傳已進版的 uid（依序）。
 
     作者記為進版者：adopt_draft 撈進來的偏離內容於是被重新掛到真人身上（T18）。
+
+    `companions` 是 uid → 那份 config 要**在同一筆紀錄裡**一起寫回 repo 的其他檔案（退版時
+    跟著回到那一版的 schema 與清單檔，#39）。它們與來源複本同進同退：失敗回滾時一起還原。
     """
     roots = tuple(allowed_roots)
+    extras = companions or {}
     before_head = head(repo)
     before_targets: list[tuple[str, bytes | None]] = []
     try:
         for plan in promotions:
             before_targets.append((plan.target, read_or_none(plan.target)))
             replace_atomically(os.path.join(repo, plan.source), plan.text.encode("utf-8"))
-            stage(repo, plan.source)
+            beside = extras.get(plan.uid, ())
+            for relative, text in beside:
+                # 回滾時 reset 只還原 git 追蹤的檔案；這次才新寫的檔案要另外記下來拿掉。
+                absolute = os.path.join(repo, relative)
+                before_targets.append((absolute, read_or_none(absolute)))
+                _place(absolute, text)
+            stage(repo, plan.source, *(relative for relative, _ in beside))
             record(repo, plan.uid, plan.kind, plan.summary, author)
             write(plan.target, plan.text, plan.permissions, roots)
     except BaseException as failure:
         _rollback(repo, before_head, before_targets, failure)
         raise
     return [plan.uid for plan in promotions]
+
+
+def _place(absolute: str, text: str | None) -> None:
+    """把一個 repo 內的檔案寫成 `text`；`text` 是 None 就拿掉它（本來就不在則什麼都不做）。"""
+    if text is None:
+        if os.path.lexists(absolute):
+            os.remove(absolute)
+        return
+    os.makedirs(os.path.dirname(absolute), exist_ok=True)
+    replace_atomically(absolute, text.encode("utf-8"))
 
 
 def _restore(target: str, before: bytes | None) -> None:
@@ -63,7 +91,8 @@ def _rollback(
     before_targets: Sequence[tuple[str, bytes | None]],
     failure: BaseException,
 ) -> None:
-    """還原到進版前：目標逐個回寫拍下的內容（原本不存在的就刪），repo reset 回進版前 HEAD。
+    """還原到進版前：目標（與一起寫回 repo 的其他檔案）逐個回寫拍下的內容（原本不存在的就刪），
+    repo reset 回進版前 HEAD。
 
     任一步還原不了就記下，最後大聲失敗——不蓋掉原本的失敗（`__cause__` 指向它），也不讓
     「目標已是新內容、紀錄卻沒了」的半套狀態悄悄留著。

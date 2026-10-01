@@ -1839,6 +1839,39 @@ def test_reverting_while_a_draft_is_pending_shows_the_reason(open_page, browse_r
     assert pathlib.Path(entry["target"]).read_text(encoding="utf-8") == "count: 2\n"
 
 
+def test_reverting_says_the_schema_goes_back_too_before_doing_it(open_page, browse_root, api):
+    # #39 的定案：退版時 schema 跟著回到那一版。這會動到開發者設的限制，所以確認框先說、不悄悄發生。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
+    _api_json(api, "POST", f"/api/configs/{entry['uid']}/schema")
+    _api_json(api, "POST", "/api/drafts", {"uid": entry["uid"], "edits": {"count": 3}})
+    _api_json(api, "POST", "/api/promote", {})
+    page = _open_history(open_page(), entry["uid"])
+    # 最舊的那一筆內容變更（count: 2）是在產生 schema 之前——那一版當時還沒有 schema。
+    page.click("[data-testid='history-list'] li[data-testid^='history-entry-']:last-child")
+    page.wait_for_selector("[data-testid='history-revert']")
+
+    page.click("[data-testid='history-revert']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    assert "不再有 schema" in page.inner_text("[data-testid='confirm-body']")
+    page.click("[data-testid='confirm-ok']")
+
+    page.wait_for_selector("[data-testid='history-notice']:not([hidden])")
+    assert "沒有 schema" in page.inner_text("[data-testid='history-notice']")
+    assert _api_json(api, "GET", f"/api/configs/{entry['uid']}")["schema"] is None
+
+
+def test_a_revert_that_leaves_the_schema_alone_does_not_mention_it(open_page, browse_root, api):
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n", "count: 3\n"])
+    page = _open_history(open_page(), entry["uid"])
+    _select_first_version(page)
+
+    page.click("[data-testid='history-revert']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+
+    assert "schema" not in page.inner_text("[data-testid='confirm-body']")
+    page.click("[data-testid='confirm-cancel']")
+
+
 # ── W5 差異檢視（#30）────────────────────────────────────────────────────────
 # 只在偏離時出現：橫幅說明目標被介面外修改、沒有紀錄與作者；來源與目標以參數為單位並排。
 

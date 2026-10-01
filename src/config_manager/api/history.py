@@ -23,6 +23,7 @@ from config_manager.io.errors import PromoteLeftBehind, WriterError
 from config_manager.io.git import KINDS, Change, history, show
 from config_manager.io.preflight import read_config_list
 from config_manager.io.promote import apply as apply_promotions
+from config_manager.io.schema import schema_revert
 
 
 class RevertInput(BaseModel):
@@ -89,14 +90,21 @@ def _config_history(repo: str, uid: str, prefix: str | None) -> list[dict[str, o
 
 
 def _version_detail(repo: str, uid: str, sha: str) -> dict[str, object]:
-    """`sha` 那一版的 `{sha, types, values}`，形狀同單筆內容端點（#26）。
+    """`sha` 那一版的 `{sha, types, values, schema_effect}`，前三者形狀同單筆內容端點（#26）。
 
     sha 限這份 config 歷史裡的（前綴可）——別份的 sha 也 show 得出內容，但那不是這份的版本→422。
     `raw` 不解析：types 空、values 為 null（同單筆內容端點）。
     """
     entry = require_entry(read_config_list(repo), uid)
     change = _find_version(repo, entry, sha)
-    detail: dict[str, object] = {"sha": change.sha, "types": {}, "values": None}
+    detail: dict[str, object] = {
+        "sha": change.sha,
+        "types": {},
+        "values": None,
+        # 退回這一版時 schema 會怎麼變（#39）：restore＝回到當時的 schema、remove＝當時還沒有
+        # schema 所以拿掉、null＝不變。介面在確認框先說，不讓它悄悄發生。
+        "schema_effect": schema_revert(repo, uid, change.sha)[0],
+    }
     if entry.format == "raw":
         return detail
     try:
@@ -135,6 +143,9 @@ def _revert_config(
     Promotion 交給進版的 `apply`——寫來源複本→記錄（`revert(<uid>): rollback to <sha>`）→寫出目標，
     失敗整批回滾。不 reset、不改寫歷史：退版本身也留在歷史裡、也可以再被退。
 
+    schema 連同內容一起回到那一版（那一版還沒有 schema 就拿掉）：內容與 schema 是一對，拿今天的
+    schema 擋舊內容，退版就成了路障（#39）。退版本身**不驗證**——那一版在當時是合格的。
+
     版本必須是**這份 config** 歷史裡的一筆（拿別份的 sha 會把別人的內容寫進來→422）；這份有未進版
     的草稿時不退（草稿是以退版前的來源為底做的，退了就對不起來——先進版或捨棄，409，不變式 4）。
     """
@@ -163,14 +174,19 @@ def _revert_config(
         summary=f"rollback to {target_change.sha[:7]}",
         kind="revert",
     )
+    # schema 跟著回到那一版（#39 的定案，ADR-00000021）：與內容進同一筆紀錄、同進同退。
+    schema_effect, companions = schema_revert(repo, uid, target_change.sha)
     try:
-        apply_promotions(repo, [plan], identity.git_author, root_prefixes(repo))
+        apply_promotions(
+            repo, [plan], identity.git_author, root_prefixes(repo), {uid: companions}
+        )
     except (PromoteLeftBehind, WriterError, CalledProcessError, OSError) as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
     latest = history(repo, uid)[0]
     return {
         "uid": uid,
         "reverted_to": target_change.sha,
+        "schema_effect": schema_effect,
         "record": {
             "sha": latest.sha, "kind": latest.kind, "summary": latest.summary,
             "author": latest.author, "at": latest.at,

@@ -856,6 +856,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **草稿（`POST /api/drafts`，body `{uid, edits}`）：以來源複本為底套 `edits`（路徑→新值）、跑第 1 層、存進階段，回 `{count, drafts:[{uid, format}]}`；不產生變更紀錄、目標不變；第 1 層沒過→422，detail 為結構化 `{message, uid, problems:[{line, message, suggestion, severity, lines}]}`（供欄位表標示那一列）且階段不變；路徑找不到→422、uid 不在清單→404、未設身分→409。`GET /api/drafts` 回同形；`DELETE /api/drafts[/{uid}]` 捨棄全部／一份，指名的沒草稿→404（#19）** |
 | 進版端點（`POST /api/promote`）：驗證失敗時**不產生變更紀錄也不寫出**（原子性）；422 的 detail 同草稿的結構化形（指名哪一份 uid 的哪些參數）；沒草稿→409、未設身分→409；成功回 `{promoted:[uid…], count:0}`、每份各一筆 `cfg` 紀錄、作者＝session 身分、目標改變、草稿清空（#19） |
 | **退版（`POST /api/configs/{uid}/revert`，body `{version}`，§3.5.3 表上既有）：`version` 必須是這份 config 歷史裡的一筆 sha（前綴可）→ 以那一版的來源內容當一筆 `revert` 紀錄寫回並寫出目標（`revert(<uid>): rollback to <sha7>`，設計 §2.3），目標內容等於那一版、歷史多一筆而先前紀錄全在（ADR-00000005）；預設「只看內容變更」的歷史不顯示這筆；sha 不在這份的歷史→422（不把別份的內容寫進來）、這份有未進版草稿→409、未設身分→409、uid 不在清單→404；寫出／記錄失敗整批回滾、帶訊息的 500（同進版）。介面不提供 reset（#24）** |
+| **退版時 schema 跟著回到那一版（#39 的定案，ADR-00000021）**：那一版當時的 schema 與現在不同→連同內容在**同一筆** `revert` 紀錄裡回到當時的 schema（`schema_effect: "restore"`）；那一版當時還沒有 schema→拿掉 schema 檔、條目不再指到它（`"remove"`）；一樣→不動（`null`）。退版本身不驗證——內容超過今天的 schema 上限照樣退得回去。`GET …/history/{sha}` 另回同一個 `schema_effect`，確認框據此先說 |
 | **進版寫出 N 份、第 k 份失敗 → 前 k-1 份已寫出的目標檔案還原為進版前內容、全部已產生的變更紀錄一併撤銷**，容器內最終狀態與進版前逐位元組相同（承接 T18 移出的批次原子性）；回帶訊息的 500、草稿保留供重試。**以注入第 k 次寫出失敗觀察**（比照 `io/onboard` 對 #173 的處理）；回滾本身失敗丟 `PromoteLeftBehind`（同時說出原本的失敗與未還原的目標） |
 | 第二個編輯階段被拒，回覆含持有者姓名、email、開始時間 |
 | 部署模式下逾時後階段自動釋放 |
@@ -923,6 +924,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | 偏離時選「將目標現況納入來源」→ 來源更新且產生紀錄（歷史列「採納現場調整」）；**若目標內容違反驗證則被拒**，原樣顯示行號／原因／建議並指去先納入待修正（#31） |
 | 偏離時選「**先納入、待修正**」→ 目標現況載入草稿；**若含非法值，橫幅與該列即時警告（原因＋正確寫法），進版按鈕停用**，改乾淨後可進版 |
 | 退版後參數回到先前值：**（#27）歷史 → 選第一版 → 看差異 → 「退回此版本」→ 確認對話框（與捨棄變更共用 W6）→ 目標內容回到第一版、歷史多一筆「退回舊版本」（連續改三次仍退得回第一版）；取消什麼都不變；有未進版草稿時後端擋下、原樣顯示原因** |
+| **（#39）退版會動到 schema 時，確認框先說（回到當時的 schema／不再有 schema），完成的通知再說一次；不動 schema 的退版不提** |
 | 開第二個分頁 → 顯示唯讀，並指出持有者（姓名、email、開始時間）；會寫入的控制項不出現；持有者不受影響；持有者關閉頁面（pagehide 釋放）後，下一個分頁重新整理、填身分即可取得（#33） |
 | 部署模式閒置逾時 → 自動退出且階段釋放 |
 | **一般使用者模式下，型別欄為純文字**、白名單與屬性編輯入口**不顯示**（非停用） |
@@ -1342,18 +1344,18 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/writer` | T8 | 已落地 |
 | `io/atomic` | T8——原子替換的共用核心，行為由 `io/writer` 的 T8 規格擋著（#186） | 已落地 |
 | `io/repo` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔可讀→T1（`load`）（#186） | 已落地（`place_source`／`write_config_list`／`load_list`——會改寫清單檔的編排共用的讀＋載入，失敗映成 `ConfigListUnparsable`，#257） |
-| `io/git` | T7 | 已落地（`head`／`reset_hard` 於 #19 加入，只給進版回滾用；`show` 於 #24 加入、checkout 式 `revert` 移除） |
+| `io/git` | T7 | 已落地（`head`／`reset_hard` 於 #19 加入，只給進版回滾用；`show` 於 #24 加入、checkout 式 `revert` 移除；`show_or_none` 於 #39 加入——那一版還沒有該檔時回 None） |
 | `io/preflight` | T15 | 已落地 |
 | `io/digest` | T20 | 已落地 |
 | `io/scan` | T21 | 已落地 |
 | `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言；`OnboardLeftBehind`（納管回滾失敗）在 `io/onboard` 的整合規格被斷言（#173）；`PromoteLeftBehind`（進版回滾失敗）由 T9 的回滾規格擁有（#19）；`BrowseError` 族（瀏覽白名單外／不是目錄）在 T9 的 `GET /api/browse` 被斷言（#185） | 已落地 |
 | `io/parsers` | T6 | 已落地（#17）：`edit_source` 讀來源複本→`set_value`→`dump`→原子寫回；原樣保證由 `core/parse` 的單元規格釘住。`read_source` 讀來源複本原文供 API 存草稿當底（#19），效果透過 T9 的 `POST /api/drafts` 觀察 |
-| `io/promote` | 效果透過 T9 觀察：`POST /api/promote` 的寫出＋記錄＋第 k 份失敗整批回滾（目標還原、紀錄撤銷）——編排層，同 `io/onboard` 的處理；回滾也失敗時丟 `PromoteLeftBehind`（#19） | 已落地（`apply`） |
+| `io/promote` | 效果透過 T9 觀察：`POST /api/promote` 的寫出＋記錄＋第 k 份失敗整批回滾（目標還原、紀錄撤銷）——編排層，同 `io/onboard` 的處理；回滾也失敗時丟 `PromoteLeftBehind`（#19）；`companions`＝同一筆紀錄裡一起寫回 repo 的其他檔案（退版時的 schema 與清單檔），與來源複本同進同退，以真實 git 的整合規格觀察（#39） | 已落地（`apply`） |
 | `io/source` | T22（匯入時刻對外界的讀取，介面議定於 #177） | 已落地：路徑判定（realpath 後比對白名單、一般檔案檢查）與一次性讀取（#174）、讀取失敗的三種分類（不存在／讀不到／上層目錄無 traverse，#182）。`local_hostname` 的部署穩定性見 #178 |
 | `io/paths` | 效果透過既有介面觀察：`blocking_parent` 的「上層目錄擋住去路」分類在 T22（`io/source`）與 T20（`io/digest`）的 EACCES 規格被斷言——`source` 與 `digest` 共用的薄工具，同 `io/repo` 的處理（#214） | 已落地（`ancestors`／`blocking_parent`） |
 | `io/onboard` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔條目→T1（`load`）、匯入 commit→T7（`io/git.history`）（#12）——編排層，不算新值，同 `io/repo` 的處理。**匯入紀錄的作者＝傳入的身分、隨之而變**（以 `history()` 的 `Change.author` 驗、不同身分各對各的紀錄，#114）。重複攔在寫入前（#172）與寫入失敗即整批回滾（#173）以注入失敗＋`git status` 觀察，回滾也失敗時丟 `OnboardLeftBehind` | 已落地（`onboard`） |
 | `io/unmanage` | 效果透過既有介面觀察：清單檔條目→T1（`load`）、`unmanage` 紀錄→T7（`history`）、來源複本、schema 檔（有的話一併拿掉，#38）與 target 直接看檔案系統——編排層，同 `io/onboard` 的處理；寫入中途失敗整批回滾、回滾也失敗丟 `UnmanageLeftBehind`（#28） | 已落地（`unmanage`） |
-| `io/schema` | 效果透過既有介面觀察：清單檔條目的 `schema`→T1（`load`）、`meta` 紀錄→T7（`history`）、骨架檔直接看 `.schemas/`（內容由 T12 的 `draft_schema` 決定）——編排層，同 `io/unmanage` 的處理；已有 schema 不覆寫、`raw`／頂層不是物件說原因；寫入中途失敗整批回滾、回滾也失敗丟 `SchemaLeftBehind`（#38） `read_schema` 讀第 2 層要用的那一份：讀不出可用的 schema 一律丟 `SchemaUnreadable`、不退回「沒有 schema」（#39） | 已落地（`draft_skeleton`／`read_schema`） |
+| `io/schema` | 效果透過既有介面觀察：清單檔條目的 `schema`→T1（`load`）、`meta` 紀錄→T7（`history`）、骨架檔直接看 `.schemas/`（內容由 T12 的 `draft_schema` 決定）——編排層，同 `io/unmanage` 的處理；已有 schema 不覆寫、`raw`／頂層不是物件說原因；寫入中途失敗整批回滾、回滾也失敗丟 `SchemaLeftBehind`（#38） `read_schema` 讀第 2 層要用的那一份：讀不出可用的 schema 一律丟 `SchemaUnreadable`、不退回「沒有 schema」（#39） `schema_revert` 算出退版時 schema 怎麼跟著回去（回到當時的內容／拿掉／不動）與要一起寫回的檔案（#39） | 已落地（`draft_skeleton`／`read_schema`／`schema_revert`） |
 | `io/drift` | 效果透過 T9 觀察：`overwrite`（寫出＋空 `cfg` 紀錄，紀錄沒成把目標還原）、`adopt`（走 `io/promote.apply`，kind `adopt`）——編排層，同 `io/onboard`／`io/promote` 的處理（#29） | 已落地（`overwrite`／`adopt`） |
 | `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath 與列目錄——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185） | 已落地（`browse`） |
 | `io/candidate` | T24（候選檔案數預覽，介面議定於 #206）：不以白名單為閘門、遞迴數一般檔（不讀內容）、每層 O_NOFOLLOW 不跟隨連結、深度／項目上限觸及回部分計數＋capped | 已落地（`count_candidates`） |
