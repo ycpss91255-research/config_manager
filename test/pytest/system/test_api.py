@@ -2335,3 +2335,119 @@ def test_specifying_for_an_unknown_uid_is_not_found(api):
         _specify(api, "zzzzzzz9", "timeout", "int")
 
     assert exc.value.code == _NOT_FOUND
+
+
+# ── T9：修改 config 屬性（POST /api/configs/{uid}/attributes，#286）───────────
+
+
+def _attributes(api, uid, **changes):
+    detail = _get(api, f"/api/configs/{uid}")
+    payload = {key: detail[key] for key in ("name", "hostname", "groups", "description")}
+    return _post(api, f"/api/configs/{uid}/attributes", {**payload, **changes})
+
+
+def test_a_developer_changes_the_attributes_and_the_list_shows_them(api, sources_root):
+    # 名稱、群組、主機、說明都改得了；清單列（樹的資料來源）與單筆內容都看得到新的值。
+    entry = _onboard(api, sources_root, "attr_ok.yaml", b"count: 1\n")
+
+    updated = _attributes(
+        api, entry["uid"], name="navigation", hostname="site-a",
+        groups=["navigation", "safety"], description="Nav2 導航參數",
+    )
+
+    assert updated == {
+        "uid": entry["uid"], "name": "navigation", "hostname": "site-a",
+        "ref": f"navigation@site-a-{entry['uid']}",
+        "groups": ["navigation", "safety"], "description": "Nav2 導航參數",
+    }
+    row = next(row for row in _get(api, "/api/configs") if row["uid"] == entry["uid"])
+    assert (row["name"], row["hostname"], row["groups"], row["description"]) == (
+        "navigation", "site-a", ["navigation", "safety"], "Nav2 導航參數",
+    )
+    assert _get(api, f"/api/configs/{entry['uid']}")["description"] == "Nav2 導航參數"
+
+
+def test_renaming_keeps_the_history_the_draft_and_the_search_on_the_same_config(
+    api, sources_root
+):
+    # 改名不影響 uid 與任何關聯：歷史還在同一份底下、存過的草稿還在、以新名稱搜得到同一個 uid。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "attr_rename.yaml", b"count: 1\n")
+    _promote_value(api, entry["uid"], "count", 2)
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 3}})
+
+    _attributes(api, entry["uid"], name="giraffe-renamed")
+
+    assert [change["kind"] for change in _history(api, entry["uid"])] == ["cfg"]
+    assert [draft["uid"] for draft in _get(api, "/api/drafts")["drafts"]] == [entry["uid"]]
+    hits = _search(api, "giraffe-renamed", "config 名稱")["hits"]
+    assert [hit["uid"] for hit in hits] == [entry["uid"]]
+    assert pathlib.Path(entry["target"]).read_bytes() == b"count: 2\n"  # 目標沒被動到
+    _clear_drafts(api)
+
+
+def test_an_attribute_change_is_a_meta_record_outside_the_default_history(api, sources_root):
+    # 屬性變更與內容變更分開記：預設的歷史（只看內容變更）不出現它，點名 meta 才看得到。
+    entry = _onboard(api, sources_root, "attr_meta.yaml", b"count: 1\n")
+
+    _attributes(api, entry["uid"], groups=["perception"])
+
+    assert _history(api, entry["uid"]) == []
+    latest = _history(api, entry["uid"], "meta")[0]
+    assert (latest["kind"], latest["summary"]) == ("meta", "群組改為 perception")
+    assert latest["author"] == "陳小明 <ming@example.com>"
+
+
+def test_changing_attributes_is_for_developers_only(api, sources_root):
+    entry = _onboard(api, sources_root, "attr_role.yaml", b"count: 1\n")
+    _post(api, "/api/session", {"name": "王小美", "email": "mei@example.com", "role": "user"})
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _attributes(api, entry["uid"], name="hijacked")
+
+    assert exc.value.code == _FORBIDDEN
+    assert _get(api, f"/api/configs/{entry['uid']}")["name"] == entry["name"]
+    _set_session(api)
+
+
+@pytest.mark.parametrize(
+    ("changes", "field"),
+    [
+        ({"name": "   "}, "name"),
+        ({"hostname": "amr 01"}, "hostname"),
+        ({"groups": ["nav", "nav"]}, "groups"),
+        ({"description": "第一行\n第二行"}, "description"),
+    ],
+)
+def test_an_invalid_attribute_is_refused_naming_the_field_and_nothing_changes(
+    api, sources_root, changes, field
+):
+    entry = _onboard(api, sources_root, f"attr_bad_{field}.yaml", b"count: 1\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _attributes(api, entry["uid"], **changes)
+
+    assert exc.value.code == _UNPROCESSABLE
+    detail = json.loads(exc.value.read())["detail"]
+    assert detail["field"] == field and "下一步" in detail["message"]
+    assert _history(api, entry["uid"], "meta") == []
+
+
+def test_saving_unchanged_attributes_is_a_conflict_not_an_empty_record(api, sources_root):
+    entry = _onboard(api, sources_root, "attr_same.yaml", b"count: 1\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _attributes(api, entry["uid"])
+
+    assert exc.value.code == _CONFLICT
+    assert _history(api, entry["uid"], "meta") == []
+
+
+def test_changing_the_attributes_of_an_unknown_uid_is_not_found(api):
+    _set_session(api)
+    payload = {"name": "x", "hostname": "amr01", "groups": [], "description": None}
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/configs/zzzzzzz9/attributes", payload)
+
+    assert exc.value.code == _NOT_FOUND

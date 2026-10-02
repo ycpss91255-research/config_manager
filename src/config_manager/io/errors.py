@@ -352,3 +352,11 @@ class SchemaUnreadable(Exception):
     def __init__(self, message: str, file: str) -> None:
         super().__init__(message)
         self.file = file
+
+
+class AttributesLeftBehind(Exception):
+    """修改屬性中途失敗、回滾也失敗，清單檔沒能回到修改前（#286）。
+
+    與 `OnboardLeftBehind` 同構：同時說出原本的失敗與清理的失敗、指名殘留了什麼，
+    `__cause__` 指向原本的失敗。
+    """
