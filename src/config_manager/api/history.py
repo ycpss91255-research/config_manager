@@ -12,6 +12,7 @@ from subprocess import CalledProcessError
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from config_manager.api.checks import overrides_in
 from config_manager.api.session import Identity
 from config_manager.core.drafts import Promotion, Stage
 from config_manager.core.errors import SyntaxParse
@@ -83,6 +84,8 @@ def _config_history(repo: str, uid: str, prefix: str | None) -> list[dict[str, o
             "author": change.author,
             "at": change.at,
             "body": change.body,
+            # 這一筆略過了哪些規則、理由是什麼（#42）；沒有就是空清單。
+            "overrides": overrides_in(change.body),
         }
         for change in history(repo, uid)
         if change.kind in kinds
@@ -204,3 +207,13 @@ def require_entry(config_list: ConfigList, uid: str) -> FileEntry:
             "下一步：重新整理清單，確認該 config 仍在納管中",
         )
     return entry
+
+
+def source_unreadable(entry: FileEntry, error: Exception) -> HTTPException:
+    """來源複本讀不到或解析不了：伺服器端資料的問題，非請求端能修——帶檔名與下一步的 500。
+    單筆內容與儲存草稿都會遇到，共用同一個說法。"""
+    return HTTPException(
+        status_code=500,
+        detail=f"「{entry.source}」的來源複本讀不到或解析不了：{error}。"
+        "下一步：檢查 config-repo 裡這份檔案是否被改壞或移走",
+    )

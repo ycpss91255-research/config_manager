@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from config_manager.api.history import require_entry
+from config_manager.api.checks import checks_for
 from config_manager.api.session import Identity
 from config_manager.api.shapes import as_problem, drafts_view
 from config_manager.core.drafts import Stage, adopt_draft
@@ -28,7 +29,6 @@ from config_manager.io.parsers import read_source as read_source_copy
 from config_manager.io.preflight import read_config_list
 from config_manager.io.promote import apply as apply_promotions
 from config_manager.io.repo import read_or_none
-from config_manager.io.schema import read_schema
 from config_manager.io.writer import write
 
 
@@ -123,7 +123,7 @@ def _resolve(
         raise HTTPException(status_code=500, detail=str(error)) from error
     # adopt_draft：內容照載，每個問題當警告回去；進版前須改正（T18）。不碰 repo、不碰 target。
     stage, warnings = adopt_draft(
-        stage_box["stage"], uid, target_text, entry.format, read_schema(repo, entry)
+        stage_box["stage"], uid, target_text, entry.format, checks_for(repo, entry)
     )
     stage_box["stage"] = stage
     return {
@@ -137,8 +137,25 @@ def _resolve(
 def _reject_invalid(repo: str, entry: FileEntry, target_text: str) -> None:
     """將現況納入來源要走完整驗證：第 1 層、以及這份有 schema 時的第 2 層（#39），有 error 級
     問題就拒，說明原因與下一步（A3）。"""
-    found = check(target_text, entry.format, schema=read_schema(repo, entry))
+    checks = checks_for(repo, entry)
+    found = check(target_text, entry.format, rules=checks.rules, schema=checks.schema)
     problems = [p for p in found if p.severity == ERROR]
+    broken = [p for p in found if p.rule is not None]
+    if not problems and broken:
+        # 違反規則的現況：這裡不另開一個填理由的入口（#42 的定案）——指去走「先納入、待修正」，
+        # 在草稿上儲存時填理由，理由才會跟著進版寫進變更紀錄。
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "kind": "override_required",
+                "message": f"目標現況違反了規則 {broken[0].rule}（{broken[0].message}），"
+                "不直接納入來源。下一步：改走「先納入、待修正」把現況載入草稿，"
+                "調整數值或在儲存時填寫略過的理由，再進版",
+                "uid": entry.uid,
+                "file": entry.target,
+                "problems": [as_problem(problem) for problem in broken],
+            },
+        )
     if problems:
         first = problems[0]
         raise HTTPException(

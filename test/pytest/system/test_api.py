@@ -2451,3 +2451,185 @@ def test_changing_the_attributes_of_an_unknown_uid_is_not_found(api):
         _post(api, "/api/configs/zzzzzzz9/attributes", payload)
 
     assert exc.value.code == _NOT_FOUND
+
+
+# ── T9：第 3 層規則與略過的理由（#41／#42）────────────────────────────────────
+
+
+def _write_rules(repo, uid, rules):
+    """替一份 config 寫規則檔（`.rules/<uid>.toml`，開發者手寫、這裡就地寫進 config-repo）。"""
+    directory = pathlib.Path(repo) / ".rules"
+    directory.mkdir(exist_ok=True)
+    (directory / f"{uid}.toml").write_text(rules, encoding="utf-8")
+
+
+def _with_rules(api, sources_root, repo, name, rules):
+    """納管一份內容為 `lo: 1`／`hi: 5` 的 config，並替它寫規則檔。"""
+    entry = _onboard(api, sources_root, name, b"lo: 1\nhi: 5\n")
+    _write_rules(repo, entry["uid"], rules)
+    return entry
+
+
+_LO_BELOW_HI = '[[rules]]\nid = "lo-below-hi"\nleft = "lo"\nop = "<"\nright = "hi"\n'
+
+
+def _refused(api, path, payload):
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, path, payload)
+    return exc.value.code, json.loads(exc.value.read())["detail"]
+
+
+def test_breaking_a_rule_holds_the_save_back_until_a_reason_is_given(api, sources_root, repo):
+    # 第 3 層不硬擋：違反規則時儲存先停下來（409、kind 說明是要理由）、指名規則與欄位；
+    # 帶了理由再送就存得成，回應列出這份內容的警告。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地寫 config-repo 裡的規則檔")
+    _clear_drafts(api)
+    entry = _with_rules(api, sources_root, repo, "rule_hold.yaml", _LO_BELOW_HI)
+    request = {"uid": entry["uid"], "edits": {"lo": 9}}
+
+    status, detail = _refused(api, "/api/drafts", request)
+
+    assert (status, detail["kind"]) == (_CONFLICT, "override_required")
+    problem = detail["problems"][0]
+    assert (problem["rule"], problem["path"]) == ("lo-below-hi", "lo")
+    assert problem["severity"] == "warning"
+    assert _get(api, "/api/drafts")["count"] == 0
+
+    saved = _post(api, "/api/drafts", {**request, "overrides": {"lo-below-hi": "現場測試低速模式"}})
+
+    assert [draft["uid"] for draft in saved["drafts"]] == [entry["uid"]]
+    assert [warning["rule"] for warning in saved["warnings"]] == ["lo-below-hi"]
+    assert _get(api, f"/api/configs/{entry['uid']}")["draft_overrides"] == {
+        "lo-below-hi": "現場測試低速模式"
+    }
+    _clear_drafts(api)
+
+
+def test_the_reason_is_written_into_the_change_record(api, sources_root, repo):
+    # 理由記入變更紀錄：主旨照舊，內文一行 `override(<規則>): <理由>`；歷史另以結構化欄位回報。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地寫 config-repo 裡的規則檔")
+    _clear_drafts(api)
+    entry = _with_rules(api, sources_root, repo, "rule_rec.yaml", _LO_BELOW_HI)
+    _post(api, "/api/drafts", {
+        "uid": entry["uid"], "edits": {"lo": 9}, "overrides": {"lo-below-hi": "現場測試低速模式"},
+    })
+
+    _post(api, "/api/promote", {})
+
+    latest = _history(api, entry["uid"])[0]
+    assert latest["summary"] == f"修改參數（{entry['name']}@{entry['hostname']}）"
+    assert latest["body"].strip() == "override(lo-below-hi): 現場測試低速模式"
+    assert latest["overrides"] == [{"rule": "lo-below-hi", "reason": "現場測試低速模式"}]
+    assert pathlib.Path(entry["target"]).read_bytes() == b"lo: 9\nhi: 5\n"
+
+
+def test_content_that_satisfies_the_rules_saves_without_any_reason(api, sources_root, repo):
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地寫 config-repo 裡的規則檔")
+    _clear_drafts(api)
+    entry = _with_rules(api, sources_root, repo, "rule_ok.yaml", _LO_BELOW_HI)
+
+    saved = _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"lo": 2}})
+
+    assert saved["warnings"] == []
+    _post(api, "/api/promote", {})
+    assert _history(api, entry["uid"])[0]["overrides"] == []
+
+
+def test_a_reason_does_not_get_past_a_hard_error(api, sources_root, repo):
+    # override 後的修改仍走完整驗證：理由只略過第 3 層的警告，第 2 層（schema）照擋。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地寫 config-repo 裡的規則檔")
+    _clear_drafts(api)
+    entry = _with_rules(api, sources_root, repo, "rule_hard.yaml", _LO_BELOW_HI)
+    _post(api, f"/api/configs/{entry['uid']}/schema", {})
+
+    status, detail = _refused(api, "/api/drafts", {
+        "uid": entry["uid"], "edits": {"lo": 9, "hi": "many"},
+        "overrides": {"lo-below-hi": "理由"},
+    })
+
+    assert status == _UNPROCESSABLE and detail["problems"][0]["path"] == "hi"
+    assert _get(api, "/api/drafts")["count"] == 0
+
+
+def test_a_rule_added_after_saving_blocks_promotion_until_a_reason_is_given(
+    api, sources_root, repo
+):
+    # 進版時重驗：草稿存下時還沒有規則。規則加上後進版被擋、指名那份與那條規則；回去帶理由
+    # 重存就進得了版。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地寫 config-repo 裡的規則檔")
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "rule_late.yaml", b"lo: 1\nhi: 5\n")
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"lo": 9}})
+    _write_rules(repo, entry["uid"], _LO_BELOW_HI)
+
+    status, detail = _refused(api, "/api/promote", {})
+
+    assert status == _UNPROCESSABLE
+    assert (detail["uid"], detail["problems"][0]["rule"]) == (entry["uid"], "lo-below-hi")
+    assert pathlib.Path(entry["target"]).read_bytes() == b"lo: 1\nhi: 5\n"
+
+    _post(api, "/api/drafts", {
+        "uid": entry["uid"], "edits": {"lo": 9}, "overrides": {"lo-below-hi": "確認過"},
+    })
+    _post(api, "/api/promote", {})
+    assert pathlib.Path(entry["target"]).read_bytes() == b"lo: 9\nhi: 5\n"
+
+
+def test_a_value_missing_from_the_referenced_config_is_a_warning(api, sources_root, repo):
+    # 外部一致性＝跨 config 對照：這份用到的 frame 必須是另一份定義過的。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地寫 config-repo 裡的規則檔")
+    _clear_drafts(api)
+    robot = _onboard(api, sources_root, "rule_robot.yaml", b"frames: [base_link, odom]\n")
+    rules = (
+        '[[rules]]\nid = "frame-is-defined"\nleft = "frame"\n'
+        f'in = {{ config = "{robot["uid"]}", field = "frames" }}\n'
+    )
+    nav = _onboard(api, sources_root, "rule_nav.yaml", b"frame: odom\n")
+    _write_rules(repo, nav["uid"], rules)
+
+    status, detail = _refused(api, "/api/drafts", {"uid": nav["uid"], "edits": {"frame": "odm"}})
+
+    assert (status, detail["problems"][0]["rule"]) == (_CONFLICT, "frame-is-defined")
+    assert "base_link" in detail["problems"][0]["suggestion"]
+
+
+def test_a_broken_rules_file_is_a_warning_to_override_not_a_dead_end(api, sources_root, repo):
+    # 規則檔寫壞：不讓存檔整個失敗（那會成為路障），也不默默當成沒有規則——要填理由才略得過，
+    # 留下紀錄讓開發者看得到。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地寫 config-repo 裡的規則檔")
+    _clear_drafts(api)
+    broken = '[[rules]]\nid = "r"\nleft = "lo"\nop = "<<"\nvalue = 1\n'
+    entry = _with_rules(api, sources_root, repo, "rule_broken.yaml", broken)
+    request = {"uid": entry["uid"], "edits": {"lo": 2}}
+
+    status, detail = _refused(api, "/api/drafts", request)
+
+    assert (status, detail["problems"][0]["rule"]) == (_CONFLICT, "rules-file")
+    assert "<<" in detail["problems"][0]["message"]
+    saved = _post(api, "/api/drafts", {**request, "overrides": {"rules-file": "規則檔待修"}})
+    assert [draft["uid"] for draft in saved["drafts"]] == [entry["uid"]]
+    _clear_drafts(api)
+
+
+def test_adopting_a_target_that_breaks_a_rule_points_to_the_draft_route(api, sources_root, repo):
+    # 「將目標現況納入來源」不另開填理由的入口：指去走「先納入、待修正」，在草稿上填。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地寫 config-repo 裡的規則檔")
+    _clear_drafts(api)
+    entry = _with_rules(api, sources_root, repo, "rule_adopt.yaml", _LO_BELOW_HI)
+    pathlib.Path(entry["target"]).write_bytes(b"lo: 9\nhi: 5\n")
+
+    status, detail = _refused(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
+
+    assert (status, detail["kind"]) == (_CONFLICT, "override_required")
+    assert "先納入、待修正" in detail["message"]
+    loaded = _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt_draft"})
+    assert [warning["rule"] for warning in loaded["warnings"]] == ["lo-below-hi"]
+    _clear_drafts(api)

@@ -20,7 +20,8 @@ def drafts_view(stage: Stage) -> dict[str, object]:
 
 def as_problem(problem: Problem) -> dict[str, object]:
     """一個驗證問題：行號／訊息／建議／嚴重度／全部行號，第 2 層的另帶欄位路徑（`path`，#39；
-    第 1 層為 null）——介面據此標示那一列。"""
+    第 1 層為 null）——介面據此標示那一列；第 3 層的警告另帶規則代號（`rule`，#41）——介面據此
+    讓人對著那一條填略過的理由。"""
     return {
         "line": problem.line,
         "message": problem.message,
@@ -28,4 +29,5 @@ def as_problem(problem: Problem) -> dict[str, object]:
         "severity": problem.severity,
         "lines": list(problem.lines),
         "path": problem.path,
+        "rule": problem.rule,
     }
