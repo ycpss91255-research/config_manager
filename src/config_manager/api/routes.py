@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from config_manager.api.attributes import register_attributes
 from config_manager.api.drift import register_drift
 from config_manager.api.history import register_history, require_entry
 from config_manager.api.schema import as_specified, register_schema, schema_view
@@ -248,6 +249,7 @@ def create_app(
     register_drift(app, repo, held, stage_box)
     register_search(app, repo)
     register_schema(app, repo, held)
+    register_attributes(app, repo, held)
     register_session(app, held, stage_box, lock_box)
     return app
 
@@ -462,6 +464,7 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
         "source": entry.source,
         "format": entry.format,
         "groups": entry.groups,
+        "description": entry.description,
         "permissions": _as_permissions(entry.permissions or config_list.defaults.permissions),
         "schema": entry.schema_path,
         "constraints": {},
@@ -919,6 +922,7 @@ def _as_row(entry: FileEntry, result: State | ScanFailure) -> dict[str, object]:
         "target": entry.target,
         "format": entry.format,
         "groups": entry.groups,
+        "description": entry.description,
     }
     if isinstance(result, ScanFailure):
         row["state"] = None

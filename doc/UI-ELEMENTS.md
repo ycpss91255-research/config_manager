@@ -84,7 +84,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 捨棄變更（單一） | `data-testid="panel-discard"` | 文字「捨棄變更」；**只在該份有草稿時出現**；經 W6 確認後 `DELETE /api/drafts/{uid}`，面板重讀為來源內容（#22） |
 | 退版按鈕 | 文字「退版」 | 針對單一 config，與草稿無關 |
 | 歷史按鈕 | 文字「歷史」（`data-testid="panel-history"`） | 右側工作區切成該 config 的歷史檢視（W4），左側樹不動（#25） |
-| 屬性按鈕 | 文字「屬性」 | **僅開發者出現** |
+| 屬性按鈕 | 文字「屬性」（`data-testid="panel-attributes"`） | **僅開發者出現**（一般使用者不在 DOM）；在區塊標頭（`raw` 也有）、唯讀時不出現。按一下展開屬性面板，再按一下收起（#286） |
 | 產生 schema 按鈕 | 文字「產生 schema」（`data-testid="panel-schema-draft"`） | **僅開發者出現**，且只在這份還沒有 schema 時；經 W6 確認後 `POST /api/configs/{uid}/schema`，成功後就地換成「有 schema」標示、不重畫欄位表（#38） |
 | 有 schema 標示 | `data-testid="panel-schema-<uid>"` | 這份 config 有 schema 時出現在標頭（`GET /api/configs/{uid}` 回 `schema`） |
 | schema 錯誤橫幅 | `data-testid="panel-schema-error"` | schema 讀不出來時出現在標頭下：明說修好之前存不了、附後端的原因（指名檔案）。值照樣顯示（#40） |
@@ -97,7 +97,13 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 元素 | 選取器 |
 |---|---|
 | 名稱 / 群組 / 主機 / 說明 | 標籤文字 |
+| 儲存屬性 | `data-testid="attributes-save"` |
+| 取消 | `data-testid="attributes-cancel"` |
+| 屬性錯誤 | `data-testid="attributes-error"` |
+| 已更新通知 | `data-testid="attributes-saved-notice"` |
 | 面板容器 | `data-testid="attributes-<uid>"` |
+
+群組以逗號（`,`／`，`／`、`）分隔，留空＝未分群。儲存走 `POST /api/configs/{uid}/attributes`：成功後樹依新的群組／主機／名稱重建、這一塊重畫並顯示已更新通知；後端指名不合法的那一項時，原因顯示在屬性錯誤、對應的輸入框標 `aria-invalid="true"`；這一塊有未儲存的參數改動時先擋下不重畫。樹節點（`tree-item-<uid>`）有說明時以 `title` 顯示（滑鼠停留）。
 
 ---
 

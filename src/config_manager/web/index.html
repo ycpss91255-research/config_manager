@@ -123,7 +123,12 @@
   .panel-draft { flex: none; font-size: 12px; color: #e69b2e; font-weight: 600; }
   .panel-schema, .panel-unvalidated { flex: none; font-size: 12px; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); }
   .panel-unvalidated { color: #b3261e; border-color: #b3261e; }
-  .panel-unmanage { flex: none; font-size: 12px; }
+  .panel-unmanage, .panel-attributes { flex: none; font-size: 12px; }
+  .attributes { display: grid; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .attributes label { display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: 8px; font-size: 13px; }
+  .attributes input[aria-invalid="true"] { outline: 2px solid var(--drift); }
+  .attributes .attributes-actions { display: flex; gap: 10px; justify-content: flex-end; }
+  .attributes .hint { font-size: 12px; color: var(--muted); }
   .param-description { color: var(--muted, #777); cursor: help; }
   .panel-actions { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line); }
   .panel-actions .hint { flex: 1; font-size: 12px; color: var(--muted); }
@@ -713,7 +718,10 @@ function rowNodeBase(row) {
     ]);
   }
   // 狀態色點在左，與草稿標記（右側，隨 T18 加入）分開——UI-ELEMENTS W2 的左側樹。
-  return element("li", { "data-testid": `tree-item-${row.uid}`, "data-uid": row.uid }, [
+  // 說明於樹節點滑鼠停留時顯示（§7.4.4、#286）。
+  const attributes = { "data-testid": `tree-item-${row.uid}`, "data-uid": row.uid };
+  if (row.description) attributes.title = row.description;
+  return element("li", attributes, [
     element("span", {
       class: `dot dot-${row.state}`,
       "data-testid": "status-dot",
@@ -975,6 +983,13 @@ function panelNode(detail) {
     type: "button", class: "panel-unmanage editing-only", "data-testid": "panel-unmanage",
     title: "不再管理這份檔案（目標檔案保留）", text: "解除納管",
   });
+  // 屬性（#286）：僅開發者——按鈕不在 DOM 裡，不是停用（ADR-00000020）。放在標頭，raw 也拿得到。
+  const canEditAttributes = currentIdentity && currentIdentity.role === "developer";
+  const attributesButton = canEditAttributes ? element("button", {
+    type: "button", class: "panel-attributes editing-only", "data-testid": "panel-attributes",
+    title: "修改名稱、群組、主機、說明", text: "屬性",
+  }) : null;
+  let hasUnsavedEdits = () => false;  // 有欄位表時換成真的（見下）
   const head = element("div", { class: "panel-head", "data-testid": "panel-head" }, [
     element("span", { class: "name", text: detail.name }),
     element("span", { class: "target", text: detail.target }),
@@ -982,6 +997,7 @@ function panelNode(detail) {
     element("span", {
       class: "panel-draft", "data-testid": `panel-draft-${detail.uid}`, text: "● 草稿",
     }),
+    ...(attributesButton ? [attributesButton] : []),
     unmanageButton,
     close,
   ]);
@@ -993,6 +1009,13 @@ function panelNode(detail) {
   });
   close.addEventListener("click", () => closeSlot(detail.uid));
   unmanageButton.addEventListener("click", () => unmanageConfig(detail));
+  if (attributesButton) {
+    attributesButton.addEventListener("click", () => {
+      const open = panel.querySelector(`[data-testid='attributes-${detail.uid}']`);
+      if (open) open.remove();
+      else head.after(attributesPanel(detail, () => hasUnsavedEdits()));
+    });
+  }
   const draftMark = panel.querySelector(`[data-testid='panel-draft-${detail.uid}']`);
   draftMark.hidden = !detail.draft_values;
   if (detail.format === "raw") {
@@ -1033,6 +1056,7 @@ function panelNode(detail) {
   });
   saveError.hidden = true;
   const entries = [];
+  hasUnsavedEdits = () => entries.some((entry) => entry.node.dataset.dirty === "true");
   // 人工指定型別（#285）：僅開發者、且拿得到編輯階段（唯讀分頁沒有身分）。
   const specify = currentIdentity && currentIdentity.role === "developer"
     ? (row, typeName, reset) => specifyType(detail, row, typeName, { entries, error: saveError, reset })
@@ -1102,6 +1126,77 @@ function panelNode(detail) {
   ]));
   refreshSave();
   return panel;
+}
+
+// 屬性面板（§7.4.4、#286）：名稱、群組（可多個）、主機、說明。從區塊標頭展開，僅開發者。
+// 儲存後樹依新的群組／主機重建（load），這一塊重畫；重畫會丟掉還沒儲存的參數改動，所以有的話
+// 先擋下、說清楚（不變式 2）。後端指名是哪一項不合法時，標在那個輸入框。
+const ATTRIBUTE_FIELDS = [
+  ["name", "名稱", ""],
+  ["groups", "群組", "可多個，以逗號分隔；留空＝未分群"],
+  ["hostname", "主機", ""],
+  ["description", "說明", "用途說明，滑鼠停在樹節點上時顯示"],
+];
+
+function attributesPanel(detail, hasUnsavedEdits) {
+  const inputs = {};
+  const rows = ATTRIBUTE_FIELDS.map(([key, label, hint]) => {
+    const value = key === "groups" ? (detail.groups || []).join(", ") : detail[key] || "";
+    inputs[key] = element("input", { type: "text", value, placeholder: hint });
+    return element("label", {}, [element("span", { text: label }), inputs[key]]);
+  });
+  const error = element("div", { class: "notice error", "data-testid": "attributes-error" });
+  error.hidden = true;
+  const save = element("button", { type: "button", "data-testid": "attributes-save", text: "儲存屬性" });
+  const cancel = element("button", { type: "button", "data-testid": "attributes-cancel", text: "取消" });
+  const form = element("div", { class: "attributes", "data-testid": `attributes-${detail.uid}` }, [
+    ...rows,
+    element("span", { class: "hint", text: "屬性的修改會留一筆變更紀錄，與參數內容的修改分開。改名不影響歷史與草稿。" }),
+    error,
+    element("div", { class: "attributes-actions" }, [cancel, save]),
+  ]);
+  cancel.addEventListener("click", () => form.remove());
+  save.addEventListener("click", () => saveAttributes(detail, { inputs, error, save, hasUnsavedEdits }));
+  return form;
+}
+
+async function saveAttributes(detail, ui) {
+  for (const input of Object.values(ui.inputs)) input.removeAttribute("aria-invalid");
+  ui.error.hidden = true;
+  if (ui.hasUnsavedEdits()) {
+    renderSaveError(ui.error, "這一塊有還沒儲存的參數改動。下一步：先儲存或改回原值，再儲存屬性——儲存屬性會重畫這一塊。");
+    return;
+  }
+  const body = {
+    name: ui.inputs.name.value,
+    hostname: ui.inputs.hostname.value,
+    groups: ui.inputs.groups.value.split(/[,，、]/).map((group) => group.trim()).filter(Boolean),
+    description: ui.inputs.description.value,
+  };
+  ui.save.disabled = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/attributes`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      renderSaveError(ui.error, payload.detail);
+      const field = payload.detail && payload.detail.field;
+      if (field && ui.inputs[field]) ui.inputs[field].setAttribute("aria-invalid", "true");
+      return;
+    }
+    load();  // 樹依新的群組／主機／名稱重建
+    openPanel(detail.uid, element("p", {
+      class: "notice", "data-testid": "attributes-saved-notice",
+      text: "已更新屬性，並記一筆變更紀錄。",
+    }));
+  } catch (error) {
+    renderSaveError(ui.error, `送不出去：${error && error.message ? error.message : error}`);
+  } finally {
+    ui.save.disabled = false;
+  }
 }
 
 // 指定或清除一個參數的型別（#285）。型別一變，那一列的輸入控制項也要換，所以成功後重畫這一塊；

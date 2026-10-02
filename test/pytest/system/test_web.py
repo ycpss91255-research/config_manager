@@ -37,6 +37,7 @@ import socket
 import subprocess
 import threading
 import time
+import tomllib
 import urllib.error
 import urllib.request
 
@@ -2472,6 +2473,142 @@ def test_the_unmanage_entry_is_absent_while_read_only(open_page, listing):
 
     assert second.is_hidden("[data-testid='panel-mfz3k9q1'] [data-testid='panel-unmanage']")
     assert holder.is_hidden("[data-testid='readonly-banner']")
+
+
+# ── W2 屬性面板（#286，§7.4.4）──────────────────────────────────────────────
+# 群組不是自動產生的，要有地方改。面板從區塊標頭展開，僅開發者；儲存後樹立即依新屬性重建。
+
+_ATTRIBUTES = f"[data-testid='attributes-{_PARAM_UID}']"
+
+
+def _open_attributes(page):
+    page.click(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-attributes']")
+    page.wait_for_selector(_ATTRIBUTES, state="visible")
+    return page.locator(_ATTRIBUTES)
+
+
+def _grouped(group: str, uid: str = _PARAM_UID) -> str:
+    return f"[data-testid='tree-group-{group}'] [data-testid='tree-item-{uid}']"
+
+
+def _in_group(page, group: str, uid: str = _PARAM_UID):
+    return page.query_selector(_grouped(group, uid))
+
+
+def test_a_developer_regroups_a_config_and_the_tree_rebuilds_at_once(open_page, repo):
+    # AC1／AC2／AC4：改群組（可多個）→ 樹立即依新群組重建，那份出現在每個群組底下；留一筆 meta。
+    _listing_many(repo, {"p": "count: 3\n", "q": "count: 5\n"})
+    page = _open_panel(open_page(), developer=True)
+    assert _in_group(page, "navigation") is None
+    form = _open_attributes(page)
+
+    form.get_by_label("群組").fill("navigation, safety")
+    page.click("[data-testid='attributes-save']")
+
+    page.wait_for_selector(_grouped("navigation"))
+    assert _in_group(page, "safety") is not None
+    assert _in_group(page, "navigation", _SECOND_UID) is None  # 另一份沒被動到
+    assert page.is_visible("[data-testid='attributes-saved-notice']")
+    listed = tomllib.loads((repo / "config-list.toml").read_text(encoding="utf-8"))["files"]
+    assert [entry["groups"] for entry in listed] == [["navigation", "safety"], []]
+    assert _git_log(repo, 1) == [f"meta({_PARAM_UID}): 群組改為 navigation、safety|陳小明"]
+
+
+def test_renaming_shows_the_new_name_in_the_tree_and_the_panel_under_the_same_uid(open_page, repo):
+    # AC3：改名不影響 uid——同一個樹節點、同一個區塊，只是名字換了。
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = _open_panel(open_page(), developer=True)
+    form = _open_attributes(page)
+
+    form.get_by_label("名稱").fill("navigation-params")
+    form.get_by_label("主機").fill("site-a")
+    page.click("[data-testid='attributes-save']")
+
+    page.wait_for_selector("[data-testid='attributes-saved-notice']")
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'] >> text=navigation-params")
+    assert "navigation-params" in page.inner_text(
+        f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-head']"
+    )
+
+
+def test_the_description_shows_when_hovering_the_tree_node(open_page, repo):
+    # AC5：說明於樹節點滑鼠停留時顯示（title）。沒有說明的節點沒有這個提示。
+    _listing_many(repo, {"p": "count: 3\n", "q": "count: 5\n"})
+    page = _open_panel(open_page(), developer=True)
+    form = _open_attributes(page)
+
+    form.get_by_label("說明").fill("Nav2 導航參數")
+    page.click("[data-testid='attributes-save']")
+
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'][title='Nav2 導航參數']")
+    assert page.get_attribute(f"[data-testid='tree-item-{_SECOND_UID}']", "title") is None
+
+
+def test_the_attributes_button_is_absent_for_a_normal_user(open_page, repo):
+    # AC6：僅開發者——一般使用者模式下按鈕不存在於 DOM，不是停用。
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = _open_panel(open_page())
+
+    assert page.query_selector("[data-testid='panel-attributes']") is None
+
+
+def test_an_invalid_attribute_is_marked_on_its_input_and_nothing_is_saved(open_page, repo):
+    # AC7：重複的群組被擋下——原因與下一步顯示在面板、標在那個輸入框；清單檔沒被改。
+    _listing_many(repo, {"p": "count: 3\n"})
+    before = (repo / "config-list.toml").read_text(encoding="utf-8")
+    page = _open_panel(open_page(), developer=True)
+    form = _open_attributes(page)
+
+    form.get_by_label("群組").fill("nav, nav")
+    page.click("[data-testid='attributes-save']")
+
+    page.wait_for_selector("[data-testid='attributes-error']", state="visible")
+    assert "重複" in page.inner_text("[data-testid='attributes-error']")
+    assert form.get_by_label("群組").get_attribute("aria-invalid") == "true"
+    assert form.get_by_label("名稱").get_attribute("aria-invalid") is None
+    assert (repo / "config-list.toml").read_text(encoding="utf-8") == before
+
+
+def test_saving_attributes_with_unsaved_parameter_edits_is_held_back(open_page, repo):
+    # 儲存屬性會重畫這一塊；有還沒儲存的參數改動時先擋下，不悄悄丟掉（不變式 2）。
+    _listing_many(repo, {"p": "count: 3\n"})
+    before = (repo / "config-list.toml").read_text(encoding="utf-8")
+    page = _open_panel(open_page(), developer=True)
+    page.fill(_param_value("count"), "4")
+    form = _open_attributes(page)
+
+    form.get_by_label("名稱").fill("renamed")
+    page.click("[data-testid='attributes-save']")
+
+    page.wait_for_selector("[data-testid='attributes-error']", state="visible")
+    assert "還沒儲存" in page.inner_text("[data-testid='attributes-error']")
+    assert page.input_value(_param_value("count")) == "4"
+    assert (repo / "config-list.toml").read_text(encoding="utf-8") == before
+
+
+def test_cancelling_closes_the_attributes_panel_without_changing_anything(open_page, repo):
+    _listing_many(repo, {"p": "count: 3\n"})
+    before = (repo / "config-list.toml").read_text(encoding="utf-8")
+    page = _open_panel(open_page(), developer=True)
+    form = _open_attributes(page)
+
+    form.get_by_label("名稱").fill("renamed")
+    page.click("[data-testid='attributes-cancel']")
+
+    assert page.query_selector(_ATTRIBUTES) is None
+    assert (repo / "config-list.toml").read_text(encoding="utf-8") == before
+
+
+def test_a_raw_config_has_the_attributes_panel_too(open_page, repo):
+    # 入口在區塊標頭：沒有欄位表的 raw 也分得了群組。
+    _listing_with(repo, "whatever: [not parsed\n", fmt="raw")
+    page = _open_panel(open_page(), developer=True)
+    form = _open_attributes(page)
+
+    form.get_by_label("群組").fill("firmware")
+    page.click("[data-testid='attributes-save']")
+
+    page.wait_for_selector(_grouped("firmware"))
 
 
 # ── W2 左側樹依主機分層（#34）───────────────────────────────────────────────

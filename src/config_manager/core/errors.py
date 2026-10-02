@@ -293,3 +293,24 @@ class TypeIncompatible(ManualTypeError):
 
     指定下去這份 config 當場就不合格、之後連存都存不了，所以擋在指定這一步（不變式 4）。
     """
+
+
+class AttributesError(Exception):
+    """修改 config 屬性（#286、T16）做不成的基底：送錯的請求，不是伺服器的錯。"""
+
+
+class AttributeInvalid(AttributesError):
+    """某一項屬性的值不合法。`field` 是哪一項（name／hostname／groups／description），介面據此
+    把錯誤標在那個輸入框旁。"""
+
+    def __init__(self, message: str, field: str) -> None:
+        super().__init__(message)
+        self.field = field
+
+
+class AttributesUnchanged(AttributesError):
+    """送來的屬性與現在的一模一樣——沒有東西要改，不留一筆空的變更紀錄。"""
+
+
+class EntryNotFound(AttributesError):
+    """要修改的 uid 不在清單檔裡。"""
