@@ -31,6 +31,19 @@ class DuplicateTarget(ConfigListError):
     """兩筆條目寫到同一個目標位置。寫出順序決定最終結果，是靜默 bug。"""
 
 
+class AlreadyManaged(DuplicateTarget):
+    """要納管的檔案已經在管理中了。
+
+    是 `DuplicateTarget` 的一種（同一個目標不能有兩筆），但說法不同：`DuplicateTarget` 講的是
+    清單檔裡已經有兩筆撞在一起、要人去改；這裡是納管當下發現「它已經在了」——這次沒有納管，
+    該做的是去看既有的那一份，不是改任何東西。`uid` 是既有那一份的。
+    """
+
+    def __init__(self, message: str, uid: str) -> None:
+        super().__init__(message)
+        self.uid = uid
+
+
 class DuplicateSource(ConfigListError):
     """兩筆條目指向同一個 repo 內來源檔。複本其實是同一份，動一個會牽到另一個。
 

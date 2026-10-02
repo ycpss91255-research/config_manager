@@ -114,6 +114,45 @@ def test_ini_round_trips_byte_identical_keeping_trailing_whitespace():
     assert dump(parse(text, "ini")) == text
 
 
+_INI_WITH_SEMICOLONS = (
+    "; 舊式 INI 設定（驗證用範例）\n[motion]\nmax_vel = 0.55\n  ; 縮排的分號註解\nenabled = true\n"
+    "\n[net]\n# 井號註解\nhost = 192.168.1.10\n"
+)
+
+
+def test_ini_semicolon_comment_lines_are_comments_not_syntax_errors():
+    # 人工驗證 U06：`;` 開頭的整行註解是 INI 最常見的寫法（Windows 與多數工具的預設），
+    # configobj 預設只認 `#`。這類檔案要解析得過、值照樣取得到，註解不變成鍵。
+    data = values(parse(_INI_WITH_SEMICOLONS, "ini"))
+
+    assert data == {
+        "motion": {"max_vel": "0.55", "enabled": "true"},
+        "net": {"host": "192.168.1.10"},
+    }
+
+
+def test_ini_with_semicolon_comments_round_trips_byte_identical():
+    # 原始內容保留：`;` 不會被改寫成 `#`。
+    assert dump(parse(_INI_WITH_SEMICOLONS, "ini")) == _INI_WITH_SEMICOLONS
+
+
+def test_setting_a_value_keeps_the_semicolon_comment_lines_untouched():
+    parsed = parse(_INI_WITH_SEMICOLONS, "ini")
+
+    set_value(parsed, "motion.max_vel", "0.8")
+
+    assert dump(parsed) == _INI_WITH_SEMICOLONS.replace("max_vel = 0.55", "max_vel = 0.8")
+
+
+def test_an_ini_syntax_error_after_a_semicolon_comment_reports_the_right_line():
+    # 把 `;` 當註解不能弄亂行號。
+    broken_line = 2
+    with pytest.raises(SyntaxParse) as exc:
+        parse("; 註解\n[未閉合\nkey = value\n", "ini")
+
+    assert exc.value.line == broken_line
+
+
 def test_ini_values_are_extractable_for_type_inference():
     # 存原文之後，型別推斷需要的值仍取得出來（比照 json：values() 再 parse 一次）。
     data = values(parse("[s]\nn = 3\nname = amr01\n", "ini"))

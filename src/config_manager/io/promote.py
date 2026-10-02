@@ -21,6 +21,7 @@ from config_manager.core.drafts import Promotion
 from config_manager.io.atomic import replace_atomically
 from config_manager.io.errors import PromoteLeftBehind, WriterError
 from config_manager.io.git import head, record, reset_hard, stage
+from config_manager.io.parsers import as_bytes
 from config_manager.io.repo import read_or_none
 from config_manager.io.writer import write
 
@@ -50,7 +51,7 @@ def apply(
     try:
         for plan in promotions:
             before_targets.append((plan.target, read_or_none(plan.target)))
-            replace_atomically(os.path.join(repo, plan.source), plan.text.encode("utf-8"))
+            replace_atomically(os.path.join(repo, plan.source), as_bytes(plan.text))
             beside = extras.get(plan.uid, ())
             for relative, text in beside:
                 # 回滾時 reset 只還原 git 追蹤的檔案；這次才新寫的檔案要另外記下來拿掉。

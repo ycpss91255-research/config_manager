@@ -34,7 +34,7 @@ def overwrite(
     repo: str, entry: FileEntry, permissions: Permissions, author: str, roots: tuple[str, ...]
 ) -> None:
     """來源複本寫回 target，並記一筆空的 cfg 紀錄。紀錄沒成就把 target 還原。"""
-    text = read_source_copy(repo, entry.source)
+    text = read_source_copy(repo, entry.source, entry.format)
     before = read_or_none(entry.target)
     write(entry.target, text, permissions, roots)
     try:

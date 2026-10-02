@@ -50,14 +50,15 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 |---|---|---|
 | 搜尋範圍 | `data-testid="search-scope"` | 全部（預設）／config 名稱／目標路徑／參數名稱／參數值；選項值即 `GET /api/search` 的 `scope`（#37） |
 | 搜尋框 | `data-testid="search-input"` | 即時過濾（150ms 去抖後走 `GET /api/search`，命中的 config 留在樹上）；無結果→`no-matches`；搜尋失敗→`search-error`（不靜默顯示成沒有結果）。展開命中的 config 時，命中的參數列帶 `data-hit="true"` 並捲進視野（#37） |
-| 檢查差異 | 文字「檢查差異」 | 觸發全項目掃描 |
+| 檢查差異 | 文字「檢查差異」（`data-testid="rescan"`） | 觸發全項目掃描；檢查期間停用 |
+| 檢查結果 | `data-testid="scan-status"` | 手動「檢查差異」的回饋，`data-state` 為 `running`（檢查中…）／`done`（時間、共幾份、全部一致或各有幾份偏離／未部署／判不出狀態）／`failed`（讀不到清單）。開頁面時的自動載入不顯示 |
 | 白名單 | 文字「白名單」 | **僅開發者出現**（非停用） |
 | 納管 | 文字「納管」 | 開啟納管流程 |
 | 進版 | `data-testid="promote-all"` | 文字含待進版草稿數，如「進版 (2)」。無草稿時停用。`POST /api/promote`；成功→`promote-done` 橫幅、草稿清空、重掃；失敗→`promote-error` 橫幅原樣列結構化錯誤（哪一份／哪些行號與建議）並打開那份（#22） |
 | 捨棄變更（全域） | `data-testid="discard-all"` | 文字「捨棄變更」；無草稿時停用；經 W6 確認對話框後 `DELETE /api/drafts`（#22） |
 | 進版結果橫幅 | `data-testid="promote-done"` ／ `"promote-error"` | 位於工作區上方、橫跨兩欄；下一次進版／捨棄前清掉 |
 | 退出 | 文字「退出」 | 有未進版草稿時二次確認 |
-| 目前角色 | `data-testid="current-role"` | 恆常可見於標題列 |
+| 目前角色 | `data-testid="current-role"` | 恆常可見於標題列：`姓名・角色`；唯讀時顯示「唯讀」，**取回編輯階段後改回身分**（重新整理會先釋放再取回） |
 
 ### 左側樹
 
@@ -223,7 +224,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 已選檔案 | `data-testid="browse-selection"` | 選取一個 `file` 後顯示其路徑（供 #14 納管；#13 只到選取） |
 | 拒絕通知 | `data-testid="browse-rejected"` | 瀏覽被拒時出現，含 `data-kind`（`outside_roots`／`not_a_directory`／`unreadable`）與**原樣**的 `message`（含「下一步」，不改寫） |
 | 加入白名單 | 文字「加入白名單」 | **僅開發者、且僅 `outside_roots`**；在一般使用者模式或其他拒絕原因下**不存在於 DOM**（ADR-00000020） |
-| 白名單前綴輸入 | `data-testid="whitelist-prefix-input"` | 「加入白名單」預填被拒目標的目錄 realpath（被拒目標是檔案則取父目錄），可編輯；送出走 `POST /api/allowed-roots`，成功後重跑被拒的瀏覽 |
+| 白名單前綴輸入 | `data-testid="whitelist-prefix-input"` | 「加入白名單」預填被拒目標的目錄 realpath（被拒目標是檔案則取父目錄），可編輯；按「加入白名單」先經 W6 確認框（寫明即將開放的目錄與底下有幾個可納管檔，同白名單維護頁），確認才 `POST /api/allowed-roots`，成功後重跑被拒的瀏覽 |
 | 允許範圍 | `data-testid="allowed-range"` | **一般使用者**在 `outside_roots` 拒絕下看到的唯讀白名單清單（理解為何被擋）；文案沿用端點 403 說法「請開發者代為加入」，不自造 |
 
 **測試須斷言**：一般使用者模式下「加入白名單」入口**找不到**（不是 disabled）；`not_a_directory`／
@@ -287,13 +288,13 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 返回 | `data-testid="whitelist-back"` | 回 W2 清單 |
 | 新增前綴輸入 | `data-testid="whitelist-add-input"` | 要加入白名單的絕對路徑（與 W7 的 `whitelist-prefix-input` 不同元素） |
 | 預覽 | `data-testid="whitelist-preview-button"` | 對輸入的前綴 `GET /api/candidate-count`；不每字打就數（避免每字遞迴走訪主機目錄，§7.9／#206） |
-| 候選數預覽 | `data-testid="whitelist-preview"` | 「此路徑下有 N 個可納管檔」；觸上限顯示「N+」（`capped`）；前綴不合法（`..`／不存在／非目錄）顯示原樣錯誤訊息；空時隱藏 |
-| 加入白名單 | `data-testid="whitelist-add"` | `POST /api/allowed-roots`（prefix 取自輸入），成功後重載清單、清空輸入與預覽 |
+| 候選數預覽 | `data-testid="whitelist-preview"` | 「此路徑下有 N 個可納管檔」；觸上限顯示「N+」（`capped`）；前綴不合法（`..`／不存在／非目錄）顯示原樣錯誤訊息；空時隱藏；**輸入一改或按加入時清掉**，不留著舊路徑的數字 |
+| 加入白名單 | `data-testid="whitelist-add"` | 先數候選檔、經 W6 確認框（寫明即將開放的目錄含子目錄、底下有幾個可納管檔）；確認才 `POST /api/allowed-roots`（prefix 取自輸入），成功後重載清單、清空輸入；取消什麼都不變、輸入還在 |
 | 新增錯誤 | `data-testid="whitelist-error"` | 新增失敗原樣顯示（`..`／symlink 逃逸 422、指向到不了的目錄、重複前綴 409）；空時隱藏 |
 | 根清單 | `data-testid="whitelist-roots"` | 目前允許的根（`GET /api/allowed-roots` 的 `roots[]`）；空時顯示「白名單目前是空的」 |
 | 根項目 | `data-testid="whitelist-root-<原樣前綴>"` | 顯示原樣 prefix、resolved（realpath）、`由 <added_by> 於 <added_at>`（誰／何時，AC2） |
 | 移除 | 根項目內 `data-testid="whitelist-remove"` | 文字「移除」；先以 `confirmed=false` `DELETE`，回受影響清單＋要求確認（AC3） |
-| 移除確認 | `data-testid="whitelist-remove-confirm"` | 承載受影響納管項目清單與確認／取消；未在確認流程時隱藏 |
+| 移除確認 | `data-testid="whitelist-remove-confirm"` | 說要移除哪一個前綴、移除後那個路徑不能再瀏覽或納管、已納管的不受影響，並列出受影響的納管項目與確認／取消；文字由介面自己寫，不出現 API 的參數名；未在確認流程時隱藏 |
 | 受影響項目 | `data-testid="whitelist-affected"` | 受影響的納管項目（target 落在被移除前綴底下），資訊性、不連動解除納管（AC3） |
 | 確認移除 | `data-testid="whitelist-confirm-remove"` | 以 `confirmed=true` `DELETE`，成功後重載清單 |
 | 取消移除 | `data-testid="whitelist-cancel-remove"` | 收起確認、不移除 |

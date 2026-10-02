@@ -212,6 +212,13 @@ def test_ini_duplicate_key_in_the_same_section_lists_every_line():
     assert [p.lines for p in problems] == [(2, 4)]
 
 
+def test_ini_with_semicolon_comments_passes_the_first_layer():
+    # 人工驗證 U06 的那份檔案：分號註解不是語法錯誤，也不算重複的鍵。
+    text = "; 舊式 INI 設定\n[motion]\nmax_vel = 0.55\n; 第二個註解\nenabled = true\n"
+
+    assert check(text, "ini") == []
+
+
 def test_trailing_whitespace_is_rejected_in_every_format():
     assert _lines(check("a = 1 \n", "toml")) == [1]
     assert _lines(check('{"a": 1} \n', "json")) == [1]

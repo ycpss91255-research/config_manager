@@ -24,6 +24,7 @@ from config_manager.io.allowed_roots import root_prefixes
 from config_manager.io.drift import adoption, overwrite
 from config_manager.io.errors import PromoteLeftBehind, WriterError
 from config_manager.io.git import history
+from config_manager.io.parsers import as_text
 from config_manager.io.parsers import read_source as read_source_copy
 from config_manager.io.preflight import read_config_list
 from config_manager.io.promote import apply as apply_promotions
@@ -70,7 +71,7 @@ def _target_text(entry: FileEntry) -> str | None:
         content = read_or_none(entry.target)
         if content is None:
             return None
-        return content.decode("utf-8")
+        return as_text(content, entry.format)
     except OSError as error:
         raise HTTPException(
             status_code=422,
@@ -79,7 +80,8 @@ def _target_text(entry: FileEntry) -> str | None:
     except UnicodeDecodeError as error:
         raise HTTPException(
             status_code=422,
-            detail=f"目標 {entry.target} 不是 UTF-8 文字，無法納入或比對：{error}。"
+            detail=f"目標 {entry.target} 不是 UTF-8 文字，無法以 {entry.format} 納入或比對："
+            f"{error}。"
             "下一步：以來源覆蓋目標，或先把該檔轉成 UTF-8",
         ) from error
 
@@ -97,7 +99,7 @@ def _resolve(
     entry, permissions = _permissions_of(repo, uid)
     roots = root_prefixes(repo)
     target_text = _target_text(entry)
-    source_text = read_source_copy(repo, entry.source)
+    source_text = read_source_copy(repo, entry.source, entry.format)
     if target_text is None:
         raise HTTPException(
             status_code=409,
@@ -166,7 +168,8 @@ def _apply_missing(repo: str, uid: str) -> dict[str, object]:
     """寫出修復：來源寫到 target。target 已在時仍可寫（等於再套一次來源），不留紀錄。"""
     entry, permissions = _permissions_of(repo, uid)
     try:
-        write(entry.target, read_source_copy(repo, entry.source), permissions, root_prefixes(repo))
+        source_text = read_source_copy(repo, entry.source, entry.format)
+        write(entry.target, source_text, permissions, root_prefixes(repo))
     except (WriterError, OSError) as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
     return {"uid": uid, "target": entry.target}
