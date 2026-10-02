@@ -4,7 +4,10 @@
 `find_ambiguous(原文, format) -> [歧義]`（#10）。
 
 `draft_schema(型別對照) -> JSON Schema 骨架` 也在這裡（#38）：骨架**只鎖型別**——不寫必填、
-不擋多出來的 key、不寫範圍（#38 動工前定案）。人工指定型別是 #285，不在這裡。
+不擋多出來的 key、不寫範圍（#38 動工前定案）。
+
+人工指定型別（#285、ADR-00000021）也在這裡：指定寫進 schema、優先於推斷；逐欄位清除，回到
+指定之前的樣子。
 
 核心層測試在無檔案系統、無 git、無網路下執行（CLAUDE.md）：資料直接以 Python 結構
 餵進去。
@@ -13,9 +16,13 @@
 import datetime
 
 import jsonschema
+import pytest
 
+from config_manager.core.errors import PathNotSpecifiable, TypeNotSpecified, UnknownTypeName
 from config_manager.core.inference import draft_schema, find_ambiguous, infer_types
+from config_manager.core.manual_types import clear, manual_types, specify
 from config_manager.core.parse import parse, values
+from config_manager.core.validate import check
 
 
 def test_basic_scalar_types_are_inferred():
@@ -329,3 +336,104 @@ def test_skeleton_tolerates_added_and_removed_fields():
     # 只鎖型別（#38 定案）：現場多加一個參數、或少一個，都不被骨架擋——納入現況才走得通。
     schema = draft_schema(infer_types({"retries": 3, "name": "amr01"}))
     jsonschema.validate({"retries": 5, "extra": True}, schema)
+
+
+# ── 人工指定型別（T12，#285、ADR-00000021）────────────────────────────────────
+# 推斷只看得到當下的值：`timeout: 5` 被推斷成整數，作者要的可能是浮點。人工指定寫進 schema，
+# 就是 schema 的一部分——優先於推斷、隨版控、隨退版回退。
+
+_SKELETON = draft_schema({"timeout": "int", "name": "string"})
+
+
+def test_specifying_a_type_replaces_the_inferred_one_and_marks_it_manual():
+    schema = specify(_SKELETON, "timeout", "float")
+
+    assert schema["properties"]["timeout"]["type"] == "number"
+    assert manual_types(schema) == {"timeout": "float"}
+    assert manual_types(_SKELETON) == {}  # 原本那份沒被動到；骨架自動產生的不算人工指定
+
+
+def test_the_specified_type_is_what_the_second_layer_enforces():
+    # T3「人工指定的型別優先於推斷型別」：推斷是整數的欄位指定成浮點後，5.5 就合格了。
+    assert [p.path for p in check("timeout: 5.5\nname: a\n", "yaml", schema=_SKELETON)] == [
+        "timeout"
+    ]
+
+    schema = specify(_SKELETON, "timeout", "float")
+
+    assert check("timeout: 5.5\nname: a\n", "yaml", schema=schema) == []
+    jsonschema.Draft202012Validator.check_schema(schema)
+
+
+def test_specifying_without_a_schema_creates_one_holding_only_that_field():
+    # 還沒有 schema 的 config：第一次指定建立只含這個欄位的 schema，不順手把其餘欄位也鎖起來。
+    schema = specify(None, "timeout", "float")
+
+    assert list(schema["properties"]) == ["timeout"]
+    assert schema["type"] == "object" and "$schema" in schema
+
+
+def test_a_nested_field_is_specified_under_its_parents():
+    schema = specify(None, "robot.limits.max_vel", "float")
+
+    assert manual_types(schema) == {"robot.limits.max_vel": "float"}
+    assert schema["properties"]["robot"]["properties"]["limits"]["properties"]["max_vel"][
+        "type"
+    ] == "number"
+
+
+def test_clearing_puts_the_field_back_as_it_was_before_the_specification():
+    # 回到指定之前（骨架推斷的整數），不是清成空值；再指定一次也記得最初的樣子。
+    schema = specify(specify(_SKELETON, "timeout", "float"), "timeout", "string")
+
+    cleared = clear(schema, "timeout")
+
+    assert cleared == _SKELETON
+
+
+def test_clearing_one_field_leaves_the_other_specifications_alone():
+    schema = specify(specify(_SKELETON, "timeout", "float"), "name", "int")
+
+    cleared = clear(schema, "timeout")
+
+    assert manual_types(cleared) == {"name": "int"}
+    assert cleared["properties"]["timeout"] == {"type": "integer"}
+
+
+def test_clearing_the_only_specification_of_a_schema_it_created_leaves_no_schema():
+    # 那份 schema 是為了這個指定才建立的：清掉後不留一份空殼（空殼會擋住之後產生骨架）。
+    schema = specify(None, "robot.max_vel", "float")
+
+    assert clear(schema, "robot.max_vel") is None
+
+
+def test_clearing_keeps_what_else_was_written_on_the_field():
+    # 開發者在同一個欄位上另外寫的範圍、說明不是「指定」的一部分，清除不動它們。
+    schema = specify(None, "timeout", "float")
+    schema["properties"]["timeout"].update({"minimum": 0, "description": "逾時秒數"})
+
+    cleared = clear(schema, "timeout")
+
+    assert cleared["properties"]["timeout"] == {"minimum": 0, "description": "逾時秒數"}
+
+
+def test_clearing_a_field_that_was_never_specified_is_a_named_error():
+    with pytest.raises(TypeNotSpecified, match="timeout"):
+        clear(_SKELETON, "timeout")
+
+
+def test_an_unknown_type_name_is_refused_listing_the_allowed_ones():
+    with pytest.raises(UnknownTypeName, match="int"):
+        specify(_SKELETON, "timeout", "decimal")
+
+
+def test_a_list_element_cannot_be_specified_on_its_own():
+    with pytest.raises(PathNotSpecifiable, match=r"servers\[0\]"):
+        specify(_SKELETON, "servers[0].port", "int")
+
+
+def test_a_key_containing_a_dot_keeps_its_escape_in_the_listing():
+    schema = specify(None, "a\\.b", "bool")
+
+    assert list(schema["properties"]) == ["a.b"]
+    assert manual_types(schema) == {"a\\.b": "bool"}

@@ -13,6 +13,7 @@ from collections.abc import Iterable
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from subprocess import CalledProcessError
+from typing import cast
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from config_manager.api.drift import register_drift
 from config_manager.api.history import register_history, require_entry
-from config_manager.api.schema import register_schema, schema_hints
+from config_manager.api.schema import as_specified, register_schema, schema_view
 from config_manager.api.search import register_search
 from config_manager.api.lock import LockBox, register_session, require_developer, utc_now
 from config_manager.api.shapes import as_problem, drafts_view
@@ -447,7 +448,8 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
     單位並排；target 不存在→null；讀不到／不是 UTF-8／解析不了→null 並在 `target_error` 說原因
     （現況壞掉是要呈現的事實、不是 500）。
     另回 `constraints`（欄位路徑→schema 的範圍／步進／列舉選項／說明，#40）：欄位表據此設輸入框；
-    schema 讀不出來→`constraints` 空、`schema_error` 說原因（值照樣回，介面明說存不了）。
+    `manual_types`（欄位路徑→人工指定的型別，#285）：`types` 裡那幾個欄位已蓋成指定的型別；
+    schema 讀不出來→兩者空、`schema_error` 說原因（值照樣回，介面明說存不了）。
     """
     config_list = read_config_list(repo)
     entry = require_entry(config_list, uid)
@@ -463,6 +465,7 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
         "permissions": _as_permissions(entry.permissions or config_list.defaults.permissions),
         "schema": entry.schema_path,
         "constraints": {},
+        "manual_types": {},
         "schema_error": None,
         "types": {},
         "values": None,
@@ -473,10 +476,13 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
     if entry.format == "raw":
         return detail
     detail["target_values"], detail["target_error"] = _target_values(entry)
-    detail["constraints"], detail["schema_error"] = schema_hints(repo, entry)
+    detail.update(schema_view(repo, entry))
+    manual = cast(dict[str, str], detail["manual_types"])
     try:
         data = values(parse(read_source_copy(repo, entry.source), entry.format))
-        detail["types"] = infer_types(data)
+        inferred = infer_types(data)
+        # 人工指定優先於推斷（#285）；指定過、但這份內容已經沒有的欄位不憑空多出一列。
+        detail["types"] = {**inferred, **{p: t for p, t in manual.items() if p in inferred}}
         detail["values"] = data
         draft = stage_box["stage"].drafts.get(uid)
         if draft is not None:
@@ -517,9 +523,10 @@ def _save_draft(
             detail="尚未設定身分，無法儲存草稿。下一步：先 POST /api/session 設定姓名與 email",
         )
     entry = require_entry(read_config_list(repo), payload.uid)
+    schema = read_schema(repo, entry)
     try:
         parsed = parse(read_source_copy(repo, entry.source), entry.format)
-        for path, value in payload.edits.items():
+        for path, value in as_specified(schema, payload.edits).items():
             set_value(parsed, path, value)
         text = dump(parsed)
     except UnknownPath as error:
@@ -533,9 +540,7 @@ def _save_draft(
             "下一步：檢查 config-repo 裡這份檔案是否被改壞或移走",
         ) from error
     try:
-        stage_box["stage"] = save_draft(
-            stage_box["stage"], payload.uid, text, entry.format, read_schema(repo, entry)
-        )
+        stage_box["stage"] = save_draft(stage_box["stage"], payload.uid, text, entry.format, schema)
     except DraftInvalid as error:
         # 驗證沒過：422，逐條問題（行號／欄位路徑／訊息／建議）原樣回給介面標示在那一列。
         raise HTTPException(
