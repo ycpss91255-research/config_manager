@@ -19,7 +19,9 @@ class Problem:
     `line` 是主要行號（1 起算；給不出行號時為 None）；`lines` 在重複 key 這類「同一個問題
     出現在多行」時列出全部行號。`severity` 是 error（硬擋）或 warning（列出來讓人確認、不擋）。
     `path` 是欄位路徑（第 2 層才有；文法與欄位表的參數列一致：點號串接、key 內的字面點跳脫成
-    `\\.`、list 元素 `[i]`），介面據此標示那一列。訊息與建議皆為中文（ADR-00000028）。
+    `\\.`、list 元素 `[i]`），介面據此標示那一列。`rule` 是違反的跨欄位規則的代號（第 3 層才有，
+    #41）：有它的問題是「可填理由略過的警告」，略過時代號連同理由記進變更紀錄（#42）。
+    訊息與建議皆為中文（ADR-00000028）。
     """
 
     line: int | None
@@ -28,6 +30,7 @@ class Problem:
     severity: str = ERROR
     lines: tuple[int, ...] = ()
     path: str | None = None
+    rule: str | None = None
 
     @property
     def where(self) -> str:

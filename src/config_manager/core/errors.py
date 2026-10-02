@@ -238,6 +238,22 @@ class DraftInvalid(DraftError):
         self.problems = tuple(problems)
 
 
+class OverrideRequired(DraftError):
+    """內容違反了第 3 層的規則，而沒有（或沒填）略過的理由——草稿**沒有**存下（#42）。
+
+    不是硬擋的錯：填了理由再送就存得成。`problems` 是那幾條警告（各帶 `rule`），端點原樣回給
+    介面，讓人對著每一條填理由。
+    """
+
+    def __init__(self, message: str, problems: Sequence[Problem]) -> None:
+        super().__init__(message)
+        self.problems = tuple(problems)
+
+
+class ReasonInvalid(DraftError):
+    """略過規則的理由不能用：它會寫進變更紀錄的一行，所以不可換行、不可過長（#42）。"""
+
+
 class DraftNotFound(DraftError):
     """`discard` 指名的 uid 在階段裡沒有草稿。具名而非靜默略過：叫人捨棄一份不存在的草稿，
     多半是 uid 拿錯了（不變式 2）。"""
@@ -314,3 +330,11 @@ class AttributesUnchanged(AttributesError):
 
 class EntryNotFound(AttributesError):
     """要修改的 uid 不在清單檔裡。"""
+
+
+class RulesInvalid(Exception):
+    """規則檔（`.rules/<uid>.toml`）本身寫錯了（#41）：不是合法的 TOML、有不認得的鍵、比較方式
+    不在允許的六種裡、缺了比較對象、代號重複。
+
+    訊息指名是第幾條、哪裡錯——寫錯的規則不默默當成沒有那條規則（不變式 2）。
+    """
