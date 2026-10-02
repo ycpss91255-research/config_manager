@@ -10,9 +10,16 @@ save_draft 擋第 1 層（人正在編輯，壞內容不該存）；adopt_draft 
 
 import pytest
 
-from config_manager.core.drafts import Stage, adopt_draft, discard, promote, save_draft
-from config_manager.core.errors import DraftInvalid, DraftNotFound, PromoteInvalid
+from config_manager.core.drafts import Checks, Stage, adopt_draft, discard, promote, save_draft
+from config_manager.core.errors import (
+    DraftInvalid,
+    DraftNotFound,
+    OverrideRequired,
+    PromoteInvalid,
+    ReasonInvalid,
+)
 from config_manager.core.models import ConfigList, Defaults, FileEntry, Permissions
+from config_manager.core.rules import Rules, parse_rules
 
 _GOOD = "speed: 1.5\nname: amr01\n"
 _BAD = "enabled: yes\n"  # 第 1 層拒絕：布林只接受 true／false
@@ -129,7 +136,7 @@ _COUNT_IS_INT = {"type": "object", "properties": {"count": {"type": "integer"}}}
 def test_saving_is_refused_when_the_content_does_not_fit_the_schema():
     # 第 2 層是硬擋：型別不符 schema 的內容存不成草稿，問題指名欄位。
     with pytest.raises(DraftInvalid) as exc:
-        save_draft(Stage(), "mfz3k9q1", "count: many\n", "yaml", schema=_COUNT_IS_INT)
+        save_draft(Stage(), "mfz3k9q1", "count: many\n", "yaml", Checks(schema=_COUNT_IS_INT))
 
     assert [problem.path for problem in exc.value.problems] == ["count"]
     assert "第 1 行" in str(exc.value)
@@ -143,7 +150,9 @@ def test_saving_without_a_schema_only_runs_the_first_layer():
 
 def test_adopting_reports_schema_problems_as_warnings_without_refusing():
     # 偏離處置的「先納入、待修正」：內容照載，schema 的問題也列成警告，進版前要改正。
-    stage, warnings = adopt_draft(Stage(), "mfz3k9q1", "count: many\n", "yaml", _COUNT_IS_INT)
+    stage, warnings = adopt_draft(
+        Stage(), "mfz3k9q1", "count: many\n", "yaml", Checks(schema=_COUNT_IS_INT)
+    )
 
     assert "mfz3k9q1" in stage.drafts
     assert [problem.path for problem in warnings] == ["count"]
@@ -241,6 +250,105 @@ def test_promotion_checks_each_draft_against_its_own_schema():
     listing = _config_list(_entry("aaaaaaa1", "a"), _entry("bbbbbbb2", "b"))
 
     with pytest.raises(PromoteInvalid) as exc:
-        promote(stage, listing, schemas={"bbbbbbb2": _COUNT_IS_INT})
+        promote(stage, listing, {"bbbbbbb2": Checks(schema=_COUNT_IS_INT)})
 
     assert (exc.value.uid, exc.value.problems[0].path) == ("bbbbbbb2", "count")
+
+
+# ── 第 3 層：規則的警告要填理由才略過（#42）────────────────────────────────────
+# 警告不硬擋，但也不能看都不看就過：填了理由才存得成，理由跟著草稿、進版時寫進變更紀錄。
+
+_MIN_BELOW_MAX = Rules(
+    parse_rules('[[rules]]\nid = "min-below-max"\nleft = "lo"\nop = "<"\nright = "hi"\n'), {}
+)
+_VIOLATING = "lo: 5\nhi: 1\n"
+
+
+def _with_rules(reasons=None):
+    return Checks(rules=_MIN_BELOW_MAX, reasons=reasons or {})
+
+
+def test_saving_content_that_breaks_a_rule_without_a_reason_is_held_back():
+    # 不是硬擋的錯（DraftInvalid），是「要理由」：指名哪一條規則，草稿沒有存下。
+    with pytest.raises(OverrideRequired) as exc:
+        save_draft(Stage(), "mfz3k9q1", _VIOLATING, "yaml", _with_rules())
+
+    assert [problem.rule for problem in exc.value.problems] == ["min-below-max"]
+    assert "min-below-max" in str(exc.value) and "下一步" in str(exc.value)
+
+
+def test_a_reason_lets_the_draft_be_saved_and_travels_with_it():
+    stage = save_draft(
+        Stage(), "mfz3k9q1", _VIOLATING, "yaml",
+        _with_rules({"min-below-max": "現場測試低速模式"}),
+    )
+
+    assert stage.drafts["mfz3k9q1"].reasons == {"min-below-max": "現場測試低速模式"}
+
+
+def test_a_blank_reason_does_not_count():
+    with pytest.raises(OverrideRequired):
+        save_draft(Stage(), "mfz3k9q1", _VIOLATING, "yaml", _with_rules({"min-below-max": "  "}))
+
+
+@pytest.mark.parametrize("reason", ["第一行\n第二行", "理" * 201])
+def test_a_reason_that_would_break_the_record_is_refused(reason):
+    # 理由會寫進變更紀錄的一行：不可換行、不可過長。
+    with pytest.raises(ReasonInvalid):
+        save_draft(Stage(), "mfz3k9q1", _VIOLATING, "yaml", _with_rules({"min-below-max": reason}))
+
+
+def test_a_reason_for_a_rule_that_is_not_broken_is_not_kept():
+    # 只記下這次真的略過的規則：內容沒違反就沒有東西要略過。
+    stage = save_draft(
+        Stage(), "mfz3k9q1", "lo: 1\nhi: 5\n", "yaml", _with_rules({"min-below-max": "用不到"})
+    )
+
+    assert stage.drafts["mfz3k9q1"].reasons == {}
+
+
+def test_a_hard_error_still_blocks_even_with_a_reason():
+    # override 後的修改仍走完整驗證：理由只略過第 3 層的警告，蓋不掉第 1／2 層的硬擋。
+    with pytest.raises(DraftInvalid):
+        save_draft(
+            Stage(), "mfz3k9q1", "lo: 5\nhi: 1\nenabled: yes\n", "yaml",
+            _with_rules({"min-below-max": "理由"}),
+        )
+
+
+def test_adopting_lists_rule_warnings_without_asking_for_a_reason_yet():
+    # 「先納入、待修正」照載；規則的警告列出來，理由留到在草稿上儲存時填。
+    stage, warnings = adopt_draft(Stage(), "mfz3k9q1", _VIOLATING, "yaml", _with_rules())
+
+    assert [problem.rule for problem in warnings] == ["min-below-max"]
+    assert stage.drafts["mfz3k9q1"].reasons == {}
+
+
+def test_promotion_writes_the_override_and_its_reason_into_the_record():
+    # 理由記入變更紀錄：主旨之後的內文一行一條 `override(<規則>): <理由>`。
+    stage = save_draft(
+        Stage(), "aaaaaaa1", _VIOLATING, "yaml", _with_rules({"min-below-max": "現場測試低速模式"})
+    )
+
+    plans = promote(stage, _config_list(_entry("aaaaaaa1", "a")), {"aaaaaaa1": _with_rules()})
+
+    assert plans[0].summary == "修改參數（a@amr01）\n\noverride(min-below-max): 現場測試低速模式"
+
+
+def test_promotion_without_overrides_keeps_a_plain_summary():
+    stage = save_draft(Stage(), "aaaaaaa1", "lo: 1\nhi: 5\n", "yaml", _with_rules())
+
+    plans = promote(stage, _config_list(_entry("aaaaaaa1", "a")), {"aaaaaaa1": _with_rules()})
+
+    assert plans[0].summary == "修改參數（a@amr01）"
+
+
+def test_a_rule_added_after_the_draft_was_saved_blocks_promotion_until_a_reason_is_given():
+    # 進版時重驗：草稿存下時還沒有這條規則、所以沒有理由——整批不進版，指名那份與那條規則。
+    stage = save_draft(Stage(), "aaaaaaa1", _VIOLATING, "yaml")
+
+    with pytest.raises(PromoteInvalid) as exc:
+        promote(stage, _config_list(_entry("aaaaaaa1", "a")), {"aaaaaaa1": _with_rules()})
+
+    assert (exc.value.uid, exc.value.problems[0].rule) == ("aaaaaaa1", "min-below-max")
+    assert "理由" in str(exc.value)

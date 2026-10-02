@@ -176,7 +176,13 @@ check(content, format, rules, schema?) -> [問題]   # 空清單 = 通過
 | 第 2 層 | 沒給 schema 不跑第 2 層；`raw` 一律不驗；解析不過時只回第 1 層的語法問題 |
 | 第 2 層 | **人工指定的型別優先於推斷型別** |
 | 第 2 層 | **同一份 schema 驗 YAML / TOML / JSON 三種格式的等價內容，結果一致** |
-| 第 3 層 | 跨欄位規則違反 → 警示（非錯誤），可 override |
+| 第 3 層 | 跨欄位規則違反 → 警示（非錯誤），可 override；**訊息說出是哪兩個欄位、各是多少，並帶上規則自己的說明** |
+| 第 3 層 | **規則＝欄位、六種比較方式之一（`<` `<=` `>` `>=` `==` `!=`）、另一個欄位或固定值**（#41 定案，不支援算式）；巢狀欄位比得到、警告指到那一行 |
+| 第 3 層 | **跨 config 對照**（外部一致性的落實）：值必須出現在另一份 config 的某個欄位裡，否則警告並列出可選的值 |
+| 第 3 層 | 同一組規則驗 YAML／TOML／JSON 的等價內容，結果一致 |
+| 第 3 層 | **規則用到的欄位不在內容裡、兩個值比不了 → 警告，不當成通過**；規則檔或對照的 config 有問題（`Rules.faults`）→ 代號 `rules-file` 的警告 |
+| 第 3 層 | **規則檔寫錯被指出來**：不是合法 TOML、頂層鍵打錯、缺 `id`／`left`、`op` 不在六種裡、`right` 與 `value` 沒擇一、不認得的鍵、`id` 含不安全的字或重複、`in` 缺欄位——`RulesInvalid` 指名第幾條與下一步 |
+| 第 3 層 | 沒給規則不跑第 3 層；`raw` 一律不驗 |
 | — | 合法內容 → 空清單 |
 
 **每個問題都必須含檔案、行號／欄位、修正建議三要素**——這本身是被測的行為。
@@ -862,6 +868,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **搜尋（`GET /api/search?q=&scope=`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：五檔範圍、預設「全部」；回以 config 為單位的命中 `{uid, name, target, matched:[範圍…], params:[{path, value}]}` 與 `unindexed`（來源複本壞掉、參數沒進索引的那幾份）；索引每次請求從真實來源重建，所以修改後舊值不再命中、解除納管後索引移除；未知範圍→422 列五個允許值、`q` 空→422（#32） |
 | **產生 schema 骨架（`POST /api/configs/{uid}/schema`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：僅開發者（403）、需身分（409）；骨架存進 config-repo 的 `.schemas/<uid>.json`、條目記下 `schema`、記一筆 `meta`，回 `{uid, schema}`；`GET /api/configs/{uid}` 另回 `schema`（路徑或 null）；已有 schema→409（不覆寫）、`raw`／頂層不是物件→422 說原因、uid 不在→404（#38） |
 | **第 2 層接在三個寫入點上（#39）**：儲存草稿（`POST /api/drafts`）、進版（`POST /api/promote`，依**此刻**的 schema 重驗）、將現況納入來源（`resolve` 的 `adopt`）——不符 schema→422，detail 另帶 `file`（驗的是哪一份：存草稿與進版是 repo 內的來源複本，納入現況是目標路徑），`problems` 每筆另帶 `path`（欄位路徑；第 1 層為 null）；`adopt_draft` 照載、schema 的問題列成警告；清單檔指到的 schema 讀不出來（不在、不是 JSON、不是合法 schema、指到 `.schemas/` 外）→結構化的 500 `{message, file}`，**不當成沒有 schema 放行** |
+| **第 3 層與略過的理由（#41／#42）**：規則檔是 config-repo 的 `.rules/<uid>.toml`。儲存草稿（`POST /api/drafts`，body 另收 `overrides`：規則代號→理由）違反規則而沒帶理由→**409**，detail `{kind: "override_required", message, uid, file, problems}`、每筆 problem 帶 `rule`，草稿沒存下；帶了理由→存成，回應另帶 `warnings`；理由不是單行或過長→422。**理由只略過警告，硬擋照擋**。單筆內容另回 `draft_overrides`。進版依此刻的規則重驗：違反而草稿沒有理由→422 整批不進版；有理由→寫進那筆紀錄的內文（`override(<規則>): <理由>`），歷史的每一筆另回結構化的 `overrides`。「將目標現況納入來源」違反規則→409、指去走「先納入、待修正」（`adopt_draft` 照載、規則的警告列在 `warnings`）。**規則檔寫壞不讓存檔失敗**——變成代號 `rules-file` 的警告，一樣要理由 |
 | **單筆內容帶 schema 的欄位提示（#40）**：`GET /api/configs/{uid}` 另回 `constraints`（欄位路徑→`minimum`／`maximum`／`exclusiveMinimum`／`exclusiveMaximum`／`multipleOf`／`enum`／`description`，鍵與 `types` 同一套路徑文法；只鎖型別的骨架回空）；schema 讀不出來→值照回、`constraints` 空、`schema_error` 說原因與下一步（不讓整份內容跟著讀不到） |
 | **人工指定型別（`POST /api/configs/{uid}/types`，body `{path, type}`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：僅開發者（403）、需身分（409）；`type` 是 `int`／`float`／`bool`／`string` 之一→寫進 schema、記一筆 `meta`（`指定「<path>」的型別為 <名稱>`），`null`→清除那個指定、記一筆 `meta`；回 `{uid, path, type, schema}`。單筆內容的 `types` 以指定為準、另回 `manual_types`（欄位路徑→指定的型別）。**與現值不相容→422 說原因與下一步、什麼都不寫**；不認得的型別／不存在或不是單一參數的路徑／`raw`→422；沒指定過要清除→409；uid 不在→404。**指定成 double 的欄位，介面送整數值也寫成帶小數點**（#285） |
 | **修改屬性（`POST /api/configs/{uid}/attributes`，body `{name, hostname, groups, description}`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：僅開發者（403）、需身分（409）；寫回清單檔、記一筆 `meta`（說明逐項寫出改了什麼），回 `{uid, name, hostname, ref, groups, description}`。清單列與單筆內容另回 `description`。**改名不影響 uid 與任何關聯**——歷史、草稿、搜尋都還在同一份底下，目標不動；屬性變更不出現在預設的歷史（只看內容變更）。值不合法→422，detail `{message, field}`；什麼都沒改→409；uid 不在→404（#286） |
@@ -1353,16 +1360,17 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `core/index` | T14 | 已落地（`search_configs` 五檔範圍於 #32 加入） |
 | `core/parse` | T6（格式解析與原樣寫回） | 已落地（yaml／json／toml／ini／raw；#8）。ini 以 `;` 開頭的整行註解視為註解（只換給解析器看、原文不動，人工驗證 U06） |
 | `core/models` | 無獨立測試介面——見「刻意的空格」 | 已落地 |
-| `core/validate` | T3 | 已落地：第 1 層（語法、正規形式白名單、縮排／尾隨空白、重複 key 列全部行號，#16）；`check` 收到 schema 時併入第 2 層的問題（#39）。第 3 層未落地（#41） |
+| `core/validate` | T3 | 已落地：第 1 層（語法、正規形式白名單、縮排／尾隨空白、重複 key 列全部行號，#16）；`check` 收到 schema 時併入第 2 層的問題（#39）、收到規則時併入第 3 層的警告（#41） |
+| `core/rules` | T3 | 已落地（第 3 層：`parse_rules` 讀規則檔並指出寫錯的地方、`check_rules` 回警告、`values_at` 依路徑取值；簡單比較與跨 config 對照，#41） |
 | `core/schema_check` | T3 | 已落地（第 2 層：`check_schema` 把 jsonschema 的錯誤轉成帶欄位路徑／行號／建議的問題；整數不收浮點；`ensure_valid_schema` 擋壞掉的 schema，#39；`field_hints` 取出給介面的範圍／步進／列舉選項／說明，#40） |
 | `core/locate` | T3 | 已落地（欄位路徑→原文行號：yaml／json 走 ruamel 的位置資訊，toml／ini 逐行掃；效果由 T3 第 2 層的行號斷言觀察，#39） |
-| `core/problem` | T3 | 已落地（`Problem` 的形狀與嚴重度常數——三層驗證共用，從 `core/validate` 抽出以免第 2 層反向 import 成環；無行為，由 T3 的規格觀察，#39） |
+| `core/problem` | T3 | 已落地（`Problem` 的形狀與嚴重度常數——三層驗證共用，從 `core/validate` 抽出以免第 2 層反向 import 成環；無行為，由 T3 的規格觀察，#39；`rule` 是第 3 層警告的規則代號，#41） |
 | `core/whitelist` | T4（正規化比對）＋ T8（符號連結逃逸） | 已落地：T4 的 `decide` 正規化比對（#11）；符號連結逃逸在**寫出**時點以 realpath 判定，落在 `io/writer`（#5，已 CLOSED）。**納管的讀取路徑上沒有這一層**——見 #174 |
 | `core/inference` | T12 | 已落地：型別推斷（`infer_types`，#9）、歧義偵測（`find_ambiguous`，#10）、schema 骨架（`draft_schema`，#38）；人工指定型別在 `core/manual_types` |
 | `core/manual_types` | T12 | 已落地（`specify`／`clear`／`manual_types`：人工指定寫進 schema、以 `x-manual-type` 標記並記下指定前的型別，逐欄位清除回到指定之前，#285） |
 | `core/attributes` | T16 | 已落地（`update_attributes`／`describe_change`／`is_safe_hostname`，#286）；`group_tree` 不落核心層——樹由介面當場建，見 T16 的說明 |
 | `core/roles` | T17 | 未落地 |
-| `core/drafts` | T18 | 已落地：草稿（`save_draft`／`adopt_draft`／`discard`，不可變 `Stage`，#18）；`promote` 全部驗證才回 `[Promotion]`、任一沒過丟 `PromoteInvalid`（#19）；儲存、納入、進版都可帶 schema 跑第 2 層（#39） |
+| `core/drafts` | T18 | 已落地：草稿（`save_draft`／`adopt_draft`／`discard`，不可變 `Stage`，#18）；`promote` 全部驗證才回 `[Promotion]`、任一沒過丟 `PromoteInvalid`（#19）；儲存、納入、進版以 `Checks` 帶 schema 與規則跑第 2、3 層（#39／#41）；違反規則要理由才存得成（`OverrideRequired`）、理由跟著草稿、進版時寫進紀錄內文（#42） |
 | `io/writer` | T8 | 已落地 |
 | `io/atomic` | T8——原子替換的共用核心，行為由 `io/writer` 的 T8 規格擋著（#186） | 已落地 |
 | `io/repo` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔可讀→T1（`load`）（#186） | 已落地（`place_source`／`write_config_list`／`load_list`——會改寫清單檔的編排共用的讀＋載入，失敗映成 `ConfigListUnparsable`，#257） |
@@ -1379,6 +1387,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/unmanage` | 效果透過既有介面觀察：清單檔條目→T1（`load`）、`unmanage` 紀錄→T7（`history`）、來源複本、schema 檔（有的話一併拿掉，#38）與 target 直接看檔案系統——編排層，同 `io/onboard` 的處理；寫入中途失敗整批回滾、回滾也失敗丟 `UnmanageLeftBehind`（#28） | 已落地（`unmanage`） |
 | `io/attributes` | 效果透過既有介面觀察：清單檔條目→T1（`load`）、`meta` 紀錄→T7（`history`）——編排層，同 `io/unmanage` 的處理；其餘條目原樣、不合法的什麼都不寫、寫入中途失敗回滾、回滾也失敗丟 `AttributesLeftBehind`（#286） | 已落地（`update`） |
 | `io/schema` | 效果透過既有介面觀察：清單檔條目的 `schema`→T1（`load`）、`meta` 紀錄→T7（`history`）、骨架檔直接看 `.schemas/`（內容由 T12 的 `draft_schema` 決定）——編排層，同 `io/unmanage` 的處理；已有 schema 不覆寫、`raw`／頂層不是物件說原因；寫入中途失敗整批回滾、回滾也失敗丟 `SchemaLeftBehind`（#38） `read_schema` 讀第 2 層要用的那一份：讀不出可用的 schema 一律丟 `SchemaUnreadable`、不退回「沒有 schema」（#39） `schema_revert` 算出退版時 schema 怎麼跟著回去（回到當時的內容／拿掉／不動）與要一起寫回的檔案（#39） `store_schema` 是產生骨架與人工指定共用的寫入＋記錄＋回滾（#285） | 已落地（`draft_skeleton`／`read_schema`／`schema_revert`／`store_schema`／`entry_of`） |
+| `io/rules` | 效果透過 T3 的 `check`（給它讀出來的規則）觀察——編排層：沒有規則檔就是沒有規則；跨 config 對照真的讀了另一份的值（清單、清單裡每個物件的某個欄位）；規則檔壞了或對照的那一份讀不到，不丟例外、變成 `faults`（#41） | 已落地（`read_rules`） |
 | `io/manual_type` | 效果透過既有介面觀察：schema 的內容→`io/schema.read_schema` 與 T12 的 `manual_types`、清單檔條目→T1（`load`）、`meta` 紀錄→T7（`history`）——編排層，同 `io/schema` 的處理；只收存在的單一參數、與現值不相容擋下（`TypeIncompatible`）、清到不剩時 schema 檔與條目指向一起拿掉、失敗回滾（#285） | 已落地（`specify_type`） |
 | `io/drift` | 效果透過 T9 觀察：`overwrite`（寫出＋空 `cfg` 紀錄，紀錄沒成把目標還原）、`adopt`（走 `io/promote.apply`，kind `adopt`）——編排層，同 `io/onboard`／`io/promote` 的處理（#29） | 已落地（`overwrite`／`adopt`） |
 | `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath 與列目錄——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185） | 已落地（`browse`） |
@@ -1386,6 +1395,8 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202）；移除以檔案原樣 prefix 定位、找不到丟 `PrefixNotFound`、commit 失敗回滾同樣以真實 fs＋git 斷言（#15） | 已落地（`read_allowed_roots`／`add_allowed_root`／`remove_allowed_root`） |
 | `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/configs/{uid}`、`DELETE /api/configs/{uid}`、`GET /api/configs/{uid}/history`、`POST /api/configs/{uid}/revert`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots`、`GET`／`POST`／`DELETE /api/drafts[/{uid}]`、`POST /api/promote` 與 CORS 中介層） |
 | `api/drift` | T9 | 已落地（`POST /api/configs/{uid}/resolve`、`POST /api/configs/{uid}/apply`——偏離處置與寫出修復，#29） |
+| `api/drafts` | T9 | 已落地（`GET`／`POST`／`DELETE /api/drafts`、`DELETE /api/drafts/{uid}`、`POST /api/promote`——草稿與進版的端點，自 `api/routes` 拆出以免該模組超過千行；儲存與進版接上 schema、規則與略過的理由，#41／#42） |
+| `api/checks` | T9 | 已落地（`checks_for` 集中讀一份 config 此刻的 schema 與規則，儲存、進版、偏離處置共用；`overrides_in` 從紀錄內文取出略過的規則與理由，#41／#42） |
 | `api/shapes` | 無獨立測試介面——`api/routes` 與 `api/drift` 共用的回應形狀（草稿檢視、驗證問題），行為由 T9 的草稿與處置端點擋著（#29） | 已落地 |
 | `api/search` | T9 | 已落地（`GET /api/search`——參數層級搜尋，索引每次請求重建，#32） |
 | `api/attributes` | T9 | 已落地（`POST /api/configs/{uid}/attributes`——僅開發者，修改名稱／群組／主機／說明，#286） |
