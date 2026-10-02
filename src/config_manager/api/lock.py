@@ -41,9 +41,11 @@ def utc_now() -> datetime:
 
 
 class TokenInput(BaseModel):
-    """續期／釋放：這個分頁持有的階段識別碼。"""
+    """續期／釋放：這個分頁持有的階段識別碼。`resume` 只用於續期：頁面重新整理後回來接續時
+    設為 true，後端會換一個新的識別碼（見 `SessionLock.resume`）。"""
 
     token: str
+    resume: bool = False
 
 
 class SessionInput(BaseModel):
@@ -118,15 +120,17 @@ def register_lock(
 
     @app.post("/api/session/lock/renew")
     def renew_lock(payload: TokenInput) -> dict[str, object]:
-        """續期；階段已失效→410（不替你重新取得，前端轉唯讀並說明）。"""
+        """續期；階段已失效→410（不替你重新取得，前端轉唯讀並說明）。回應帶這個分頁接下來要用
+        的識別碼（`token`）：一般續期不變，`resume`（重新整理後接續）會換新的。"""
         # 先在 API 層 sweep：逾時的階段要在這裡清草稿、清身分並記下數量——SessionLock 自己的
         # sweep 只會把階段丟掉，之後就沒人知道有東西該清。
         sweep(held, stage_box, box)
         try:
-            session = box.lock.renew(payload.token, box.clock())
+            keep = box.lock.resume if payload.resume else box.lock.renew
+            session = keep(payload.token, box.clock())
         except SessionExpired as error:
             raise HTTPException(status_code=410, detail=str(error)) from error
-        return _session_view(session)
+        return {**_session_view(session), "token": session.token}
 
     @app.post("/api/session/lock/release")
     async def release_lock_beacon(request: Request) -> dict[str, object]:

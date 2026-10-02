@@ -43,7 +43,10 @@ def _git(repo: str, *args: str) -> str:
         ["git", "-C", repo, *args],
         check=True,
         capture_output=True,
-        text=True,
+        # 輸出以 UTF-8 讀、解不開的位元組無損保留：`show` 拿回的可能是 raw 的二進位內容，
+        # 寫回去時要一個位元組都不差（見 `io/parsers.as_text`）。
+        encoding="utf-8",
+        errors="surrogateescape",
     )
     return completed.stdout
 

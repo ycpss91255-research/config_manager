@@ -155,6 +155,17 @@ class SessionLock:
         self.current = replace(self.current, renewed_at=now)
         return self.current
 
+    def resume(self, token: str, now: datetime) -> EditingSession:
+        """重新整理後接續：續期並**換一個新的識別碼**。階段已失效→`SessionExpired`。
+
+        頁面重新整理時，舊頁面卸載會送出「釋放」、新頁面拿存著的識別碼回來接續，兩個請求誰先到
+        不一定。接續時把識別碼換掉，晚到的那個釋放帶的是舊識別碼，就什麼都動不了；先到的話
+        階段已釋放，這裡丟 `SessionExpired`、由呼叫端重新取得。
+        """
+        current = self.renew(token, now)
+        self.current = replace(current, token=self._tokens())
+        return self.current
+
     def release(self, token: str) -> bool:
         """持有者主動釋放（正常關閉頁面）。識別碼不對就什麼都不做、回 False。"""
         if self.current is None or self.current.token != token:

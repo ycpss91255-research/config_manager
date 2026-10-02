@@ -52,11 +52,13 @@ from __future__ import annotations
 import datetime
 import os
 import subprocess
+from pathlib import PurePosixPath
 from dataclasses import dataclass
 
 from config_manager.core.config_list import dump
+from config_manager.core.errors import AlreadyManaged
 from config_manager.core.identity import derive_name, new_uid
-from config_manager.core.models import FileEntry, Permissions
+from config_manager.core.models import ConfigList, FileEntry, Permissions
 from config_manager.io.atomic import replace_atomically
 from config_manager.io.errors import OnboardLeftBehind, WriterError
 from config_manager.io.git import record, stage, unstage
@@ -167,6 +169,23 @@ def _rollback(repo: str, relative: str, before: _WritePreState, failure: BaseExc
         ) from failure
 
 
+def _refuse_if_managed(current: ConfigList, target: str) -> None:
+    """`target` 已經在管理中就丟 `AlreadyManaged`。
+
+    最常見的衝突，值得自己的說法：dump 的完整性檢查也擋得住它，但那邊的訊息是寫給「清單檔裡
+    兩筆撞在一起」的，叫人去改目標位置——對納管的人是誤導（人工驗證 U10）。
+    """
+    wanted = PurePosixPath(target)
+    managed = next((item for item in current.files if PurePosixPath(item.target) == wanted), None)
+    if managed is not None:
+        raise AlreadyManaged(
+            f"「{target}」已經納管了（{managed.ref}），這次沒有再納管一次。"
+            f"下一步：在清單裡找「{managed.name}」查看既有的設定；"
+            "同一個檔案不需要、也不能納管兩次",
+            managed.uid,
+        )
+
+
 def onboard(repo: str, request: OnboardRequest, author: str) -> FileEntry:
     """把 `request.source_path` 指的檔案納入 `repo` 管理，回傳新建的條目。"""
     # 1. 讀來源：白名單判定、realpath、原始位元組與權限，一次讀完（T22）。
@@ -196,6 +215,7 @@ def onboard(repo: str, request: OnboardRequest, author: str) -> FileEntry:
     #    (a) 載入既有清單失敗＝伺服器端資料損壞 → ConfigListUnparsable（結構化 500）；
     #    (b) dump 的完整性檢查對「新條目與既有衝突」丟 ConfigListError，屬輸入衝突、下游映 409。
     original_text, current = load_list(repo)
+    _refuse_if_managed(current, target)
     new_list_text = dump(
         current.model_copy(update={"files": [*current.files, entry]}),
         original_text,

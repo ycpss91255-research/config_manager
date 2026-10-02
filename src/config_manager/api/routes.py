@@ -627,7 +627,7 @@ def _add_allowed_root(
         raise HTTPException(status_code=422, detail=str(error)) from error
     except DuplicatePrefix as error:
         # 白名單已含這個前綴（存的是 realpath，尾斜線／symlink 都會解析到同一個）：與現狀
-        # 衝突 → 409（同 _onboard_config 對重複條目的處置）。core 的訊息已指出是哪兩筆。
+        # 衝突 → 409（同 _onboard_config 對重複條目的處置）。訊息說明這次沒有加入。
         raise HTTPException(status_code=409, detail=str(error)) from error
     except (WriterError, CalledProcessError, AllowedRootLeftBehind) as error:
         # 寫入／commit／回滾失敗（唯讀掛載、git 出錯、.git/index.lock、回滾也失敗殘留）：伺服器
@@ -673,13 +673,15 @@ def _confirm_removal_detail(repo: str, prefix: str) -> dict[str, object]:
     affected = _affected_by_removing(repo, prefix)
     if affected:
         message = (
-            "移除這個白名單根前請先確認。以下納管項目的目標落在此前綴底下（僅供知情，"
-            "不會自動解除納管）。下一步：確認後再帶 confirmed 送出"
+            "移除這個白名單根前請先確認。以下納管項目的目標落在此前綴底下——它們不受影響、"
+            "仍會繼續管理；只是這個路徑底下的其他檔案之後不能再瀏覽或納管。"
+            "下一步：確定要移除就按「確認移除」，不移除就按「取消」"
         )
     else:
         message = (
-            "移除這個白名單根前請先確認。目前沒有納管項目的目標落在此前綴底下。"
-            "下一步：確認後再帶 confirmed 送出"
+            "移除這個白名單根前請先確認。目前沒有納管項目的目標落在此前綴底下；"
+            "移除後這個路徑底下的檔案不能再瀏覽或納管。"
+            "下一步：確定要移除就按「確認移除」，不移除就按「取消」"
         )
     return {"kind": "confirm_required", "affected": affected, "message": message}
 
@@ -797,6 +799,17 @@ def _inspect(roots: tuple[str, ...], payload: InspectInput) -> dict[str, object]
         raise HTTPException(status_code=500, detail=str(error)) from error
 
     source = _read_for_inspect(roots, payload.source_path)
+    if payload.format == "raw":
+        # raw＝只版控、不解析（§3.4）：內容是不是文字都不擋，也就沒有欄位與歧義可列。先前照樣
+        # 解碼，二進位檔於是被拒、還被建議「改用 raw」（人工驗證 U07）。
+        return {
+            "format": "raw",
+            "field_count": 0,
+            "ambiguities": [],
+            "types": {},
+            "permissions": _as_permissions(source.permissions),
+            "hostname": hostname,
+        }
     text = _decode_for_inspect(source.content, payload)
     try:
         parsed = _parse_for_inspect(text, payload)

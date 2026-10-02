@@ -50,11 +50,14 @@
   }
   header {
     display: flex;
+    flex-wrap: wrap;  /* 窄視窗時整顆按鈕換到下一行，不是把字擠成一欄（人工驗證） */
     align-items: center;
-    gap: 12px;
+    gap: 8px 12px;
     padding: 12px 20px;
     border-bottom: 1px solid var(--line);
   }
+  /* 中文沒有空白可斷行，彈性容器一擠就會一個字一行。工具列的按鈕、選單、身分一律不拆字、不縮。 */
+  header button, header select, header h1, header .who { flex: none; white-space: nowrap; }
   h1 { font-size: 16px; margin: 0; font-weight: 600; }
   .grow { flex: 1; }
   button {
@@ -75,7 +78,9 @@
   input[type="search"] {
     font: inherit;
     padding: 6px 10px;
-    min-width: 220px;
+    flex: 1 1 160px;
+    min-width: 120px;
+    max-width: 320px;
     border: 1px solid var(--line);
     border-radius: 6px;
     background: var(--bg);
@@ -281,6 +286,15 @@
     font-size: 13px;
   }
   .who { color: var(--muted); font-size: 13px; }
+  .scan-status { grid-column: 1 / -1; margin: 0; font-size: 13px; color: var(--muted); }
+  .scan-status[data-state="done"] { color: var(--in-sync); }
+  .scan-status[data-state="failed"] { color: var(--drift); }
+  /* 窄視窗：左側樹與右側工作區上下排，不並排——並排時兩欄的最小寬度加起來超出畫面。 */
+  @media (max-width: 760px) {
+    header { padding: 10px 12px; }
+    header .grow { display: none; }
+    main { grid-template-columns: minmax(0, 1fr); padding: 12px 12px 32px; gap: 16px; }
+  }
 
   /* W7 檔案瀏覽 */
   #browse { padding: 16px 20px 40px; }
@@ -468,6 +482,9 @@
   <div class="notice error banner" data-testid="readonly-banner" hidden></div>
   <div class="notice error banner" data-testid="promote-error" hidden></div>
   <div class="notice banner" data-testid="promote-done" hidden></div>
+  <!-- 「檢查差異」的回饋：檢查中／檢查完（幾份、結果）／失敗。全部一致時畫面不會變，沒有這一行
+       就看不出到底有沒有執行（人工驗證）。 -->
+  <p class="scan-status" data-testid="scan-status" role="status" hidden></p>
   <div class="tree-column">
     <!-- 樹的排列（#34、§7.4.1）：依群組（預設）或依主機（第一層 hostname、第二層群組）。單機部署下
          主機層只有一個節點，切換的價值在多機；結構先留著。 -->
@@ -875,7 +892,40 @@ async function load() {
 
 search.addEventListener("input", scheduleSearch);
 searchScope.addEventListener("change", scheduleSearch);
-document.querySelector("[data-testid='rescan']").addEventListener("click", load);
+// 手動「檢查差異」：重掃並說出結果。與一般的載入分開——開頁面時的自動載入不需要這一行回饋。
+const rescanButton = document.querySelector("[data-testid='rescan']");
+const scanStatus = document.querySelector("[data-testid='scan-status']");
+const SCAN_PARTS = [["error", "份判不出狀態"], ["drift", "份偏離"], ["missing", "份未部署"]];
+
+function setScanStatus(state, text) {
+  scanStatus.dataset.state = state;
+  scanStatus.textContent = text;
+  scanStatus.hidden = false;
+}
+
+async function rescan() {
+  rescanButton.disabled = true;
+  setScanStatus("running", "檢查中…");
+  try {
+    await load();
+    if (loadError !== null) {
+      setScanStatus("failed", "檢查失敗：讀不到清單，原因見下方。修正後再按一次「檢查差異」。");
+      return;
+    }
+    const counts = {};
+    for (const row of rows) {
+      const key = row.error ? "error" : row.state;
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    const found = SCAN_PARTS.filter(([key]) => counts[key]).map(([key, text]) => `${counts[key]} ${text}`);
+    const at = new Date().toLocaleTimeString("zh-TW", { hour12: false });
+    setScanStatus("done", `${at} 檢查完成，共 ${rows.length} 份：${found.length ? found.join("、") : "全部一致"}。`);
+  } finally {
+    rescanButton.disabled = false;
+  }
+}
+
+rescanButton.addEventListener("click", rescan);
 
 // ── W3 參數欄位表（#20）──────────────────────────────────────────────────────
 // 這不是線上 YAML 編輯器（ADR-00000013、設計 §7.5）：一列一個參數，依型別給控制項——bool 核取方塊、
@@ -2186,11 +2236,20 @@ function setReadonly(holder, startedAt, reason) {
 function setEditing() {
   document.body.dataset.readonly = "false";
   readonlyBanner.hidden = true;
+  // 標頭的身分要跟著回來：轉唯讀時它被改成「唯讀」，取回編輯階段後不改回去的話，畫面說唯讀、
+  // 實際上卻可以編輯（人工驗證 U38）。
+  if (currentIdentity) currentRole.textContent = identityLabel(currentIdentity);
+}
+
+function identityLabel(identity) {
+  return `${identity.name}・${ROLE_TEXT[identity.role] || identity.role}`;
 }
 
 async function acquireSession() {
+  // 重新整理：舊頁面卸載時已送出釋放，存著的識別碼可能還有效（釋放晚到）也可能已失效（釋放先到）。
+  // 先試著接續（後端會換一個新的識別碼，晚到的舊釋放就動不了它）；失效了就往下重新取得。
   const token = storedToken();
-  if (token && await renewSession(token)) return;
+  if (token && await renewSession(token, true)) return;
   try {
     const response = await fetch(`${API_BASE}/api/session/lock`, { method: "POST" });
     const payload = await response.json();
@@ -2217,24 +2276,29 @@ async function acquireSession() {
   }
 }
 
-async function renewSession(token) {
+// `resuming`＝頁面剛載入、拿存著的識別碼回來接續。此時識別碼失效不算「階段被回收」——多半只是
+// 自己重新整理時釋放掉的——所以不轉唯讀，交給 acquireSession 重新取得。
+async function renewSession(token, resuming = false) {
   if (!token) return false;
   try {
     const response = await fetch(`${API_BASE}/api/session/lock/renew`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ token, resume: resuming }),
     });
     if (response.ok) {
-      rememberToken(token);
+      const payload = await response.json();
+      rememberToken(payload.token || token);
       setEditing();
       if (!renewTimer) renewTimer = setInterval(() => renewSession(sessionToken), RENEW_EVERY_MS);
       return true;
     }
     if (response.status === 410) {
-      // 階段已失效（逾時被回收或已釋放）：明確轉唯讀並說明，不替使用者悄悄重新取得。
       rememberToken(null);
-      setReadonly(null, null, "編輯階段已失效（逾時被回收或已釋放），這個分頁現在是唯讀。重新整理頁面以重新取得。");
+      // 使用中的階段失效（逾時被回收或已釋放）：明確轉唯讀並說明，不替使用者悄悄重新取得。
+      if (!resuming) {
+        setReadonly(null, null, "編輯階段已失效（逾時被回收或已釋放），這個分頁現在是唯讀。重新整理頁面以重新取得。");
+      }
     }
     return false;
   } catch (_error) {
@@ -2311,7 +2375,7 @@ function showList(identity) {
   hideAllPageViews();
   header.hidden = false;
   listView.hidden = false;
-  currentRole.textContent = `${identity.name}・${ROLE_TEXT[identity.role] || identity.role}`;
+  currentRole.textContent = identityLabel(identity);
   // 白名單維護面板開發者專屬：按鈕對一般使用者不出現於 DOM（UI-ELEMENTS.md 角色表、
   // ADR-00000020），不是停用。一般使用者的檢視走 browse 的根清單與允許範圍。
   whitelistButton.hidden = identity.role !== "developer";
@@ -2533,11 +2597,36 @@ function renderBrowseRejection(detail, attempted) {
   browseRejectedEl.hidden = false;
 }
 
+// 加入白名單前的預覽與確認（§7.9：顯示「此路徑下有幾個可納管檔」供確認再送出）。兩個入口共用
+// ——白名單維護頁，與瀏覽被拒時的「加入白名單」。後者原本一按就生效（人工驗證 U13）。
+// 明確寫出即將開放的路徑：加入的是整個目錄（含子目錄），不只是剛才想看的那個檔案。
+async function confirmAddRoot(prefix, showError) {
+  let payload;
+  try {
+    const response = await fetch(`${API_BASE}/api/candidate-count?prefix=${encodeURIComponent(prefix)}`);
+    payload = await response.json();
+    if (!response.ok) {
+      showError(detailText(payload.detail));
+      return false;
+    }
+  } catch (error) {
+    showError(`數不出這個路徑底下有幾個檔案：${errText(error)}`);
+    return false;
+  }
+  const shown = payload.capped ? `${payload.count} 個以上` : `${payload.count} 個`;
+  return confirmAction(
+    "加入白名單？",
+    `將開放「${prefix}」這個目錄與它底下的所有子目錄，供瀏覽與納管；目前底下有 ${shown}可納管檔。`
+      + "這會留下一筆紀錄（誰在何時加入），之後可以在白名單維護移除。",
+  );
+}
+
 async function addToWhitelist(prefix) {
   const showAddError = (text) => {
     const slot = browseRejectedEl.querySelector(".msg");
     if (slot) slot.textContent = text;
   };
+  if (!await confirmAddRoot(prefix, showAddError)) return;
   try {
     const response = await fetch(`${API_BASE}/api/allowed-roots`, {
       method: "POST",
@@ -2672,10 +2761,22 @@ async function previewCandidates() {
   }
 }
 
+function clearPreview() {
+  ++previewGeneration;  // 仍在途的預覽回來時作廢
+  whitelistPreviewEl.hidden = true;
+  whitelistPreviewEl.textContent = "";
+}
+
 async function addRoot() {
   whitelistErrorEl.hidden = true;
+  clearPreview();  // 舊的預覽不留到這次的結果旁邊——那會被誤認成目前路徑的數字
   const prefix = whitelistAddInput.value.trim();
   if (!prefix) return;
+  const showError = (text) => {
+    whitelistErrorEl.textContent = text;
+    whitelistErrorEl.hidden = false;
+  };
+  if (!await confirmAddRoot(prefix, showError)) return;
   try {
     const response = await fetch(`${API_BASE}/api/allowed-roots`, {
       method: "POST",
@@ -2733,8 +2834,16 @@ function renderRemoveConfirm(prefix, detail) {
     type: "button", "data-testid": "whitelist-cancel-remove", text: "取消",
   });
   cancel.addEventListener("click", () => { whitelistConfirmEl.hidden = true; });
+  // 這段是寫給按按鈕的人看的，由介面自己說：要移除的是哪一個、會怎樣、已納管的受不受影響。
+  const listed = (detail.affected || []).length;
+  const about = listed
+    ? `以下 ${listed} 份已納管的設定的目標在這個路徑底下——它們不受影響，仍會繼續管理：`
+    : "目前沒有已納管的設定的目標在這個路徑底下。";
   whitelistConfirmEl.replaceChildren(
-    element("p", { class: "whitelist-confirm-msg", text: detailText(detail) }),
+    element("p", {
+      class: "whitelist-confirm-msg",
+      text: `要把「${prefix}」從白名單移除嗎？移除後這個路徑底下的檔案不能再瀏覽或納管。${about}`,
+    }),
     affected, confirm, cancel);
   whitelistConfirmEl.hidden = false;
 }
@@ -2767,6 +2876,11 @@ whitelistView.querySelector("[data-testid='whitelist-preview-button']")
   .addEventListener("click", previewCandidates);
 whitelistView.querySelector("[data-testid='whitelist-add']")
   .addEventListener("click", addRoot);
+// 路徑一改，先前的預覽就不是這個路徑的了：清掉，不留著讓人誤認。
+whitelistAddInput.addEventListener("input", () => {
+  clearPreview();
+  whitelistErrorEl.hidden = true;
+});
 browseView.querySelector(".browse-go").addEventListener("click", () => {
   const path = browsePathInput.value.trim();
   if (path) browseTo(path);

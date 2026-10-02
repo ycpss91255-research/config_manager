@@ -194,3 +194,26 @@ def test_release_with_the_wrong_token_does_nothing():
 
     assert lock.release("someone-elses-token") is False
     assert lock.current is not None
+
+
+def test_resuming_swaps_the_token_so_a_late_release_of_the_old_one_is_harmless():
+    # 重新整理頁面：舊頁面卸載時送出釋放，新頁面拿存著的識別碼接續。兩個請求誰先到不一定——
+    # 接續時換一個新的識別碼，晚到的那個「釋放舊識別碼」就什麼都動不了（人工驗證 U38）。
+    lock = _lock(timeout_minutes=10)
+    session = lock.acquire(_MING, _T0)
+
+    resumed = lock.resume(session.token, _T0 + timedelta(minutes=1))
+
+    assert resumed.token != session.token
+    assert (resumed.holder, resumed.started_at) == (session.holder, session.started_at)
+    assert lock.release(session.token) is False  # 晚到的舊釋放
+    assert lock.holds(resumed.token)
+
+
+def test_resuming_a_session_that_is_gone_fails_loudly():
+    lock = _lock(timeout_minutes=10)
+    session = lock.acquire(_MING, _T0)
+    lock.release(session.token)
+
+    with pytest.raises(SessionExpired):
+        lock.resume(session.token, _T0 + timedelta(minutes=1))
