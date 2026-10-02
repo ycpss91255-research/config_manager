@@ -1271,10 +1271,10 @@ def test_a_string_parameter_is_a_text_input_and_quotes_are_the_systems_business(
     assert page.input_value(_param_value("name")) == "amr01"
 
 
-def test_the_type_column_is_plain_text_even_for_a_developer(open_page, repo):
-    # AC7：型別由系統決定、使用者不能改——本版兩種角色都是純文字（人工指定是 v0.7.0）。
+def test_the_type_column_is_plain_text_for_a_normal_user(open_page, repo):
+    # AC7（#20）＋#285：一般使用者看得到型別、改不了——欄位是純文字，選單根本不在 DOM 裡。
     _listing_with(repo, "count: 3\n")
-    page = _open_panel(open_page(), developer=True)
+    page = _open_panel(open_page())
 
     tag = page.eval_on_selector(
         "[data-testid='param-count'] [data-testid='param-type']", "e => e.tagName"
@@ -1592,6 +1592,128 @@ def test_a_broken_schema_is_announced_in_the_panel_while_the_values_stay_visible
     )
     assert "存不了" in banner and f".schemas/{_PARAM_UID}.json" in banner
     assert page.input_value(_param_value("count")) == "3"
+
+
+# ── W3 人工指定型別（#285、ADR-00000021）──────────────────────────────────────
+# 推斷只看得到當下的值；開發者在型別欄把它改對。指定寫進 schema，逐欄位清除。
+
+_TYPE = "[data-testid='param-type']"
+
+
+def test_a_developer_specifies_a_type_and_the_row_is_marked_specified(open_page, repo):
+    # `timeout: 5` 推斷成 int；開發者選 double → 那一列換成 double 的輸入框、標「已指定」、
+    # 有「清除」；指定寫進 schema 並留一筆紀錄。別列不受影響。
+    _listing_many(repo, {"p": "timeout: 5\nretries: 3\n"})
+    _commit_listing(repo)
+    page = _open_panel(open_page(), developer=True)
+    assert page.eval_on_selector(f"{_row('timeout')} {_TYPE}", "e => e.value") == "int"
+
+    page.select_option(f"{_row('timeout')} {_TYPE}", "float")
+
+    page.wait_for_selector(f"{_row('timeout')} [data-testid='type-overridden']")
+    assert page.inner_text(f"{_row('timeout')} [data-testid='type-overridden']") == "已指定"
+    assert page.is_visible(f"{_row('timeout')} [data-testid='type-clear']")
+    assert page.input_value(_param_value("timeout")) == "5.0"  # double 的顯示帶小數點
+    assert page.query_selector(f"{_row('retries')} [data-testid='type-overridden']") is None
+    assert "double" in page.inner_text("[data-testid='type-specified-notice']")
+    stored = json.loads((repo / ".schemas" / f"{_PARAM_UID}.json").read_text(encoding="utf-8"))
+    assert stored["properties"]["timeout"]["type"] == "number"
+    assert _git_log(repo, 1) == [f"meta({_PARAM_UID}): 指定「timeout」的型別為 double|陳小明"]
+
+
+def test_clearing_one_field_returns_it_to_the_inferred_type_and_leaves_the_other(open_page, repo):
+    # 逐欄位清除，不是全部重設：兩欄都指定過，清掉一欄，另一欄的指定還在。
+    _listing_many(repo, {"p": "timeout: 5\nretries: 3\n"})
+    _commit_listing(repo)
+    page = _open_panel(open_page(), developer=True)
+    for name in ("timeout", "retries"):
+        page.select_option(f"{_row(name)} {_TYPE}", "float")
+        page.wait_for_selector(f"{_row(name)} [data-testid='type-overridden']")
+
+    page.click(f"{_row('timeout')} [data-testid='type-clear']")
+
+    page.wait_for_selector(f"{_row('timeout')} [data-testid='type-overridden']", state="detached")
+    assert page.eval_on_selector(f"{_row('timeout')} {_TYPE}", "e => e.value") == "int"
+    assert page.input_value(_param_value("timeout")) == "5"
+    assert page.is_visible(f"{_row('retries')} [data-testid='type-overridden']")
+
+
+def test_a_normal_user_sees_the_specified_mark_but_cannot_change_or_clear(open_page, repo, api):
+    # 僅開發者可改：一般使用者模式下選單與「清除」都不在 DOM 裡（不是停用）；標記看得到。
+    _listing_many(repo, {"p": "timeout: 5\n"})
+    _commit_listing(repo)
+    _api_json(api, "POST", "/api/session", {"name": _NAME, "email": _EMAIL, "role": "developer"})
+    _api_json(api, "POST", f"/api/configs/{_PARAM_UID}/types", {"path": "timeout", "type": "float"})
+    # 身分換回一般使用者；頁面開啟時沿用這個身分直接進清單。
+    _api_json(api, "POST", "/api/session", {"name": _NAME, "email": _EMAIL, "role": "user"})
+    page = open_page()
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+
+    assert page.inner_text(f"{_row('timeout')} {_TYPE}") == "double"
+    assert page.is_visible(f"{_row('timeout')} [data-testid='type-overridden']")
+    assert page.query_selector(f"{_row('timeout')} select") is None
+    assert page.query_selector("[data-testid='type-clear']") is None
+
+
+def test_a_type_the_value_does_not_fit_is_refused_and_the_selector_goes_back(open_page, repo):
+    # 把文字指定成 int：後端擋下，原因顯示在這一塊，選單回到原本的型別、沒有標成已指定。
+    _listing_many(repo, {"p": "name: amr01\n"})
+    _commit_listing(repo)
+    page = _open_panel(open_page(), developer=True)
+
+    page.select_option(f"{_row('name')} {_TYPE}", "int")
+
+    error = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save-error']"
+    page.wait_for_selector(error, state="visible")
+    assert "name" in page.inner_text(error) and "下一步" in page.inner_text(error)
+    assert page.eval_on_selector(f"{_row('name')} {_TYPE}", "e => e.value") == "string"
+    assert page.query_selector("[data-testid='type-overridden']") is None
+
+
+def test_changing_a_type_with_unsaved_edits_is_held_back_so_they_are_not_lost(open_page, repo):
+    # 改型別會重畫這張表；有還沒儲存的改動時先擋下、說清楚，不悄悄丟掉（不變式 2）。
+    _listing_many(repo, {"p": "timeout: 5\nretries: 3\n"})
+    _commit_listing(repo)
+    page = _open_panel(open_page(), developer=True)
+    page.fill(_param_value("retries"), "4")
+
+    page.select_option(f"{_row('timeout')} {_TYPE}", "float")
+
+    error = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save-error']"
+    page.wait_for_selector(error, state="visible")
+    assert "還沒儲存" in page.inner_text(error)
+    assert page.input_value(_param_value("retries")) == "4"
+    assert page.eval_on_selector(f"{_row('timeout')} {_TYPE}", "e => e.value") == "int"
+    assert not (repo / ".schemas" / f"{_PARAM_UID}.json").exists()
+
+
+def test_list_elements_and_containers_have_no_type_selector(open_page, repo):
+    _listing_many(repo, {"p": "frames:\n  - base\n  - odom\nrobot:\n  name: amr01\n"})
+    page = _open_panel(open_page(), developer=True)
+
+    assert page.query_selector(f"{_row('frames')} select") is None
+    assert page.eval_on_selector(f"{_row('frames[0]')} {_TYPE}", "e => e.tagName") == "SPAN"
+    assert page.query_selector(f"{_row('robot')} select") is None
+    assert page.eval_on_selector(f"{_row('robot.name')} {_TYPE}", "e => e.tagName") == "SELECT"
+
+
+def test_the_type_selector_is_hidden_while_read_only(open_page, repo):
+    # 沒拿到編輯階段的分頁（即使身分是開發者）：選單不出現，型別以純文字顯示。
+    _listing_many(repo, {"p": "timeout: 5\n"})
+    holder = open_page()
+    holder.click("[data-testid='role-toggle'] button[data-role='developer']")
+    _enter_identity(holder)
+    holder.wait_for_selector("[data-testid='promote-all']", state="visible")
+    second = open_page()
+    second.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+
+    second.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    second.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+
+    assert second.is_hidden(f"{_row('timeout')} select")
+    assert second.query_selector(f"{_row('timeout')} [data-testid='type-clear']") is None
 
 
 # ── W3 儲存草稿（#21）────────────────────────────────────────────────────────

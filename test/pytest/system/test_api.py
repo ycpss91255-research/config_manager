@@ -2221,3 +2221,117 @@ def test_a_broken_schema_still_shows_the_values_and_says_what_is_wrong(api, sour
     assert detail["values"] == {"count": 3}
     assert detail["constraints"] == {}
     assert entry["schema"] in detail["schema_error"] and "下一步" in detail["schema_error"]
+
+
+# ── T9：人工指定型別（POST /api/configs/{uid}/types，#285、ADR-00000021）───────
+
+
+def _specify(api, uid, path, type_name):
+    return _post(api, f"/api/configs/{uid}/types", {"path": path, "type": type_name})
+
+
+def test_a_developer_specifies_a_type_and_the_detail_shows_it_over_the_inferred_one(
+    api, sources_root
+):
+    # `timeout: 5` 被推斷成整數；指定成 double 後單筆內容回報的型別以指定為準、標出哪幾個是人工
+    # 指定，記一筆 meta、作者＝身分。還沒有 schema 的 config，指定會建立只含這個欄位的 schema。
+    entry = _onboard(api, sources_root, "types_ok.yaml", b"timeout: 5\nname: amr01\n")
+    assert _get(api, f"/api/configs/{entry['uid']}")["types"]["timeout"] == "int"
+
+    done = _specify(api, entry["uid"], "timeout", "float")
+
+    assert done == {
+        "uid": entry["uid"], "path": "timeout", "type": "float",
+        "schema": f".schemas/{entry['uid']}.json",
+    }
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+    assert detail["types"] == {"timeout": "float", "name": "string"}
+    assert detail["manual_types"] == {"timeout": "float"}
+    latest = _history(api, entry["uid"], "meta")[0]
+    assert latest["summary"] == "指定「timeout」的型別為 double"
+    assert latest["author"] == "陳小明 <ming@example.com>"
+
+
+def test_a_field_specified_as_double_is_written_with_a_decimal_point(api, sources_root):
+    # 指定 double 的目的：之後改成整數樣子的值，寫出去仍是 `6.0` 不是 `6`（ROS 的 1 vs 1.0）；
+    # 而 5.5 這種原本會被「推斷是整數」擋下的值現在存得成。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "types_double.yaml", b"timeout: 5\n")
+    _specify(api, entry["uid"], "timeout", "float")
+
+    _promote_value(api, entry["uid"], "timeout", 6)
+    assert pathlib.Path(entry["target"]).read_bytes() == b"timeout: 6.0\n"
+
+    _promote_value(api, entry["uid"], "timeout", 5.5)
+    assert pathlib.Path(entry["target"]).read_bytes() == b"timeout: 5.5\n"
+
+
+def test_clearing_one_specification_keeps_the_other_and_the_type_falls_back(api, sources_root):
+    # 逐欄位清除：只影響那一欄，型別回到推斷值（不是清成空的）；清除也記一筆 meta。
+    entry = _onboard(api, sources_root, "types_clear.yaml", b"timeout: 5\nretries: 3\n")
+    _specify(api, entry["uid"], "timeout", "float")
+    _specify(api, entry["uid"], "retries", "float")
+
+    cleared = _specify(api, entry["uid"], "timeout", None)
+
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+    assert cleared["type"] is None
+    assert detail["types"] == {"timeout": "int", "retries": "float"}
+    assert detail["manual_types"] == {"retries": "float"}
+    assert _history(api, entry["uid"], "meta")[0]["summary"] == "清除「timeout」的型別指定"
+
+
+def test_specifying_and_clearing_are_for_developers_only(api, sources_root):
+    # 改錯型別的後果是靜默的（直到 node 啟動失敗才發現），所以不放給一般使用者（ADR-00000020）。
+    entry = _onboard(api, sources_root, "types_role.yaml", b"timeout: 5\n")
+    _specify(api, entry["uid"], "timeout", "float")
+    _post(api, "/api/session", {"name": "王小美", "email": "mei@example.com", "role": "user"})
+
+    for type_name in ("int", None):
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _specify(api, entry["uid"], "timeout", type_name)
+        assert exc.value.code == _FORBIDDEN
+
+    assert _get(api, f"/api/configs/{entry['uid']}")["manual_types"] == {"timeout": "float"}
+    _set_session(api)
+
+
+def test_a_type_the_current_value_does_not_fit_is_refused_with_the_reason(api, sources_root):
+    entry = _onboard(api, sources_root, "types_bad.yaml", b"name: amr01\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _specify(api, entry["uid"], "name", "int")
+
+    assert exc.value.code == _UNPROCESSABLE
+    detail = json.loads(exc.value.read())["detail"]
+    assert "name" in detail and "下一步" in detail
+    assert _get(api, f"/api/configs/{entry['uid']}")["schema"] is None
+
+
+@pytest.mark.parametrize(
+    ("payload", "status"),
+    [
+        ({"path": "timeout", "type": "decimal"}, _UNPROCESSABLE),  # 不認得的型別
+        ({"path": "nope", "type": "int"}, _UNPROCESSABLE),  # 這份沒有的參數
+        ({"path": "timeout", "type": None}, _CONFLICT),  # 沒指定過，沒有東西可清
+    ],
+)
+def test_requests_that_cannot_be_carried_out_say_why(api, sources_root, payload, status):
+    _set_session(api)
+    name = f"types_refuse_{payload['path']}_{payload['type']}.yaml"
+    entry = _onboard(api, sources_root, name, b"timeout: 5\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, f"/api/configs/{entry['uid']}/types", payload)
+
+    assert exc.value.code == status
+    assert "下一步" in json.loads(exc.value.read())["detail"]
+
+
+def test_specifying_for_an_unknown_uid_is_not_found(api):
+    _set_session(api)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _specify(api, "zzzzzzz9", "timeout", "int")
+
+    assert exc.value.code == _NOT_FOUND

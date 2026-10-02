@@ -109,9 +109,9 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 |---|---|---|
 | 欄位表 | `data-testid="param-table"` | 一列一個參數；`raw`／頂層非物件時不出現，改顯示 `panel-unstructured`（§7.5.4） |
 | 參數列 | `data-testid="param-<參數路徑>"` | 路徑文法與 `set_value` 一致：點號串接、key 內字面點跳脫成 `\.`、list 元素 `[i]`。帶 `data-name`／`data-type`（API 型別名）／`data-depth`；容器（物件／list）帶 `data-container="true"`，單擊折疊其子列；改值後 `data-changed`、驗證結果 `data-valid` |
-| 型別欄 | 列內 `data-testid="param-type"` | **開發者為下拉選單，一般使用者為純文字**（人工指定是 v0.7.0；#20 兩種角色皆純文字）。顯示名依設計 §7.5.1（`double`／`object`），`data-type` 留 API 名（`float`／`dict`） |
-| 已指定標記 | 列內 `data-testid="type-overridden"` | 型別經人工指定時出現 |
-| 清除指定 | 文字「清除」 | **逐欄位**，不是全部重設 |
+| 型別欄 | 列內 `data-testid="param-type"` | **開發者對單一參數是下拉選單（int／double／bool／string），一般使用者是純文字**（#285）。選了即 `POST /api/configs/{uid}/types` 指定型別，成功後重畫這一塊並顯示 `type-specified-notice`；失敗（與現值不相容等）原因顯示在 `panel-save-error`、選單回到原本的型別；這一塊有未儲存的改動時先擋下不重畫。容器、清單元素、型別未知的列一律純文字。唯讀時選單不出現，改顯示 `param-type-text`。顯示名依設計 §7.5.1（`double`／`object`），列的 `data-type` 留 API 名（`float`／`dict`）；有 `enum` 的欄位純文字顯示 enum |
+| 已指定標記 | 列內 `data-testid="type-overridden"` | 型別經人工指定時出現（兩種角色都看得到；依 `GET /api/configs/{uid}` 的 `manual_types`） |
+| 清除指定 | 文字「清除」（`data-testid="type-clear"`） | **逐欄位**，不是全部重設；僅開發者出現、唯讀時不出現。`POST /api/configs/{uid}/types` 帶 `type: null`，回到指定之前 |
 | 值欄 | 列內 `data-testid="param-value"` | 控制項依型別。**有 schema 時（#40）**：數字輸入框帶 `min`／`max`／`step`；有 `enum` 的欄位是下拉選單（選項來自 schema；目前的值不在選項裡時多一個標明「不在允許的值裡」的選項，`data-outside`） |
 | 欄位說明 | 列內 `data-testid="param-description"` | schema 有 `description` 時出現在參數名旁（ⓘ），`title` 是說明全文（#40） |
 | 來源值 | 列內 `data-testid="param-source-value"` | 與目前值不同時標色 |

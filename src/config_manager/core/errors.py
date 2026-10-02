@@ -267,3 +267,29 @@ class SchemaInvalid(Exception):
     def __init__(self, message: str, reason: str) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+class ManualTypeError(Exception):
+    """人工指定型別（#285、ADR-00000021）做不成的基底：送錯的請求，不是伺服器的錯。"""
+
+
+class UnknownTypeName(ManualTypeError):
+    """要指定的型別不在可指定的集合裡（int／float／bool／string）。"""
+
+
+class PathNotSpecifiable(ManualTypeError):
+    """這個欄位路徑不能個別指定型別：清單元素（`a[0]`）或寫法不合。
+
+    清單的元素型別是整個清單共用的（schema 的 `items`），不是某一個元素自己的。
+    """
+
+
+class TypeNotSpecified(ManualTypeError):
+    """要清除的欄位沒有人工指定的型別——沒有東西可以清。"""
+
+
+class TypeIncompatible(ManualTypeError):
+    """要指定的型別與這個欄位現在的值不相容（把 `0.8` 指定成整數、把文字指定成布林）。
+
+    指定下去這份 config 當場就不合格、之後連存都存不了，所以擋在指定這一步（不變式 4）。
+    """

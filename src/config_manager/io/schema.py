@@ -49,38 +49,71 @@ def schema_relpath(uid: str) -> str:
 
 def draft_skeleton(repo: str, uid: str, author: str) -> FileEntry:
     """替 `uid` 那份 config 產生 schema 骨架，回傳更新後的條目（`schema_path` 指向骨架）。"""
-    original, current = load_list(repo)
-    entry = next((item for item in current.files if item.uid == uid), None)
-    if entry is None:
-        raise SchemaNotFound(
-            f"清單檔裡沒有 uid「{uid}」的條目，無從產生 schema。"
-            "下一步：重新整理清單，確認該 config 仍在納管中"
-        )
+    entry = entry_of(repo, uid)
     if entry.schema_path is not None:
         raise SchemaExists(
             f"「{entry.name}@{entry.hostname}」已經有 schema（{entry.schema_path}），不覆寫。"
             "下一步：要調整就直接編輯該檔"
         )
-    relative = schema_relpath(uid)
-    text = json.dumps(_skeleton(repo, entry), ensure_ascii=False, indent=2) + "\n"
-    # 先算好新文字（dump 的完整性檢查在此），此刻 repo 一個位元組都還沒動。
-    updated = entry.model_copy(update={"schema_path": relative})
-    files = [updated if item.uid == uid else item for item in current.files]
-    new_text = dump(current.model_copy(update={"files": files}), original)
+    return store_schema(repo, uid, _skeleton(repo, entry), "產生 schema 骨架", author)
 
+
+def entry_of(repo: str, uid: str) -> FileEntry:
+    """清單檔裡 `uid` 的條目；不在清單裡丟 `SchemaNotFound`。"""
+    _, current = load_list(repo)
+    entry = next((item for item in current.files if item.uid == uid), None)
+    if entry is None:
+        raise SchemaNotFound(
+            f"清單檔裡沒有 uid「{uid}」的條目，沒有 schema 可以處理。"
+            "下一步：重新整理清單，確認該 config 仍在納管中"
+        )
+    return entry
+
+
+def store_schema(
+    repo: str, uid: str, schema: Mapping[str, object] | None, summary: str, author: str
+) -> FileEntry:
+    """把 `uid` 那份 config 的 schema 存成 `schema`（None＝拿掉），記一筆 `meta`，回更新後的條目。
+
+    schema 檔與清單檔裡條目的指向一起變、進同一筆紀錄：有 schema 就指到它，拿掉了就不再指。
+    產生骨架（#38）與人工指定型別（#285）共用這一段——寫入步驟任一步失敗就回滾到動手前，
+    回滾也失敗才丟 `SchemaLeftBehind`。
+    """
+    entry = entry_of(repo, uid)
+    relative = entry.schema_path or schema_relpath(uid)
+    updated = entry.model_copy(update={"schema_path": None if schema is None else relative})
+    # 先算好新文字（dump 的完整性檢查在此），此刻 repo 一個位元組都還沒動。
+    original, new_text = _list_with(repo, updated)
     absolute = os.path.join(repo, relative)
-    # 清單檔沒指到、檔案卻在（先前回滾未竟的殘留）：拍下來，回滾時放回原樣。
-    stray = read_or_none(absolute)
+    # 動手前拍下那個位置原本的內容（含清單檔沒指到的殘留），回滾時放回原樣。
+    before = read_or_none(absolute)
     try:
-        os.makedirs(os.path.dirname(absolute), exist_ok=True)
-        replace_atomically(absolute, text.encode("utf-8"))
+        _put(absolute, schema)
         write_config_list(repo, new_text)
         stage(repo, relative, CONFIG_LIST_NAME)
-        record(repo, uid, "meta", "產生 schema 骨架", author)
+        record(repo, uid, "meta", summary, author)
     except BaseException as failure:
-        _rollback(repo, relative, original, stray, failure)
+        _rollback(repo, relative, original, before, failure)
         raise
     return updated
+
+
+def _list_with(repo: str, updated: FileEntry) -> tuple[str, str]:
+    """清單檔的（原文, 把 `updated` 那筆條目換上去之後的新文字）。其餘條目原樣。"""
+    original, current = load_list(repo)
+    files = [updated if item.uid == updated.uid else item for item in current.files]
+    return original, dump(current.model_copy(update={"files": files}), original)
+
+
+def _put(absolute: str, schema: Mapping[str, object] | None) -> None:
+    """把 schema 檔寫成 `schema`；None 就拿掉它（本來就不在則什麼都不做）。"""
+    if schema is None:
+        if os.path.lexists(absolute):
+            os.remove(absolute)
+        return
+    os.makedirs(os.path.dirname(absolute), exist_ok=True)
+    text = json.dumps(schema, ensure_ascii=False, indent=2) + "\n"
+    replace_atomically(absolute, text.encode("utf-8"))
 
 
 def read_schema(repo: str, entry: FileEntry) -> dict[str, object] | None:
@@ -140,13 +173,7 @@ def schema_revert(repo: str, uid: str, sha: str) -> tuple[str | None, list[tuple
     schema，舊內容可能不符、之後連改都改不了；所以 schema 回到那一版的樣子，那一版還沒有
     schema 就拿掉、清單檔的條目也不再指到它。那一版與現在一樣時什麼都不用做。
     """
-    original, current = load_list(repo)
-    entry = next((item for item in current.files if item.uid == uid), None)
-    if entry is None:
-        raise SchemaNotFound(
-            f"清單檔裡沒有 uid「{uid}」的條目，無從決定退版時 schema 怎麼處理。"
-            "下一步：重新整理清單，確認該 config 仍在納管中"
-        )
+    entry = entry_of(repo, uid)
     relative = entry.schema_path or schema_relpath(uid)
     then = show_or_none(repo, sha, relative)
     now_bytes = read_or_none(os.path.join(repo, relative))
@@ -157,9 +184,7 @@ def schema_revert(repo: str, uid: str, sha: str) -> tuple[str | None, list[tuple
     wanted = None if then is None else relative
     if entry.schema_path != wanted:
         updated = entry.model_copy(update={"schema_path": wanted})
-        files = [updated if item.uid == uid else item for item in current.files]
-        new_text = dump(current.model_copy(update={"files": files}), original)
-        companions.append((CONFIG_LIST_NAME, new_text))
+        companions.append((CONFIG_LIST_NAME, _list_with(repo, updated)[1]))
     return (REMOVE if then is None else RESTORE), companions
 
 
@@ -183,7 +208,7 @@ def _skeleton(repo: str, entry: FileEntry) -> dict[str, object]:
 def _rollback(
     repo: str, relative: str, list_text: str, stray: bytes | None, failure: BaseException
 ) -> None:
-    """還原到產生前：索引退回 HEAD、清單檔寫回原文、骨架檔拿掉（原本有殘留就放回）。"""
+    """還原到動手前：索引退回 HEAD、清單檔寫回原文、schema 檔放回原本的內容（原本沒有就拿掉）。"""
     absolute = os.path.join(repo, relative)
 
     def _restore_schema() -> None:
@@ -200,7 +225,7 @@ def _rollback(
     leftover = undo(steps)
     if leftover:
         raise SchemaLeftBehind(
-            f"產生 schema 骨架中途失敗後回滾未竟，殘留：{'；'.join(leftover)}。"
+            f"寫入 schema 中途失敗後回滾未竟，殘留：{'；'.join(leftover)}。"
             f"原本的失敗：{failure}。"
-            "下一步：先照原本的失敗處理，再手動核對清單檔與該 schema 檔是否回到產生前"
+            "下一步：先照原本的失敗處理，再手動核對清單檔與該 schema 檔是否回到動手前"
         ) from failure
