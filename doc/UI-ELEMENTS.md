@@ -87,6 +87,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 屬性按鈕 | 文字「屬性」 | **僅開發者出現** |
 | 產生 schema 按鈕 | 文字「產生 schema」（`data-testid="panel-schema-draft"`） | **僅開發者出現**，且只在這份還沒有 schema 時；經 W6 確認後 `POST /api/configs/{uid}/schema`，成功後就地換成「有 schema」標示、不重畫欄位表（#38） |
 | 有 schema 標示 | `data-testid="panel-schema-<uid>"` | 這份 config 有 schema 時出現在標頭（`GET /api/configs/{uid}` 回 `schema`） |
+| schema 錯誤橫幅 | `data-testid="panel-schema-error"` | schema 讀不出來時出現在標頭下：明說修好之前存不了、附後端的原因（指名檔案）。值照樣顯示（#40） |
 | 未驗證標示 | `data-testid="panel-unvalidated-<uid>"` | 文字「未驗證」；**僅 `raw`**——唯一不受把關的格式（§3.4） |
 | schema 已產生通知 | `data-testid="schema-drafted-notice"` | 產生成功後出現在標頭下，寫出 schema 的路徑 |
 | 解除納管按鈕 | 文字「解除納管」（`data-testid="panel-unmanage"`） | 在區塊標頭（`raw` 也有）；唯讀時不出現。經 W6 確認（寫明目標檔案保留、歷史仍在）後 `DELETE /api/configs/{uid}`；成功後這份從樹與工作區消失、`promote-done` 寫出目標路徑；後端拒絕（有草稿、寫入失敗）時原因顯示在 `promote-error`（#287） |
@@ -111,9 +112,10 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 型別欄 | 列內 `data-testid="param-type"` | **開發者為下拉選單，一般使用者為純文字**（人工指定是 v0.7.0；#20 兩種角色皆純文字）。顯示名依設計 §7.5.1（`double`／`object`），`data-type` 留 API 名（`float`／`dict`） |
 | 已指定標記 | 列內 `data-testid="type-overridden"` | 型別經人工指定時出現 |
 | 清除指定 | 文字「清除」 | **逐欄位**，不是全部重設 |
-| 值欄 | 列內 `data-testid="param-value"` | 控制項依型別 |
+| 值欄 | 列內 `data-testid="param-value"` | 控制項依型別。**有 schema 時（#40）**：數字輸入框帶 `min`／`max`／`step`；有 `enum` 的欄位是下拉選單（選項來自 schema；目前的值不在選項裡時多一個標明「不在允許的值裡」的選項，`data-outside`） |
+| 欄位說明 | 列內 `data-testid="param-description"` | schema 有 `description` 時出現在參數名旁（ⓘ），`title` 是說明全文（#40） |
 | 來源值 | 列內 `data-testid="param-source-value"` | 與目前值不同時標色 |
-| 驗證狀態 | 列內 `data-testid="param-validation"` | 錯誤時含原因文字 |
+| 驗證狀態 | 列內 `data-testid="param-validation"` | 錯誤時含原因文字（列的 `data-valid="false"`、整列標紅）。輸入當下由前端算（整數、範圍、倍數、不在列舉裡）；**後端擋下的問題若指名欄位，也標在那一列並附修正建議**，那一列再改動即清掉（#40） |
 | 儲存 | 文字「儲存」 | 存為草稿。**驗證未過時為停用** |
 
 ### 值控制項依型別

@@ -118,6 +118,7 @@
   .panel-schema, .panel-unvalidated { flex: none; font-size: 12px; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); }
   .panel-unvalidated { color: #b3261e; border-color: #b3261e; }
   .panel-unmanage { flex: none; font-size: 12px; }
+  .param-description { color: var(--muted, #777); cursor: help; }
   .panel-actions { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line); }
   .panel-actions .hint { flex: 1; font-size: 12px; color: var(--muted); }
   .panel-save:disabled { opacity: .5; cursor: not-allowed; }
@@ -998,6 +999,13 @@ function panelNode(detail) {
     head.insertBefore(schemaBadge(detail.uid, detail.schema), close);
   }
   if (row && row.state === "drift") panel.appendChild(driftBanner(detail, true));
+  if (detail.schema_error) {
+    // schema 讀不出來（#40）：值照樣看得到，但明說這份在修好之前存不了——不讓人改了半天才被擋。
+    panel.appendChild(element("div", { class: "notice error", "data-testid": "panel-schema-error" }, [
+      element("strong", { text: "這份的 schema 讀不出來，修好之前改動存不了。" }),
+      element("pre", { text: detail.schema_error }),
+    ]));
+  }
   const structured = detail.values && typeof detail.values === "object" && !Array.isArray(detail.values);
   if (detail.format === "raw" || !structured) {
     // §7.5.4：沒有結構就明說「未結構化」——使用者看得到自己失去了型別保護（不變式 2）。
@@ -1126,6 +1134,23 @@ async function draftSchema(detail, ui) {
   }
 }
 
+// 後端回的問題若指名了欄位（第 2 層帶 `path`，#39），就標在那一列：標紅、寫出原因與修正建議
+// （§7.5.1）。介面沒擋到、後端擋下的（例如 schema 的 pattern）靠這個讓人知道是哪一列。那一列再被
+// 改動時由 refreshParamRow 重算，標記自然清掉。
+function markServerProblems(entries, problems) {
+  for (const problem of problems || []) {
+    const entry = problem.path && entries.find((candidate) => candidate.row.path === problem.path);
+    if (!entry) continue;
+    entry.node.dataset.valid = "false";
+    entry.node.querySelector("[data-testid='param-validation']").textContent =
+      `${problem.message}。建議：${problem.suggestion}`;
+  }
+}
+
+function markedInvalid(entries) {
+  return entries.some((entry) => entry.node.dataset.valid === "false");
+}
+
 // 送出的是相對**來源**的全部改動（後端以來源複本為底重建草稿文字），不是相對上一份草稿的差量。
 async function saveDraft(detail, entries, ui) {
   const edits = {};
@@ -1144,7 +1169,8 @@ async function saveDraft(detail, entries, ui) {
     const payload = await response.json();
     if (!response.ok) {
       renderSaveError(ui.error, payload.detail);
-      ui.save.disabled = false;
+      markServerProblems(entries, payload.detail && payload.detail.problems);
+      ui.save.disabled = markedInvalid(entries);
       return;
     }
     setDrafts(payload.drafts.map((draft) => draft.uid));  // 樹上的草稿標記、工具列的計數
@@ -1196,7 +1222,9 @@ function paramRows(detail) {
     const type = detail.types[typePath] || "unknown";
     const container = type === "dict" || type === "list";
     const baseline = draft === undefined ? value : draft;
-    out.push({ path, type, value, baseline, depth, name, container, readonly });
+    // schema 對這個欄位的提示（範圍／步進／列舉選項／說明，#40）；沒有 schema 或沒有提示就是 null。
+    const hint = (!container && (detail.constraints || {})[typePath]) || null;
+    out.push({ path, type, value, baseline, depth, name, container, readonly, hint });
     if (type === "dict") {
       for (const [key, child] of Object.entries(value)) {
         const draftChild = draft && typeof draft === "object" ? draft[key] : undefined;
@@ -1227,23 +1255,56 @@ function displayValue(value, type) {
   return String(value);
 }
 
+// 列舉（#40）：選項來自 schema，結構上不可能選到不存在的值（§7.5.2）。目前的值若不在選項裡
+// （schema 是後來才收緊的），另列一個標明「不在允許的值裡」的選項並把這一列標成有問題——不悄悄
+// 換成第一個選項（那等於替人改了值）。`choices` 與選項一一對應，取值時拿回原本型別的值。
+function enumControl(row) {
+  const choices = [...row.hint.enum];
+  const labels = choices.map((choice) => displayValue(choice, row.type));
+  let selected = choices.findIndex((choice) =>
+    displayValue(choice, row.type) === displayValue(row.baseline, row.type));
+  if (selected < 0) {
+    choices.unshift(row.baseline);
+    labels.unshift(`${displayValue(row.baseline, row.type)}（不在允許的值裡）`);
+    selected = 0;
+  }
+  const control = element("select", {}, labels.map((label, index) =>
+    element("option", { value: String(index), text: label })));
+  if (choices.length > row.hint.enum.length) control.options[0].dataset.outside = "true";
+  control.selectedIndex = selected;
+  control.choices = choices;
+  return control;
+}
+
+// 數值範圍（#40）：輸入框套 min／max／step（§7.5.2）。只設上下界與步進的屬性供瀏覽器的增減鈕用；
+// 「合不合」由 refreshParamRow 自己算——瀏覽器的步進檢查以 min 為起點，與 schema 的倍數語意不同。
+function applyRange(control, hint) {
+  if (!hint) return;
+  const low = hint.minimum ?? hint.exclusiveMinimum;
+  const high = hint.maximum ?? hint.exclusiveMaximum;
+  if (low !== undefined) control.min = String(low);
+  if (high !== undefined) control.max = String(high);
+  if (hint.multipleOf !== undefined) control.step = String(hint.multipleOf);
+}
+
 function valueControl(row) {
   let control;
-  switch (row.type) {
+  const hasChoices = row.hint && Array.isArray(row.hint.enum) && row.type !== "bool";
+  switch (hasChoices ? "enum" : row.type) {
     case "bool":
       control = element("input", { type: "checkbox" });
       control.checked = row.baseline === true;
       break;
     case "int":
       control = element("input", { type: "number", step: "1", value: String(row.baseline) });
+      applyRange(control, row.hint);
       break;
     case "float":
       control = element("input", { type: "number", step: "any", value: formatDouble(row.baseline) });
+      applyRange(control, row.hint);
       break;
     case "enum":
-      control = element("select", {}, (row.options || []).map((option) =>
-        element("option", { value: String(option), text: String(option) })));
-      control.value = String(row.baseline);
+      control = enumControl(row);
       break;
     case "string":
       control = element("input", { type: "text", value: row.baseline });  // 引號由系統處理
@@ -1255,7 +1316,7 @@ function valueControl(row) {
   control.setAttribute("data-testid", "param-value");
   if (row.readonly) {
     // list 元素唯讀：新增／移除／排序是 #46，改值也留到那時一起做（D3）。
-    if (control.type === "checkbox") control.disabled = true;
+    if (control.type === "checkbox" || control.tagName === "SELECT") control.disabled = true;
     else control.setAttribute("readonly", "");
     control.title = "陣列元素的編輯留待陣列編輯功能（#46）";
   }
@@ -1276,9 +1337,21 @@ function paramRow(row, entries, onChange) {
       class: "param-name",
       text: `${"　".repeat(row.depth)}${row.container ? "▾ " : ""}${row.name}`,
     }),
-    element("span", { class: "param-type", "data-testid": "param-type", text: TYPE_LABEL[row.type] || row.type }),
+    element("span", {
+      class: "param-type", "data-testid": "param-type",
+      text: row.hint && Array.isArray(row.hint.enum) ? TYPE_LABEL.enum : TYPE_LABEL[row.type] || row.type,
+    }),
   ]);
   if (row.container) return node;
+  if (row.hint && row.hint.description) {
+    // schema 的說明顯示在欄位旁，滑鼠停留看得到全文（§7.5.1）。
+    const name = node.querySelector(".param-name");
+    name.title = row.hint.description;
+    name.appendChild(element("span", {
+      class: "param-description", "data-testid": "param-description",
+      title: row.hint.description, "aria-label": row.hint.description, text: " ⓘ",
+    }));
+  }
   const control = valueControl(row);
   const source = element("span", {
     class: "param-source", "data-testid": "param-source-value", text: displayValue(row.value, row.type),
@@ -1303,20 +1376,46 @@ function paramRow(row, entries, onChange) {
 }
 
 function currentValue(control, row) {
+  if (control.choices) return control.choices[control.selectedIndex];
   if (row.type === "bool") return control.checked;
   if (row.type === "int" || row.type === "float") return Number(control.value);
   return control.value;
 }
 
-function refreshParamRow(node, control, row, source, validation) {
-  let problem = "";
-  if (row.type === "int") {
-    if (control.validity.badInput || control.validity.stepMismatch) problem = "必須是整數，不接受小數或文字";
-    else if (control.value === "") problem = "不可為空";
-  } else if (row.type === "float") {
-    if (control.validity.badInput) problem = "必須是數字";
-    else if (control.value === "") problem = "不可為空";
+// 值相對 schema 的範圍／倍數（#40）。回原因與修法；合格回空字串。倍數以容許誤差比（0.3 ÷ 0.1 在
+// 浮點數上不是整數）。
+function rangeProblem(number, hint) {
+  if (!hint) return "";
+  if (hint.minimum !== undefined && number < hint.minimum) return `超出範圍：不可小於 ${hint.minimum}`;
+  if (hint.maximum !== undefined && number > hint.maximum) return `超出範圍：不可大於 ${hint.maximum}`;
+  if (hint.exclusiveMinimum !== undefined && number <= hint.exclusiveMinimum) {
+    return `超出範圍：必須大於 ${hint.exclusiveMinimum}`;
   }
+  if (hint.exclusiveMaximum !== undefined && number >= hint.exclusiveMaximum) {
+    return `超出範圍：必須小於 ${hint.exclusiveMaximum}`;
+  }
+  if (hint.multipleOf !== undefined) {
+    const ratio = number / hint.multipleOf;
+    if (Math.abs(ratio - Math.round(ratio)) > 1e-9) return `必須是 ${hint.multipleOf} 的倍數`;
+  }
+  return "";
+}
+
+function localProblem(control, row) {
+  if (control.choices) {
+    const outside = control.selectedOptions[0] && control.selectedOptions[0].dataset.outside;
+    return outside ? "目前的值不在允許的值裡，請改選一個" : "";
+  }
+  if (row.type !== "int" && row.type !== "float") return "";
+  if (control.validity.badInput) return row.type === "int" ? "必須是整數，不接受小數或文字" : "必須是數字";
+  if (control.value === "") return "不可為空";
+  const number = Number(control.value);
+  if (row.type === "int" && !Number.isInteger(number)) return "必須是整數，不接受小數或文字";
+  return rangeProblem(number, row.hint);
+}
+
+function refreshParamRow(node, control, row, source, validation) {
+  const problem = localProblem(control, row);
   validation.textContent = problem;
   node.dataset.valid = problem ? "false" : "true";
   const current = displayValue(currentValue(control, row), row.type);

@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from config_manager.api.drift import register_drift
 from config_manager.api.history import register_history, require_entry
-from config_manager.api.schema import register_schema
+from config_manager.api.schema import register_schema, schema_hints
 from config_manager.api.search import register_search
 from config_manager.api.lock import LockBox, register_session, require_developer, utc_now
 from config_manager.api.shapes import as_problem, drafts_view
@@ -446,6 +446,8 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
     另回 `target_values`（target 磁碟現況解析後的值樹，#30）：差異檢視據此把來源與現況以參數為
     單位並排；target 不存在→null；讀不到／不是 UTF-8／解析不了→null 並在 `target_error` 說原因
     （現況壞掉是要呈現的事實、不是 500）。
+    另回 `constraints`（欄位路徑→schema 的範圍／步進／列舉選項／說明，#40）：欄位表據此設輸入框；
+    schema 讀不出來→`constraints` 空、`schema_error` 說原因（值照樣回，介面明說存不了）。
     """
     config_list = read_config_list(repo)
     entry = require_entry(config_list, uid)
@@ -460,6 +462,8 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
         "groups": entry.groups,
         "permissions": _as_permissions(entry.permissions or config_list.defaults.permissions),
         "schema": entry.schema_path,
+        "constraints": {},
+        "schema_error": None,
         "types": {},
         "values": None,
         "draft_values": None,
@@ -469,6 +473,7 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
     if entry.format == "raw":
         return detail
     detail["target_values"], detail["target_error"] = _target_values(entry)
+    detail["constraints"], detail["schema_error"] = schema_hints(repo, entry)
     try:
         data = values(parse(read_source_copy(repo, entry.source), entry.format))
         detail["types"] = infer_types(data)
