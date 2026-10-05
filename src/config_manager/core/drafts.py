@@ -30,6 +30,7 @@ from config_manager.core.errors import (
     ReasonInvalid,
 )
 from config_manager.core.models import ConfigList, FileEntry, Permissions
+from config_manager.core.lintrc import FormatRules
 from config_manager.core.rules import Rules
 from config_manager.core.validate import ERROR, Problem, check
 
@@ -57,12 +58,13 @@ class Checks:
 
     `schema`：有 schema 就跑第 2 層（硬擋，#39）。`rules`：有規則就跑第 3 層（警告，#41）。
     `reasons`：規則代號 → 略過那條警告的理由（#42）；進版時不看這裡的、看草稿自己帶的。
-    第 1 層一律跑，不在這裡。
+    第 1 層一律跑；`lintrc` 是它要套的規則（`.lintrc.toml`，#43），沒給就是預設值。
     """
 
     schema: Mapping[str, object] | None = None
     rules: Rules | None = None
     reasons: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    lintrc: FormatRules | None = None  # 第 1 層的設定（#43）；None＝預設值
 
 
 @dataclass(frozen=True)
@@ -83,7 +85,7 @@ def save_draft(
     記著這次真的略過了哪幾條、理由是什麼。
     """
     checks = checks or Checks()
-    found = check(text, fmt, rules=checks.rules, schema=checks.schema)
+    found = check(text, fmt, rules=checks.rules, schema=checks.schema, lintrc=checks.lintrc)
     problems = [p for p in found if p.severity == ERROR]
     if problems:
         first = problems[0]
@@ -128,7 +130,9 @@ def adopt_draft(
     （#19）；違反規則的（#41）要在草稿上儲存時填了理由才進得了版（#42）。
     """
     checks = checks or Checks()
-    found = check(target_text, fmt, rules=checks.rules, schema=checks.schema)
+    found = check(
+        target_text, fmt, rules=checks.rules, schema=checks.schema, lintrc=checks.lintrc
+    )
     return _with(stage, Draft(uid, target_text, fmt)), found
 
 
@@ -216,7 +220,7 @@ def promote(
 def _cleared(draft: Draft, entry: FileEntry, gate: Checks) -> list[str]:
     """一份草稿過不過得了進版的檢查。過得了回它略過的規則（`override(<規則>): <理由>`，
     一條一行、不重複）；有硬擋的問題、或違反規則而草稿沒有理由，丟 `PromoteInvalid`。"""
-    found = check(draft.text, draft.fmt, rules=gate.rules, schema=gate.schema)
+    found = check(draft.text, draft.fmt, rules=gate.rules, schema=gate.schema, lintrc=gate.lintrc)
     label = f"「{entry.name}@{entry.hostname}」（{draft.uid}）"
     problems = [p for p in found if p.severity == ERROR]
     if problems:

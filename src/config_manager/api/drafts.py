@@ -144,7 +144,9 @@ def _save_draft(
                 "problems": [as_problem(problem) for problem in error.problems],
             },
         ) from error
-    found = check(text, entry.format, rules=checks.rules, schema=checks.schema)
+    found = check(
+        text, entry.format, rules=checks.rules, schema=checks.schema, lintrc=checks.lintrc
+    )
     warnings = [as_problem(problem) for problem in found if problem.severity == WARNING]
     return {**drafts_view(stage_box["stage"]), "warnings": warnings}
 

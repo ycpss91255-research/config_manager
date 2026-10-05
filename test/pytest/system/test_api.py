@@ -2769,3 +2769,51 @@ def test_adopting_a_target_that_breaks_a_rule_points_to_the_draft_route(api, sou
     loaded = _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt_draft"})
     assert [warning["rule"] for warning in loaded["warnings"]] == ["lo-below-hi"]
     _clear_drafts(api)
+
+
+# ── T9：第 1 層規則可配置（.lintrc.toml，#43）──────────────────────────────────
+
+
+def _write_lintrc(repo, text):
+    (pathlib.Path(repo) / ".lintrc.toml").write_text(text, encoding="utf-8")
+
+
+def test_the_lintrc_in_the_repo_changes_what_the_first_layer_accepts(api, sources_root, repo):
+    # 規則檔的修改實際改變驗證行為：預設擋 `yes`；設定檔放寬布林寫法後同一份內容存得成。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地寫 config-repo 裡的 .lintrc.toml")
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "lintrc_bool.yaml", b"enabled: yes\ncount: 1\n",
+                     note="第 1 行「yes」已確認")
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
+        assert exc.value.code == _UNPROCESSABLE
+
+        _write_lintrc(repo, '[yaml]\nboolean_literals = ["true", "false", "yes", "no"]\n')
+
+        saved = _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
+        assert [draft["uid"] for draft in saved["drafts"]] == [entry["uid"]]
+    finally:
+        (pathlib.Path(repo) / ".lintrc.toml").unlink(missing_ok=True)
+        _clear_drafts(api)
+
+
+def test_an_unusable_lintrc_blocks_saving_with_a_structured_error_naming_it(
+    api, sources_root, repo
+):
+    # 它管的是硬擋的第 1 層：壞了不能當成預設值放行——結構化 500、指名那份檔。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地寫 config-repo 裡的 .lintrc.toml")
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "lintrc_broken.yaml", b"count: 1\n")
+    _write_lintrc(repo, '[yaml]\nduplicate_key = "ignore"\n')
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
+
+        detail = json.loads(exc.value.read())["detail"]
+        assert exc.value.code == _SERVER_ERROR
+        assert detail["file"].endswith(".lintrc.toml") and "ignore" in detail["message"]
+    finally:
+        (pathlib.Path(repo) / ".lintrc.toml").unlink(missing_ok=True)

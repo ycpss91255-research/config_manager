@@ -140,7 +140,9 @@ def _reject_invalid(repo: str, entry: FileEntry, target_text: str) -> None:
     """將現況納入來源要走完整驗證：第 1 層、以及這份有 schema 時的第 2 層（#39），有 error 級
     問題就拒，說明原因與下一步（A3）。"""
     checks = checks_for(repo, entry)
-    found = check(target_text, entry.format, rules=checks.rules, schema=checks.schema)
+    found = check(
+        target_text, entry.format, rules=checks.rules, schema=checks.schema, lintrc=checks.lintrc
+    )
     problems = [p for p in found if p.severity == ERROR]
     broken = [p for p in found if p.rule is not None]
     if not problems and broken:
