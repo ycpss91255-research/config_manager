@@ -131,6 +131,9 @@
   .panel-schema, .panel-unvalidated { flex: none; font-size: 12px; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); }
   .panel-unvalidated { color: #b3261e; border-color: #b3261e; }
   .panel-unmanage, .panel-attributes { flex: none; font-size: 12px; }
+  .list-ops { display: flex; gap: 4px; flex: none; }
+  .list-op { font-size: 12px; padding: 0 6px; line-height: 20px; }
+  .param-unstructured { color: var(--warn); font-size: 11px; font-weight: 600; }
   .attributes { display: grid; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
   .attributes label { display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: 8px; font-size: 13px; }
   .attributes input[aria-invalid="true"] { outline: 2px solid var(--drift); }
@@ -1137,10 +1140,13 @@ function panelNode(detail) {
       element("span", { class: "param-source", text: "來源值" }),
       element("span", { class: "param-validation", text: "驗證" }),
     ]),
-    ...paramRows(detail).map((row) => paramRow(row, entries, refreshSave, specify)),
   ]);
+  // 一張欄位表共用的東西：列（entries）、儲存鈕的重算、型別指定、清單增刪調序時重畫用的 detail 與 ul。
+  const table = { detail, entries, onChange: refreshSave, specify, list };
+  for (const row of paramRows(detail)) list.appendChild(paramRow(row, table));
   if (specify) list.dataset.specifiable = "true";
   list.addEventListener("click", (event) => {
+    if (event.target.closest("button")) return;  // 清單的增刪調序鈕在容器列上，不是要折疊
     const container = event.target.closest("li[data-container='true']");
     if (container) toggleCollapse(list, container);
   });
@@ -1421,6 +1427,11 @@ function markedInvalid(entries) {
 async function saveDraft(detail, entries, ui, overrides = {}) {
   const edits = {};
   for (const { row, control } of entries) {
+    if (row.owner) continue;  // 清單底下的列由擁有者整個清單一起送
+    if (row.working) {
+      if (!same(row.working, row.value)) edits[row.path] = row.working;  // 整個清單替換（#46）
+      continue;
+    }
     const current = currentValue(control, row);
     if (displayValue(current, row.type) !== displayValue(row.value, row.type)) edits[row.path] = current;
   }
@@ -1445,7 +1456,10 @@ async function saveDraft(detail, entries, ui, overrides = {}) {
       return;
     }
     setDrafts(payload.drafts.map((draft) => draft.uid));  // 樹上的草稿標記、工具列的計數
-    for (const entry of entries) entry.row.baseline = currentValue(entry.control, entry.row);
+    for (const entry of entries) {
+      if (entry.row.working) entry.row.listBaseline = clone(entry.row.working);
+      else entry.row.baseline = currentValue(entry.control, entry.row);
+    }
     for (const entry of entries) entry.refresh();  // 畫面＝已存的草稿：不再 dirty、儲存回到停用
     ui.draft.hidden = !draftUids.has(detail.uid);
     ui.discard.hidden = !draftUids.has(detail.uid);
@@ -1486,38 +1500,70 @@ function renderSaveError(target, detail) {
 
 // 前序走訪值樹，配上 types 裡的型別（list 元素的型別鍵是 `path[]`，值的路徑是 `path[i]`）。
 // key 裡的字面點跳脫成 \.（#219），路徑文法與 set_value 一致（`a.b\.c[2]`）。
+const clone = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
+const escapeKey = (key) => String(key).replace(/\./g, "\\.");
+
 function paramRows(detail) {
   const out = [];
-  const escape = (key) => String(key).replace(/\./g, "\\.");
   // value 是來源值（「來源值」欄、改動的比較基準）；draft 是草稿裡對應的值（有草稿時當「目前值」的
   // 起點，#21）。兩棵樹並行走訪，草稿樹缺該路徑就退回來源值。
   const drafts = detail.draft_values;
-  const walk = (value, draft, path, typePath, depth, name, readonly) => {
-    const type = detail.types[typePath] || "unknown";
-    const container = type === "dict" || type === "list";
-    const baseline = draft === undefined ? value : draft;
-    // schema 對這個欄位的提示（範圍／步進／列舉選項／說明，#40）；沒有 schema 或沒有提示就是 null。
-    const hint = (!container && (detail.constraints || {})[typePath]) || null;
-    // 這個欄位的型別是不是人工指定的（#285）；清單元素不能個別指定。
-    const manual = !readonly && Boolean((detail.manual_types || {})[typePath]);
-    out.push({ path, type, value, baseline, depth, name, container, readonly, hint, manual });
-    if (type === "dict") {
-      for (const [key, child] of Object.entries(value)) {
-        const draftChild = draft && typeof draft === "object" ? draft[key] : undefined;
-        walk(child, draftChild, `${path}.${escape(key)}`, `${typePath}.${escape(key)}`, depth + 1, key, readonly);
-      }
-    } else if (type === "list") {
-      value.forEach((child, index) => {
-        const draftChild = Array.isArray(draft) ? draft[index] : undefined;
-        walk(child, draftChild, `${path}[${index}]`, `${typePath}[]`, depth + 1, `[${index}]`, true);
-      });
-    }
-  };
   for (const [key, value] of Object.entries(detail.values)) {
     const draft = drafts && typeof drafts === "object" ? drafts[key] : undefined;
-    walk(value, draft, escape(key), escape(key), 0, key, false);
+    collectRows(detail, out, {
+      value, draft, path: escapeKey(key), typePath: escapeKey(key), depth: 0, name: key,
+      owner: null, segments: null,
+    });
   }
   return out;
+}
+
+// 一個欄位與它底下的全部列。清單（#46）：最外層的清單是「擁有者」，有一份可以改的工作副本
+// （`working`，從目前值複製）；它底下的每一列都掛在它身上（`owner`＋相對位置 `segments`），
+// 改值寫回工作副本，增刪調序改工作副本後整段重畫。清單裡再有清單，一併由最外層那份擁有。
+function collectRows(detail, out, scope) {
+  const { value, draft, path, typePath, depth, name, owner, segments } = scope;
+  const type = detail.types[typePath] || "unknown";
+  const container = type === "dict" || type === "list";
+  const baseline = draft === undefined ? value : draft;
+  // schema 對這個欄位的提示（範圍／步進／列舉選項／說明，#40）；沒有 schema 或沒有提示就是 null。
+  const hint = (!container && (detail.constraints || {})[typePath]) || null;
+  // 這個欄位的型別是不是人工指定的（#285）；清單元素不能個別指定。
+  const manual = !owner && Boolean((detail.manual_types || {})[typePath]);
+  const row = { path, type, typePath, value, baseline, depth, name, container, hint, manual, owner, segments };
+  if (type === "list" && !owner) {
+    row.working = clone(baseline) || [];
+    row.listBaseline = clone(baseline) || [];
+  }
+  out.push(row);
+  const under = (childValue, childDraft, childPath, childTypePath, childName, segment) => collectRows(
+    detail, out, {
+      value: childValue, draft: childDraft, path: childPath, typePath: childTypePath,
+      depth: depth + 1, name: childName,
+      owner: owner || (type === "list" ? row : null),
+      segments: owner || type === "list" ? [...(segments || []), segment] : null,
+    },
+  );
+  if (type === "dict") {
+    // 以目前值（草稿／工作副本）的鍵走訪：清單裡新增的物件元素在來源裡沒有對應項，來源值那邊
+    // 取不到就是 undefined（顯示成「—」）。
+    const sourceKeys = value && typeof value === "object" ? value : {};
+    for (const [key, child] of Object.entries(baseline || {})) {
+      under(sourceKeys[key], draft === undefined ? undefined : child,
+        `${path}.${escapeKey(key)}`, `${typePath}.${escapeKey(key)}`, key, key);
+    }
+  } else if (type === "list") {
+    const source = Array.isArray(value) ? value : [];
+    if (row.working) {
+      // 擁有者：元素從工作副本畫（目前值）；來源值欄顯示來源裡同一個位置的元素——調序後兩邊
+      // 對不上是正常的，變動與否看擁有者那一列的標記。
+      row.working.forEach((child, index) =>
+        under(source[index], child, `${path}[${index}]`, `${typePath}[]`, `[${index}]`, index));
+    } else {
+      (baseline || []).forEach((child, index) =>
+        under(child, undefined, `${path}[${index}]`, `${typePath}[]`, `[${index}]`, index));
+    }
+  }
 }
 
 // double 顯示一定帶小數點（`5` → `5.0`）——擋 ROS 2 的 1 vs 1.0 型別錯誤（§7.5.2）。
@@ -1586,16 +1632,11 @@ function valueControl(row) {
       control = element("input", { type: "text", value: row.baseline });  // 引號由系統處理
       break;
     default:
-      // 型別未知（null／空陣列元素…）：唯讀顯示原樣，標示未結構化（§7.5.4），不假裝可編輯。
-      control = element("input", { type: "text", value: displayValue(row.baseline, row.type), readonly: "" });
+      // 型別未知（null、空陣列的元素…）：退回文字編輯，列上明確標示「未結構化編輯」——使用者看得到
+      // 自己失去了型別保護（§7.5.4、#46）；這類項目應優先補 schema。
+      control = element("input", { type: "text", value: displayValue(row.baseline, row.type) });
   }
   control.setAttribute("data-testid", "param-value");
-  if (row.readonly) {
-    // list 元素唯讀：新增／移除／排序是 #46，改值也留到那時一起做（D3）。
-    if (control.type === "checkbox" || control.tagName === "SELECT") control.disabled = true;
-    else control.setAttribute("readonly", "");
-    control.title = "陣列元素的編輯留待陣列編輯功能（#46）";
-  }
   return control;
 }
 
@@ -1608,7 +1649,7 @@ function typeCell(row, specify) {
   const label = row.hint && Array.isArray(row.hint.enum)
     ? TYPE_LABEL.enum : TYPE_LABEL[row.type] || row.type;
   const cell = element("span", { class: "param-type" });
-  const choosable = specify && !row.container && !row.readonly && SPECIFIABLE.includes(row.type);
+  const choosable = specify && !row.container && !row.owner && SPECIFIABLE.includes(row.type);
   if (choosable) {
     // 唯讀（沒拿到編輯階段、或階段中途失效）時選單不出現，改顯示純文字——會寫入的控制項一律如此。
     const select = element("select", {
@@ -1639,7 +1680,8 @@ function typeCell(row, specify) {
   return cell;
 }
 
-function paramRow(row, entries, onChange, specify) {
+function paramRow(row, table) {
+  const { entries, onChange, specify } = table;
   const attributes = {
     class: "param-row",
     "data-testid": `param-${row.path}`,
@@ -1655,7 +1697,17 @@ function paramRow(row, entries, onChange, specify) {
     }),
     typeCell(row, specify),
   ]);
-  if (row.container) return node;
+  row.node = node;
+  if (row.owner && row.segments.length === 1) node.appendChild(listOps(row, table));
+  if (row.container) {
+    if (row.working) {
+      // 清單的擁有者：新增元素的入口在這一列；清單整體有沒有改動也標在這一列（#46）。
+      node.appendChild(listAdd(row, table));
+      entries.push({ row, node, refresh: () => updateOwner(row, onChange) });
+      updateOwner(row, null);
+    }
+    return node;
+  }
   if (row.hint && row.hint.description) {
     // schema 的說明顯示在欄位旁，滑鼠停留看得到全文（§7.5.1）。
     const name = node.querySelector(".param-name");
@@ -1665,17 +1717,30 @@ function paramRow(row, entries, onChange, specify) {
       title: row.hint.description, "aria-label": row.hint.description, text: " ⓘ",
     }));
   }
+  if (row.type === "unknown" || row.type === "null") {
+    node.querySelector(".param-name").appendChild(element("span", {
+      class: "param-unstructured", "data-testid": "param-unstructured",
+      title: "這個欄位沒有型別保護，輸入什麼都照字面存成文字。請優先補 schema 給它型別。",
+      text: " 未結構化編輯",
+    }));
+  }
   const control = valueControl(row);
   const source = element("span", {
-    class: "param-source", "data-testid": "param-source-value", text: displayValue(row.value, row.type),
+    class: "param-source", "data-testid": "param-source-value",
+    text: row.value === undefined ? "—" : displayValue(row.value, row.type),
   });
   const validation = element("span", { class: "param-validation", "data-testid": "param-validation" });
   node.append(element("span", { class: "param-value-wrap" }, [control]), source, validation);
   const refresh = () => {
     refreshParamRow(node, control, row, source, validation);
+    if (row.owner) {
+      // 清單底下的列：把值寫回擁有者的工作副本，整個清單的變動與否由擁有者那一列說。
+      setAt(row.owner.working, row.segments, currentValue(control, row));
+      updateOwner(row.owner, null);
+    }
     if (onChange) onChange();
   };
-  if (entries) entries.push({ row, control, node, refresh });
+  entries.push({ row, control, node, refresh });
   control.addEventListener("input", refresh);
   control.addEventListener("change", () => {
     // double：離開欄位時把整數樣子的輸入正規化成帶小數點（打字中不動，否則沒法打出 52）。
@@ -1686,6 +1751,103 @@ function paramRow(row, entries, onChange, specify) {
   });
   refresh();  // 一開始就標好 data-valid／data-changed，讓「尚未改動」與「改成一樣的值」是同一個狀態
   return node;
+}
+
+// ── 清單的增刪調序（#46、§7.5.2）────────────────────────────────────────────
+// 順序本身就是資料：只給新增／移除的話，要把第三項移到第一位得刪掉重打，重打會遺失原值、也容易
+// 打錯。所以每個元素有 ↑↓ 與移除，清單有新增；全部改在擁有者的工作副本上，改完整段重畫。
+
+const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+
+function setAt(target, segments, value) {
+  let node = target;
+  for (const segment of segments.slice(0, -1)) node = node[segment];
+  node[segments[segments.length - 1]] = value;
+}
+
+function updateOwner(owner, onChange) {
+  owner.node.dataset.dirty = String(!same(owner.working, owner.listBaseline));
+  owner.node.dataset.changed = String(!same(owner.working, owner.value));
+  owner.node.dataset.valid = "true";
+  if (onChange) onChange();
+}
+
+function listOps(row, table) {
+  const owner = row.owner;
+  const index = row.segments[0];
+  const last = owner.working.length - 1;
+  const button = (testid, text, title, disabled, act) => {
+    const made = element("button", {
+      type: "button", class: "list-op editing-only", "data-testid": testid, title, text,
+    });
+    made.disabled = disabled;
+    made.addEventListener("click", act);
+    return made;
+  };
+  const move = (to) => {
+    const items = owner.working;
+    [items[index], items[to]] = [items[to], items[index]];
+    rerenderList(owner, table);
+  };
+  return element("span", { class: "list-ops" }, [
+    button("list-up", "↑", "往上移一位", index === 0, () => move(index - 1)),
+    button("list-down", "↓", "往下移一位", index === last, () => move(index + 1)),
+    button("list-remove", "✕", "移除這一項", false, () => {
+      owner.working.splice(index, 1);
+      rerenderList(owner, table);
+    }),
+  ]);
+}
+
+// 新增一項：元素型別一致（§7.5.2）——依清單的元素型別給一個空值；元素是物件時以最後一項為樣板
+// （欄位齊、再改值），清單還是空的且不知道元素型別時給空字串（未結構化編輯）。
+const EMPTY_BY_TYPE = { int: 0, float: 0, bool: false, string: "" };
+
+function listAdd(owner, table) {
+  const button = element("button", {
+    type: "button", class: "list-op editing-only", "data-testid": "list-add", text: "＋ 新增",
+    title: "在清單末端加一項",
+  });
+  button.addEventListener("click", () => {
+    const elementType = table.detail.types[`${owner.typePath}[]`] || "unknown";
+    const lastItem = owner.working[owner.working.length - 1];
+    let fresh = EMPTY_BY_TYPE[elementType];
+    if (elementType === "dict" || elementType === "list") fresh = lastItem === undefined ? {} : clone(lastItem);
+    if (fresh === undefined) fresh = "";
+    owner.working.push(fresh);
+    rerenderList(owner, table);
+    const added = table.list.querySelector(
+      `[data-name='${owner.path}[${owner.working.length - 1}]'] [data-testid='param-value']`,
+    );
+    if (added && added.focus) added.focus();
+  });
+  return button;
+}
+
+// 整段重畫擁有者底下的列：舊的列與 entries 拿掉、從工作副本重建。擁有者那一列不動。
+function rerenderList(owner, table) {
+  const { detail, entries, list } = table;
+  const prefix = `${owner.path}[`;
+  for (const node of [...list.querySelectorAll("li[data-name]")]) {
+    if (node.dataset.name.startsWith(prefix)) node.remove();
+  }
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (entries[index].row.owner === owner) entries.splice(index, 1);
+  }
+  const rows = [];
+  const source = Array.isArray(owner.value) ? owner.value : [];
+  owner.working.forEach((child, index) => collectRows(detail, rows, {
+    value: source[index], draft: child, path: `${owner.path}[${index}]`,
+    typePath: `${owner.typePath}[]`, depth: owner.depth + 1, name: `[${index}]`,
+    owner, segments: [index],
+  }));
+  let anchor = owner.node;
+  for (const row of rows) {
+    const node = paramRow(row, table);
+    anchor.after(node);
+    anchor = node;
+  }
+  updateOwner(owner, table.onChange);
 }
 
 function currentValue(control, row) {

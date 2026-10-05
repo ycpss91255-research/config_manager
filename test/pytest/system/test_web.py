@@ -1366,14 +1366,15 @@ def test_editing_a_value_keeps_the_source_value_beside_it_and_marks_the_change(o
     assert page.get_attribute("[data-testid='param-count']", "data-changed") == "true"
 
 
-def test_list_elements_are_listed_read_only(open_page, repo):
-    # D3：list 只列元素、唯讀；新增／移除／排序是 #46。
+def test_list_elements_are_editable_rows(open_page, repo):
+    # #46：清單的元素是可編輯的列（先前唯讀，D3）；順序本身就是資料，所以每列有 ↑↓ 與移除。
     _listing_with(repo, "items:\n  - spin\n  - backup\n")
     page = _open_panel(open_page())
 
     assert page.get_attribute("[data-testid='param-items']", "data-type") == "list"
     assert page.input_value(_param_value("items[1]")) == "backup"
-    assert page.get_attribute(_param_value("items[1]"), "readonly") is not None
+    assert page.get_attribute(_param_value("items[1]"), "readonly") is None
+    assert page.is_visible("[data-testid='param-items[1]'] [data-testid='list-up']")
 
 
 def test_a_raw_config_shows_an_unstructured_notice_not_an_empty_table(open_page, repo):
@@ -1383,6 +1384,141 @@ def test_a_raw_config_shows_an_unstructured_notice_not_an_empty_table(open_page,
 
     assert page.is_visible("[data-testid='panel-unstructured']")
     assert page.query_selector("[data-testid='param-table']") is None
+
+
+# ── W3 陣列與巢狀編輯（#46，§7.5.2）────────────────────────────────────────
+# 順序本身就是資料：只給新增／移除的話，要把第三項移到第一位得刪掉重打，重打會遺失原值。
+
+_LIST_YAML = "recovery:\n  - spin\n  - backup\n  - wait\nspeed: 0.5\n"
+
+
+def _list_values(page, path: str, count: int) -> list:
+    return [page.input_value(_param_value(f"{path}[{index}]")) for index in range(count)]
+
+
+def test_list_elements_can_be_reordered_edited_added_and_removed_then_saved(open_page, repo):
+    targets = _listing_many(repo, {"p": _LIST_YAML})
+    page = _open_panel(open_page())
+
+    page.click(f"{_row('recovery[2]')} [data-testid='list-up']")  # wait 往上
+    page.click(f"{_row('recovery[1]')} [data-testid='list-up']")  # 再往上到第一位
+    assert _list_values(page, "recovery", 3) == ["wait", "spin", "backup"]
+    page.fill(_param_value("recovery[2]"), "retreat")
+    page.click(f"{_row('recovery')} [data-testid='list-add']")
+    page.fill(_param_value("recovery[3]"), "pause")
+    page.click(f"{_row('recovery[1]')} [data-testid='list-remove']")  # 移除 spin
+    assert _list_values(page, "recovery", 3) == ["wait", "retreat", "pause"]
+    assert page.get_attribute(_row("recovery"), "data-dirty") == "true"
+
+    _save(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector("[data-testid='promote-done']", state="visible")
+
+    assert targets["p"].read_text(encoding="utf-8") == (
+        "recovery:\n  - wait\n  - retreat\n  - pause\nspeed: 0.5\n"
+    )
+
+
+def test_the_first_element_cannot_move_up_and_the_last_cannot_move_down(open_page, repo):
+    _listing_many(repo, {"p": _LIST_YAML})
+    page = _open_panel(open_page())
+
+    assert page.is_disabled(f"{_row('recovery[0]')} [data-testid='list-up']")
+    assert page.is_disabled(f"{_row('recovery[2]')} [data-testid='list-down']")
+    assert page.is_enabled(f"{_row('recovery[1]')} [data-testid='list-up']")
+
+
+def test_moving_back_to_the_original_order_is_not_a_change(open_page, repo):
+    _listing_many(repo, {"p": _LIST_YAML})
+    page = _open_panel(open_page())
+
+    page.click(f"{_row('recovery[0]')} [data-testid='list-down']")
+    assert page.get_attribute(_row("recovery"), "data-dirty") == "true"
+    page.click(f"{_row('recovery[1]')} [data-testid='list-up']")
+
+    assert page.get_attribute(_row("recovery"), "data-dirty") == "false"
+    assert page.is_disabled(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save']")
+
+
+def test_a_list_of_objects_can_be_reordered_and_its_fields_edited(open_page, repo):
+    # 元素是物件的清單：整塊一起搬（物件的欄位在它底下、可折疊），搬完欄位照樣可以改。
+    targets = _listing_many(
+        repo, {"p": "servers:\n  - host: a\n    port: 80\n  - host: b\n    port: 81\n"}
+    )
+    page = _open_panel(open_page())
+
+    page.click(f"{_row('servers[1]')} [data-testid='list-up']")
+    assert page.input_value(_param_value("servers[0].host")) == "b"
+    page.fill(_param_value("servers[0].port"), "8080")
+    page.click(f"{_row('servers')} [data-testid='list-add']")  # 以最後一項為樣板
+    assert page.input_value(_param_value("servers[2].host")) == "a"
+    page.fill(_param_value("servers[2].host"), "c")
+
+    _save(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector("[data-testid='promote-done']", state="visible")
+
+    assert targets["p"].read_text(encoding="utf-8") == (
+        "servers:\n  - host: b\n    port: 8080\n  - host: a\n    port: 80\n"
+        "  - host: c\n    port: 80\n"
+    )
+
+
+def test_a_typed_list_keeps_its_element_type_when_edited(open_page, repo):
+    # 元素型別一致：整數清單新增的是整數欄、double 清單寫出帶小數點。
+    targets = _listing_many(repo, {"p": "ids:\n  - 1\n  - 2\ngains:\n  - 0.5\n"})
+    page = _open_panel(open_page())
+
+    page.click(f"{_row('ids')} [data-testid='list-add']")
+    assert page.get_attribute(_param_value("ids[2]"), "type") == "number"
+    page.fill(_param_value("ids[2]"), "3")
+    page.click(f"{_row('gains')} [data-testid='list-add']")
+    page.fill(_param_value("gains[1]"), "1")
+    page.dispatch_event(_param_value("gains[1]"), "change")
+
+    _save(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector("[data-testid='promote-done']", state="visible")
+
+    assert targets["p"].read_text(encoding="utf-8") == (
+        "ids:\n  - 1\n  - 2\n  - 3\ngains:\n  - 0.5\n  - 1.0\n"
+    )
+
+
+def test_a_value_without_a_type_is_editable_as_text_and_marked_unstructured(open_page, repo):
+    # 型別未知（null、空清單的元素）退回文字編輯，並明確標示未結構化、建議補 schema（§7.5.4）。
+    targets = _listing_many(repo, {"p": "note: null\ncount: 3\n"})
+    page = _open_panel(open_page())
+
+    badge = f"{_row('note')} [data-testid='param-unstructured']"
+    assert "未結構化" in page.inner_text(badge) and "schema" in page.get_attribute(badge, "title")
+    assert page.query_selector(f"{_row('count')} [data-testid='param-unstructured']") is None
+    page.fill(_param_value("note"), "filled in by hand")
+
+    _save(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector("[data-testid='promote-done']", state="visible")
+
+    assert targets["p"].read_text(encoding="utf-8") == "note: filled in by hand\ncount: 3\n"
+
+
+def test_list_controls_are_absent_while_read_only(open_page, repo):
+    # 唯讀分頁：增刪調序鈕都是會寫入的控制項，不出現。
+    _listing_many(repo, {"p": _LIST_YAML})
+    holder = _enter_identity(open_page())
+    holder.wait_for_selector("[data-testid='promote-all']", state="visible")
+    second = open_page()
+    second.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+    second.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    second.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+
+    assert second.is_hidden(f"{_row('recovery')} [data-testid='list-add']")
+    assert second.is_hidden(f"{_row('recovery[0]')} [data-testid='list-up']")
+    assert holder.is_visible("[data-testid='promote-all']")
 
 
 # ── W3 schema 骨架（#38）─────────────────────────────────────────────────────

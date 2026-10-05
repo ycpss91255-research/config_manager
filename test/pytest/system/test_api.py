@@ -2817,3 +2817,23 @@ def test_an_unusable_lintrc_blocks_saving_with_a_structured_error_naming_it(
         assert detail["file"].endswith(".lintrc.toml") and "ignore" in detail["message"]
     finally:
         (pathlib.Path(repo) / ".lintrc.toml").unlink(missing_ok=True)
+
+
+# ── T9：整個清單替換（陣列編輯的後端，#46）────────────────────────────────────
+
+
+def test_a_draft_can_replace_a_whole_list_and_keeps_the_rest_byte_for_byte(api, sources_root):
+    # 介面的增刪調序送的是整個清單；其餘內容（註解、別的鍵）原樣不動，double 清單的新元素帶小數點。
+    _clear_drafts(api)
+    content = b"# nav\nrecovery:  # order matters\n  - spin\n  - wait\ngains: [0.5]\nspeed: 1\n"
+    entry = _onboard(api, sources_root, "list_edit.yaml", content)
+
+    _post(api, "/api/drafts", {
+        "uid": entry["uid"], "edits": {"recovery": ["wait", "spin", "pause"], "gains": [0.5, 1]},
+    })
+    _post(api, "/api/promote", {})
+
+    assert pathlib.Path(entry["target"]).read_bytes() == (
+        b"# nav\nrecovery:  # order matters\n  - wait\n  - spin\n  - pause\n"
+        b"gains: [0.5, 1.0]\nspeed: 1\n"
+    )
