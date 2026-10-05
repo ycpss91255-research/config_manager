@@ -200,10 +200,21 @@ def _parse_ini(text: str) -> str:
     return text
 
 
+# `;` 開頭的整行註解。INI 沒有單一標準，但這是最常見的註解寫法（Windows 的 .ini、多數工具的
+# 預設）；configobj 預設只認 `#`，遇到 `;` 開頭的行會當成語法錯誤。
+_INI_SEMICOLON_COMMENT = re.compile(r"^([ \t]*);", re.MULTILINE)
+
+
 def _ini_document(text: str) -> object:
-    """把 ini 原文解析成 configobj 的結構（供驗語法與取值，非往返）。"""
+    """把 ini 原文解析成 configobj 的結構（供驗語法與取值，非往返）。
+
+    交給 configobj 之前，把 `;` 開頭的整行註解換成它認得的 `#`。**只換給解析器看的那一份**：
+    `document` 存的仍是原文（`_parse_ini`），`;` 不會被改寫；一行換一行，行號不變。寫在值後面的
+    `;` 不動——那可能是值的一部分（例如以分號分隔的清單）。
+    """
+    readable = _INI_SEMICOLON_COMMENT.sub(r"\1#", text)
     try:
-        return ConfigObj(io.BytesIO(text.encode("utf-8")), encoding="utf-8")
+        return ConfigObj(io.BytesIO(readable.encode("utf-8")), encoding="utf-8")
     except ConfigObjError as exc:
         line = getattr(exc, "line_number", None)
         loc = f"（第 {line} 行）" if line else ""

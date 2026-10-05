@@ -2451,3 +2451,139 @@ def test_changing_the_attributes_of_an_unknown_uid_is_not_found(api):
         _post(api, "/api/configs/zzzzzzz9/attributes", payload)
 
     assert exc.value.code == _NOT_FOUND
+
+
+# ── 人工驗證 U06／U07：INI 分號註解、raw 的二進位檔 ────────────────────────────
+
+_FIRMWARE = b"\x7fCMRAW\x00\x01\x02\xff\xfe binary-ish payload\n"  # 不是 UTF-8
+_LEGACY_INI = "; 舊式 INI 設定（驗證用範例）\n[motion]\nmax_vel = 0.55\n".encode()
+
+
+def _onboard_as(api, sources_root, name, content, fmt):
+    _set_session(api)
+    source = _write_source(sources_root, name, content)
+    return _post(api, "/api/configs", {"source_path": source, "format": fmt, "ambiguity_note": ""})
+
+
+def test_an_ini_file_with_a_semicolon_comment_can_be_previewed_and_onboarded(api, sources_root):
+    # `;` 開頭的整行註解是合法的 INI：預覽不報語法錯誤、納管後來源複本逐位元組相同。
+    source = _write_source(sources_root, "legacy.ini", _LEGACY_INI)
+
+    preview = _post(api, "/api/inspect", {"source_path": source, "format": "ini"})
+    entry = _onboard_as(api, sources_root, "legacy.ini", _LEGACY_INI, "ini")
+
+    assert preview["types"] == {"motion": "dict", "motion.max_vel": "string"}
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+    assert detail["values"] == {"motion": {"max_vel": "0.55"}}
+    assert pathlib.Path(entry["target"]).read_bytes() == _LEGACY_INI
+
+
+def test_a_binary_file_can_be_previewed_and_onboarded_as_raw(api, sources_root, repo):
+    # raw＝只版控、不解析：內容是不是文字都不該擋。預覽沒有欄位；納管後來源複本逐位元組相同、
+    # 狀態一致、單筆內容開得起來（沒有欄位表）。
+    source = _write_source(sources_root, "firmware.bin", _FIRMWARE)
+
+    preview = _post(api, "/api/inspect", {"source_path": source, "format": "raw"})
+    entry = _onboard_as(api, sources_root, "firmware.bin", _FIRMWARE, "raw")
+
+    assert (preview["format"], preview["field_count"], preview["ambiguities"]) == ("raw", 0, [])
+    assert _state_of(api, entry["uid"]) == "in_sync"
+    assert _get(api, f"/api/configs/{entry['uid']}")["values"] is None
+    if not os.environ.get("CM_SYSTEM_BASE_URL"):
+        assert (pathlib.Path(repo) / entry["source"]).read_bytes() == _FIRMWARE
+    assert _search(api, "binary")["query"] == "binary"  # 搜尋不被這份二進位檔弄壞
+
+
+def test_a_binary_file_previewed_as_a_text_format_is_told_to_use_raw(api, sources_root):
+    # 選了要解析的格式而內容不是文字：拒絕，下一步指去 raw（此時這個建議才成立）。
+    source = _write_source(sources_root, "firmware_as_yaml.bin", _FIRMWARE)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/inspect", {"source_path": source, "format": "yaml"})
+
+    detail = json.loads(exc.value.read())["detail"]
+    assert exc.value.code == _UNPROCESSABLE
+    assert "yaml" in detail["message"] and "raw" in detail["message"]
+
+
+def test_a_binary_raw_config_survives_drift_handling_and_revert_byte_for_byte(api, sources_root):
+    # raw 的內容整塊搬、不經解碼：以來源覆蓋、納入現況、寫出修復、退版，位元組都不能走樣。
+    _clear_drafts(api)
+    entry = _onboard_as(api, sources_root, "firmware_ops.bin", _FIRMWARE, "raw")
+    target = pathlib.Path(entry["target"])
+    changed = b"\x00\xfe\xff changed on site \x80\n"
+
+    target.write_bytes(changed)
+    assert _state_of(api, entry["uid"]) == "drift"
+    _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "overwrite"})
+    assert target.read_bytes() == _FIRMWARE
+
+    target.write_bytes(changed)
+    _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
+    assert (target.read_bytes(), _state_of(api, entry["uid"])) == (changed, "in_sync")
+
+    target.unlink()
+    _post(api, f"/api/configs/{entry['uid']}/apply", {})
+    assert target.read_bytes() == changed
+
+    imported = _history(api, entry["uid"], "import")[0]["sha"]
+    _post(api, f"/api/configs/{entry['uid']}/revert", {"version": imported})
+    assert (target.read_bytes(), _state_of(api, entry["uid"])) == (_FIRMWARE, "in_sync")
+
+
+# ── 人工驗證 U10／U13／U15：被拒絕時的文案要說「這次沒做什麼」，不是叫人去改既有的東西 ──
+
+
+def test_onboarding_a_target_that_is_already_managed_points_to_the_existing_config(
+    api, sources_root
+):
+    # 先前的說法叫人「改掉其中一筆的目標位置——寫出順序會決定最終內容」，容易誤導。
+    # 實情是：這個檔案已經納管了，這次沒有再納管；該做的是去看既有的那一份。
+    entry = _onboard(api, sources_root, "already_managed.yaml", b"count: 1\n")
+    payload = {"source_path": entry["target"], "format": "yaml", "ambiguity_note": ""}
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/configs", payload)
+
+    detail = json.loads(exc.value.read())["detail"]
+    assert exc.value.code == _CONFLICT
+    assert "已經納管" in detail and entry["ref"] in detail and "沒有" in detail
+    assert "寫出順序" not in detail and "改掉" not in detail
+
+
+def test_adding_a_root_that_is_already_whitelisted_says_nothing_was_added(api, sources_root):
+    # 先前的說法是「第 2 筆與第 3 筆重複，刪掉其中一筆」——但清單其實沒有多一筆，沒有東西要刪。
+    _set_session(api)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/allowed-roots", {"prefix": str(sources_root)})
+
+    detail = json.loads(exc.value.read())["detail"]
+    assert exc.value.code == _CONFLICT
+    assert "已經在白名單" in detail and "沒有加入" in detail
+    assert "刪掉" not in detail and "第 " not in detail
+
+
+def test_the_removal_confirmation_is_worded_for_a_person_not_for_the_api(api, sources_root):
+    _set_session(api)
+    request = urllib.request.Request(
+        f"{api}/api/allowed-roots",
+        data=json.dumps({"prefix": "/nonexistent/never-added", "confirmed": False}).encode(),
+        headers={"content-type": "application/json"}, method="DELETE",
+    )
+    with pytest.raises(urllib.error.HTTPError) as missing:
+        urllib.request.urlopen(request, timeout=_TIMEOUT)
+    assert missing.value.code == _NOT_FOUND
+
+    stored = _get(api, "/api/allowed-roots")["roots"][0]["prefix"]
+    request = urllib.request.Request(
+        f"{api}/api/allowed-roots",
+        data=json.dumps({"prefix": stored, "confirmed": False}).encode(),
+        headers={"content-type": "application/json"}, method="DELETE",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(request, timeout=_TIMEOUT)
+
+    detail = json.loads(exc.value.read())["detail"]
+    assert detail["kind"] == "confirm_required"
+    assert "confirmed" not in detail["message"] and "確認移除" in detail["message"]

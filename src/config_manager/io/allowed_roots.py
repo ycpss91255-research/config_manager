@@ -17,7 +17,7 @@ from pydantic import ValidationError
 from tomlkit.exceptions import ParseError
 
 from config_manager.core.allowed_roots import check_prefix, dump, load
-from config_manager.core.errors import AllowedRootsError, PrefixNotFound
+from config_manager.core.errors import AllowedRootsError, DuplicatePrefix, PrefixNotFound
 from config_manager.core.models import AllowedRoot, AllowedRoots
 from config_manager.io.atomic import replace_atomically
 from config_manager.io.errors import (
@@ -104,6 +104,13 @@ def add_allowed_root(repo: str, prefix: str, added_by: str, added_at: str) -> No
     path = os.path.join(repo, ALLOWED_ROOTS_NAME)
     current = read_allowed_roots(repo)
     original = _read(path)
+    if any(os.path.realpath(root.prefix) == resolved for root in current.roots):
+        # 這次沒有加入、清單也沒有多一筆。dump 的完整性檢查也擋得住重複，但那邊的訊息是寫給
+        # 「設定檔裡兩筆重複」的，叫人刪掉其中一筆——而這裡沒有東西要刪（人工驗證 U13）。
+        raise DuplicatePrefix(
+            f"「{resolved}」已經在白名單裡，這次沒有加入；既有的項目不用更動。"
+            "下一步：不需要再加一次——到白名單維護看目前的清單"
+        )
     current.roots.append(
         AllowedRoot(prefix=resolved, added_by=added_by, added_at=added_at)
     )

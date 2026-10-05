@@ -633,6 +633,18 @@ def test_a_developer_adds_the_rejected_path_then_browsing_it_succeeds(
     page.wait_for_selector("[data-testid='whitelist-prefix-input']")
 
     page.get_by_role("button", name="加入白名單").click()
+    # 人工驗證 U13：這個入口原本一按就生效。現在與白名單維護同一套流程——先說即將開放的範圍與
+    # 底下有幾個可納管檔，確認了才加入；取消什麼都不變。
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    said = page.inner_text("[data-testid='confirm-body']")
+    assert str(outside) in said and "1 個可納管檔" in said
+    page.click("[data-testid='confirm-cancel']")
+    assert page.is_visible("[data-testid='whitelist-prefix-input']")
+    assert page.query_selector("[data-testid='browse-entry-cfg.yaml']") is None
+
+    page.get_by_role("button", name="加入白名單").click()
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
 
     page.wait_for_selector("[data-testid='browse-entry-cfg.yaml']")
     assert _browse_entries(page) == [["cfg.yaml", "file"]]
@@ -1065,10 +1077,66 @@ def test_adding_a_prefix_appends_it_to_the_whitelist(open_page, tmp_path):
     prefix.mkdir()
     page = _open_whitelist_as_developer(open_page())
 
+    (prefix / "a.yaml").write_text("x", encoding="utf-8")
     page.fill("[data-testid='whitelist-add-input']", str(prefix))
     page.get_by_role("button", name="加入白名單").click()
+    # 加入前先確認：寫明即將開放的路徑與底下有幾個可納管檔（§7.9）。
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    said = page.inner_text("[data-testid='confirm-body']")
+    assert str(prefix) in said and "1 個可納管檔" in said
+    page.click("[data-testid='confirm-ok']")
 
     page.wait_for_selector(f"[data-testid='whitelist-root-{prefix}']")
+
+
+def test_adding_a_root_that_is_already_whitelisted_is_refused_before_the_confirmation(
+    open_page, browse_root
+):
+    # 複驗回饋：已存在的路徑原本先跳確認框、按確認才被告知已存在。顯示確認框前先比對目前的
+    # 白名單，直接說已存在、沒有加入；後端送出時的重複檢查仍保留。
+    page = _open_whitelist_as_developer(open_page())
+    page.wait_for_selector(f"[data-testid='whitelist-root-{browse_root}']")
+
+    page.fill("[data-testid='whitelist-add-input']", str(browse_root))
+    page.get_by_role("button", name="加入白名單").click()
+
+    page.wait_for_selector("[data-testid='whitelist-error']", state="visible")
+    assert "已經在白名單" in page.inner_text("[data-testid='whitelist-error']")
+    assert page.query_selector("[data-testid='confirm-dialog'][open]") is None
+    assert page.locator("[data-testid^='whitelist-root-']").count() == 1
+
+
+def test_cancelling_the_add_confirmation_leaves_the_whitelist_unchanged(open_page, tmp_path):
+    prefix = tmp_path / "not_added"
+    prefix.mkdir()
+    page = _open_whitelist_as_developer(open_page())
+
+    page.fill("[data-testid='whitelist-add-input']", str(prefix))
+    page.get_by_role("button", name="加入白名單").click()
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-cancel']")
+
+    assert page.query_selector(f"[data-testid='whitelist-root-{prefix}']") is None
+    assert page.input_value("[data-testid='whitelist-add-input']") == str(prefix)  # 輸入還在
+
+
+def test_a_stale_preview_is_cleared_when_the_path_changes(open_page, tmp_path):
+    # 人工驗證 U13：預覽某個路徑後把輸入改成別的，舊的「N 個可納管檔」還留著，會被誤認為是
+    # 目前路徑的結果。路徑一改就清掉；按加入被拒時也不留著。
+    prefix = tmp_path / "preview_then_change"
+    prefix.mkdir()
+    (prefix / "a.yaml").write_text("x", encoding="utf-8")
+    page = _open_whitelist_as_developer(open_page())
+    page.fill("[data-testid='whitelist-add-input']", str(prefix))
+    page.get_by_role("button", name="預覽").click()
+    page.wait_for_selector("[data-testid='whitelist-preview']", state="visible")
+
+    page.fill("[data-testid='whitelist-add-input']", "relative/path")
+    assert page.is_hidden("[data-testid='whitelist-preview']")
+
+    page.get_by_role("button", name="加入白名單").click()
+    page.wait_for_selector("[data-testid='whitelist-error']", state="visible")
+    assert page.is_hidden("[data-testid='whitelist-preview']")
 
 
 def test_adding_a_prefix_with_dotdot_is_rejected_with_the_reason_shown(open_page, tmp_path):
@@ -1090,6 +1158,9 @@ def test_removing_a_root_asks_for_confirmation_then_removes(open_page, browse_ro
         f"[data-testid='whitelist-root-{browse_root}'] [data-testid='whitelist-remove']"
     ).click()
     page.wait_for_selector("[data-testid='whitelist-remove-confirm']", state="visible")
+    # 人工驗證 U15：確認區是寫給按按鈕的人看的——說要移除哪一個、會怎樣，不出現 API 的參數名。
+    said = page.inner_text("[data-testid='whitelist-remove-confirm']")
+    assert str(browse_root) in said and "不能再瀏覽或納管" in said and "confirmed" not in said
     page.get_by_role("button", name="確認移除").click()
 
     page.wait_for_selector(f"[data-testid='whitelist-root-{browse_root}']", state="detached")
@@ -2473,6 +2544,131 @@ def test_the_unmanage_entry_is_absent_while_read_only(open_page, listing):
 
     assert second.is_hidden("[data-testid='panel-mfz3k9q1'] [data-testid='panel-unmanage']")
     assert holder.is_hidden("[data-testid='readonly-banner']")
+
+
+def test_reloading_the_holders_own_tab_keeps_editing_and_shows_who_it_is(open_page, listing):
+    # 人工驗證 U38：重新整理時舊頁面先釋放、新頁面再取回。取回後標頭要是身分與角色、不是「唯讀」，
+    # 沒有唯讀橫幅，會寫入的入口還在。再重新整理一次也一樣。
+    listing("a")
+    page = open_page()
+    page.click("[data-testid='role-toggle'] button[data-role='developer']")
+    _enter_identity(page)
+    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+
+    for _ in range(2):
+        page.evaluate("window.dispatchEvent(new Event('pagehide'))")  # 卸載時的釋放先送達
+        page.wait_for_timeout(300)
+        page.reload()
+        page.wait_for_selector("[data-testid='config-tree']", state="visible")
+        page.wait_for_selector("[data-testid='promote-all']", state="visible")
+
+        assert page.inner_text("[data-testid='current-role']") == f"{_NAME}・開發者"
+        assert page.is_hidden("[data-testid='readonly-banner']")
+        assert page.get_attribute("body", "data-readonly") == "false"
+        assert page.is_visible("[data-testid='open-whitelist']")
+
+
+def test_getting_the_session_back_puts_the_identity_back_in_the_header(open_page, listing):
+    # 轉唯讀時標頭改成「唯讀」；之後只要又拿到編輯階段，標頭就要改回身分——否則畫面說唯讀、
+    # 實際上卻可以編輯（人工驗證 U38 看到的就是這個）。
+    listing("a")
+    page = _enter_identity(open_page())
+    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+
+    page.evaluate("setReadonly(null, null, '暫時取不到')")
+    assert page.inner_text("[data-testid='current-role']") == "唯讀"
+    page.evaluate("setEditing()")
+
+    assert page.inner_text("[data-testid='current-role']") == f"{_NAME}・一般使用者"
+    assert page.is_hidden("[data-testid='readonly-banner']")
+
+
+def test_a_release_that_arrives_after_the_reload_does_not_take_the_session_away(
+    open_page, listing, api
+):
+    # 釋放晚到的那一種順序：新頁面先拿存著的識別碼接續成功，舊頁面的釋放才到。接續時識別碼已換新，
+    # 晚到的釋放帶的是舊的——階段還在，這個分頁繼續可以編輯。
+    listing("a")
+    page = _enter_identity(open_page())
+    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+    old_token = page.evaluate("sessionStorage.getItem('cm.session.token')")
+    # 讓卸載時的釋放「還在路上」：頁面不送（記憶體裡的識別碼清掉，存著的那份還在），稍後由
+    # 這裡代它送出——等於它晚到。
+    page.evaluate("sessionToken = null")
+
+    page.reload()
+    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+    late = _api_json(api, "POST", "/api/session/lock/release", {"token": old_token})
+
+    assert late == {"released": False}
+    assert _api_json(api, "GET", "/api/session/lock")["held"] is True
+    assert page.evaluate("sessionStorage.getItem('cm.session.token')") != old_token
+    assert page.evaluate("renewSession(sessionToken)") is True
+    assert page.get_attribute("body", "data-readonly") == "false"
+
+
+# ── 人工驗證：檢查差異的回饋、窄視窗排版 ─────────────────────────────────────
+
+_NARROW = 390  # 手機直立的寬度；工具列在這個寬度下不該拆字、不該讓頁面左右捲
+
+
+def test_checking_for_differences_says_when_it_ran_and_what_it_found(open_page, repo):
+    # 全部一致時按「檢查差異」原本什麼都沒變，看不出有沒有執行。現在說出檢查了幾份、結果如何。
+    targets = _listing_many(repo, {"p": "count: 3\n", "q": "count: 5\n"})
+    page = _enter_identity(open_page())
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}']")
+
+    page.click("[data-testid='rescan']")
+    page.wait_for_selector("[data-testid='scan-status'][data-state='done']")
+    said = page.inner_text("[data-testid='scan-status']")
+    assert "2 份" in said and "全部一致" in said
+
+    targets["p"].write_text("count: 9\n", encoding="utf-8")
+    targets["q"].unlink()
+    page.click("[data-testid='rescan']")
+    page.wait_for_function(
+        "document.querySelector(\"[data-testid='scan-status']\").textContent.includes('偏離')"
+    )
+    said = page.inner_text("[data-testid='scan-status']")
+    assert "1 份偏離" in said and "1 份未部署" in said and "全部一致" not in said
+
+
+def test_a_failed_check_says_it_failed_instead_of_looking_finished(open_page, repo):
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = _enter_identity(open_page())
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.route("**/api/configs", lambda route: route.abort())
+
+    page.click("[data-testid='rescan']")
+
+    page.wait_for_selector("[data-testid='scan-status'][data-state='failed']")
+    assert "失敗" in page.inner_text("[data-testid='scan-status']")
+
+
+def test_the_toolbar_fits_a_narrow_window_without_sideways_scrolling(open_page, repo):
+    # 窄視窗下工具列原本逐字換行、按鈕超出畫面要橫向捲動。現在整列換行、按鈕文字不拆字、
+    # 頁面不必左右捲。
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = open_page()
+    page.set_viewport_size({"width": _NARROW, "height": 800})
+    page.click("[data-testid='role-toggle'] button[data-role='developer']")
+    _enter_identity(page)
+    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+
+    overflow = page.evaluate(
+        "document.documentElement.scrollWidth - document.documentElement.clientWidth"
+    )
+    heights = page.eval_on_selector_all(
+        "header button", "els => els.filter(e => e.offsetParent).map(e => e.offsetHeight)"
+    )
+    right_edges = page.eval_on_selector_all(
+        "header button",
+        "els => els.filter(e => e.offsetParent).map(e => e.getBoundingClientRect().right)",
+    )
+
+    assert overflow <= 0
+    assert len(set(heights)) == 1  # 每顆按鈕都是一行高：文字沒有被拆成好幾行
+    assert max(right_edges) <= _NARROW
 
 
 # ── W2 屬性面板（#286，§7.4.4）──────────────────────────────────────────────

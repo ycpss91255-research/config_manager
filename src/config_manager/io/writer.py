@@ -10,6 +10,7 @@ from collections.abc import Iterable
 
 from config_manager.core.models import Permissions
 from config_manager.io.atomic import replace_atomically
+from config_manager.io.parsers import as_bytes
 from config_manager.io.errors import (
     OwnershipRefused,
     TargetOutsideRoots,
@@ -94,4 +95,4 @@ def write(
             ) from error
         os.chmod(temporary, int(permissions.mode, 8))
 
-    replace_atomically(target, content.encode("utf-8"), finalize=_apply_ownership)
+    replace_atomically(target, as_bytes(content), finalize=_apply_ownership)
