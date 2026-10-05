@@ -30,6 +30,7 @@ import pytest
 import uvicorn
 
 from config_manager.api.routes import create_app
+from config_manager.core.roles import DEVELOPMENT
 
 _MINIMAL_LIST = """\
 list_version = 1
@@ -203,6 +204,34 @@ def api(repo, sources_root):
     # CM_ALLOWED_ROOTS 種）。
     _seed_allowed_roots(repo, sources_root)
     app = create_app(repo)
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    base = f"http://127.0.0.1:{port}"
+    try:
+        _wait_until_answering(base)
+        yield base
+    finally:
+        server.should_exit = True
+        thread.join(timeout=_STARTUP_TIMEOUT)
+
+
+@pytest.fixture
+def api_developing(repo, sources_root, api):
+    """一個**開發模式**的服務（#47）。
+
+    `api` 那個是部署模式（就地起時 `create_app` 的預設；建好的映像裡 entrypoint 沒設 `CM_MODE`，
+    也是部署）。角色與模式正交的規格要兩種模式各一個服務對照——這一個永遠就地起，連對著映像
+    跑時也是：映像裡只有一個服務、一種模式，第二種只能自己起。同一份 config-repo（白名單每次
+    請求從檔讀，兩個服務看到同一份），身分與編輯階段各自獨立（掛在各自的 app 上）。
+
+    逐則起、逐則收（不是 session 範圍）：第二個服務只在用到它的那幾則活著，不陪跑整個 session。
+    """
+    del sources_root, api  # 只為了排序：白名單已由 `api` 種好；外部服務時那份是 entrypoint 種的
+    port = _free_port()
+    app = create_app(repo, mode=DEVELOPMENT)
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)

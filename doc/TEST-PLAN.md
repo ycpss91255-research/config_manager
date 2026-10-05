@@ -410,6 +410,11 @@ permits(角色, 動作) -> 允許 | 拒絕
 **角色是自我宣告，不是認證。** 本測試介面驗證的是**權限對照表本身正確**，
 不驗證「無法偽造角色」——v0.10.0 前沒有那個保證，也不假裝有。
 
+**角色與環境正交（#47）。** 開發／部署模式由後端依 `CM_MODE` 判定（未設＝部署，寫錯具名拒絕）、
+以 `GET /api/mode` 回報給前端，沒有改它的端點。模式**不是** `permits` 的參數：同一張表在兩種模式下
+給同一個答案（部署環境下開發者仍能維護白名單；開發模式不放寬一般使用者）。正交組合的規格在 T9
+（兩種模式各起一個服務對照）；`GET /api/mode` 是本 repo 對 §3.5.3 的追加，比照 `GET /api/session`。
+
 ### T18 — 草稿與進版
 
 ```
@@ -844,7 +849,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 比照 GET /api/session／#122）。設計 §7.9 的新增流程要在送出前顯示「此路徑下有幾個可納管檔」；
 要數的前綴此刻還不在白名單內（那正是新增流程），故走**白名單外**、只數一般檔的 metadata
 （不讀內容），計數邏輯在 `io/candidate`（T24）。僅開發者、與白名單維護同一道門檻
-（`_require_developer`）——這是系統唯一主動走訪白名單外目錄的讀取路徑（#206）。
+（`require_permission`）——這是系統唯一主動走訪白名單外目錄的讀取路徑（#206）。
 
 **結構化錯誤那一條的適用範圍。** 「檔案、行號、欄位、建議」是**驗證／解析**錯誤的要求
 （供編輯器就地標示，§3.5.3）——那走 `POST /api/validate` 與**偵測端點（#195，已落地）**：
@@ -1377,7 +1382,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `core/inference` | T12 | 已落地：型別推斷（`infer_types`，#9）、歧義偵測（`find_ambiguous`，#10）、schema 骨架（`draft_schema`，#38）；人工指定型別在 `core/manual_types` |
 | `core/manual_types` | T12 | 已落地（`specify`／`clear`／`manual_types`：人工指定寫進 schema、以 `x-manual-type` 標記並記下指定前的型別，逐欄位清除回到指定之前，#285） |
 | `core/attributes` | T16 | 已落地（`update_attributes`／`describe_change`／`is_safe_hostname`，#286）；`group_tree` 不落核心層——樹由介面當場建，見 T16 的說明 |
-| `core/roles` | T17 | 未落地 |
+| `core/roles` | T17 | 已落地（`permits(角色, 動作)`：權限對照表的唯一定義，端點門檻 `api/lock.require_permission` 問它；角色與開發／部署模式的常數也在這裡，兩者正交——模式不是表的參數，#47） |
 | `core/drafts` | T18 | 已落地：草稿（`save_draft`／`adopt_draft`／`discard`，不可變 `Stage`，#18）；`promote` 全部驗證才回 `[Promotion]`、任一沒過丟 `PromoteInvalid`（#19）；儲存、納入、進版以 `Checks` 帶 schema 與規則跑第 2、3 層（#39／#41）；違反規則要理由才存得成（`OverrideRequired`）、理由跟著草稿、進版時寫進紀錄內文（#42） |
 | `io/writer` | T8 | 已落地 |
 | `io/atomic` | T8——原子替換的共用核心，行為由 `io/writer` 的 T8 規格擋著（#186） | 已落地 |
@@ -1413,7 +1418,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `api/history` | T9 | 已落地（`GET /api/configs/{uid}/history`、`GET /api/configs/{uid}/history/{sha}`、`POST /api/configs/{uid}/revert`——歷史與退版的端點與邏輯，自 `api/routes` 拆出以免該模組超過千行，#24） |
 | `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 已落地：身分（`author`）；階段 `SessionLock` 的 acquire／renew／resume（重新整理後接續、換識別碼）／release／sweep，時鐘注入（#33） |
-| `api/lock` | T9 | 已落地（`POST`／`GET /api/session` 與編輯階段的取得／續期／釋放／狀態端點——設身分要看階段有沒有被別人持有，接線放一起；逾時回收清草稿並回報，#33；開發者門檻 `require_developer` 也在這裡，白名單維護、候選數預覽與產生 schema 共用） |
+| `api/lock` | T9 | 已落地（`POST`／`GET /api/session` 與編輯階段的取得／續期／釋放／狀態端點——設身分要看階段有沒有被別人持有，接線放一起；逾時回收清草稿並回報，#33；權限門檻 `require_permission` 也在這裡，白名單維護、候選數預覽、產生 schema、型別指定與屬性編輯共用，誰能做什麼問 `core/roles.permits`，#47） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |
 | `web/` | T11 | 已落地。執行通路於 #97 補上：`test/pytest/system/test_web.py`，Playwright 驅動 Chromium，行覆蓋率由 V8 自己算 |
 | `**/__init__.py` | 無——見「刻意的空格」 | 已落地 |
