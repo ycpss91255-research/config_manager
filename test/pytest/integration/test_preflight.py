@@ -9,12 +9,15 @@
 import pytest
 
 from config_manager.io import preflight as preflight_module
+from config_manager.core.lintrc import DEFAULT, default_text
+from config_manager.io.lintrc import read_lintrc
 from config_manager.io.errors import (
     AllowedRootsMissing,
     AllowedRootsUnparsable,
     ConfigListMissing,
     ConfigListUnparsable,
     SourceMissing,
+    LintrcUnparsable,
 )
 from config_manager.io.preflight import preflight
 
@@ -191,3 +194,41 @@ def test_a_non_utf8_config_list_is_named_unparsable_not_a_bare_unicode_error(tmp
 
     with pytest.raises(ConfigListUnparsable):
         preflight_module.read_config_list(str(tmp_path))
+
+
+# ── .lintrc.toml（第 1 層規則的設定檔，#43）────────────────────────────────────
+
+
+def test_a_repo_without_a_lintrc_uses_the_defaults_and_passes_preflight(tmp_path):
+    # 沒有這個檔不是故障：既有的 repo 一個行為都不變。
+    _write_list(tmp_path, _MINIMAL_LIST)
+    _write_roots(tmp_path, _MINIMAL_ROOTS)
+
+    preflight(str(tmp_path))
+
+    assert read_lintrc(str(tmp_path)) == DEFAULT
+
+
+def test_the_lintrc_in_the_repo_is_the_one_read(tmp_path):
+    _write_list(tmp_path, _MINIMAL_LIST)
+    _write_roots(tmp_path, _MINIMAL_ROOTS)
+    loosened = default_text().replace('duplicate_key = "error"', 'duplicate_key = "warn"', 1)
+    (tmp_path / ".lintrc.toml").write_text(loosened, encoding="utf-8")
+
+    lintrc = read_lintrc(str(tmp_path))
+
+    assert lintrc.formats["yaml"].duplicate_key == "warn"
+    assert lintrc.formats["toml"].duplicate_key == "error"
+
+
+def test_an_unusable_lintrc_fails_preflight_naming_the_file(tmp_path):
+    # 它管的是硬擋的第 1 層：壞了不能當成預設值放行，啟動時就具名失敗。
+    _write_list(tmp_path, _MINIMAL_LIST)
+    _write_roots(tmp_path, _MINIMAL_ROOTS)
+    (tmp_path / ".lintrc.toml").write_text('[yaml]\nduplicate_key = "ignore"\n', encoding="utf-8")
+
+    with pytest.raises(LintrcUnparsable) as exc:
+        preflight(str(tmp_path))
+
+    assert ".lintrc.toml" in str(exc.value) and "ignore" in str(exc.value)
+    assert exc.value.file == str(tmp_path / ".lintrc.toml")

@@ -351,3 +351,11 @@ class RulesInvalid(Exception):
 
     訊息指名是第幾條、哪裡錯——寫錯的規則不默默當成沒有那條規則（不變式 2）。
     """
+
+
+class LintrcInvalid(Exception):
+    """規則設定檔（`.lintrc.toml`）本身寫錯了（#43）：不是合法的 TOML、不認得的分節或鍵、值不在
+    允許的選項裡（如 `duplicate_key = "ignore"`）、個別檔案的豁免沒填理由。
+
+    訊息指名哪裡錯與下一步。這份檔管的是硬擋的第 1 層——寫錯了不能當成預設值放行（不變式 4）。
+    """

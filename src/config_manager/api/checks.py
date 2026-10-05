@@ -11,6 +11,8 @@ from collections.abc import Mapping
 
 from config_manager.core.drafts import Checks
 from config_manager.core.models import FileEntry
+from config_manager.core.lintrc import rules_for
+from config_manager.io.lintrc import read_lintrc
 from config_manager.io.rules import read_rules
 from config_manager.io.schema import read_schema
 
@@ -24,12 +26,14 @@ def checks_for(
     """`entry` 那份 config 此刻的檢查；`reasons` 是這次請求帶來的、略過規則的理由（#42）。
 
     schema 讀不出來會丟 `SchemaUnreadable`（硬擋的那一層壞了不能當成沒有，#39）；規則讀不出來
-    不丟——變成一個要填理由才略得過的警告（第 3 層不硬擋，#41）。
+    不丟——變成一個要填理由才略得過的警告（第 3 層不硬擋，#41）。第 1 層的設定（`.lintrc.toml`，
+    #43）讀不出來丟 `LintrcUnparsable`（結構化 500）；沒有這個檔就是預設值。
     """
     return Checks(
         schema=read_schema(repo, entry),
         rules=read_rules(repo, entry.uid),
         reasons=reasons or {},
+        lintrc=rules_for(read_lintrc(repo), entry.format, entry.source),
     )
 
 

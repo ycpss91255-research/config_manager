@@ -167,6 +167,9 @@ check(content, format, rules, schema?) -> [問題]   # 空清單 = 通過
 | 第 1 層 | Tab 縮排、尾隨空白 → 問題，指出行號 |
 | 第 1 層 | 重複 key → 問題，**列出該 key 的所有出現行號** |
 | 第 1 層 | **yaml 清單的每個項目各自是一個範圍**：不同項目的同名 key 不是重複（項目裡每一個 key 都算，不只緊接在 `- ` 後面那個）；同一個項目內重複才是 |
+| 第 1 層 | **規則可配置（`.lintrc.toml`，#43）**：`[yaml]` 的布林白名單（可列舉或 `"any"`）、`allow_octal_prefix`、`allow_scientific_notation`、`duplicate_key`（`error`｜`warn`，**沒有 `ignore`**）、`trailing_whitespace`（`error`｜`warn`｜`ignore`）、`indent` 寬度；`[toml]`／`[json]`／`[ini]` 只有 `duplicate_key` 與 `trailing_whitespace`；`[yaml.overrides]` 以來源複本的路徑豁免個別檔案、**必填 `reason`**；每個設定都真的改變驗證行為；沒有這個檔＝預設值（§6.3 全套）；預設值寫成的範例檔解讀回來等於預設值 |
+| 第 1 層 | 設定檔寫錯被指出來：不是合法 TOML、不認得的分節或鍵、值不在選項裡、`yaml_version` 不是 1.2、縮排不是空白或寬度不是正整數、豁免沒填理由——`LintrcInvalid` 指名哪裡錯與下一步 |
+| 第 1 層 | `True`／`TRUE` 預設不在布林白名單上（§6.3 的拒絕欄）；可由 `boolean_literals` 列進去 |
 | 第 2 層 | 型別不符 schema → 問題，指出欄位 |
 | 第 2 層 | 超出數值範圍 → 問題，說出界限 |
 | 第 2 層 | 缺少必填欄位 → 問題，指到它該在的那個物件；**拼錯的 key → 問題，建議最接近的已知 key** |
@@ -869,6 +872,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **產生 schema 骨架（`POST /api/configs/{uid}/schema`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：僅開發者（403）、需身分（409）；骨架存進 config-repo 的 `.schemas/<uid>.json`、條目記下 `schema`、記一筆 `meta`，回 `{uid, schema}`；`GET /api/configs/{uid}` 另回 `schema`（路徑或 null）；已有 schema→409（不覆寫）、`raw`／頂層不是物件→422 說原因、uid 不在→404（#38） |
 | **第 2 層接在三個寫入點上（#39）**：儲存草稿（`POST /api/drafts`）、進版（`POST /api/promote`，依**此刻**的 schema 重驗）、將現況納入來源（`resolve` 的 `adopt`）——不符 schema→422，detail 另帶 `file`（驗的是哪一份：存草稿與進版是 repo 內的來源複本，納入現況是目標路徑），`problems` 每筆另帶 `path`（欄位路徑；第 1 層為 null）；`adopt_draft` 照載、schema 的問題列成警告；清單檔指到的 schema 讀不出來（不在、不是 JSON、不是合法 schema、指到 `.schemas/` 外）→結構化的 500 `{message, file}`，**不當成沒有 schema 放行** |
 | **第 3 層與略過的理由（#41／#42）**：規則檔是 config-repo 的 `.rules/<uid>.toml`。儲存草稿（`POST /api/drafts`，body 另收 `overrides`：規則代號→理由）違反規則而沒帶理由→**409**，detail `{kind: "override_required", message, uid, file, problems}`、每筆 problem 帶 `rule`，草稿沒存下；帶了理由→存成，回應另帶 `warnings`；理由不是單行或過長→422。**理由只略過警告，硬擋照擋**。單筆內容另回 `draft_overrides`。進版依此刻的規則重驗：違反而草稿沒有理由→422 整批不進版；有理由→寫進那筆紀錄的內文（`override(<規則>): <理由>`），歷史的每一筆另回結構化的 `overrides`。「將目標現況納入來源」違反規則→409、指去走「先納入、待修正」（`adopt_draft` 照載、規則的警告列在 `warnings`）。**規則檔寫壞不讓存檔失敗**——變成代號 `rules-file` 的警告，一樣要理由 |
+| **第 1 層的設定來自 config-repo 的 `.lintrc.toml`（#43）**：儲存草稿、進版、納入現況都套它（經 `checks_for`）；沒有這個檔＝預設值；改了檔、同一份內容的驗證結果就跟著變；檔寫壞→結構化的 500 `{message, file}`（它管的是硬擋的那一層，壞了不當成預設值放行）。退版不驗證（#39 的定案），所以不會以新規則替舊內容產生假警報 |
 | **單筆內容帶 schema 的欄位提示（#40）**：`GET /api/configs/{uid}` 另回 `constraints`（欄位路徑→`minimum`／`maximum`／`exclusiveMinimum`／`exclusiveMaximum`／`multipleOf`／`enum`／`description`，鍵與 `types` 同一套路徑文法；只鎖型別的骨架回空）；schema 讀不出來→值照回、`constraints` 空、`schema_error` 說原因與下一步（不讓整份內容跟著讀不到） |
 | **人工指定型別（`POST /api/configs/{uid}/types`，body `{path, type}`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：僅開發者（403）、需身分（409）；`type` 是 `int`／`float`／`bool`／`string` 之一→寫進 schema、記一筆 `meta`（`指定「<path>」的型別為 <名稱>`），`null`→清除那個指定、記一筆 `meta`；回 `{uid, path, type, schema}`。單筆內容的 `types` 以指定為準、另回 `manual_types`（欄位路徑→指定的型別）。**與現值不相容→422 說原因與下一步、什麼都不寫**；不認得的型別／不存在或不是單一參數的路徑／`raw`→422；沒指定過要清除→409；uid 不在→404。**指定成 double 的欄位，介面送整數值也寫成帶小數點**（#285） |
 | **修改屬性（`POST /api/configs/{uid}/attributes`，body `{name, hostname, groups, description}`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：僅開發者（403）、需身分（409）；寫回清單檔、記一筆 `meta`（說明逐項寫出改了什麼），回 `{uid, name, hostname, ref, groups, description}`。清單列與單筆內容另回 `description`。**改名不影響 uid 與任何關聯**——歷史、草稿、搜尋都還在同一份底下，目標不動；屬性變更不出現在預設的歷史（只看內容變更）。值不合法→422，detail `{message, field}`；什麼都沒改→409；uid 不在→404（#286） |
@@ -1360,7 +1364,8 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `core/index` | T14 | 已落地（`search_configs` 五檔範圍於 #32 加入） |
 | `core/parse` | T6（格式解析與原樣寫回） | 已落地（yaml／json／toml／ini／raw；#8）。ini 以 `;` 開頭的整行註解視為註解（只換給解析器看、原文不動，人工驗證 U06） |
 | `core/models` | 無獨立測試介面——見「刻意的空格」 | 已落地 |
-| `core/validate` | T3 | 已落地：第 1 層（語法、正規形式白名單、縮排／尾隨空白、重複 key 列全部行號，#16）；`check` 收到 schema 時併入第 2 層的問題（#39）、收到規則時併入第 3 層的警告（#41） |
+| `core/validate` | T3 | 已落地：第 1 層（語法、正規形式白名單、縮排／尾隨空白、重複 key 列全部行號，#16；套 `.lintrc.toml` 的設定，#43）；`check` 收到 schema 時併入第 2 層的問題（#39）、收到規則時併入第 3 層的警告（#41） |
+| `core/lintrc` | T3 | 已落地（`parse_lintrc`／`rules_for`／`DEFAULT`／`default_text`：第 1 層規則的設定檔，分節、豁免與理由、每個鍵的檢查，#43） |
 | `core/rules` | T3 | 已落地（第 3 層：`parse_rules` 讀規則檔並指出寫錯的地方、`check_rules` 回警告、`values_at` 依路徑取值；簡單比較與跨 config 對照，#41） |
 | `core/schema_check` | T3 | 已落地（第 2 層：`check_schema` 把 jsonschema 的錯誤轉成帶欄位路徑／行號／建議的問題；整數不收浮點；`ensure_valid_schema` 擋壞掉的 schema，#39；`field_hints` 取出給介面的範圍／步進／列舉選項／說明，#40） |
 | `core/locate` | T3 | 已落地（欄位路徑→原文行號：yaml／json 走 ruamel 的位置資訊，toml／ini 逐行掃；效果由 T3 第 2 層的行號斷言觀察，#39） |
@@ -1388,6 +1393,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/attributes` | 效果透過既有介面觀察：清單檔條目→T1（`load`）、`meta` 紀錄→T7（`history`）——編排層，同 `io/unmanage` 的處理；其餘條目原樣、不合法的什麼都不寫、寫入中途失敗回滾、回滾也失敗丟 `AttributesLeftBehind`（#286） | 已落地（`update`） |
 | `io/schema` | 效果透過既有介面觀察：清單檔條目的 `schema`→T1（`load`）、`meta` 紀錄→T7（`history`）、骨架檔直接看 `.schemas/`（內容由 T12 的 `draft_schema` 決定）——編排層，同 `io/unmanage` 的處理；已有 schema 不覆寫、`raw`／頂層不是物件說原因；寫入中途失敗整批回滾、回滾也失敗丟 `SchemaLeftBehind`（#38） `read_schema` 讀第 2 層要用的那一份：讀不出可用的 schema 一律丟 `SchemaUnreadable`、不退回「沒有 schema」（#39） `schema_revert` 算出退版時 schema 怎麼跟著回去（回到當時的內容／拿掉／不動）與要一起寫回的檔案（#39） `store_schema` 是產生骨架與人工指定共用的寫入＋記錄＋回滾（#285） | 已落地（`draft_skeleton`／`read_schema`／`schema_revert`／`store_schema`／`entry_of`） |
 | `io/rules` | 效果透過 T3 的 `check`（給它讀出來的規則）觀察——編排層：沒有規則檔就是沒有規則；跨 config 對照真的讀了另一份的值（清單、清單裡每個物件的某個欄位）；規則檔壞了或對照的那一份讀不到，不丟例外、變成 `faults`（#41） | 已落地（`read_rules`） |
+| `io/lintrc` | 效果透過 T15（preflight：有檔就要讀得出來、沒有是預設值）與 T9（儲存時套到的規則）觀察——薄 adapter，同 `io/rules` 的處理；讀不出來丟 `LintrcUnparsable`（`PreflightError` 的一種，#43） | 已落地（`read_lintrc`） |
 | `io/manual_type` | 效果透過既有介面觀察：schema 的內容→`io/schema.read_schema` 與 T12 的 `manual_types`、清單檔條目→T1（`load`）、`meta` 紀錄→T7（`history`）——編排層，同 `io/schema` 的處理；只收存在的單一參數、與現值不相容擋下（`TypeIncompatible`）、清到不剩時 schema 檔與條目指向一起拿掉、失敗回滾（#285） | 已落地（`specify_type`） |
 | `io/drift` | 效果透過 T9 觀察：`overwrite`（寫出＋空 `cfg` 紀錄，紀錄沒成把目標還原）、`adopt`（走 `io/promote.apply`，kind `adopt`）——編排層，同 `io/onboard`／`io/promote` 的處理（#29） | 已落地（`overwrite`／`adopt`） |
 | `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath 與列目錄——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185） | 已落地（`browse`） |

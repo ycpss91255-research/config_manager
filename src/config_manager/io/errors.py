@@ -77,6 +77,13 @@ class ConfigListUnparsable(PreflightError):
     """清單檔存在但讀不出來：TOML 語法錯誤，或內容不符清單檔規格。"""
 
 
+class LintrcUnparsable(PreflightError):
+    """`.lintrc.toml` 存在但讀不出可用的設定（#43）：不是 UTF-8、不是合法 TOML、或設定不合法。
+
+    它管的是硬擋的第 1 層，壞了不能當成預設值放行。沒有這個檔不算錯（＝預設值）。
+    """
+
+
 class SourceMissing(PreflightError):
     """清單檔某條目引用的來源內容不在 repo 裡。只查來源側——目標未部署是合法狀態。"""
 

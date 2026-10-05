@@ -27,6 +27,7 @@ import re
 from collections.abc import Mapping
 
 from config_manager.core.errors import SyntaxParse
+from config_manager.core.lintrc import DEFAULT, FormatRules, rules_for
 from config_manager.core.parse import parse
 from config_manager.core.problem import ERROR, WARNING, Problem
 from config_manager.core.rules import Rules, check_rules
@@ -40,17 +41,20 @@ def check(
     fmt: str,
     rules: Rules | None = None,  # 第 3 層（#41）：給了就依它檢查，回的是警告
     schema: Mapping[str, object] | None = None,  # 第 2 層（#39）：給了就依它檢查
+    lintrc: FormatRules | None = None,  # 第 1 層的設定（#43）：沒給就是預設值（§6.3 全套）
 ) -> list[Problem]:
     """第 1 層驗證，給了 `schema` 再加第 2 層、給了 `rules` 再加第 3 層。回傳依行號排序的問題
-    清單，空清單＝通過。第 3 層的問題是警告（`severity` 為 warning、帶 `rule`），不是硬擋。"""
+    清單，空清單＝通過。第 3 層的問題是警告（`severity` 為 warning、帶 `rule`），不是硬擋。
+    第 1 層套的規則由 `lintrc` 決定（`.lintrc.toml`，#43）；沒給就是預設值。"""
     if fmt == "raw":
         return []
+    settings = lintrc or rules_for(DEFAULT, fmt, "")
 
     lines = text.split("\n")
     # 重複 key 的掃描要在 parse 之前：ruamel／tomlkit／configobj 遇重複 key 會直接拋錯、且只帶
     # 第二次出現的行，若先 parse 就永遠走不到「列出所有出現行號」這條契約（json.loads 則是
     # 靜默取後者，非掃不可）。
-    duplicates = _duplicate_keys(lines, fmt)
+    duplicates = _duplicate_keys(lines, fmt, settings.duplicate_key)
     try:
         parse(text, fmt)
     except SyntaxParse as error:
@@ -58,11 +62,11 @@ def check(
         # 的解析錯誤；其餘語法錯誤照回，行號沿用解析器的。
         return duplicates or [Problem(error.line, str(error), "修正該行的語法後重試")]
 
-    problems = _trailing_whitespace(lines)
+    problems = _trailing_whitespace(lines, settings.trailing_whitespace)
     problems += duplicates
     if fmt == "yaml":
-        problems += _yaml_indentation(lines)
-        problems += _yaml_canonical_forms(lines)
+        problems += _yaml_indentation(lines, settings.indent_width)
+        problems += _yaml_canonical_forms(lines, settings)
     if schema is not None:
         # 解析得過才有值可以驗；第 1 層的其他問題（尾隨空白、正規形式）不影響第 2 層照跑，
         # 兩層的問題一次列完，不必修一輪才看得到下一輪。
@@ -77,16 +81,24 @@ def check(
 _TRAILING = re.compile(r"[ \t]+$")
 
 
-def _trailing_whitespace(lines: list[str]) -> list[Problem]:
+def _trailing_whitespace(lines: list[str], handling: str) -> list[Problem]:
+    if handling == "ignore":
+        return []
     return [
         Problem(
             number,
             f"第 {number} 行結尾有多餘的空白",
             "刪掉行尾的空白或 Tab",
+            _severity(handling),
         )
         for number, line in enumerate(lines, start=1)
         if _TRAILING.search(line.rstrip("\r"))
     ]
+
+
+def _severity(handling: str) -> str:
+    """設定檔的 `error`｜`warn` → 問題的嚴重度。"""
+    return WARNING if handling == "warn" else ERROR
 
 
 # ── 重複 key（依格式範圍）──────────────────────────────────────────────────
@@ -94,7 +106,7 @@ def _trailing_whitespace(lines: list[str]) -> list[Problem]:
 _Scope = tuple[object, ...]
 
 
-def _duplicate_keys(lines: list[str], fmt: str) -> list[Problem]:
+def _duplicate_keys(lines: list[str], fmt: str, handling: str = "error") -> list[Problem]:
     seen = _key_occurrences(lines, fmt)
     problems = []
     for (_scope, key), numbers in seen.items():
@@ -105,6 +117,7 @@ def _duplicate_keys(lines: list[str], fmt: str) -> list[Problem]:
                     numbers[0],
                     f"key「{key}」重複出現於第 {listed} 行",
                     "只保留一個；後者會靜默覆蓋前者，留下哪一個要由人決定",
+                    _severity(handling),
                     lines=tuple(numbers),
                 )
             )
@@ -274,7 +287,7 @@ def _ini_keys(lines: list[str]) -> dict[tuple[_Scope, str], list[int]]:
 # ── yaml 縮排：只接受 2 個空白；拒 Tab、空白與 Tab 混用、非 2 的倍數 ───────────
 
 
-def _yaml_indentation(lines: list[str]) -> list[Problem]:
+def _yaml_indentation(lines: list[str], width: int = 2) -> list[Problem]:
     problems = []
     block_indent: int | None = None
     for number, raw in enumerate(lines, start=1):
@@ -289,14 +302,14 @@ def _yaml_indentation(lines: list[str]) -> list[Problem]:
             block_indent = None
         if "\t" in leading:
             problems.append(
-                Problem(number, f"第 {number} 行以 Tab 縮排", "改成空白縮排，每層 2 個空白")
+                Problem(number, f"第 {number} 行以 Tab 縮排", f"改成空白縮排，每層 {width} 個空白")
             )
-        elif indent % 2 != 0:
+        elif indent % width != 0:
             problems.append(
                 Problem(
                     number,
-                    f"第 {number} 行縮排 {indent} 個空白，不是 2 的倍數",
-                    "每層縮排 2 個空白",
+                    f"第 {number} 行縮排 {indent} 個空白，不是 {width} 的倍數",
+                    f"每層縮排 {width} 個空白",
                 )
             )
         if _YAML_BLOCK.search(line):
@@ -306,79 +319,95 @@ def _yaml_indentation(lines: list[str]) -> list[Problem]:
 
 # ── yaml 正規形式白名單 ──────────────────────────────────────────────────────
 # 比對順序有意義（bool 先於 int 先於 float 先於 null）。資料，不是邏輯：多認一種寫法就加一列。
-_CANONICAL: tuple[tuple[re.Pattern[str], str, str, str], ...] = (
-    (
-        re.compile(r"^(?:y|n|yes|no|on|off)$", re.IGNORECASE),
-        "布林只接受 true／false",
-        "改寫成 true 或 false；若本意是字串，加上引號",
-        ERROR,
-    ),
+# 第五欄是 `.lintrc.toml` 裡的開關（#43）：`octal`／`scientific` 由對應的 allow_* 關掉；None 的
+# 沒有開關、一律套。布林另外處理（白名單是一份清單，不是開或關）。
+_CANONICAL: tuple[tuple[re.Pattern[str], str, str, str, str | None], ...] = (
     (
         re.compile(r"^0\d+$"),
         "整數不接受前導零（會被讀成八進位或十進位而各家不同）",
         "改寫成十進位；若是檔案權限之類的代號，加上引號成字串",
         ERROR,
+        "octal",
+    ),
+    (
+        re.compile(r"^0o[0-7]+$"),
+        "整數不接受八進位前綴 0o",
+        "改寫成十進位",
+        ERROR,
+        "octal",
     ),
     (
         re.compile(r"^0x[0-9a-fA-F]+$"),
         "整數不接受十六進位寫法",
         "改寫成十進位",
         ERROR,
+        None,
     ),
     (
         re.compile(r"^[+-]?\d+(?:_\d+)+$"),
         "整數不接受底線分隔",
         "把底線拿掉",
         ERROR,
+        None,
     ),
     (
         re.compile(r"^\+\d+$"),
         "整數不接受前置的加號",
         "把加號拿掉",
         ERROR,
+        None,
     ),
     (
         re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)[eE][+-]?\d+$"),
         "浮點數不接受科學記號",
         "改寫成一般小數",
         ERROR,
+        "scientific",
     ),
     (
         re.compile(r"^[+-]?\.\d+$"),
         "浮點數不接受省略整數部分（如 .5）",
         "補上整數部分，如 0.5",
         ERROR,
+        None,
     ),
     (
         re.compile(r"^[+-]?\d+\.$"),
         "浮點數不接受省略小數部分（如 1.）",
         "補上小數部分，如 1.0",
         ERROR,
+        None,
     ),
     (
         re.compile(r"^[+-]?\.?(?:inf|nan)$", re.IGNORECASE),
         "不接受 inf／nan",
         "改用具體的數值，或以字串表達並在使用端處理",
         ERROR,
+        None,
     ),
     (
         re.compile(r"^\d+\.\d+0$"),
         "尾隨零的小數（如 1.10）解析後尾數會退掉，易與版本號字串混淆",
         "若是版本號請加引號成字串；若是數值請去掉尾隨的 0",
         WARNING,
+        None,
     ),
     (
         re.compile(r"^(?:~|Null|NULL)$"),
         "null 只接受小寫的 null",
         "改寫成 null",
         ERROR,
+        None,
     ),
 )
+# 讀起來像布林的寫法（YAML 1.1 的 y/n/yes/no/on/off 與 1.2 的 true/false 各種大小寫）：不在
+# 白名單上的擋下。True／TRUE 也在拒絕之列（§6.3）——1.2 讀得成布林，但不是白名單上的寫法。
+_BOOLEAN_LIKE = re.compile(r"^(?:y|n|yes|no|on|off|true|false)$", re.IGNORECASE)
 
 _YAML_VALUE = re.compile(r"^(?:[^\s#'\"\[{&*!|>-][^:#]*?:|-)\s*(?P<value>.*?)\s*$")
 
 
-def _yaml_canonical_forms(lines: list[str]) -> list[Problem]:
+def _yaml_canonical_forms(lines: list[str], settings: FormatRules) -> list[Problem]:
     problems = []
     block_indent: int | None = None
     for number, raw in enumerate(lines, start=1):
@@ -396,7 +425,7 @@ def _yaml_canonical_forms(lines: list[str]) -> list[Problem]:
             if _YAML_BLOCK.search(line):
                 block_indent = indent
             continue
-        problem = _canonical_problem(number, value)
+        problem = _canonical_problem(number, value, settings)
         if problem is not None:
             problems.append(problem)
     return problems
@@ -414,8 +443,25 @@ def _written_scalar(stripped: str) -> str | None:
     return value
 
 
-def _canonical_problem(number: int, value: str) -> Problem | None:
-    for pattern, what, suggestion, severity in _CANONICAL:
+def _canonical_problem(number: int, value: str, settings: FormatRules) -> Problem | None:
+    if _BOOLEAN_LIKE.match(value):
+        allowed = settings.boolean_literals
+        if allowed is None or value in allowed:
+            return None
+        listed = "／".join(sorted(allowed))
+        return Problem(
+            number,
+            f"第 {number} 行的值「{value}」：布林只接受 {listed}",
+            f"改寫成 {listed} 之一；若本意是字串，加上引號",
+        )
+    allowed_forms = set()
+    if settings.allow_octal_prefix:
+        allowed_forms.add("octal")
+    if settings.allow_scientific_notation:
+        allowed_forms.add("scientific")
+    for pattern, what, suggestion, severity, switch in _CANONICAL:
+        if switch in allowed_forms:
+            continue
         if pattern.match(value):
             return Problem(number, f"第 {number} 行的值「{value}」：{what}", suggestion, severity)
     return None
