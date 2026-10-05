@@ -1089,6 +1089,23 @@ def test_adding_a_prefix_appends_it_to_the_whitelist(open_page, tmp_path):
     page.wait_for_selector(f"[data-testid='whitelist-root-{prefix}']")
 
 
+def test_adding_a_root_that_is_already_whitelisted_is_refused_before_the_confirmation(
+    open_page, browse_root
+):
+    # 複驗回饋：已存在的路徑原本先跳確認框、按確認才被告知已存在。顯示確認框前先比對目前的
+    # 白名單，直接說已存在、沒有加入；後端送出時的重複檢查仍保留。
+    page = _open_whitelist_as_developer(open_page())
+    page.wait_for_selector(f"[data-testid='whitelist-root-{browse_root}']")
+
+    page.fill("[data-testid='whitelist-add-input']", str(browse_root))
+    page.get_by_role("button", name="加入白名單").click()
+
+    page.wait_for_selector("[data-testid='whitelist-error']", state="visible")
+    assert "已經在白名單" in page.inner_text("[data-testid='whitelist-error']")
+    assert page.query_selector("[data-testid='confirm-dialog'][open]") is None
+    assert page.locator("[data-testid^='whitelist-root-']").count() == 1
+
+
 def test_cancelling_the_add_confirmation_leaves_the_whitelist_unchanged(open_page, tmp_path):
     prefix = tmp_path / "not_added"
     prefix.mkdir()

@@ -2601,6 +2601,22 @@ function renderBrowseRejection(detail, attempted) {
 // ——白名單維護頁，與瀏覽被拒時的「加入白名單」。後者原本一按就生效（人工驗證 U13）。
 // 明確寫出即將開放的路徑：加入的是整個目錄（含子目錄），不只是剛才想看的那個檔案。
 async function confirmAddRoot(prefix, showError) {
+  // 顯示確認框前先比對目前的白名單：已經在裡面的直接說、不問「要開放嗎」——問了再答已存在，
+  // 等於白按一次（複驗回饋）。只比對得出字面或後端解析過的路徑；符號連結等後端送出時仍會擋。
+  const wanted = prefix.replace(/\/+$/, "") || prefix;
+  try {
+    const listed = await fetch(`${API_BASE}/api/allowed-roots`);
+    if (listed.ok) {
+      const roots = (await listed.json()).roots || [];
+      const same = roots.find((root) => [root.prefix, root.resolved].includes(wanted));
+      if (same) {
+        showError(`「${same.prefix}」已經在白名單裡，這次沒有加入；既有的項目不用更動。`);
+        return false;
+      }
+    }
+  } catch (_error) {
+    // 查不到目前的白名單就略過這一步：後端送出時仍會擋重複。
+  }
   let payload;
   try {
     const response = await fetch(`${API_BASE}/api/candidate-count?prefix=${encodeURIComponent(prefix)}`);

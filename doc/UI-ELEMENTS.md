@@ -289,7 +289,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 新增前綴輸入 | `data-testid="whitelist-add-input"` | 要加入白名單的絕對路徑（與 W7 的 `whitelist-prefix-input` 不同元素） |
 | 預覽 | `data-testid="whitelist-preview-button"` | 對輸入的前綴 `GET /api/candidate-count`；不每字打就數（避免每字遞迴走訪主機目錄，§7.9／#206） |
 | 候選數預覽 | `data-testid="whitelist-preview"` | 「此路徑下有 N 個可納管檔」；觸上限顯示「N+」（`capped`）；前綴不合法（`..`／不存在／非目錄）顯示原樣錯誤訊息；空時隱藏；**輸入一改或按加入時清掉**，不留著舊路徑的數字 |
-| 加入白名單 | `data-testid="whitelist-add"` | 先數候選檔、經 W6 確認框（寫明即將開放的目錄含子目錄、底下有幾個可納管檔）；確認才 `POST /api/allowed-roots`（prefix 取自輸入），成功後重載清單、清空輸入；取消什麼都不變、輸入還在 |
+| 加入白名單 | `data-testid="whitelist-add"` | 先比對目前的白名單——已經在裡面的直接在 `whitelist-error` 說已存在、不開確認框；再數候選檔、經 W6 確認框（寫明即將開放的目錄含子目錄、底下有幾個可納管檔）；確認才 `POST /api/allowed-roots`（prefix 取自輸入），成功後重載清單、清空輸入；取消什麼都不變、輸入還在 |
 | 新增錯誤 | `data-testid="whitelist-error"` | 新增失敗原樣顯示（`..`／symlink 逃逸 422、指向到不了的目錄、重複前綴 409）；空時隱藏 |
 | 根清單 | `data-testid="whitelist-roots"` | 目前允許的根（`GET /api/allowed-roots` 的 `roots[]`）；空時顯示「白名單目前是空的」 |
 | 根項目 | `data-testid="whitelist-root-<原樣前綴>"` | 顯示原樣 prefix、resolved（realpath）、`由 <added_by> 於 <added_at>`（誰／何時，AC2） |
