@@ -256,3 +256,20 @@ def test_raw_cannot_be_edited_by_path():
     # raw 不解析、沒有結構——沒有「哪個值」可改。
     with pytest.raises(UnsupportedFormat):
         set_value(parse("anything", "raw"), "a", 1)
+
+
+def test_replacing_a_double_list_keeps_new_integer_looking_elements_as_doubles():
+    # #46：清單整個替換時，原本是 double 的清單，新元素寫成 1 也要寫出 1.0（與單一欄位同一條規則）。
+    parsed = parse("gains: [0.5, 1.5]\n", "yaml")
+
+    set_value(parsed, "gains", [0.5, 1])
+
+    assert dump(parsed) == "gains: [0.5, 1.0]\n"
+
+
+def test_replacing_an_integer_list_leaves_integers_alone():
+    parsed = parse("ids: [1, 2]\n", "yaml")
+
+    set_value(parsed, "ids", [2, 1, 3])
+
+    assert dump(parsed) == "ids: [2, 1, 3]\n"

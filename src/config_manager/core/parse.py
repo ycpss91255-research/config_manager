@@ -20,7 +20,7 @@ from __future__ import annotations
 import io
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -30,6 +30,7 @@ from tomlkit import TOMLDocument
 from tomlkit.exceptions import TOMLKitError
 from tomlkit.items import Item
 from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedSeq
 from ruamel.yaml.error import YAMLError
 
 from config_manager.core.errors import SyntaxParse, UnknownPath, UnsupportedFormat
@@ -271,7 +272,7 @@ def set_value(parsed: Parsed, path: str, value: object) -> None:
         case "toml":
             _assign(parsed.document, segments, value, path, _toml_item)
         case _:
-            _assign(parsed.document, segments, value, path, lambda new, _old: new)
+            _assign(parsed.document, segments, value, path, _yaml_item)
 
 
 def _segments(path: str) -> list[str | int]:
@@ -324,6 +325,28 @@ def _keep_double(value: object, old: object) -> object:
     """
     if isinstance(old, float) and isinstance(value, int) and not isinstance(value, bool):
         return float(value)
+    # 整個清單替換（#46）：原本是 double 清單的，新元素寫成整數樣子也要帶小數點——與單一欄位
+    # 同一條規則，清單裡新增的那一項才不會變成 ROS 讀不了的 int。
+    if (
+        isinstance(value, list)
+        and isinstance(old, Sequence)
+        and not isinstance(old, (str, bytes))
+        and any(isinstance(item, float) for item in old)
+    ):
+        return [
+            float(item) if isinstance(item, int) and not isinstance(item, bool) else item
+            for item in value
+        ]
+    return value
+
+
+def _yaml_item(value: object, old: object) -> object:
+    """yaml 的新值。整個清單替換時（#46）沿用舊清單的寫法：原本寫成一行的 `[a, b]` 換了元素仍是
+    一行，不會變成一行一項——改的是元素，不是版面。"""
+    if isinstance(value, list) and isinstance(old, CommentedSeq) and old.fa.flow_style():
+        kept = CommentedSeq(value)
+        kept.fa.set_flow_style()
+        return kept
     return value
 
 
