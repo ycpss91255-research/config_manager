@@ -33,3 +33,11 @@ class ServePortInvalid(Exception):
 
 class SessionTimeoutInvalid(Exception):
     """`CM_SESSION_TIMEOUT` 不是正數（秒）（#33）。寫錯的值不能靜默當成不逾時。"""
+
+
+class ModeInvalid(Exception):
+    """`CM_MODE` 不是 development 或 deployment（#47）。
+
+    未設定時走部署模式（較嚴的那一種，不變式 4）；但**設了卻寫錯**不能靜默當成任何一種——
+    那會讓一台以為自己在開發模式的現場機器少掉閒置逾時。
+    """
