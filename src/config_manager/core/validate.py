@@ -17,8 +17,8 @@ configobj 遇重複直接拋錯、只帶第二次出現的行；json.loads 更�
 只按 `\n` 切行（不用 str.splitlines()），行號才與解析器和編輯器一致（#257）。
 
 第 2 層（schema，#39）在 `core/schema_check`：`check` 收到 `schema` 才跑，問題與第 1 層的
-併在同一張清單。第 3 層（跨欄位規則）是 #41；`rules` 參數先收下但不用，讓 T3 的簽章一次定好。
-核心層不做 I/O。
+併在同一張清單。第 3 層（跨欄位規則，#41）在 `core/rules`：`check` 收到 `rules` 才跑，回的是
+警告（可填理由略過，#42）。核心層不做 I/O。
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from collections.abc import Mapping
 from config_manager.core.errors import SyntaxParse
 from config_manager.core.parse import parse
 from config_manager.core.problem import ERROR, WARNING, Problem
+from config_manager.core.rules import Rules, check_rules
 from config_manager.core.schema_check import check_schema
 
 __all__ = ["ERROR", "WARNING", "Problem", "check"]
@@ -37,11 +38,11 @@ __all__ = ["ERROR", "WARNING", "Problem", "check"]
 def check(
     text: str,
     fmt: str,
-    rules: object | None = None,  # 第 3 層（#41）才用；T3 簽章先定好
+    rules: Rules | None = None,  # 第 3 層（#41）：給了就依它檢查，回的是警告
     schema: Mapping[str, object] | None = None,  # 第 2 層（#39）：給了就依它檢查
 ) -> list[Problem]:
-    """第 1 層驗證，給了 `schema` 再加第 2 層。回傳依行號排序的問題清單，空清單＝通過。"""
-    del rules
+    """第 1 層驗證，給了 `schema` 再加第 2 層、給了 `rules` 再加第 3 層。回傳依行號排序的問題
+    清單，空清單＝通過。第 3 層的問題是警告（`severity` 為 warning、帶 `rule`），不是硬擋。"""
     if fmt == "raw":
         return []
 
@@ -66,6 +67,8 @@ def check(
         # 解析得過才有值可以驗；第 1 層的其他問題（尾隨空白、正規形式）不影響第 2 層照跑，
         # 兩層的問題一次列完，不必修一輪才看得到下一輪。
         problems += check_schema(text, fmt, schema)
+    if rules is not None:
+        problems += check_rules(text, fmt, rules)
     return sorted(problems, key=lambda p: (p.line or 0, p.message))
 
 
