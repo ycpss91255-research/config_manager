@@ -21,10 +21,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from config_manager.api.attributes import register_attributes
+from config_manager.api.checks import checks_for
 from config_manager.api.drafts import register_drafts
 from config_manager.api.drift import register_drift
 from config_manager.api.history import register_history, require_entry, source_unreadable
 from config_manager.api.schema import register_schema, schema_view
+from config_manager.api.shapes import as_problem
 from config_manager.api.search import register_search
 from config_manager.api.lock import LockBox, register_session, require_developer, utc_now
 from config_manager.api.session import DEFAULT_RENEW_TIMEOUT, Identity, SessionLock
@@ -42,7 +44,9 @@ from config_manager.core.errors import (
 )
 from config_manager.core.inference import Ambiguity, find_ambiguous, infer_types
 from config_manager.core.models import FileEntry, Permissions
+from config_manager.core.problem import WARNING
 from config_manager.core.parse import Parsed, parse, values
+from config_manager.core.validate import check
 from config_manager.core.state import State
 from config_manager.core.whitelist import decide
 from config_manager.io.allowed_roots import (
@@ -390,7 +394,9 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
     權限回條目自己的、沒寫就回清單檔 defaults（T1 的語意，與進版寫出用的一致）。
     有未進版的草稿時另回 `draft_values`（草稿文字解析後的值樹，#21）：介面以它當「目前值」、
     `values` 當「來源值」並列，重開這份 config 看到的是存過的草稿，不是被丟掉的改動。草稿略過了
-    規則時 `draft_overrides` 是規則代號 → 理由（#42），重開看得到當時填的理由。
+    規則時 `draft_overrides` 是規則代號 → 理由（#42），重開看得到當時填的理由；
+    `draft_warnings` 是這份
+    草稿此刻的警告（#44），介面據此顯示還有哪些規則要填理由。
     另回 `target_values`（target 磁碟現況解析後的值樹，#30）：差異檢視據此把來源與現況以參數為
     單位並排；target 不存在→null；讀不到／不是 UTF-8／解析不了→null 並在 `target_error` 說原因
     （現況壞掉是要呈現的事實、不是 500）。
@@ -419,6 +425,7 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
         "values": None,
         "draft_values": None,
         "draft_overrides": {},
+        "draft_warnings": [],
         "target_values": None,
         "target_error": None,
     }
@@ -437,6 +444,12 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
         if draft is not None:
             detail["draft_values"] = values(parse(draft.text, draft.fmt))
             detail["draft_overrides"] = dict(draft.reasons)
+            # 這份草稿此刻的警告（第 3 層的規則等，#44）：重開面板要看得到還有哪些要填理由。
+            gate = checks_for(repo, entry)
+            found = check(
+                draft.text, draft.fmt, rules=gate.rules, schema=gate.schema, lintrc=gate.lintrc
+            )
+            detail["draft_warnings"] = [as_problem(p) for p in found if p.severity == WARNING]
     except (OSError, UnicodeDecodeError, SyntaxParse, RecursionError) as error:
         # 來源複本讀不到／解析不了：伺服器端資料的問題，非請求端能修——帶檔名與下一步的 500。
         raise source_unreadable(entry, error) from error
