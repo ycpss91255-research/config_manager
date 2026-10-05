@@ -14,9 +14,11 @@ import contextlib
 import datetime
 import gc
 import http.server
+import http.cookiejar
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import threading
@@ -49,8 +51,23 @@ _NOT_FOUND = 404
 _GONE = 410
 
 
+# 這份檔案裡的請求都來自同一個「瀏覽器」：身分綁在後端發的瀏覽器票（cookie）上（#288），沒有
+# cookie 罐的 urlopen 每一發都是「還沒說自己是誰」。要扮第二個瀏覽器的規格自己再開一罐
+# （`_another_browser`）。
+
+
+def _another_browser():
+    """另一個瀏覽器：自己的 cookie 罐，後端會發它自己的票。"""
+    return urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+    )
+
+
+_browser = _another_browser()
+
+
 def _get(api, path):
-    with urllib.request.urlopen(f"{api}{path}", timeout=_TIMEOUT) as response:
+    with _browser.open(f"{api}{path}", timeout=_TIMEOUT) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -61,7 +78,7 @@ def _post(api, path, payload):
         headers={"content-type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+    with _browser.open(request, timeout=_TIMEOUT) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -72,7 +89,7 @@ def _delete(api, path, payload):
         headers={"content-type": "application/json"},
         method="DELETE",
     )
-    with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+    with _browser.open(request, timeout=_TIMEOUT) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -80,6 +97,10 @@ def _detail(error):
     # 422／409 的 body 是 {"detail": "..."}。斷言原因文字，才分得出「白名單外」與
     # 「不是目錄」——只斷言狀態碼的話，任何一種 422 都會讓規格過（資安審查 #185）。
     return json.loads(error.read().decode("utf-8"))["detail"]
+
+
+# CLI 不是瀏覽器，納管的作者要在命令列明寫（#288）。
+_AUTHOR_FLAGS = ("--name", "陳小明", "--email", "ming@example.com")
 
 
 def _cli(*args):
@@ -404,7 +425,7 @@ def test_cli_import_goes_through_the_same_endpoint_as_the_page(api, sources_root
     _set_session(api)
     source = _write_source(sources_root, "cli_import.yaml")
 
-    result = _cli("import", "--api", api, "--source", source, "--format", "yaml")
+    result = _cli("import", "--api", api, "--source", source, "--format", "yaml", *_AUTHOR_FLAGS)
 
     assert result.returncode == 0
     assert "已納管" in result.stdout
@@ -1158,7 +1179,9 @@ def test_cli_import_validation_error_is_readable_not_echoed_input(api, sources_r
     src = _write_source(sources_root, "cli_note.yaml")
     huge = "x" * 20_000
 
-    result = _cli("import", "--api", api, "--source", src, "--format", "yaml", "--note", huge)
+    result = _cli(
+        "import", "--api", api, "--source", src, "--format", "yaml", "--note", huge, *_AUTHOR_FLAGS
+    )
 
     assert result.returncode == 1
     assert "Traceback" not in result.stderr
@@ -1616,7 +1639,7 @@ def test_unmanaging_removes_the_config_from_the_list_and_keeps_the_target_file(a
     entry = _onboard(api, sources_root, "unmanage.yaml", b"count: 1\n")
 
     request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
-    with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+    with _browser.open(request, timeout=_TIMEOUT) as response:
         removed = json.loads(response.read().decode("utf-8"))
 
     assert removed["uid"] == entry["uid"]
@@ -1632,7 +1655,7 @@ def test_unmanaging_records_an_unmanage_change_by_the_session_identity(api, sour
     entry = _onboard(api, sources_root, "unmanage_rec.yaml", b"count: 1\n")
 
     request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
-    with urllib.request.urlopen(request, timeout=_TIMEOUT):
+    with _browser.open(request, timeout=_TIMEOUT):
         pass
 
     latest = subprocess.run(
@@ -1650,7 +1673,7 @@ def test_unmanaging_with_a_pending_draft_is_a_conflict(api, sources_root):
 
     request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
     with pytest.raises(urllib.error.HTTPError) as exc:
-        urllib.request.urlopen(request, timeout=_TIMEOUT)
+        _browser.open(request, timeout=_TIMEOUT)
 
     assert exc.value.code == _CONFLICT
     _clear_drafts(api)
@@ -1661,7 +1684,7 @@ def test_unmanaging_an_unknown_uid_is_not_found(api):
     request = urllib.request.Request(f"{api}/api/configs/zzzzzzz9", method="DELETE")
 
     with pytest.raises(urllib.error.HTTPError) as exc:
-        urllib.request.urlopen(request, timeout=_TIMEOUT)
+        _browser.open(request, timeout=_TIMEOUT)
 
     assert exc.value.code == _NOT_FOUND
 
@@ -1852,7 +1875,7 @@ def test_search_reflects_promoted_changes_and_unmanaged_configs(api, sources_roo
     assert [h["uid"] for h in _search(api, "222", "參數值")["hits"]] == [entry["uid"]]
 
     request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
-    with urllib.request.urlopen(request, timeout=_TIMEOUT):
+    with _browser.open(request, timeout=_TIMEOUT):
         pass
     assert _search(api, "222", "參數值")["hits"] == []
 
@@ -1865,6 +1888,94 @@ def test_search_with_an_unknown_scope_is_unprocessable_not_empty(api):
     assert "config 名稱／目標路徑／參數名稱／參數值／全部" in _detail(exc.value)
 
 
+# ── T9：身分屬於各自的瀏覽器（#288）────────────────────────────────────────────
+# 身分綁在後端發給該瀏覽器的票（cookie）上；另一個瀏覽器（另一罐 cookie）看不到、也沿用不到。
+
+
+def _request_as(opener, api, path, payload=None, method="POST"):
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        f"{api}{path}", data=data, headers={"content-type": "application/json"}, method=method
+    )
+    with opener.open(request, timeout=_TIMEOUT) as response:
+        return json.loads(response.read().decode("utf-8")), response.headers
+
+
+def test_an_identity_belongs_to_the_browser_that_entered_it(api):
+    _set_session(api)  # 這一罐：陳小明
+    other = _another_browser()
+
+    mine, _ = _request_as(_browser, api, "/api/session", method="GET")
+    theirs, _ = _request_as(other, api, "/api/session", method="GET")
+
+    assert mine["name"] == "陳小明"
+    assert theirs is None  # 另一個瀏覽器一律從「還沒說自己是誰」開始
+
+
+def test_a_browser_without_an_identity_cannot_act_in_someone_elses_name(api, sources_root):
+    entry = _onboard(api, sources_root, "other_browser.yaml", b"count: 1\n")
+    other = _another_browser()
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _request_as(other, api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
+
+    assert exc.value.code == _CONFLICT
+    assert "尚未設定身分" in _detail(exc.value)
+
+
+def test_each_change_is_authored_by_the_browser_that_sent_it(api, sources_root):
+    # 兩個瀏覽器各自納管一份：紀錄上的作者各是自己，不是「最後一個輸入身分的人」。
+    _set_session(api)
+    other = _another_browser()
+    _request_as(other, api, "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
+    mine = _write_source(sources_root, "authored_by_me.yaml")
+    theirs = _write_source(sources_root, "authored_by_them.yaml")
+
+    mine_entry = _post(api, "/api/configs", {"source_path": mine, "format": "yaml"})
+    theirs_entry, _ = _request_as(
+        other, api, "/api/configs", {"source_path": theirs, "format": "yaml"}
+    )
+
+    assert _history(api, mine_entry["uid"], "import")[0]["author"] == "陳小明 <ming@example.com>"
+    assert _history(api, theirs_entry["uid"], "import")[0]["author"] == "林巡檢 <lin@example.com>"
+
+
+def test_the_ticket_is_a_session_cookie_the_page_cannot_read(api):
+    # HttpOnly：頁面的 JS 讀不到票；沒有 Max-Age／Expires：關閉瀏覽器即失效（記住裝置另外做，
+    # 不靠它）。
+    fresh = _another_browser()
+
+    _, headers = _request_as(
+        fresh, api, "/api/session", {"name": "王小美", "email": "mei@example.com"}
+    )
+
+    cookie = headers["set-cookie"]
+    assert cookie.startswith("cm_browser=")
+    assert "HttpOnly" in cookie and "SameSite=lax" in cookie
+    assert "Max-Age" not in cookie and "Expires" not in cookie
+
+
+def test_a_malformed_ticket_is_replaced_not_trusted(api):
+    # cookie 裡的任意內容不會變成後端字典的鍵：形狀不合就當沒帶、重新發一張。
+    request = urllib.request.Request(
+        f"{api}/api/session",
+        data=json.dumps({"name": "王小美", "email": "mei@example.com"}).encode("utf-8"),
+        headers={"content-type": "application/json", "cookie": "cm_browser=../../etc/passwd"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+        issued = response.headers["set-cookie"]
+
+    ticket = issued.split(";")[0].removeprefix("cm_browser=")
+    assert re.fullmatch(r"[A-Za-z0-9_-]{16,64}", ticket), ticket  # api/browser 收票的形狀
+    # 身分記在新發的票上：拿它再問，得到的是剛宣告的人。
+    follow_up = urllib.request.Request(
+        f"{api}/api/session", headers={"cookie": issued.split(";")[0]}
+    )
+    with urllib.request.urlopen(follow_up, timeout=_TIMEOUT) as response:
+        assert json.loads(response.read())["name"] == "王小美"
+
+
 # ── T9／T13：編輯階段（POST /api/session/lock…，#33）───────────────────────────
 
 
@@ -1873,7 +1984,7 @@ def _lock(api, method="POST", path="/api/session/lock", payload=None):
     request = urllib.request.Request(
         f"{api}{path}", data=data, headers={"content-type": "application/json"}, method=method
     )
-    with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+    with _browser.open(request, timeout=_TIMEOUT) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -2008,7 +2119,7 @@ def test_the_page_can_release_its_session_with_a_plain_text_beacon(api):
         method="POST",
     )
 
-    with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+    with _browser.open(request, timeout=_TIMEOUT) as response:
         released = json.loads(response.read().decode("utf-8"))
 
     assert released == {"released": True}
@@ -2633,7 +2744,7 @@ def test_the_removal_confirmation_is_worded_for_a_person_not_for_the_api(api, so
         headers={"content-type": "application/json"}, method="DELETE",
     )
     with pytest.raises(urllib.error.HTTPError) as missing:
-        urllib.request.urlopen(request, timeout=_TIMEOUT)
+        _browser.open(request, timeout=_TIMEOUT)
     assert missing.value.code == _NOT_FOUND
 
     stored = _get(api, "/api/allowed-roots")["roots"][0]["prefix"]
@@ -2643,7 +2754,7 @@ def test_the_removal_confirmation_is_worded_for_a_person_not_for_the_api(api, so
         headers={"content-type": "application/json"}, method="DELETE",
     )
     with pytest.raises(urllib.error.HTTPError) as exc:
-        urllib.request.urlopen(request, timeout=_TIMEOUT)
+        _browser.open(request, timeout=_TIMEOUT)
 
     detail = json.loads(exc.value.read())["detail"]
     assert detail["kind"] == "confirm_required"
