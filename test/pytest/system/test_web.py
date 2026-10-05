@@ -1788,6 +1788,109 @@ def test_the_type_selector_is_hidden_while_read_only(open_page, repo):
     assert second.query_selector(f"{_row('timeout')} [data-testid='type-clear']") is None
 
 
+# ── W3／W4 第 3 層規則的警告與略過理由（#44／#45）────────────────────────────
+# 警告與硬擋在視覺上要分得開：硬擋阻止送出；警告允許帶理由通過，理由出現在變更紀錄。
+
+_RULE_WARNINGS = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='rule-warnings']"
+_LO_BELOW_HI = (
+    '[[rules]]\nid = "lo-below-hi"\nleft = "lo"\nop = "<"\nright = "hi"\n'
+    'message = "最小不能超過最大"\n'
+)
+
+
+def _listing_with_rules(repo, content: str, rules: str) -> dict:
+    targets = _listing_many(repo, {"p": content})
+    (repo / ".rules").mkdir(exist_ok=True)
+    (repo / ".rules" / f"{_PARAM_UID}.toml").write_text(rules, encoding="utf-8")
+    return targets
+
+
+def test_breaking_a_rule_shows_a_warning_distinct_from_errors_and_asks_for_a_reason(
+    open_page, repo
+):
+    # AC（#44）：警告不是紅色的硬擋——有自己的區塊、那一列標成警告；儲存停在那裡等理由。
+    _listing_with_rules(repo, "lo: 1\nhi: 5\n", _LO_BELOW_HI)
+    page = _open_panel(open_page())
+    page.fill(_param_value("lo"), "9")
+
+    _save(page)
+
+    page.wait_for_selector(_RULE_WARNINGS, state="visible")
+    said = page.inner_text(_RULE_WARNINGS)
+    assert "lo-below-hi" in said and "最小不能超過最大" in said and "理由" in said
+    assert page.get_attribute(_row("lo"), "data-warning") == "true"
+    assert page.get_attribute(_row("lo"), "data-valid") == "true"  # 不是錯誤
+    assert page.is_hidden(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save-error']")
+    assert not page.is_visible(_draft_dot(_PARAM_UID))  # 還沒存下
+
+
+def test_a_reason_lets_the_draft_save_and_shows_in_the_history(open_page, repo):
+    # AC（#45）：填了理由才能送出；理由出現在變更紀錄中。
+    targets = _listing_with_rules(repo, "lo: 1\nhi: 5\n", _LO_BELOW_HI)
+    page = _open_panel(open_page())
+    page.fill(_param_value("lo"), "9")
+    _save(page)
+    page.wait_for_selector(_RULE_WARNINGS, state="visible")
+
+    page.click("[data-testid='save-with-overrides']")  # 沒填理由
+    page.wait_for_selector("[data-testid='rule-warnings'] [data-testid='override-error']")
+    assert not page.is_visible(_draft_dot(_PARAM_UID))
+
+    page.fill("[data-testid='override-reason-lo-below-hi']", "現場測試低速模式")
+    page.click("[data-testid='save-with-overrides']")
+
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    assert "已略過" in page.inner_text(_RULE_WARNINGS)
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector("[data-testid='promote-done']", state="visible")
+    assert targets["p"].read_text(encoding="utf-8") == "lo: 9\nhi: 5\n"
+
+    page.click(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-history']")
+    page.wait_for_selector("[data-testid='history-overrides']")
+    assert "lo-below-hi" in page.inner_text("[data-testid='history-overrides']")
+    assert "現場測試低速模式" in page.inner_text("[data-testid='history-overrides']")
+
+
+def test_a_hard_error_stays_red_even_with_a_reason(open_page, repo):
+    # override 後的修改仍走完整驗證：理由只略過警告，第 1 層的硬擋照樣是紅色錯誤。
+    _listing_with_rules(repo, "lo: 1\nhi: 5\nflag: true\n", _LO_BELOW_HI)
+    page = _open_panel(open_page())
+    page.fill(_param_value("lo"), "9")
+    _save(page)
+    page.wait_for_selector(_RULE_WARNINGS, state="visible")
+    page.fill("[data-testid='override-reason-lo-below-hi']", "理由")
+    page.fill(_param_value("hi"), "")  # 空值是硬擋
+
+    page.click("[data-testid='save-with-overrides']")
+
+    page.wait_for_selector(f"{_row('hi')}[data-valid='false']")
+    assert not page.is_visible(_draft_dot(_PARAM_UID))
+
+
+def test_a_draft_adopted_with_a_rule_warning_asks_for_the_reason_when_reopened(
+    open_page, repo, api
+):
+    # 「先納入、待修正」載入的草稿違反規則：重開面板就看到警告與理由欄，不必改值也能填理由儲存。
+    _listing_with_rules(repo, "lo: 1\nhi: 5\n", _LO_BELOW_HI)
+    _commit_listing(repo)
+    (repo / "targets" / "p.yaml").write_text("lo: 9\nhi: 5\n", encoding="utf-8")
+    _api_json(api, "POST", "/api/session", {"name": _NAME, "email": _EMAIL, "role": "user"})
+    _api_json(api, "POST", f"/api/configs/{_PARAM_UID}/resolve", {"action": "adopt_draft"})
+    page = open_page()
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(_RULE_WARNINGS, state="visible")
+
+    page.fill("[data-testid='override-reason-lo-below-hi']", "現場就是這樣設的")
+    page.click("[data-testid='save-with-overrides']")
+
+    page.wait_for_function(
+        "document.querySelector(\"[data-testid='rule-warnings']\").textContent.includes('已略過')"
+    )
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector("[data-testid='promote-done']", state="visible")
+
+
 # ── W3 儲存草稿（#21）────────────────────────────────────────────────────────
 # 三段式：編輯 → 儲存（草稿）→ 進版。「儲存」只存為草稿：不記錄、不寫到目標（§7.4.3、T18）。
 

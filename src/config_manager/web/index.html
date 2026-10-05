@@ -23,6 +23,7 @@
     --panel: #f7f7f7;
     --in-sync: #2e7d32;
     --drift: #c62828;
+    --warn: #b26a00;
     --missing: #9e9e9e;
   }
   @media (prefers-color-scheme: dark) {
@@ -34,6 +35,7 @@
       --panel: #1d2023;
       --in-sync: #66bb6a;
       --drift: #ef5350;
+      --warn: #f0b429;
       --missing: #8a8f94;
     }
   }
@@ -242,6 +244,17 @@
     color: var(--muted);
   }
   .notice.error { border-color: var(--drift); color: var(--drift); }
+  /* 警告（第 3 層的規則）：與紅色的硬擋分得開——琥珀色；允許帶理由通過（§6.2、#44） */
+  .notice.warning { border-color: var(--warn); color: var(--warn); }
+  .notice.warning ul { margin: 8px 0 0; padding-left: 18px; }
+  .notice.warning li { display: block; padding: 4px 0; border: 0; font-size: 13px; }
+  .notice.warning label { display: flex; gap: 8px; align-items: center; margin-top: 4px; color: var(--fg); font-size: 13px; }
+  .notice.warning input { flex: 1; font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  .notice.warning .override-error { color: var(--drift); margin: 6px 0 0; }
+  .notice.warning .override-done { color: var(--in-sync); margin: 6px 0 0; }
+  .param-row[data-warning="true"] { background: color-mix(in srgb, var(--warn) 10%, transparent); }
+  .param-row[data-warning="true"] .param-validation { color: var(--warn); }
+  .history-overrides { grid-column: 1 / -1; margin: 2px 0 0; padding-left: 18px; font-size: 12px; color: var(--warn); }
   .notice.error pre {
     margin: 8px 0 0;
     white-space: pre-wrap;
@@ -1137,11 +1150,17 @@ function panelNode(detail) {
   });
   discardButton.hidden = !detail.draft_values;
   discardButton.addEventListener("click", () => discardDrafts(detail.uid, detail.name));
-  saveButton.addEventListener("click", () => {
-    saveDraft(detail, entries, {
-      save: saveButton, error: saveError, draft: draftMark, discard: discardButton,
-    });
-  });
+  // 第 3 層規則的警告區（#44／#45）：違反規則時列出每一條與理由欄，填了理由才存得成。
+  const warningsSlot = element("div", { class: "rule-warnings-slot" });
+  const ui = {
+    save: saveButton, error: saveError, draft: draftMark, discard: discardButton,
+    warnings: warningsSlot, entries,
+  };
+  saveButton.addEventListener("click", () => saveDraft(detail, entries, ui));
+  if ((detail.draft_warnings || []).some((problem) => problem.rule)) {
+    // 重開一份有草稿的 config（例如「先納入、待修正」載入的）：還有哪些規則要填理由，一開就看到。
+    renderRuleWarnings(detail, ui, detail.draft_warnings, detail.draft_overrides || {}, false);
+  }
   // 歷史（W4，#25）：這份 config 的變更紀錄，右側工作區切成歷史檢視、左側樹不動。
   const historyButton = element("button", {
     type: "button", "data-testid": "panel-history", text: "歷史",
@@ -1168,7 +1187,7 @@ function panelNode(detail) {
     firstHit = firstHit || hitRow;
   }
   if (firstHit) queueMicrotask(() => firstHit.scrollIntoView({ block: "center" }));
-  panel.append(list, saveError, element("div", { class: "panel-actions" }, [
+  panel.append(list, warningsSlot, saveError, element("div", { class: "panel-actions" }, [
     ...actions,
     element("span", { class: "hint", text: "「儲存」只是存為草稿——不記錄、不寫到目標；工具列的「進版」才會。" }),
     discardButton,
@@ -1326,6 +1345,62 @@ async function draftSchema(detail, ui) {
 // 後端回的問題若指名了欄位（第 2 層帶 `path`，#39），就標在那一列：標紅、寫出原因與修正建議
 // （§7.5.1）。介面沒擋到、後端擋下的（例如 schema 的 pattern）靠這個讓人知道是哪一列。那一列再被
 // 改動時由 refreshParamRow 重算，標記自然清掉。
+// 規則的警告區（#44／#45）：每一條規則一列——原因、建議、略過的理由欄。`missing`＝剛送出時有
+// 規則沒填理由；`saved`＝已帶理由存成。警告的列標成琥珀色，與紅色的硬擋分得開。
+function renderRuleWarnings(detail, ui, problems, reasons, missing, saved = false) {
+  const byRule = new Map();
+  for (const problem of problems) {
+    if (problem.rule && !byRule.has(problem.rule)) byRule.set(problem.rule, problem);
+  }
+  markWarnings(ui.entries, problems);
+  const inputs = {};
+  const items = [...byRule.values()].map((problem) => {
+    inputs[problem.rule] = element("input", {
+      type: "text", "data-testid": `override-reason-${problem.rule}`,
+      value: reasons[problem.rule] || "", placeholder: "為什麼要這樣設（會寫進變更紀錄）",
+    });
+    return element("li", { "data-testid": `rule-warning-${problem.rule}` }, [
+      element("span", { text: `規則 ${problem.rule}：${problemText(problem)}` }),
+      element("label", {}, [element("span", { text: "略過的理由" }), inputs[problem.rule]]),
+    ]);
+  });
+  const submit = element("button", {
+    type: "button", class: "editing-only", "data-testid": "save-with-overrides", text: "填理由後儲存",
+  });
+  submit.addEventListener("click", () => {
+    const given = Object.fromEntries(Object.entries(inputs).map(([rule, input]) => [rule, input.value]));
+    saveDraft(detail, ui.entries, ui, given);
+  });
+  const children = [
+    element("strong", {
+      text: saved
+        ? `已儲存，已略過 ${byRule.size} 條規則的警告；理由會在進版時寫進變更紀錄。`
+        : `有 ${byRule.size} 條規則的警告。警告不擋存檔，但要填寫略過的理由才能儲存；理由會寫進變更紀錄。`,
+    }),
+    element("ul", {}, items),
+  ];
+  if (missing) {
+    children.push(element("p", {
+      class: "override-error", "data-testid": "override-error",
+      text: "還有規則沒填理由。下一步：對每一條填寫理由後再按「填理由後儲存」，或把值改回規則接受的範圍。",
+    }));
+  }
+  if (saved) children.push(element("p", { class: "override-done", text: "改了理由再按一次「填理由後儲存」即可更新。" }));
+  children.push(submit);
+  ui.warnings.replaceChildren(
+    element("div", { class: "notice warning", "data-testid": "rule-warnings" }, children),
+  );
+}
+
+function markWarnings(entries, problems) {
+  for (const problem of problems || []) {
+    const entry = problem.path && entries.find((candidate) => candidate.row.path === problem.path);
+    if (!entry || entry.node.dataset.valid === "false") continue;  // 硬擋的紅色優先
+    entry.node.dataset.warning = "true";
+    entry.node.querySelector("[data-testid='param-validation']").textContent = `警告：${problem.message}`;
+  }
+}
+
 function markServerProblems(entries, problems) {
   for (const problem of problems || []) {
     const entry = problem.path && entries.find((candidate) => candidate.row.path === problem.path);
@@ -1341,7 +1416,9 @@ function markedInvalid(entries) {
 }
 
 // 送出的是相對**來源**的全部改動（後端以來源複本為底重建草稿文字），不是相對上一份草稿的差量。
-async function saveDraft(detail, entries, ui) {
+// `overrides`：規則代號 → 略過的理由（#42／#45）。違反第 3 層規則而沒帶理由時後端回 409
+// override_required——不是錯誤，是還缺使用者的一個決定：列出警告與理由欄，填了再送一次。
+async function saveDraft(detail, entries, ui, overrides = {}) {
   const edits = {};
   for (const { row, control } of entries) {
     const current = currentValue(control, row);
@@ -1353,9 +1430,14 @@ async function saveDraft(detail, entries, ui) {
     const response = await fetch(`${API_BASE}/api/drafts`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ uid: detail.uid, edits }),
+      body: JSON.stringify({ uid: detail.uid, edits, overrides }),
     });
     const payload = await response.json();
+    if (response.status === 409 && payload.detail && payload.detail.kind === "override_required") {
+      renderRuleWarnings(detail, ui, payload.detail.problems, overrides, Object.keys(overrides).length > 0);
+      ui.save.disabled = false;
+      return;
+    }
     if (!response.ok) {
       renderSaveError(ui.error, payload.detail);
       markServerProblems(entries, payload.detail && payload.detail.problems);
@@ -1367,6 +1449,9 @@ async function saveDraft(detail, entries, ui) {
     for (const entry of entries) entry.refresh();  // 畫面＝已存的草稿：不再 dirty、儲存回到停用
     ui.draft.hidden = !draftUids.has(detail.uid);
     ui.discard.hidden = !draftUids.has(detail.uid);
+    const skipped = (payload.warnings || []).filter((problem) => problem.rule);
+    if (skipped.length) renderRuleWarnings(detail, ui, skipped, overrides, false, true);
+    else if (ui.warnings) ui.warnings.replaceChildren();
   } catch (error) {
     renderSaveError(ui.error, `送不出去：${error && error.message ? error.message : error}`);
     ui.save.disabled = false;
@@ -1646,6 +1731,7 @@ function refreshParamRow(node, control, row, source, validation) {
   const problem = localProblem(control, row);
   validation.textContent = problem;
   node.dataset.valid = problem ? "false" : "true";
+  delete node.dataset.warning;  // 規則的警告是後端標的；值一改就重算，標記由下一次儲存重標
   const current = displayValue(currentValue(control, row), row.type);
   const changed = current !== displayValue(row.value, row.type);  // 相對來源（「來源值」欄標色）
   node.dataset.changed = String(changed);
@@ -1769,6 +1855,11 @@ function historyEntry(change, detail, view) {
       element("time", { "data-testid": "history-time", datetime: change.at, text: formatTime(change.at) }),
     ]),
   ]);
+  if ((change.overrides || []).length) {
+    // 這一筆略過了哪些規則、理由是什麼（#42／#45）：理由出現在變更紀錄中，不只在 commit 內文。
+    node.appendChild(element("ul", { class: "history-overrides", "data-testid": "history-overrides" },
+      change.overrides.map((item) => element("li", { text: `略過規則 ${item.rule}：${item.reason}` }))));
+  }
   node.addEventListener("click", () => selectChange(view, detail, change, node));
   return node;
 }

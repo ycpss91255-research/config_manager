@@ -82,6 +82,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 草稿指示 | `data-testid="panel-draft-<uid>"` | 該區塊有草稿時出現（`GET /api/configs/{uid}` 回 `draft_values`） |
 | 儲存按鈕 | 文字「儲存」（`data-testid="panel-save"`） | **存為草稿**（`POST /api/drafts`，送相對來源的全部改動），不記錄也不寫出。驗證未過或沒有改動時停用 |
 | 儲存錯誤 | `data-testid="panel-save-error"` | 驗證沒過的 422（第 1 層；有 schema 時含第 2 層，#39）逐條列行號／原因／建議——給不出行號的不印行號，訊息已指名欄位；其他錯誤原樣顯示 |
+| 規則警告區 | `data-testid="rule-warnings"`（`.notice.warning`） | 儲存時後端回 409 `override_required`、或重開一份草稿有規則警告的 config 時出現。每條規則一列（`rule-warning-<規則>`）：原因、建議、略過的理由欄 `override-reason-<規則>`；「填理由後儲存」`save-with-overrides` 帶理由重送 `POST /api/drafts`；沒填的規則→`override-error`、草稿不存；帶理由存成後標頭改為「已儲存，已略過 N 條」、理由欄可再改（#44／#45） |
 | 捨棄變更（單一） | `data-testid="panel-discard"` | 文字「捨棄變更」；**只在該份有草稿時出現**；經 W6 確認後 `DELETE /api/drafts/{uid}`，面板重讀為來源內容（#22） |
 | 退版按鈕 | 文字「退版」 | 針對單一 config，與草稿無關 |
 | 歷史按鈕 | 文字「歷史」（`data-testid="panel-history"`） | 右側工作區切成該 config 的歷史檢視（W4），左側樹不動（#25） |
@@ -123,6 +124,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 欄位說明 | 列內 `data-testid="param-description"` | schema 有 `description` 時出現在參數名旁（ⓘ），`title` 是說明全文（#40） |
 | 來源值 | 列內 `data-testid="param-source-value"` | 與目前值不同時標色 |
 | 驗證狀態 | 列內 `data-testid="param-validation"` | 錯誤時含原因文字（列的 `data-valid="false"`、整列標紅）。輸入當下由前端算（整數、範圍、倍數、不在列舉裡）；**後端擋下的問題若指名欄位，也標在那一列並附修正建議**，那一列再改動即清掉（#40） |
+| 警告列 | 列的 `data-warning="true"` | 違反第 3 層規則的那一列（琥珀色，與紅色的 `data-valid="false"` 分得開；硬擋優先）。值一改即清除，由下一次儲存重標（#44） |
 | 儲存 | 文字「儲存」 | 存為草稿。**驗證未過時為停用** |
 
 ### 值控制項依型別
@@ -160,6 +162,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 列表 | `data-testid="history-list"` | 最新在前；空時顯示 `history-empty`、讀不到顯示 `history-error` |
 | 變更列 | `data-testid="history-entry-<sha>"` | 顯示**行為描述**（內部類型→介面顯示對照表 §7.6.1），不顯示內部代號；退回舊版本附「退回到版本 <sha7>」；點選→`aria-selected="true"` 並載入差異 |
 | 作者／時間 | 列內 `data-testid="history-author"`／`"history-time"` | 姓名（email 在 title）；`<time datetime=ISO>` 顯示本地時間 |
+| 略過的規則 | 列內 `data-testid="history-overrides"` | 這一筆略過了哪些規則與理由（`略過規則 <規則>：<理由>`），來自 `GET …/history` 的 `overrides`；沒有就不出現（#45） |
 | 差異區 | `data-testid="history-diff"` | 以參數為單位：`history-diff-summary`（N 個參數不同）＋每參數一列 |
 | 差異列 | `data-testid="diff-row-<參數路徑>"` | 帶 `data-change`（`same`／`changed`／`added`／`removed`）；列內 `diff-from`（那一版）→`diff-to`（目前）。顏色語言與 W3／W5 一致（改動＝偏離紅） |
 | 退回此版本 | 文字「退回此版本」（`data-testid="history-revert"`） | 選定一版、看過差異後才出現在差異區下方；與目前相同（0 個參數不同）時停用。點擊→W6 確認對話框（標題「退回此版本？」、後果：幾個參數會改變、產生新紀錄並寫出、歷史不改寫；**退版會動到 schema 時另寫明**——回到那一版當時的 schema，或那一版還沒有 schema 所以拿掉，#39）→ `POST /api/configs/{uid}/revert`；成功→重開歷史並顯示 `history-notice`（已退回到版本 X）、左側樹重掃；被擋（有草稿 409 等）→ `history-revert-error` 原樣顯示原因與下一步（#27） |
