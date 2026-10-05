@@ -15,12 +15,13 @@ from datetime import datetime, timedelta, timezone
 from subprocess import CalledProcessError
 from typing import cast
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from config_manager.api.attributes import register_attributes
+from config_manager.api.browser import Browsers
 from config_manager.api.checks import checks_for
 from config_manager.api.drafts import register_drafts
 from config_manager.api.drift import register_drift
@@ -174,6 +175,8 @@ def create_app(
         allow_origins=list(allowed_origins),
         allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["content-type"],
+        # 身分綁在瀏覽器票（cookie）上（#288）：跨來源的 fetch 要帶 cookie，後端得明說放行。
+        allow_credentials=True,
     )
 
     # 清單檔／白名單設定檔在執行期讀不了（被改壞／刪除、掛載漂移）時，PreflightError 家族
@@ -182,11 +185,11 @@ def create_app(
     # 清單檔指到的 schema 讀不出來：同樣是伺服器側資料的問題，同一種結構化 500（#39）。
     app.add_exception_handler(SchemaUnreadable, _preflight_error)
 
-    # 目前的身分。一次只有一個編輯階段（ADR-00000014），所以放在 app 上而不是
-    # 一個模組層的全域——後者會讓同一個行程裡起兩個 app 互相看見對方的身分。
-    held: dict[str, Identity] = {}
-    # 目前編輯階段裡的草稿（#18 的 D1：掛在 app 上、單一階段；階段生命週期是 #33）。與 held
-    # 分開放，是為了不把 Identity 型別的 dict 混進另一種值；同樣是 app 級、重新整理頁面不丟。
+    # 各瀏覽器宣告的身分（#288：身分屬於各自的瀏覽器，不是一份全域）。放在 app 上而不是一個模組層
+    # 的全域——後者會讓同一個行程裡起兩個 app 互相看見對方的身分。
+    browsers = Browsers()
+    # 目前編輯階段裡的草稿（#18 的 D1：掛在 app 上、單一階段；階段生命週期是 #33）。app 級、
+    # 重新整理頁面不丟。
     stage_box: dict[str, Stage] = {"stage": Stage()}
     # 單一編輯階段（#33、ADR-00000014）：session_timeout 是續期逾時，沒給就用預設（兩種模式都有，
     # 異常中斷的分頁才收得回來）；時鐘可注入（T13）。
@@ -204,9 +207,11 @@ def create_app(
         return [_as_row(entry, state) for entry, state in scan(repo)]
 
     @app.post("/api/configs")
-    def onboard_config(payload: ConfigInput) -> dict[str, object]:
+    def onboard_config(
+        payload: ConfigInput, identity: Identity | None = Depends(browsers.current)
+    ) -> dict[str, object]:
         """納管新檔案（設計文件 §3.5.3）。"""
-        return _onboard_config(repo, root_prefixes(repo), held, payload)
+        return _onboard_config(repo, root_prefixes(repo), identity, payload)
 
     @app.get("/api/configs/{uid}")
     def config_detail(uid: str) -> dict[str, object]:
@@ -220,13 +225,15 @@ def create_app(
         return _browse_filesystem(root_prefixes(repo), path)
 
     @app.get("/api/candidate-count")
-    def candidate_count(prefix: str) -> dict[str, object]:
+    def candidate_count(
+        prefix: str, identity: Identity | None = Depends(browsers.current)
+    ) -> dict[str, object]:
         """數一個前綴底下有幾個可納管檔（§7.9 新增流程的即時預覽，#206）。
 
         僅開發者，且**走白名單外**——新增流程要數的前綴依定義還不在白名單內。這是系統唯一
         主動走訪白名單外目錄的讀取路徑，只數 metadata、不讀內容。
         """
-        return _candidate_count(held, prefix)
+        return _candidate_count(identity, prefix)
 
     @app.post("/api/inspect")
     def inspect_source(payload: InspectInput) -> dict[str, object]:
@@ -234,15 +241,15 @@ def create_app(
         return _inspect(root_prefixes(repo), payload)
 
     _register_mode(app, mode)
-    _register_allowed_roots(app, repo, held)
-    register_drafts(app, repo, held, stage_box)
-    register_history(app, repo, held, stage_box)
-    _register_unmanage(app, repo, held, stage_box)
-    register_drift(app, repo, held, stage_box)
+    _register_allowed_roots(app, repo, browsers)
+    register_drafts(app, repo, browsers, stage_box)
+    register_history(app, repo, browsers, stage_box)
+    _register_unmanage(app, repo, browsers, stage_box)
+    register_drift(app, repo, browsers, stage_box)
     register_search(app, repo)
-    register_schema(app, repo, held)
-    register_attributes(app, repo, held)
-    register_session(app, held, stage_box, lock_box)
+    register_schema(app, repo, browsers)
+    register_attributes(app, repo, browsers)
+    register_session(app, browsers, stage_box, lock_box)
     return app
 
 
@@ -265,23 +272,24 @@ def _register_mode(app: FastAPI, mode: str) -> None:
 
 
 def _register_unmanage(
-    app: FastAPI, repo: str, held: dict[str, Identity], stage_box: dict[str, Stage]
+    app: FastAPI, repo: str, browsers: Browsers, stage_box: dict[str, Stage]
 ) -> None:
     """解除納管的端點（§3.5.3 表上既有，#28）。抽出來的理由同 `_register_allowed_roots`（C901）。"""
 
     @app.delete("/api/configs/{uid}")
-    def unmanage_config(uid: str) -> dict[str, object]:
+    def unmanage_config(
+        uid: str, identity: Identity | None = Depends(browsers.current)
+    ) -> dict[str, object]:
         """解除納管：從清單檔移除、來源複本自 repo 拿掉、記一筆 unmanage；**不刪 target**
         （§5.5）。"""
-        return _unmanage_config(repo, held, stage_box, uid)
+        return _unmanage_config(repo, identity, stage_box, uid)
 
 
 def _unmanage_config(
-    repo: str, held: dict[str, Identity], stage_box: dict[str, Stage], uid: str
+    repo: str, identity: Identity | None, stage_box: dict[str, Stage], uid: str
 ) -> dict[str, object]:
     """解除納管的邏輯（#28）：需要身分（紀錄要作者）、這份有未進版草稿先擋（預設落向安全），
     再交給 `io/unmanage`。回被解除的條目，介面據此從樹上拿掉它。"""
-    identity = held.get("identity")
     if identity is None:
         raise HTTPException(
             status_code=409,
@@ -305,11 +313,11 @@ def _unmanage_config(
     return _as_entry(removed)
 
 
-def _register_allowed_roots(app: FastAPI, repo: str, held: dict[str, Identity]) -> None:
+def _register_allowed_roots(app: FastAPI, repo: str, browsers: Browsers) -> None:
     """把白名單維護的三個端點（檢視／新增／移除，§7.9）掛上 app。
 
     抽出來讓 `create_app` 不因這一組路由而過度複雜（C901）；三者同屬白名單維護、放一起讀。
-    以 `held` 閉包共用身分，與 `create_app` 裡其餘路由一致。
+    身分由 `browsers.current` 取（這個瀏覽器宣告的那個），與 `create_app` 裡其餘路由一致。
     """
 
     @app.get("/api/allowed-roots")
@@ -323,14 +331,18 @@ def _register_allowed_roots(app: FastAPI, repo: str, held: dict[str, Identity]) 
         return _allowed_roots_view(repo)
 
     @app.post("/api/allowed-roots")
-    def add_root(payload: AllowedRootInput) -> dict[str, object]:
+    def add_root(
+        payload: AllowedRootInput, identity: Identity | None = Depends(browsers.current)
+    ) -> dict[str, object]:
         """把一個路徑前綴加進白名單（§7.9, #202）。僅開發者可用；記下是誰、何時加的。"""
-        return _add_allowed_root(repo, held, payload)
+        return _add_allowed_root(repo, identity, payload)
 
     @app.delete("/api/allowed-roots")
-    def remove_root(payload: RemoveRootInput) -> dict[str, object]:
+    def remove_root(
+        payload: RemoveRootInput, identity: Identity | None = Depends(browsers.current)
+    ) -> dict[str, object]:
         """把一個路徑前綴從白名單移除（§7.9, #15）。僅開發者可用；確認在前，回更新後的清單。"""
-        return _remove_allowed_root(repo, held, payload)
+        return _remove_allowed_root(repo, identity, payload)
 
 
 def _reject_nul(value: str, field: str) -> None:
@@ -345,12 +357,11 @@ def _reject_nul(value: str, field: str) -> None:
 
 
 def _onboard_config(
-    repo: str, roots: tuple[str, ...], held: dict[str, Identity], payload: ConfigInput
+    repo: str, roots: tuple[str, ...], identity: Identity | None, payload: ConfigInput
 ) -> dict[str, object]:
     """納管新檔案的邏輯。收確認畫面已確認過的請求（來源路徑、format、歧義確認），呼叫
     `io/onboard`。偵測（format／型別／歧義）不在這裡——那在確認畫面就做完了（#12 的 D4、
     #195）。抽成模組層函式，端點的 closure 只負責接線，`create_app` 才不會愈長愈複雜。"""
-    identity = held.get("identity")
     if identity is None:
         # 納管會產生一筆變更紀錄，需要作者。沒有身分就無從署名——先設身分。
         raise HTTPException(
@@ -498,11 +509,11 @@ def _target_values(entry: FileEntry) -> tuple[object, str | None]:
 
 
 def _add_allowed_root(
-    repo: str, held: dict[str, Identity], payload: AllowedRootInput
+    repo: str, identity: Identity | None, payload: AllowedRootInput
 ) -> dict[str, object]:
     """把 `payload.prefix` 加進白名單。僅開發者可用；`added_by` 取自 session、`added_at` 由
     伺服器蓋時間（抽成模組層函式，同 `_onboard_config`：端點的 closure 只負責接線）。"""
-    identity = require_permission(held, MAINTAIN_ROOTS)
+    identity = require_permission(identity, MAINTAIN_ROOTS)
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
@@ -523,11 +534,11 @@ def _add_allowed_root(
 
 
 def _remove_allowed_root(
-    repo: str, held: dict[str, Identity], payload: RemoveRootInput
+    repo: str, identity: Identity | None, payload: RemoveRootInput
 ) -> dict[str, object]:
     """把 `payload.prefix` 從白名單移除。僅開發者可用；確認在前（未帶 confirmed 先回受影響
     清單＋409，不靜默移除，AC3），以檔案原樣 prefix 定位、定位不到 → 404。"""
-    identity = require_permission(held, MAINTAIN_ROOTS)
+    identity = require_permission(identity, MAINTAIN_ROOTS)
 
     stored = {root.prefix for root in read_allowed_roots(repo).roots}
     if payload.prefix not in stored:
@@ -633,14 +644,14 @@ def _candidate_kind(error: CandidateError) -> str:
     return "candidate_error"
 
 
-def _candidate_count(held: dict[str, Identity], prefix: str) -> dict[str, object]:
+def _candidate_count(identity: Identity | None, prefix: str) -> dict[str, object]:
     """候選數預覽的邏輯（僅開發者，#206）：數一個白名單外前綴底下有幾個可納管檔（不讀內容）。
 
     走白名單外目錄，套與白名單維護一致的開發者門檻（`require_developer`）。io 的具名例外
     （前綴 escape／不是目錄／讀不出來）映成 422＋結構化 detail，比照 `_browse_filesystem`——
     輸入的路徑值不合法，前端依 `kind` 分流、`message` 是原樣可行動訊息（含下一步）。
     """
-    require_permission(held, MAINTAIN_ROOTS)
+    require_permission(identity, MAINTAIN_ROOTS)
     try:
         result = count_candidates(prefix)
     except CandidateError as error:

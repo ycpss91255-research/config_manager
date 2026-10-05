@@ -16,11 +16,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 
+from config_manager.api.browser import Browsers
 from config_manager.api.errors import InvalidAuthor
-
 from config_manager.api.session import (
     EditingSession,
     Identity,
@@ -59,7 +59,7 @@ class SessionInput(BaseModel):
 
 @dataclass
 class LockBox:
-    """階段鎖與「上次回收清掉幾份草稿」的容器；掛在 app 上（同 held／stage_box）。"""
+    """階段鎖與「上次回收清掉幾份草稿」的容器；掛在 app 上（同 browsers／stage_box）。"""
 
     lock: SessionLock
     clock: Clock
@@ -67,44 +67,52 @@ class LockBox:
 
 
 def register_session(
-    app: FastAPI, held: dict[str, Identity], stage_box: dict[str, Stage], box: LockBox
+    app: FastAPI, browsers: Browsers, stage_box: dict[str, Stage], box: LockBox
 ) -> None:
     """把身分（POST／GET /api/session）與編輯階段的端點掛上 app。身分與階段是兩件事（T13），但
-    設身分要看階段有沒有被別人持有，所以接線放在一起。抽出來的理由同 `register_history`（C901）。"""
+    設身分要看階段有沒有被別人持有，所以接線放在一起。抽出來的理由同 `register_history`（C901）。
+
+    身分屬於各自的瀏覽器（#288）：`browsers` 以瀏覽器票為鍵記身分，端點以
+    `Depends(browsers.current)` 取「這個請求的瀏覽器」宣告過的身分。"""
 
     @app.post("/api/session")
-    def set_session(payload: SessionInput) -> dict[str, str]:
+    def set_session(
+        payload: SessionInput, request: Request, response: Response
+    ) -> dict[str, str]:
         """設定使用者身分（設計文件 §3.5.3）。
 
-        **這不是登入。** 沒有密碼、不驗證、角色是自我宣告（ADR-00000020）。
+        **這不是登入。** 沒有密碼、不驗證、角色是自我宣告（ADR-00000020）。身分記在這個瀏覧器的
+        票上；第一次來會發票（回應的 Set-Cookie）。
         """
-        return _set_identity(box, held, stage_box, payload)
+        identity = _checked_identity(box, stage_box, payload)
+        browsers.declare(request, response, identity)
+        return _as_session(identity)
 
     @app.get("/api/session")
-    def get_session() -> dict[str, str] | None:
-        """目前的身分，尚未輸入則回 null。"""
-        identity = held.get("identity")
+    def get_session(
+        identity: Identity | None = Depends(browsers.current),
+    ) -> dict[str, str] | None:
+        """這個瀏覽器目前的身分，尚未輸入則回 null。"""
         return _as_session(identity) if identity else None
 
-    register_lock(app, held, stage_box, box)
+    register_lock(app, browsers, stage_box, box)
 
 
 def register_lock(
-    app: FastAPI, held: dict[str, Identity], stage_box: dict[str, Stage], box: LockBox
+    app: FastAPI, browsers: Browsers, stage_box: dict[str, Stage], box: LockBox
 ) -> None:
     """把編輯階段的四支端點掛上 app。"""
 
     @app.get("/api/session/lock")
     def lock_status() -> dict[str, object]:
         """誰在編輯（無人→`held: false`）。不回識別碼。"""
-        sweep(held, stage_box, box)
+        sweep(stage_box, box)
         return _status(box)
 
     @app.post("/api/session/lock")
-    def acquire_lock() -> dict[str, object]:
-        """以目前身分取得編輯階段；已被占用→409（持有者姓名、email、開始時間）。"""
-        sweep(held, stage_box, box)
-        identity = held.get("identity")
+    def acquire_lock(identity: Identity | None = Depends(browsers.current)) -> dict[str, object]:
+        """以這個瀏覽器的身分取得編輯階段；已被占用→409（持有者姓名、email、開始時間）。"""
+        sweep(stage_box, box)
         if identity is None:
             raise HTTPException(
                 status_code=409,
@@ -124,7 +132,7 @@ def register_lock(
         的識別碼（`token`）：一般續期不變，`resume`（重新整理後接續）會換新的。"""
         # 先在 API 層 sweep：逾時的階段要在這裡清草稿、清身分並記下數量——SessionLock 自己的
         # sweep 只會把階段丟掉，之後就沒人知道有東西該清。
-        sweep(held, stage_box, box)
+        sweep(stage_box, box)
         try:
             keep = box.lock.resume if payload.resume else box.lock.renew
             session = keep(payload.token, box.clock())
@@ -152,25 +160,24 @@ def register_lock(
         return {"released": box.lock.release(payload.token)}
 
 
-def sweep(held: dict[str, Identity], stage_box: dict[str, Stage], box: LockBox) -> None:
-    """回收逾時的階段：草稿一併清除並記下數量（下次取得時回報）。"""
-    del held  # 身分不隨階段清掉（見 release）；參數留著讓呼叫端的接線一致
+def sweep(stage_box: dict[str, Stage], box: LockBox) -> None:
+    """回收逾時的階段：草稿一併清除並記下數量（下次取得時回報）。身分不隨階段清掉（見 release）。"""
     for _expired in box.lock.sweep(box.clock()):
         box.cleared_drafts += len(stage_box["stage"].drafts)
         stage_box["stage"] = discard(stage_box["stage"])
 
 
-def _set_identity(
-    lock_box: LockBox, held: dict[str, Identity], stage_box: dict[str, Stage], payload: SessionInput
-) -> dict[str, str]:
-    """設定身分的邏輯。422：值不合法（訊息已是可行動的樣子，原樣傳）；409：別人正持有編輯階段
-    ——換身分會把持有者接下來的變更紀錄掛到別人頭上（#33），帶持有者資訊讓前端轉唯讀；同一個人
-    再設一次不擋。"""
+def _checked_identity(
+    lock_box: LockBox, stage_box: dict[str, Stage], payload: SessionInput
+) -> Identity:
+    """設定身分的檢查。422：值不合法（訊息已是可行動的樣子，原樣傳）；409：別人正持有編輯階段
+    ——後來者此時進不了編輯，帶持有者資訊讓前端以唯讀進清單並說明是誰（#33、#288 的條件 7）；
+    持有者本人再設一次不擋（他的另一個分頁、或重新選角色）。"""
     try:
         identity = author(payload.name, payload.email, payload.role)
     except InvalidAuthor as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    occupied = held_by_other(lock_box, identity, held, stage_box)
+    occupied = held_by_other(lock_box, identity, stage_box)
     if occupied is not None:
         raise HTTPException(
             status_code=409,
@@ -180,8 +187,7 @@ def _set_identity(
                 "started_at": occupied.started_at.isoformat(),
             },
         )
-    held["identity"] = identity
-    return _as_session(identity)
+    return identity
 
 
 def _as_session(identity: Identity) -> dict[str, str]:
@@ -195,11 +201,11 @@ def _as_session(identity: Identity) -> dict[str, str]:
 
 
 def held_by_other(
-    box: LockBox, identity: Identity, held: dict[str, Identity], stage_box: dict[str, Stage]
+    box: LockBox, identity: Identity, stage_box: dict[str, Stage]
 ) -> SessionHeld | None:
     """別人正持有編輯階段時，換身分會把持有者的變更紀錄掛到別人頭上——擋在設定身分這一步。
     同一個人（姓名＋email 相同）再設一次不擋（第二個分頁：之後取得階段會被 409、轉唯讀）。"""
-    sweep(held, stage_box, box)
+    sweep(stage_box, box)
     current = box.lock.current
     if current is None:
         return None
@@ -208,15 +214,14 @@ def held_by_other(
     return SessionHeld(current.holder, current.started_at)
 
 
-def require_permission(held: dict[str, Identity], action: str) -> Identity:
-    """取得目前 session 身分並要求它被允許做 `action`，回傳該身分，否則以具名 HTTP 錯誤擋下。
+def require_permission(identity: Identity | None, action: str) -> Identity:
+    """要求這個瀏覽器的身分被允許做 `action`，回傳該身分，否則以具名 HTTP 錯誤擋下。
 
     `action` 是 `core/roles` 的動作代號（同時就是介面上的那句話）：誰能做什麼只問那一張表
     （#47），這裡不寫 `role == "developer"`。白名單維護（含候選數預覽，#206）、型別指定（含產生
     schema 骨架，#38）、屬性編輯都走這道門檻：**沒有身分 → 409**（先設身分）、**不被允許 → 403**。
     開發／部署模式不進來：角色與環境正交，部署環境下開發者仍能維護白名單。
     """
-    identity = held.get("identity")
     if identity is None:
         raise HTTPException(
             status_code=409,

@@ -14,10 +14,11 @@ from __future__ import annotations
 
 from subprocess import CalledProcessError
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from config_manager.api.lock import require_permission
+from config_manager.api.browser import Browsers
 from config_manager.api.session import Identity
 from config_manager.core.attributes import Attributes
 from config_manager.core.errors import (
@@ -44,24 +45,26 @@ class AttributesInput(BaseModel):
     description: str | None = None
 
 
-def register_attributes(app: FastAPI, repo: str, held: dict[str, Identity]) -> None:
+def register_attributes(app: FastAPI, repo: str, browsers: Browsers) -> None:
     """把修改屬性的端點掛上 app。"""
 
     @app.post("/api/configs/{uid}/attributes")
-    def update_config_attributes(uid: str, payload: AttributesInput) -> dict[str, object]:
+    def update_config_attributes(
+        uid: str, payload: AttributesInput, identity: Identity | None = Depends(browsers.current)
+    ) -> dict[str, object]:
         """修改名稱、群組、主機、說明：寫回清單檔、記一筆 meta。回更新後的那幾項。"""
-        return _update(repo, held, uid, payload)
+        return _update(repo, identity, uid, payload)
 
 
 def _update(
-    repo: str, held: dict[str, Identity], uid: str, payload: AttributesInput
+    repo: str, identity: Identity | None, uid: str, payload: AttributesInput
 ) -> dict[str, object]:
     """修改屬性的邏輯：開發者門檻（沒身分 409、角色不足 403）之後交給 `io/attributes`。
 
     值不合法 422（detail 帶 `field`，介面據此標在那個輸入框）；什麼都沒改 409；定位不到 404；
     改完會讓清單檔不合規（與既有條目衝突）409；寫入／commit／回滾失敗是伺服器側的錯，500。
     """
-    identity = require_permission(held, EDIT_ATTRIBUTES)
+    identity = require_permission(identity, EDIT_ATTRIBUTES)
     wanted = Attributes(
         name=payload.name,
         hostname=payload.hostname,

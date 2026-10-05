@@ -20,6 +20,11 @@ select = ["E", "F", "W", "C90", "PL", "B", "BLE", "RET", "SIM", "UP"]
 # C901 循環複雜度 <= 10、PLR0915 函式長度 <= 50 個 statement、
 # PLR0913 參數數量 <= 5、E722 與 BLE001 不得使用 bare／blind except。
 
+# FastAPI 的依賴注入就是寫在參數預設值裡的 `Depends(...)`（#288 的 `Depends(browsers.current)`）：
+# 它在 import 時只建一個標記物件、不執行任何東西，B008 擔心的「每次呼叫才算一次的預設值」不成立。
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends"]
+
 [tool.ruff.lint.mccabe]
 max-complexity = 10
 
