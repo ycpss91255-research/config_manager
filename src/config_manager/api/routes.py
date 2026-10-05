@@ -28,7 +28,7 @@ from config_manager.api.history import register_history, require_entry, source_u
 from config_manager.api.schema import register_schema, schema_view
 from config_manager.api.shapes import as_problem
 from config_manager.api.search import register_search
-from config_manager.api.lock import LockBox, register_session, require_developer, utc_now
+from config_manager.api.lock import LockBox, register_session, require_permission, utc_now
 from config_manager.api.session import DEFAULT_RENEW_TIMEOUT, Identity, SessionLock
 from config_manager.core.drafts import Stage
 from config_manager.core.errors import (
@@ -45,6 +45,7 @@ from config_manager.core.errors import (
 from config_manager.core.inference import Ambiguity, find_ambiguous, infer_types
 from config_manager.core.models import FileEntry, Permissions
 from config_manager.core.problem import WARNING
+from config_manager.core.roles import DEPLOYMENT, MAINTAIN_ROOTS, MODES
 from config_manager.core.parse import Parsed, parse, values
 from config_manager.core.validate import check
 from config_manager.core.state import State
@@ -153,13 +154,19 @@ def create_app(
     allowed_origins: Iterable[str] = DEFAULT_ORIGINS,
     session_timeout: timedelta | None = None,
     clock: Callable[[], datetime] = utc_now,
+    mode: str = DEPLOYMENT,
 ) -> FastAPI:
     """建立服務於 repo 這份 config-repo 的 app。
 
     納管與檔案瀏覽的白名單（系統可以碰主機上的哪些目錄，§7.9 的安全邊界）是
     `<repo>/allowed-roots.toml`（#202），**每次請求從檔讀**——從介面新增的根要立即生效、
     不必重啟。entrypoint 首次啟動從 `CM_ALLOWED_ROOTS` 種下那份檔（`io/allowed_roots`）。
+
+    `mode` 是開發／部署模式（#47）：由起服務的那一層判定（`api/cli` 讀 `CM_MODE`）、在這裡定住、
+    以 `GET /api/mode` 回報給前端。沒有改它的端點——前端改不了，所以前端的改動繞不過它。
+    不認得的值在這裡再擋一次：`create_app` 也會被測試直接呼叫，不只從 `serve_plan` 來。
     """
+    mode = _checked_mode(mode)
     app = FastAPI(title="config_manager", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
     app.add_middleware(
@@ -226,6 +233,7 @@ def create_app(
         """偵測候選檔案（§3.5.3 追加，#195）。供納管確認畫面顯示偵測結果。"""
         return _inspect(root_prefixes(repo), payload)
 
+    _register_mode(app, mode)
     _register_allowed_roots(app, repo, held)
     register_drafts(app, repo, held, stage_box)
     register_history(app, repo, held, stage_box)
@@ -236,6 +244,24 @@ def create_app(
     register_attributes(app, repo, held)
     register_session(app, held, stage_box, lock_box)
     return app
+
+
+def _checked_mode(mode: str) -> str:
+    """不認得的模式在建 app 之前就擋：`create_app` 也會被測試直接呼叫，不只從 `serve_plan` 來。"""
+    if mode not in MODES:
+        raise ValueError(
+            f"mode 必須是 {' 或 '.join(MODES)}，現在是 {mode!r}。下一步：改用 core/roles 的常數"
+        )
+    return mode
+
+
+def _register_mode(app: FastAPI, mode: str) -> None:
+    """`GET /api/mode`（#47）：目前是開發還是部署模式。只有讀——模式由後端判定，前端只能問，
+    不能改。"""
+
+    @app.get("/api/mode")
+    def current_mode() -> dict[str, str]:
+        return {"mode": mode}
 
 
 def _register_unmanage(
@@ -476,7 +502,7 @@ def _add_allowed_root(
 ) -> dict[str, object]:
     """把 `payload.prefix` 加進白名單。僅開發者可用；`added_by` 取自 session、`added_at` 由
     伺服器蓋時間（抽成模組層函式，同 `_onboard_config`：端點的 closure 只負責接線）。"""
-    identity = require_developer(held, "維護白名單")
+    identity = require_permission(held, MAINTAIN_ROOTS)
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
@@ -501,7 +527,7 @@ def _remove_allowed_root(
 ) -> dict[str, object]:
     """把 `payload.prefix` 從白名單移除。僅開發者可用；確認在前（未帶 confirmed 先回受影響
     清單＋409，不靜默移除，AC3），以檔案原樣 prefix 定位、定位不到 → 404。"""
-    identity = require_developer(held, "維護白名單")
+    identity = require_permission(held, MAINTAIN_ROOTS)
 
     stored = {root.prefix for root in read_allowed_roots(repo).roots}
     if payload.prefix not in stored:
@@ -614,7 +640,7 @@ def _candidate_count(held: dict[str, Identity], prefix: str) -> dict[str, object
     （前綴 escape／不是目錄／讀不出來）映成 422＋結構化 detail，比照 `_browse_filesystem`——
     輸入的路徑值不合法，前端依 `kind` 分流、`message` 是原樣可行動訊息（含下一步）。
     """
-    require_developer(held, "查詢候選檔案數")
+    require_permission(held, MAINTAIN_ROOTS)
     try:
         result = count_candidates(prefix)
     except CandidateError as error:

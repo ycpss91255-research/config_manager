@@ -359,3 +359,10 @@ class LintrcInvalid(Exception):
 
     訊息指名哪裡錯與下一步。這份檔管的是硬擋的第 1 層——寫錯了不能當成預設值放行（不變式 4）。
     """
+
+
+class UnknownAction(Exception):
+    """權限對照表（`core/roles.permits`）收到不認得的動作代號（#47）。
+
+    這是呼叫端寫錯代號，不是「這個角色不被允許」——兩者該做的處置相反，所以不回 False。
+    """

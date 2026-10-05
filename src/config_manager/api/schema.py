@@ -19,11 +19,12 @@ from subprocess import CalledProcessError
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from config_manager.api.lock import require_developer
+from config_manager.api.lock import require_permission
 from config_manager.api.session import Identity
 from config_manager.core.errors import ManualTypeError, SyntaxParse, TypeNotSpecified
 from config_manager.core.manual_types import manual_types
 from config_manager.core.models import FileEntry
+from config_manager.core.roles import SPECIFY_TYPES
 from config_manager.core.schema_check import field_hints
 from config_manager.io.errors import (
     ChangeError,
@@ -66,7 +67,7 @@ def _draft(repo: str, held: dict[str, Identity], uid: str) -> dict[str, object]:
     定位不到 404、已有 schema 409（不覆寫）、沒有結構可推導 422（raw／頂層不是物件）；來源
     複本讀不到或解析不了、寫入／commit／回滾失敗是伺服器側的錯，帶訊息的 500。
     """
-    identity = require_developer(held, "產生 schema")
+    identity = require_permission(held, SPECIFY_TYPES)
     try:
         entry = draft_skeleton(repo, uid, identity.git_author)
     except SchemaNotFound as error:
@@ -132,8 +133,7 @@ def _specify(
     送錯的請求 422（不認得的型別、不能指定的路徑、與現值不相容、raw）；要清除的欄位沒有指定
     409；定位不到 404；寫入／commit／回滾失敗是伺服器側的錯，帶訊息的 500。
     """
-    action = "指定參數型別" if payload.type is not None else "清除型別指定"
-    identity = require_developer(held, action)
+    identity = require_permission(held, SPECIFY_TYPES)
     try:
         entry = specify_type(repo, uid, payload.path, payload.type, identity.git_author)
     except SchemaNotFound as error:
