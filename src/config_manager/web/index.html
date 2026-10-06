@@ -1778,6 +1778,11 @@ function paramRows(detail) {
 // 一個欄位與它底下的全部列。清單（#46）：最外層的清單是「擁有者」，有一份可以改的工作副本
 // （`working`，從目前值複製）；它底下的每一列都掛在它身上（`owner`＋相對位置 `segments`），
 // 改值寫回工作副本，增刪調序改工作副本後整段重畫。清單裡再有清單，一併由最外層那份擁有。
+//
+// 擁有者另有一份**來源的影子**（`shadow`，從來源值複製）：增刪調序時與工作副本做同樣的搬動，
+// 但**改值從不碰它**。底下每一列的「來源值」都從影子的同一個位置取——所以來源值跟著元素走
+// （alpha 上移後它的來源值仍是 alpha 原本的值），新增的元素在影子裡是空位（顯示「—」）。
+// 重畫只讀影子，不讀工作副本：還沒儲存的編輯值不會變成來源值（人工驗證 U36）。
 function collectRows(detail, out, scope) {
   const { value, draft, path, typePath, depth, name, owner, segments } = scope;
   const type = detail.types[typePath] || "unknown";
@@ -1791,6 +1796,7 @@ function collectRows(detail, out, scope) {
   if (type === "list" && !owner) {
     row.working = clone(baseline) || [];
     row.listBaseline = clone(baseline) || [];
+    row.shadow = Array.isArray(value) ? clone(value) : [];
   }
   out.push(row);
   const under = (childValue, childDraft, childPath, childTypePath, childName, segment) => collectRows(
@@ -1810,16 +1816,11 @@ function collectRows(detail, out, scope) {
         `${path}.${escapeKey(key)}`, `${typePath}.${escapeKey(key)}`, key, key);
     }
   } else if (type === "list") {
-    const source = Array.isArray(value) ? value : [];
-    if (row.working) {
-      // 擁有者：元素從工作副本畫（目前值）；來源值欄顯示來源裡同一個位置的元素——調序後兩邊
-      // 對不上是正常的，變動與否看擁有者那一列的標記。
-      row.working.forEach((child, index) =>
-        under(source[index], child, `${path}[${index}]`, `${typePath}[]`, `[${index}]`, index));
-    } else {
-      (baseline || []).forEach((child, index) =>
-        under(child, undefined, `${path}[${index}]`, `${typePath}[]`, `[${index}]`, index));
-    }
+    // 元素從目前值畫（擁有者＝工作副本）；來源值從影子的同一個位置取。擁有者底下的清單，`value`
+    // 一路都是從影子傳下來的，所以裡面那層也一樣。
+    const source = row.working ? row.shadow : (Array.isArray(value) ? value : []);
+    (row.working || baseline || []).forEach((child, index) =>
+      under(source[index], child, `${path}[${index}]`, `${typePath}[]`, `[${index}]`, index));
   }
 }
 
@@ -2044,6 +2045,9 @@ function listOps(row, table) {
   const move = (to) => {
     const items = owner.working;
     [items[index], items[to]] = [items[to], items[index]];
+    // 影子跟著搬（先補到一樣長：新增的元素在影子裡是空位）。
+    while (owner.shadow.length < items.length) owner.shadow.push(undefined);
+    [owner.shadow[index], owner.shadow[to]] = [owner.shadow[to], owner.shadow[index]];
     rerenderList(owner, table);
   };
   return element("span", { class: "list-ops" }, [
@@ -2051,6 +2055,7 @@ function listOps(row, table) {
     button("list-down", "↓", "往下移一位", index === last, () => move(index + 1)),
     button("list-remove", "✕", "移除這一項", false, () => {
       owner.working.splice(index, 1);
+      owner.shadow.splice(index, 1);
       rerenderList(owner, table);
     }),
   ]);
@@ -2072,6 +2077,8 @@ function listAdd(owner, table) {
     if (elementType === "dict" || elementType === "list") fresh = lastItem === undefined ? {} : clone(lastItem);
     if (fresh === undefined) fresh = "";
     owner.working.push(fresh);
+    // 影子在同一個位置留空位：新增的元素沒有來源值，就算以最後一項為樣板也一樣。
+    while (owner.shadow.length < owner.working.length) owner.shadow.push(undefined);
     rerenderList(owner, table);
     const added = table.list.querySelector(
       `[data-name='${owner.path}[${owner.working.length - 1}]'] [data-testid='param-value']`,
@@ -2092,9 +2099,8 @@ function rerenderList(owner, table) {
     if (entries[index].row.owner === owner) entries.splice(index, 1);
   }
   const rows = [];
-  const source = Array.isArray(owner.value) ? owner.value : [];
   owner.working.forEach((child, index) => collectRows(detail, rows, {
-    value: source[index], draft: child, path: `${owner.path}[${index}]`,
+    value: owner.shadow[index], draft: child, path: `${owner.path}[${index}]`,
     typePath: `${owner.typePath}[]`, depth: owner.depth + 1, name: `[${index}]`,
     owner, segments: [index],
   }));

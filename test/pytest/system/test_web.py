@@ -2537,6 +2537,101 @@ def test_list_elements_can_be_reordered_edited_added_and_removed_then_saved(open
     )
 
 
+# ── 「來源值」跟著元素走（人工驗證 U36 的回歸）─────────────────────────────────
+# 來源值欄說的是「這個元素在設定庫裡原本的值」。調序、移除、新增之後整段重畫，重畫不能把還沒
+# 儲存的編輯值、也不能把別的元素的值，當成它的來源值。
+
+# 人工驗證用的那份：beta 在前、alpha 在後，各有一個內層的 ports 清單。
+_NESTED_LISTS = (
+    "services:\n"
+    "  - name: beta\n"
+    "    ports:\n"
+    "      - 9001\n"
+    "  - name: alpha\n"
+    "    ports:\n"
+    "      - 8101\n"
+    "      - 8002\n"
+)
+
+
+def _source_of(page, path: str) -> str:
+    return page.inner_text(f"{_row(path)} [data-testid='param-source-value']")
+
+
+def _value_of(page, path: str) -> str:
+    return page.input_value(_param_value(path))
+
+
+def test_moving_an_edited_object_keeps_its_inner_source_values(open_page, repo):
+    # U36 回報的步驟：alpha 第一個 port 8101→8201（不儲存），把 alpha 上移。內層的來源值原本變成
+    # 8201——重畫時把工作副本（含編輯值）當成了來源。
+    _listing_many(repo, {"p": _NESTED_LISTS})
+    page = _open_panel(open_page())
+    page.fill(_param_value("services[1].ports[0]"), "8201")
+    assert _source_of(page, "services[1].ports[0]") == "8101"
+
+    page.click(f"{_row('services[1]')} [data-testid='list-up']")
+
+    assert _value_of(page, "services[0].ports[0]") == "8201"
+    assert _source_of(page, "services[0].ports[0]") == "8101"  # 不是 8201（編輯值）
+    assert _source_of(page, "services[0].ports[1]") == "8002"
+    assert _source_of(page, "services[0].name") == "alpha"
+    assert _source_of(page, "services[1].ports[0]") == "9001"  # beta 的來源值跟著 beta 到第二位
+    assert _source_of(page, "services[1].name") == "beta"
+
+
+def test_moving_an_edited_element_keeps_its_own_source_value(open_page, repo):
+    _listing_many(repo, {"p": _LIST_YAML})
+    page = _open_panel(open_page())
+    page.fill(_param_value("recovery[1]"), "retreat")  # backup → retreat
+
+    page.click(f"{_row('recovery[1]')} [data-testid='list-up']")
+
+    assert (_value_of(page, "recovery[0]"), _source_of(page, "recovery[0]")) == ("retreat", "backup")
+    assert (_value_of(page, "recovery[1]"), _source_of(page, "recovery[1]")) == ("spin", "spin")
+    # 改過的那一項仍標著已改動、沒改的不標——不因換了位置而顛倒。
+    assert page.get_attribute(_row("recovery[0]"), "data-changed") == "true"
+    assert page.get_attribute(_row("recovery[1]"), "data-changed") == "false"
+
+
+def test_removing_an_element_does_not_shift_the_others_source_values(open_page, repo):
+    _listing_many(repo, {"p": _LIST_YAML})
+    page = _open_panel(open_page())
+
+    page.click(f"{_row('recovery[0]')} [data-testid='list-remove']")  # 移除 spin
+
+    assert _list_values(page, "recovery", 2) == ["backup", "wait"]
+    assert [_source_of(page, f"recovery[{index}]") for index in range(2)] == ["backup", "wait"]
+    assert page.get_attribute(_row("recovery[0]"), "data-changed") == "false"
+
+
+def test_a_new_element_has_no_source_value_even_after_moving(open_page, repo):
+    _listing_many(repo, {"p": _LIST_YAML})
+    page = _open_panel(open_page())
+    page.click(f"{_row('recovery')} [data-testid='list-add']")
+    page.fill(_param_value("recovery[3]"), "pause")
+
+    page.click(f"{_row('recovery[3]')} [data-testid='list-up']")
+
+    assert (_value_of(page, "recovery[2]"), _source_of(page, "recovery[2]")) == ("pause", "—")
+    assert (_value_of(page, "recovery[3]"), _source_of(page, "recovery[3]")) == ("wait", "wait")
+
+
+def test_reordering_never_changes_what_the_source_column_says_overall(open_page, repo):
+    # 不管怎麼調序，來源值欄列出的仍是設定庫裡的那幾個值（只是跟著元素換位置）——沒有任何編輯值混進去。
+    _listing_many(repo, {"p": _LIST_YAML})
+    page = _open_panel(open_page())
+    for index, text in enumerate(("x", "y", "z")):
+        page.fill(_param_value(f"recovery[{index}]"), text)
+
+    page.click(f"{_row('recovery[2]')} [data-testid='list-up']")
+    page.click(f"{_row('recovery[1]')} [data-testid='list-up']")
+    page.click(f"{_row('recovery[0]')} [data-testid='list-down']")
+
+    sources = sorted(_source_of(page, f"recovery[{index}]") for index in range(3))
+    assert sources == ["backup", "spin", "wait"]
+
+
 def test_the_first_element_cannot_move_up_and_the_last_cannot_move_down(open_page, repo):
     _listing_many(repo, {"p": _LIST_YAML})
     page = _open_panel(open_page())
