@@ -954,6 +954,61 @@ def test_a_candidate_count_for_a_nonexistent_prefix_is_unprocessable(api, tmp_pa
     assert exc.value.code == _UNPROCESSABLE
 
 
+# ── T9／T17：開發／部署模式（GET /api/mode，#47）────────────────────────────────
+# 模式由後端依 `CM_MODE` 判定、回報給前端；沒有改它的端點。角色（能做什麼）與模式（階段行為）
+# 正交：同一張權限表在兩種模式下給同一個答案。
+
+_METHOD_NOT_ALLOWED = 405
+
+
+def test_the_backend_reports_the_mode_and_defaults_to_deployment(api):
+    # 就地起的服務沒給 mode、映像裡的 entrypoint 沒設 CM_MODE——兩邊都該落在較嚴的部署模式。
+    assert _get(api, "/api/mode") == {"mode": "deployment"}
+
+
+def test_a_development_mode_server_reports_development(api_developing):
+    assert _get(api_developing, "/api/mode") == {"mode": "development"}
+
+
+def test_the_mode_cannot_be_changed_over_http(api):
+    # 前端（或任何 client）改不了模式：沒有寫入端點，POST 是 405 而不是 404——路徑存在、只是不收。
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/mode", {"mode": "development"})
+
+    assert exc.value.code == _METHOD_NOT_ALLOWED
+    assert _get(api, "/api/mode") == {"mode": "deployment"}
+
+
+@pytest.mark.parametrize("server", ["api", "api_developing"])
+def test_a_developer_may_maintain_the_whitelist_in_either_mode(server, request, tmp_path):
+    # 部署環境下仍可能需要開發者調整白名單（#47）：候選數預覽走開發者門檻，兩種模式都放行。
+    base = request.getfixturevalue(server)
+    _set_session(base)  # developer
+    prefix = tmp_path / "either_mode"
+    prefix.mkdir()
+    (prefix / "a.yaml").write_text("x")
+
+    query = urllib.parse.urlencode({"prefix": str(prefix)})
+
+    assert _get(base, f"/api/candidate-count?{query}") == {"count": 1, "capped": False}
+
+
+@pytest.mark.parametrize("server", ["api", "api_developing"])
+def test_a_normal_user_may_not_maintain_the_whitelist_in_either_mode(server, request, tmp_path):
+    # 反過來也一樣：開發模式不會順手放寬角色——一般使用者在兩種模式下都是 403。
+    base = request.getfixturevalue(server)
+    _post(base, "/api/session", {"name": "王小美", "email": "mei@example.com", "role": "user"})
+    prefix = tmp_path / "either_mode_user"
+    prefix.mkdir()
+
+    query = urllib.parse.urlencode({"prefix": str(prefix)})
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(base, f"/api/candidate-count?{query}")
+
+    assert exc.value.code == _FORBIDDEN
+    _set_session(base)
+
+
 # ── #222：onboard／inspect 的例外映射缺口（與 #209 同類）─────────────────────
 
 
@@ -1909,10 +1964,16 @@ def test_an_expired_session_is_swept_and_its_drafts_are_reported_as_cleared(api,
 
 
 def _find_lock_box():
-    """就地起的服務：從物件圖裡撈出 app 的 LockBox（測逾時要動它的時鐘與逾時）。"""
+    """就地起的服務：從物件圖裡撈出 app 的 LockBox（測逾時要動它的時鐘與逾時）。
+
+    撈的是**正持有編輯階段**的那一個：呼叫端在這之前都先 `_lock(api)` 取得了階段。物件圖裡可能
+    還有別的 LockBox（開發模式那個對照服務的，#47；已收掉的 app 不一定立刻被回收），它們沒有
+    人持有階段，所以不會被選到。
+    """
     boxes = [obj for obj in gc.get_objects() if isinstance(obj, LockBox)]
-    assert len(boxes) == 1, f"預期恰好一個 LockBox，找到 {len(boxes)}"
-    return boxes[0]
+    holding = [box for box in boxes if box.lock.current is not None]
+    assert len(holding) == 1, f"預期恰好一個持有中的 LockBox，找到 {len(holding)}／{len(boxes)}"
+    return holding[0]
 
 
 def test_an_abandoned_session_is_released_once_its_renewals_stop(api):

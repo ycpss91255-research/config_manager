@@ -302,6 +302,7 @@
     font-size: 13px;
   }
   .who { color: var(--muted); font-size: 13px; }
+  .who.mode { border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; }
   .scan-status { grid-column: 1 / -1; margin: 0; font-size: 13px; color: var(--muted); }
   .scan-status[data-state="done"] { color: var(--in-sync); }
   .scan-status[data-state="failed"] { color: var(--drift); }
@@ -474,6 +475,9 @@
   <input type="search" data-testid="search-input" placeholder="搜尋" aria-label="搜尋">
   <span class="grow"></span>
   <span class="who" data-testid="current-role"></span>
+  <!-- 開發／部署模式（#47）：後端判定、這裡只顯示。角色決定能做什麼、模式決定階段行為，兩者正交，
+       所以分開兩個徽章。 -->
+  <span class="who mode" data-testid="current-mode"></span>
   <button type="button" class="editing-only" data-testid="open-browse">納管</button>
   <button type="button" class="editing-only" data-testid="open-whitelist" hidden>白名單</button>
   <button type="button" data-testid="rescan">檢查差異</button>
@@ -3374,7 +3378,28 @@ onboardTypesEl.addEventListener("click", (event) => {
 confirmView.querySelector(".onboard-cancel").addEventListener("click", showBrowse);
 
 // 已經輸入過身分就直接進清單（重新整理不必再填一次）。
+// 模式的中文說法（CONTEXT.md「角色與環境」）。後端回的是代號；不認得的代號原樣顯示，不猜。
+const MODE_TEXT = { development: "開發模式", deployment: "部署模式" };
+
+// 問後端現在是哪個模式（#47）。前端沒有決定權，也沒有端點可改——它只能問。問不到時徽章顯示
+// 「模式未知」而不是留白或假設某一種：假設成開發模式會讓之後依模式開關的行為（#48、#288）
+// 在部署機上開錯邊。之後的程式碼從 `document.body.dataset.mode` 讀。
+async function loadMode() {
+  const badge = document.querySelector("[data-testid='current-mode']");
+  try {
+    const response = await fetch(`${API_BASE}/api/mode`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const { mode } = await response.json();
+    document.body.dataset.mode = mode;
+    badge.textContent = MODE_TEXT[mode] || mode;
+  } catch (error) {
+    delete document.body.dataset.mode;
+    badge.textContent = "模式未知";
+  }
+}
+
 (async function start() {
+  await loadMode();
   try {
     const response = await fetch(`${API_BASE}/api/session`);
     const identity = response.ok ? await response.json() : null;

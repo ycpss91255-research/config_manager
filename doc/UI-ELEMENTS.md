@@ -58,6 +58,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 捨棄變更（全域） | `data-testid="discard-all"` | 文字「捨棄變更」；無草稿時停用；經 W6 確認對話框後 `DELETE /api/drafts`（#22） |
 | 進版結果橫幅 | `data-testid="promote-done"` ／ `"promote-error"` | 位於工作區上方、橫跨兩欄；下一次進版／捨棄前清掉 |
 | 退出 | 文字「退出」 | 有未進版草稿時二次確認 |
+| 目前模式 | `data-testid="current-mode"` | 恆常可見於標題列：「開發模式」／「部署模式」，由後端 `GET /api/mode` 回報、前端只顯示不可改；問不到時顯示「模式未知」且 `body` 不帶 `data-mode`。有模式時 `body[data-mode="development|deployment"]`，依模式開關的行為（閒置逾時、記住此裝置）讀它（#47） |
 | 目前角色 | `data-testid="current-role"` | 恆常可見於標題列：`姓名・角色`；唯讀時顯示「唯讀」，**取回編輯階段後改回身分**（重新整理會先釋放再取回） |
 
 ### 左側樹

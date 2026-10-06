@@ -26,7 +26,13 @@ from dataclasses import dataclass
 
 import uvicorn
 
-from config_manager.api.errors import ConfigRepoMissing, ServePortInvalid, SessionTimeoutInvalid
+from config_manager.api.errors import (
+    ConfigRepoMissing,
+    ModeInvalid,
+    ServePortInvalid,
+    SessionTimeoutInvalid,
+)
+from config_manager.core.roles import DEPLOYMENT, MODES
 from config_manager.api.routes import DEFAULT_ORIGINS, create_app
 
 _DEFAULT_HOST = "127.0.0.1"
@@ -63,6 +69,8 @@ class ServePlan:
     allowed_origins: tuple[str, ...]
     # 編輯階段的續期逾時（秒）；None＝用預設值（#33）。部署模式的閒置逾時是 #48。
     session_timeout: float | None = None
+    # 開發／部署模式（#47）：由後端依環境變數判定、回報給前端；前端改不了它。
+    mode: str = DEPLOYMENT
 
 
 def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
@@ -92,6 +100,7 @@ def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
         port=port,
         allowed_origins=_allowed_origins(environ),
         session_timeout=_session_timeout(environ),
+        mode=_mode(environ),
     )
 
 
@@ -112,6 +121,24 @@ def _session_timeout(environ: Mapping[str, str]) -> float | None:
             "下一步：改成如 150（秒），或取消設定改用預設值"
         )
     return seconds
+
+
+def _mode(environ: Mapping[str, str]) -> str:
+    """`CM_MODE`：`development` 或 `deployment`（CONTEXT.md「角色與環境」）。
+
+    **未設定＝部署模式。** 忘了設定的機器比較可能是現場那台，而部署模式是較嚴的那一種（閒置
+    逾時、不記住裝置），預設落向它不會造成損害（不變式 4）。`.setup.conf` 目前只是佔位檔，沒有人
+    讀它，所以判定來源是這個環境變數；compose 以 `CM_MODE` 接線。寫錯的值具名拒絕，不猜。
+    """
+    raw = environ.get("CM_MODE", "").strip()
+    if not raw:
+        return DEPLOYMENT
+    if raw not in MODES:
+        raise ModeInvalid(
+            f"CM_MODE 必須是 {' 或 '.join(MODES)}，現在是 {raw!r}。"
+            "下一步：改成其中一個，或取消設定改用部署模式"
+        )
+    return raw
 
 
 def _allowed_origins(environ: Mapping[str, str]) -> tuple[str, ...]:
@@ -377,7 +404,7 @@ def _unexpected_response(api: str, error: Exception) -> int:
 def _serve(host: str, port: int) -> int:
     try:
         plan = serve_plan(host, port, os.environ)
-    except (ConfigRepoMissing, ServePortInvalid, SessionTimeoutInvalid) as error:
+    except (ConfigRepoMissing, ModeInvalid, ServePortInvalid, SessionTimeoutInvalid) as error:
         print(f"config_manager: {error}", file=sys.stderr)
         return 2
 
@@ -386,6 +413,7 @@ def _serve(host: str, port: int) -> int:
             plan.repo,
             plan.allowed_origins,
             None if plan.session_timeout is None else timedelta(seconds=plan.session_timeout),
+            mode=plan.mode,
         ),
         host=plan.host,
         port=plan.port,

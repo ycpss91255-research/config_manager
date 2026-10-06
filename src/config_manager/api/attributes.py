@@ -17,7 +17,7 @@ from subprocess import CalledProcessError
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from config_manager.api.lock import require_developer
+from config_manager.api.lock import require_permission
 from config_manager.api.session import Identity
 from config_manager.core.attributes import Attributes
 from config_manager.core.errors import (
@@ -26,6 +26,7 @@ from config_manager.core.errors import (
     ConfigListError,
     EntryNotFound,
 )
+from config_manager.core.roles import EDIT_ATTRIBUTES
 from config_manager.io.attributes import update
 from config_manager.io.errors import AttributesLeftBehind, ChangeError, WriterError
 
@@ -60,7 +61,7 @@ def _update(
     值不合法 422（detail 帶 `field`，介面據此標在那個輸入框）；什麼都沒改 409；定位不到 404；
     改完會讓清單檔不合規（與既有條目衝突）409；寫入／commit／回滾失敗是伺服器側的錯，500。
     """
-    identity = require_developer(held, "修改 config 屬性")
+    identity = require_permission(held, EDIT_ATTRIBUTES)
     wanted = Attributes(
         name=payload.name,
         hostname=payload.hostname,

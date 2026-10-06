@@ -497,6 +497,48 @@ def test_the_header_says_who_is_looking_and_in_which_role(open_page, api):
     assert page.inner_text("[data-testid='current-role']") == f"{_NAME}・一般使用者"
 
 
+# ── 開發／部署模式徽章（#47）──────────────────────────────────────────────────
+# 模式由後端判定、前端只顯示（ADR-00000020：讓使用者清楚知道自己處於哪個模式，而非阻擋）。
+
+
+def test_the_header_says_which_mode_the_backend_is_running_in(open_page, api):
+    _remember_identity(api)
+
+    page = open_page()
+
+    page.wait_for_selector("[data-testid='current-mode']:not(:empty)")
+    assert page.inner_text("[data-testid='current-mode']") == "部署模式"
+    assert page.get_attribute("body", "data-mode") == "deployment"
+
+
+def test_a_development_mode_answer_shows_as_development(open_page, api):
+    # 就地起的服務是部署模式；開發模式那一邊以攔截回應驗——文案對照表兩格都要真的走到。
+    _remember_identity(api)
+    page = open_page()
+    page.wait_for_selector("[data-testid='current-mode']:not(:empty)")
+    page.route(
+        "**/api/mode",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps({"mode": "development"})
+        ),
+    )
+
+    page.evaluate("loadMode()")
+
+    page.wait_for_selector("[data-testid='current-mode']:has-text('開發模式')")
+    assert page.get_attribute("body", "data-mode") == "development"
+
+
+def test_an_unknown_mode_is_shown_as_unknown_not_assumed(open_page, api):
+    # 問不到模式時不假設任何一種：假設成開發模式會讓依模式開關的行為在部署機上開錯邊（不變式 4）。
+    _remember_identity(api)
+
+    page = open_page(unreachable="**/api/mode")
+
+    page.wait_for_selector("[data-testid='current-mode']:has-text('模式未知')")
+    assert page.get_attribute("body", "data-mode") is None
+
+
 # ── W7 檔案瀏覽（#13）────────────────────────────────────────────────────────
 
 

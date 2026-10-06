@@ -46,6 +46,10 @@ services:
       # 所以要穩定。沒設就回 gethostname()——host 網路模式下那是穩定的主機名；bridge 下
       # gethostname() 是每次重建都變的容器 ID，那種部署務必在這裡（或 .env）明寫。
       CM_HOSTNAME: ${CM_HOSTNAME:-}
+      # 開發／部署模式（#47）：後端依這個變數判定、回報給前端，前端改不了。程式的預設是
+      # **部署**（沒設定時落向較嚴的那一種）；這份 compose 是開發用的接線，所以這裡明寫開發模式。
+      # 現場機器以 .env 設 CM_MODE=deployment，或乾脆不設——兩者都是部署模式。
+      CM_MODE: ${CM_MODE:-development}
     # 是 config_manager.api.cli，不是 api.cli——見 Dockerfile 的 CMD（#90）。
     command: ["python", "-m", "config_manager.api.cli", "serve", "--host", "127.0.0.1", "--port", "8080"]
 

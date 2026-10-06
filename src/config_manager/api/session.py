@@ -20,10 +20,9 @@ from datetime import datetime, timedelta
 from typing import NamedTuple
 
 from config_manager.api.errors import InvalidAuthor
-
-USER = "user"
-DEVELOPER = "developer"
-ROLES = (USER, DEVELOPER)
+# 角色的值定義在核心層的權限對照表（`core/roles`，#47）：這裡只驗「輸入是不是其中之一」，
+# 「哪個角色能做什麼」由那張表回答，不在這裡另寫一份。
+from config_manager.core.roles import DEVELOPER, ROLES, USER
 
 # git 的作者字串是 `姓名 <email>`。這三個字元會拆散它：角括號讓作者變成另一個人，
 # `<`／`>` 破壞 git 的作者字串；換行讓後面的內容變成另一行。`\x1f`／`\x1e` 是 io/git.history()

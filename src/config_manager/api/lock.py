@@ -29,7 +29,7 @@ from config_manager.api.session import (
     SessionLock,
     author,
 )
-from config_manager.api.session import DEVELOPER, USER
+from config_manager.core.roles import USER, permits
 from config_manager.api.shapes import drafts_view
 from config_manager.core.drafts import Stage, discard
 
@@ -208,13 +208,13 @@ def held_by_other(
     return SessionHeld(current.holder, current.started_at)
 
 
-def require_developer(held: dict[str, Identity], action: str) -> Identity:
-    """取得目前 session 身分並要求它是開發者，回傳該身分，否則以具名 HTTP 錯誤擋下。
+def require_permission(held: dict[str, Identity], action: str) -> Identity:
+    """取得目前 session 身分並要求它被允許做 `action`，回傳該身分，否則以具名 HTTP 錯誤擋下。
 
-    白名單維護（新增／移除，§7.9、W2）與候選數預覽（#206）都走白名單外的敏感讀寫，產生 schema
-    骨架（#38）會開啟硬擋——都僅開發者可用。這些呼叫端共用同一道門檻：**沒有身分 → 409**
-    （先設身分）、**角色不足 → 403**。
-    `action` 填在訊息裡（如「維護白名單」「查詢候選檔案數」），讓下一步對得上呼叫端在做的事。
+    `action` 是 `core/roles` 的動作代號（同時就是介面上的那句話）：誰能做什麼只問那一張表
+    （#47），這裡不寫 `role == "developer"`。白名單維護（含候選數預覽，#206）、型別指定（含產生
+    schema 骨架，#38）、屬性編輯都走這道門檻：**沒有身分 → 409**（先設身分）、**不被允許 → 403**。
+    開發／部署模式不進來：角色與環境正交，部署環境下開發者仍能維護白名單。
     """
     identity = held.get("identity")
     if identity is None:
@@ -222,7 +222,7 @@ def require_developer(held: dict[str, Identity], action: str) -> Identity:
             status_code=409,
             detail=f"尚未設定身分，無法{action}。下一步：先 POST /api/session 設定姓名與 email",
         )
-    if identity.role != DEVELOPER:
+    if not permits(identity.role, action):
         raise HTTPException(
             status_code=403,
             detail=f"只有開發者能{action}。下一步：以開發者身分進入，或請開發者代為處理",
@@ -260,5 +260,5 @@ def _timeout_seconds(box: LockBox) -> float:
 
 __all__ = [
     "LockBox", "SessionInput", "drafts_view", "register_lock", "register_session",
-    "require_developer", "sweep", "utc_now",
+    "require_permission", "sweep", "utc_now",
 ]

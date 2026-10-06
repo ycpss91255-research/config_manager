@@ -17,8 +17,8 @@ import urllib.error
 import pytest
 
 from config_manager.api.cli import main, serve_plan
-from config_manager.api.errors import ConfigRepoMissing, SessionTimeoutInvalid
-from config_manager.api.routes import DEFAULT_ORIGINS
+from config_manager.api.errors import ConfigRepoMissing, ModeInvalid, SessionTimeoutInvalid
+from config_manager.api.routes import DEFAULT_ORIGINS, create_app
 
 # 2 是「用法錯誤／接線不對」，1 是「跑了但沒成功」。serve 少了 CM_CONFIG_REPO
 # 屬於前者：不是服務起不來，是根本沒有東西可服務。
@@ -366,3 +366,30 @@ def test_serve_plan_refuses_a_non_positive_session_timeout_by_name():
     # 寫錯的值不能靜默當成別的意思。
     with pytest.raises(SessionTimeoutInvalid, match="CM_SESSION_TIMEOUT"):
         serve_plan("0.0.0.0", 9000, {"CM_CONFIG_REPO": "/srv/r", "CM_SESSION_TIMEOUT": "abc"})
+
+
+# ── CM_MODE（#47）───────────────────────────────────────────────────────────────
+# 開發／部署模式由後端依環境變數判定（動工前定案：`.setup.conf` 目前是佔位檔）；沒設＝部署模式
+# （無法判定時落向安全）；不認得的值大聲失敗，不靜默當成任何一種。
+
+
+def test_serve_plan_reads_the_mode_from_the_environment():
+    environ = {"CM_CONFIG_REPO": "/srv/r", "CM_MODE": "development"}
+
+    assert serve_plan("0.0.0.0", 9000, environ).mode == "development"
+
+
+def test_serve_plan_defaults_to_deployment_mode_when_unset():
+    # 忘了設定的機器比較可能是現場機器：預設較嚴（有閒置逾時、沒有記住此裝置）不會造成損害。
+    assert serve_plan("0.0.0.0", 9000, {"CM_CONFIG_REPO": "/srv/r"}).mode == "deployment"
+
+
+def test_serve_plan_refuses_an_unknown_mode_by_name():
+    with pytest.raises(ModeInvalid, match="CM_MODE"):
+        serve_plan("0.0.0.0", 9000, {"CM_CONFIG_REPO": "/srv/r", "CM_MODE": "staging"})
+
+
+def test_create_app_refuses_an_unknown_mode_even_when_called_directly():
+    # create_app 不只從 serve_plan 來（測試、別的接線會直接呼叫），所以它自己也擋。
+    with pytest.raises(ValueError, match="mode 必須是"):
+        create_app("/srv/r", mode="staging")
