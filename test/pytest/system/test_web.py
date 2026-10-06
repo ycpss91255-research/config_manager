@@ -884,6 +884,208 @@ def test_an_error_without_a_reason_still_says_where_to_look(open_page, listing):
     assert "下一步：查看後端服務的紀錄" in text
 
 
+# ── 鍵盤操作（#50、§7.10）──────────────────────────────────────────────────────
+# 樹：↑／↓ 移動（Home／End 到頭尾）、Enter 展開、Esc 收合；Ctrl+S 儲存目前區塊。
+
+_TREE_ITEMS = "[...document.querySelectorAll('#tree li[data-uid]')]"
+
+
+def _tree_order(page) -> list:
+    return page.evaluate(f"{_TREE_ITEMS}.map(node => node.dataset.uid)")
+
+
+def _selected(page):
+    return page.evaluate(
+        "(document.querySelector(\"#tree li[aria-selected='true']\") || {dataset: {}}).dataset.uid"
+    )
+
+
+def _focused_uid(page):
+    return page.evaluate("document.activeElement.dataset.uid")
+
+
+def _three_configs(open_page, repo):
+    _listing_many(repo, {"a": "count: 3\n", "b": "speed: 1.5\n", "c": "gain: 2\n"})
+    page = _enter_identity(open_page())
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}']")
+    return page
+
+
+def test_arrow_keys_move_through_the_tree_in_the_order_shown(open_page, repo):
+    page = _three_configs(open_page, repo)
+    first, second, third = _tree_order(page)
+    page.click(f"[data-testid='tree-item-{first}']")
+
+    page.keyboard.press("ArrowDown")
+    after_down = (_selected(page), _focused_uid(page))
+    page.keyboard.press("ArrowDown")
+    page.keyboard.press("ArrowDown")  # 已經在最後一個：停住，不繞回開頭
+    at_end = _selected(page)
+    page.keyboard.press("ArrowUp")
+
+    assert after_down == (second, second)
+    assert at_end == third
+    assert _selected(page) == second
+
+
+def test_home_and_end_jump_to_the_first_and_last_config(open_page, repo):
+    page = _three_configs(open_page, repo)
+    first, _second, third = _tree_order(page)
+    page.click(f"[data-testid='tree-item-{first}']")
+
+    page.keyboard.press("End")
+    at_end = _selected(page)
+    page.keyboard.press("Home")
+
+    assert (at_end, _selected(page)) == (third, first)
+
+
+def test_the_tree_is_one_tab_stop(open_page, repo):
+    # Tab 只停在一個節點上、節點之間用方向鍵：不必 Tab 過整棵樹才到得了工作區。
+    page = _three_configs(open_page, repo)
+
+    stops = page.evaluate(f"{_TREE_ITEMS}.filter(node => node.tabIndex === 0).length")
+
+    assert stops == 1
+
+
+def test_enter_expands_the_selected_config_and_escape_collapses_it(open_page, repo):
+    page = _three_configs(open_page, repo)
+    page.click(f"[data-testid='tree-item-{_PARAM_UID}']")
+
+    page.keyboard.press("Enter")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.keyboard.press("Escape")
+
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="detached")
+    assert _focused_uid(page) == _PARAM_UID  # 焦點還在樹上，可以繼續用方向鍵
+
+
+def test_the_selection_and_focus_survive_a_rescan(open_page, repo):
+    # 樹重畫時整棵換掉；選取與焦點要留著，否則方向鍵走到一半就掉回開頭。
+    page = _three_configs(open_page, repo)
+    _first, second, _third = _tree_order(page)
+    page.click(f"[data-testid='tree-item-{second}']")
+
+    page.evaluate("load()")
+    page.wait_for_timeout(300)
+    page.keyboard.press("ArrowDown")
+
+    assert _selected(page) == _tree_order(page)[2]
+
+
+def test_escape_inside_a_panel_collapses_it_and_returns_focus_to_the_tree(open_page, repo):
+    page = _three_configs(open_page, repo)
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.focus(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-history']")
+
+    page.keyboard.press("Escape")
+
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="detached")
+    assert _focused_uid(page) == _PARAM_UID
+
+
+def test_escape_while_typing_in_a_field_does_not_collapse_the_panel(open_page, repo):
+    page = _three_configs(open_page, repo)
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.fill(f"{_row('count')} input", "4")
+
+    page.keyboard.press("Escape")
+
+    page.wait_for_timeout(200)
+    assert page.is_visible(f"[data-testid='panel-{_PARAM_UID}']")
+    assert page.input_value(f"{_row('count')} input") == "4"
+
+
+def test_collapsing_a_panel_with_unsaved_edits_asks_first(open_page, repo):
+    # 關掉就沒了：先問。取消→區塊與改動都還在；確認→才收合。× 與 Esc 走同一條路。
+    page = _three_configs(open_page, repo)
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.fill(f"{_row('count')} input", "4")
+    close = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-close']"
+
+    page.click(close)
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+    asked = page.inner_text("[data-testid='confirm-body']")
+    label = page.inner_text("[data-testid='confirm-ok']")
+    page.click("[data-testid='confirm-cancel']")
+    kept = page.input_value(f"{_row('count')} input")
+    page.click(close)
+    page.click("[data-testid='confirm-ok']")
+
+    assert "有還沒儲存的改動" in asked and label == "關閉並丟掉改動"
+    assert kept == "4"
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="detached")
+
+
+def test_collapsing_a_panel_without_edits_does_not_ask(open_page, repo):
+    page = _three_configs(open_page, repo)
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+
+    page.click(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-close']")
+
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="detached")
+    assert page.is_hidden(_CONFIRM)
+
+
+def test_ctrl_s_saves_the_panel_being_edited(open_page, repo):
+    page = _three_configs(open_page, repo)
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.fill(f"{_row('count')} input", "4")
+
+    page.keyboard.press("Control+s")
+
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (1)"
+
+
+def test_ctrl_s_saves_only_the_panel_that_has_the_focus(open_page, repo):
+    page = _three_configs(open_page, repo)
+    for uid in (_PARAM_UID, _SECOND_UID):
+        page.dblclick(f"[data-testid='tree-item-{uid}']")
+        page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
+    page.fill(f"[data-testid='panel-{_PARAM_UID}'] li[data-name='count'] input", "4")
+    page.fill(f"[data-testid='panel-{_SECOND_UID}'] li[data-name='speed'] input", "2.5")
+
+    page.keyboard.press("Control+s")  # 焦點在第二份（剛填的那一格）
+
+    page.wait_for_selector(_draft_dot(_SECOND_UID), state="visible")
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (1)"
+    assert page.query_selector(_draft_dot(_PARAM_UID)) is None
+
+
+def test_ctrl_s_from_the_tree_saves_the_selected_config(open_page, repo):
+    page = _three_configs(open_page, repo)
+    for uid in (_PARAM_UID, _SECOND_UID):
+        page.dblclick(f"[data-testid='tree-item-{uid}']")
+        page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
+    page.fill(f"[data-testid='panel-{_PARAM_UID}'] li[data-name='count'] input", "4")
+    page.click(f"[data-testid='tree-item-{_PARAM_UID}']")
+
+    page.keyboard.press("Control+s")
+
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+
+
+def test_ctrl_s_with_nothing_to_save_says_so(open_page, repo):
+    # 按了卻什麼都沒發生最讓人困惑：說出為什麼沒存。
+    page = _three_configs(open_page, repo)
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.focus(f"{_row('count')} input")
+
+    page.keyboard.press("Control+s")
+
+    note = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save-note']"
+    page.wait_for_selector(note, state="visible")
+    assert page.inner_text(note) == "沒有還沒儲存的改動。"
+
+
 # ── 確認對話框的一致性（#50）───────────────────────────────────────────────────
 # 所有要先確認的動作共用一個對話框：確認鈕寫的是動作本身、開啟時焦點在取消、Esc 是取消。
 

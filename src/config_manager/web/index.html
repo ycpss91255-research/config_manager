@@ -183,6 +183,8 @@
   .panel[data-collapsed="true"] > :not(.panel-head) { display: none !important; }
   .panel-close { margin-left: 4px; padding: 2px 8px; font-size: 13px; line-height: 1.2; }
   li[aria-selected="true"] { outline: 2px solid var(--fg); outline-offset: -2px; }
+  /* 鍵盤焦點所在的樹節點（#50）：與選取分開畫，看得出方向鍵現在走到哪。 */
+  #tree li[data-uid]:focus-visible { outline: 2px dashed var(--fg); outline-offset: -2px; }
   /* 樹的排列（#34） */
   .tree-layout { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
   .tree-layout select { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
@@ -805,7 +807,15 @@ function rowNode(row) {
   return node;
 }
 
+// 樹每次重畫（重掃、搜尋、草稿變動）都整棵換掉：選取與鍵盤焦點要跟著留下來（#50），否則用方向鍵
+// 走到一半、背景重掃一次就掉回開頭。
 function render() {
+  const hadFocus = tree.contains(document.activeElement);
+  renderTree();
+  selectItem(selectedUid, hadFocus);
+}
+
+function renderTree() {
   if (loadError !== null) {
     // 載入失敗是黏性的：重畫 load-error，不讀 rows。否則搜尋輸入一觸發 render 就把錯誤
     // 蓋成空清單／過期清單，而「讀不到」與「沒有」該做的處置完全不同（不變式 2）。
@@ -1001,16 +1011,64 @@ const TYPE_LABEL = {
 // 每次開啟遞增；晚到的舊回應不覆蓋新開的那份（同 load／browse 的世代守門，#252）。
 let panelGeneration = 0;
 
+// 選取記在這裡而不是只記在 DOM 上（樹重畫時 DOM 整棵換掉）。
+let selectedUid = null;
+
+function treeItems() {
+  return [...tree.querySelectorAll("li[data-uid]")];
+}
+
+// 選取一個節點（`uid` 不在樹上就是沒有選取）。Tab 只停在一個節點上——選取的那個，沒有選取就是
+// 第一個——節點之間用方向鍵走，不必 Tab 過整棵樹。`focus`：把鍵盤焦點也移過去。
+function selectItem(uid, focus) {
+  const items = treeItems();
+  const chosen = items.find((node) => node.dataset.uid === uid) || null;
+  for (const node of items) {
+    if (node === chosen) node.setAttribute("aria-selected", "true");
+    else node.removeAttribute("aria-selected");
+    node.tabIndex = node === (chosen || items[0]) ? 0 : -1;
+  }
+  const target = chosen || items[0];
+  if (focus && target) {
+    target.focus();
+    target.scrollIntoView({ block: "nearest" });
+  }
+}
+
 // 單擊＝選取（高亮），雙擊＝展開到右側工作區堆疊（§7.4.1、#35）。
 tree.addEventListener("click", (event) => {
   const item = event.target.closest("li[data-uid]");
   if (!item) return;
-  for (const node of tree.querySelectorAll("li[aria-selected='true']")) node.removeAttribute("aria-selected");
-  item.setAttribute("aria-selected", "true");
+  selectedUid = item.dataset.uid;
+  selectItem(selectedUid, false);
 });
 tree.addEventListener("dblclick", (event) => {
   const item = event.target.closest("li[data-uid]");
   if (item) openPanel(item.dataset.uid);
+});
+
+// 鍵盤操作（#50、§7.10）：↑／↓ 在節點之間移動（Home／End 到頭尾）、Enter 展開到工作區、Esc 收合
+// 那一份的區塊。跨群組照畫面上的順序走。
+tree.addEventListener("keydown", (event) => {
+  const item = event.target.closest("li[data-uid]");
+  if (!item) return;
+  const items = treeItems();
+  const at = items.indexOf(item);
+  const moves = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 };
+  if (event.key in moves) {
+    event.preventDefault();
+    const next = items[Math.min(items.length - 1, Math.max(0, moves[event.key]))];
+    selectedUid = next.dataset.uid;
+    selectItem(selectedUid, true);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    selectedUid = item.dataset.uid;
+    selectItem(selectedUid, false);
+    openPanel(selectedUid);
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    requestClose(item.dataset.uid);
+  }
 });
 
 // ── 右側工作區的堆疊（#36）：每份 config 一個槽（data-uid），槽裡是欄位表／歷史／差異檢視之一，
@@ -1028,6 +1086,65 @@ function mountView(uid, view, kind) {
   if (existing) existing.replaceWith(view);
   else workspace.prepend(view);
   refreshWorkspaceEmpty();
+}
+
+// 收合一份 config 的區塊（按 ×、或在樹上／區塊裡按 Esc）。裡面有還沒儲存的改動就先問——關掉就
+// 沒了，不悄悄丟（不變式 2；#50 的破壞性操作二次確認）。已儲存的草稿在後端，不受影響。
+async function requestClose(uid) {
+  const slot = slotFor(uid);
+  if (!slot) return;
+  if (slot.querySelector("[data-dirty='true']")) {
+    const row = rows.find((item) => item.uid === uid);
+    const ok = await confirmAction(
+      "關閉這個區塊？",
+      `「${row ? row.name : uid}」有還沒儲存的改動，關閉後這些改動會丟掉；已儲存的草稿不受影響。`,
+      "關閉並丟掉改動",
+    );
+    if (!ok) return;
+  }
+  const hadFocus = slot.contains(document.activeElement);
+  closeSlot(uid);
+  // 焦點原本在被收掉的區塊裡：交還給樹上的那個節點，鍵盤才接得下去。
+  if (hadFocus) {
+    selectedUid = uid;
+    selectItem(uid, true);
+  }
+}
+
+// Esc 在區塊裡也是收合那個區塊——但正在輸入框裡打字時不是（那裡的 Esc 是瀏覽器自己的事）。
+// Ctrl+S／⌘S 儲存「目前區塊」：焦點所在的那個區塊；焦點在樹上就是選取的那一份；都不是而只開著
+// 一個區塊，就是它。主畫面上一律不讓瀏覽器跳出「另存網頁」。
+document.addEventListener("keydown", (event) => {
+  if (listView.hidden || confirmDialog.open) return;
+  const active = document.activeElement;
+  const slot = active && active.closest ? active.closest("[data-testid='workspace'] [data-uid]") : null;
+  if (event.key === "Escape" && slot && !active.matches("input, select, textarea")) {
+    event.preventDefault();
+    requestClose(slot.dataset.uid);
+    return;
+  }
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s") return;
+  event.preventDefault();
+  saveCurrentPanel(slot);
+});
+
+function saveCurrentPanel(focused) {
+  const open = [...workspace.querySelectorAll("[data-uid][data-view='panel']")];
+  const fromTree = tree.contains(document.activeElement) && selectedUid ? slotFor(selectedUid) : null;
+  const slot = focused || fromTree || (open.length === 1 ? open[0] : null);
+  const save = slot ? slot.querySelector("[data-testid='panel-save']") : null;
+  if (!save || save.hidden) return;
+  const note = slot.querySelector("[data-testid='panel-save-note']");
+  if (!save.disabled) {
+    note.hidden = true;
+    save.click();
+    return;
+  }
+  // 按了卻什麼都沒發生最讓人困惑：說出為什麼沒存（沒有改動，或有欄位沒通過驗證）。
+  note.textContent = slot.querySelector("[data-valid='false']")
+    ? "有欄位沒通過驗證，還不能儲存。下一步：依那一列的說明修正後再存。"
+    : "沒有還沒儲存的改動。";
+  note.hidden = false;
 }
 
 function closeSlot(uid) {
@@ -1115,7 +1232,7 @@ function panelNode(detail) {
     if (event.target.closest("button")) return;
     panel.dataset.collapsed = panel.dataset.collapsed === "true" ? "false" : "true";
   });
-  close.addEventListener("click", () => closeSlot(detail.uid));
+  close.addEventListener("click", () => requestClose(detail.uid));
   unmanageButton.addEventListener("click", () => unmanageConfig(detail, unmanageButton));
   if (attributesButton) {
     attributesButton.addEventListener("click", () => {
@@ -1238,6 +1355,7 @@ function panelNode(detail) {
   panel.append(list, warningsSlot, saveError, element("div", { class: "panel-actions" }, [
     ...actions,
     element("span", { class: "hint", text: "「儲存」只是存為草稿——不記錄、不寫到目標；工具列的「進版」才會。" }),
+    element("span", { class: "hint", "data-testid": "panel-save-note", role: "status", hidden: "" }),
     discardButton,
     saveButton,
   ]));
