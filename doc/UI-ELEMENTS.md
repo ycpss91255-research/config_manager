@@ -204,9 +204,9 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 閒置提示 | `data-testid="idle-warning"` | 部署模式逾時前 1 分鐘出現（`role="alert"`）：文字（`idle-warning-text`）說還剩約幾秒、逾時會自動退出並釋放編輯階段、有幾份未進版草稿會被清除；秒數每秒倒數。剩餘時間充裕或開發模式不出現（#48） |
 | 繼續使用 | `data-testid="idle-extend"` | 在閒置提示上；按下回報「有在操作」、重新起算，提示消失。在頁面上動滑鼠、按鍵、點擊、捲動也會自動回報，不必按它（#48） |
 | 逾時退出提示 | `data-testid="session-timeout"` | 部署模式閒置逾時後，頁面回到身分輸入頁並在表單上方出現：說明閒置超過幾分鐘已自動退出、編輯階段已釋放、未進版草稿已清除、下一步重新輸入身分。姓名／Email 清空、角色回到預設；重新整理仍在，重新輸入身分後消失。判定在後端（`GET /api/session/idle`），頁面只顯示（#48） |
-| 確認對話框 | `data-testid="confirm-dialog"` | 退出丟草稿／**捨棄變更**／以來源覆蓋／退回此版本／先納入待修正共用；`<dialog>`，開啟時帶 `open`；標題 `confirm-title`、後果 `confirm-body` |
-| 對話框確認鈕 | 對話框內文字「確認」（`confirm-ok`） | 執行該動作 |
-| 對話框取消鈕 | 對話框內文字「取消」（`confirm-cancel`） | 關閉、不執行（Esc 同） |
+| 確認對話框 | `data-testid="confirm-dialog"` | **所有要先確認的動作共用**（#50）：捨棄變更（全域／單一）、以來源覆蓋、先納入待修正、退回此版本、解除納管、產生 schema、加入白名單、從白名單移除。`<dialog>`（modal，開著時後面的東西按不到），開啟時帶 `open`。文案一致：標題 `confirm-title` 是問句並指名對象；內文 `confirm-body` 說會發生什麼、什麼不會變、能不能復原；要一併列出的項目在 `confirm-items`（沒有就隱藏） |
+| 對話框確認鈕 | `confirm-ok` | 文字是**那個動作本身**（「捨棄變更」「解除納管」「退回此版本」「以來源覆蓋」「先納入」「產生 schema」「加入白名單」「從白名單移除」），不是一律「確認」；按下才執行 |
+| 對話框取消鈕 | 對話框內文字「取消」（`confirm-cancel`） | 關閉、不執行（Esc 同）。**開啟時焦點在這裡**——手滑按到 Enter 是取消 |
 
 ---
 
@@ -303,9 +303,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 根清單 | `data-testid="whitelist-roots"` | 目前允許的根（`GET /api/allowed-roots` 的 `roots[]`）；空時顯示「白名單目前是空的」 |
 | 根項目 | `data-testid="whitelist-root-<原樣前綴>"` | 顯示原樣 prefix、resolved（realpath）、`由 <added_by> 於 <added_at>`（誰／何時，AC2） |
 | 移除 | 根項目內 `data-testid="whitelist-remove"` | 文字「移除」；先以 `confirmed=false` `DELETE`，回受影響清單＋要求確認（AC3） |
-| 移除確認 | `data-testid="whitelist-remove-confirm"` | 說要移除哪一個前綴、移除後那個路徑不能再瀏覽或納管、已納管的不受影響，並列出受影響的納管項目與確認／取消；文字由介面自己寫，不出現 API 的參數名；未在確認流程時隱藏 |
-| 受影響項目 | `data-testid="whitelist-affected"` | 受影響的納管項目（target 落在被移除前綴底下），資訊性、不連動解除納管（AC3） |
-| 確認移除 | `data-testid="whitelist-confirm-remove"` | 以 `confirmed=true` `DELETE`，成功後重載清單 |
+| 移除確認 | 共用的 W6 確認對話框 | 標題指名要移除的前綴；內文說移除後那個路徑不能再瀏覽或納管、之後可以再加回來、已納管的不受影響；受影響的納管項目（target 落在被移除前綴底下）列在 `confirm-items`，資訊性、不連動解除納管（AC3）。確認鈕「從白名單移除」以 `confirmed=true` `DELETE`，成功後重載清單。文字由介面自己寫，不出現 API 參數名（#50 起不再是頁面內的一塊） |
 | 取消移除 | `data-testid="whitelist-cancel-remove"` | 收起確認、不移除 |
 
 **測試須斷言**：一般使用者模式下「白名單」按鈕**找不到**（不是 disabled，角色表）；列根帶誰／何時

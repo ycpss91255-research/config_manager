@@ -884,6 +884,94 @@ def test_an_error_without_a_reason_still_says_where_to_look(open_page, listing):
     assert "下一步：查看後端服務的紀錄" in text
 
 
+# ── 確認對話框的一致性（#50）───────────────────────────────────────────────────
+# 所有要先確認的動作共用一個對話框：確認鈕寫的是動作本身、開啟時焦點在取消、Esc 是取消。
+
+_CONFIRM = "[data-testid='confirm-dialog']"
+
+
+def _with_a_draft(open_page, repo):
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    return page
+
+
+def test_the_confirm_button_names_the_action_instead_of_a_generic_confirm(open_page, repo):
+    page = _with_a_draft(open_page, repo)
+
+    page.click("[data-testid='discard-all']")
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+    discard = page.inner_text("[data-testid='confirm-ok']")
+    page.click("[data-testid='confirm-cancel']")
+    page.click(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-unmanage']")
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+    unmanage = page.inner_text("[data-testid='confirm-ok']")
+
+    assert (discard, unmanage) == ("捨棄變更", "解除納管")
+
+
+def test_the_confirm_dialog_opens_with_focus_on_cancel(open_page, repo):
+    # 手滑按到 Enter 不會把東西丟掉：預設落在安全的那一邊。
+    page = _with_a_draft(open_page, repo)
+    page.click("[data-testid='discard-all']")
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+
+    focused = page.evaluate("document.activeElement.dataset.testid")
+    page.keyboard.press("Enter")
+
+    assert focused == "confirm-cancel"
+    page.wait_for_selector(f"{_CONFIRM}:not([open])", state="attached")
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (1)"  # 草稿還在
+
+
+def test_escape_cancels_the_confirm_dialog(open_page, repo):
+    page = _with_a_draft(open_page, repo)
+    page.click("[data-testid='discard-all']")
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+
+    page.keyboard.press("Escape")
+
+    page.wait_for_selector(f"{_CONFIRM}:not([open])", state="attached")
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (1)"
+
+
+def test_a_confirmation_without_listed_items_shows_no_empty_list(open_page, repo):
+    page = _with_a_draft(open_page, repo)
+
+    page.click("[data-testid='discard-all']")
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+
+    assert page.is_hidden("[data-testid='confirm-items']")
+
+
+def test_removing_a_root_lists_the_affected_configs_in_the_same_dialog(open_page, browse_root):
+    # 移除白名單的確認也走共用的對話框，受影響的納管項目列在裡面（資訊性：它們不會被解除納管）。
+    page = _open_whitelist_as_developer(open_page())
+    page.wait_for_selector(f"[data-testid='whitelist-root-{browse_root}']")
+    affected = [{"ref": "nav@amr01-abc", "target": f"{browse_root}/nav.yaml"}]
+
+    def answer(route):
+        if route.request.method != "DELETE":
+            route.continue_()
+            return
+        detail = {"kind": "confirm_required", "message": "需要確認", "affected": affected}
+        route.fulfill(
+            status=409, content_type="application/json", body=json.dumps({"detail": detail})
+        )
+
+    page.route("**/api/allowed-roots", answer)
+
+    page.locator(
+        f"[data-testid='whitelist-root-{browse_root}'] [data-testid='whitelist-remove']"
+    ).click()
+
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+    assert page.inner_text("[data-testid='confirm-items']") == f"nav@amr01-abc：{browse_root}/nav.yaml"
+    assert "以下 1 份已納管的設定" in page.inner_text("[data-testid='confirm-body']")
+    assert "不受影響" in page.inner_text("[data-testid='confirm-body']")
+
+
 # ── 進行中的指示（#50）─────────────────────────────────────────────────────────
 # 會寫入或要等一下的動作：按下後按鈕標成進行中（aria-busy、文字「…中」），做完還原；進行中再按
 # 不會送出第二次。這裡把請求扣住不放，看那段期間的畫面。
@@ -1690,11 +1778,12 @@ def test_removing_a_root_asks_for_confirmation_then_removes(open_page, browse_ro
     page.locator(
         f"[data-testid='whitelist-root-{browse_root}'] [data-testid='whitelist-remove']"
     ).click()
-    page.wait_for_selector("[data-testid='whitelist-remove-confirm']", state="visible")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
     # 人工驗證 U15：確認區是寫給按按鈕的人看的——說要移除哪一個、會怎樣，不出現 API 的參數名。
-    said = page.inner_text("[data-testid='whitelist-remove-confirm']")
+    said = page.inner_text("[data-testid='confirm-dialog']")
     assert str(browse_root) in said and "不能再瀏覽或納管" in said and "confirmed" not in said
-    page.get_by_role("button", name="確認移除").click()
+    assert page.inner_text("[data-testid='confirm-ok']") == "從白名單移除"
+    page.click("[data-testid='confirm-ok']")
 
     page.wait_for_selector(f"[data-testid='whitelist-root-{browse_root}']", state="detached")
 
@@ -1707,9 +1796,10 @@ def test_cancelling_a_removal_keeps_the_root(open_page, browse_root):
     page.locator(
         f"[data-testid='whitelist-root-{browse_root}'] [data-testid='whitelist-remove']"
     ).click()
-    page.wait_for_selector("[data-testid='whitelist-remove-confirm']", state="visible")
-    page.get_by_role("button", name="取消").click()
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-cancel']")
 
+    page.wait_for_selector("[data-testid='confirm-dialog']:not([open])", state="attached")
     assert page.is_visible(f"[data-testid='whitelist-root-{browse_root}']")
 
 
@@ -1724,23 +1814,29 @@ def test_returning_from_the_whitelist_panel_hides_it_rather_than_stacking_on_the
     assert page.is_hidden("[data-testid='whitelist']")
 
 
-def test_the_remove_confirm_control_does_not_survive_leaving_the_whitelist_panel(
-    open_page, browse_root
-):
-    # #252 發現1（更嚴重的一面）：開了移除確認框後直接按「返回」，那顆綁著 confirmRemoveRoot
-    # 的「確認移除」按鈕若隨殘留面板留在看似清單的畫面上、還可點，就能觸發不可逆的白名單刪除。
-    # 驗離開白名單後該控制不再可觸達。
+def test_the_removal_confirmation_blocks_everything_else_until_answered(open_page, browse_root):
+    # #252 發現1 的那個洞：舊的確認區是頁面裡的一塊，開著它按「返回」，那顆「確認移除」會跟著殘留
+    # 在看似清單的畫面上。現在確認走共用的對話框（#50），是 modal——沒回答之前按不到後面的東西。
     page = _open_whitelist_as_developer(open_page())
     page.wait_for_selector(f"[data-testid='whitelist-root-{browse_root}']")
     page.locator(
         f"[data-testid='whitelist-root-{browse_root}'] [data-testid='whitelist-remove']"
     ).click()
-    page.wait_for_selector("[data-testid='whitelist-remove-confirm']", state="visible")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
 
-    page.click("[data-testid='whitelist-back']")
-    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    covered = page.evaluate(
+        """() => {
+          const back = document.querySelector("[data-testid='whitelist-back']");
+          const box = back.getBoundingClientRect();
+          const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+          return hit !== back && !back.contains(hit);
+        }"""
+    )
 
-    assert page.is_hidden("[data-testid='whitelist-confirm-remove']")
+    assert covered  # 「返回」被對話框擋著，點不到
+    page.keyboard.press("Escape")
+    page.wait_for_selector("[data-testid='confirm-dialog']:not([open])", state="attached")
+    assert page.is_visible(f"[data-testid='whitelist-root-{browse_root}']")  # Esc＝取消，根還在
 
 
 def test_a_structured_load_error_shows_the_backend_message_not_a_bare_status(open_page):

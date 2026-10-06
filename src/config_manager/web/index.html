@@ -199,6 +199,7 @@
   .confirm::backdrop { background: rgba(0, 0, 0, .35); }
   .confirm h3 { margin: 0 0 8px; font-size: 16px; }
   .confirm p { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
+  .confirm ul { margin: -8px 0 18px; padding-left: 20px; color: var(--muted); font-size: 13px; max-height: 30vh; overflow: auto; }
   .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
   .group { margin-bottom: 22px; }
   .group > h2 {
@@ -389,11 +390,6 @@
   .whitelist-resolved { color: var(--muted); font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
   .whitelist-who { color: var(--muted); font-size: 12px; margin-left: auto; }
   .whitelist-empty { color: var(--muted); font-size: 13px; }
-  .whitelist-remove-confirm {
-    margin-top: 12px; padding: 12px; border: 1px solid var(--drift); border-radius: 8px;
-  }
-  .whitelist-remove-confirm[hidden] { display: none; }
-  .whitelist-affected { margin: 8px 0; padding-left: 18px; font-size: 13px; color: var(--muted); }
 
   /* W8 納管確認 */
   #onboard-confirm { padding: 16px 20px 40px; }
@@ -505,6 +501,7 @@
 <dialog data-testid="confirm-dialog" class="confirm">
   <h3 data-testid="confirm-title"></h3>
   <p data-testid="confirm-body"></p>
+  <ul data-testid="confirm-items" hidden></ul>
   <div class="confirm-actions">
     <button type="button" data-testid="confirm-cancel">取消</button>
     <button type="button" data-testid="confirm-ok">確認</button>
@@ -580,7 +577,6 @@
   <p class="whitelist-preview" data-testid="whitelist-preview" hidden></p>
   <p class="whitelist-error" data-testid="whitelist-error" hidden></p>
   <ul data-testid="whitelist-roots" class="whitelist-roots"></ul>
-  <div class="whitelist-remove-confirm" data-testid="whitelist-remove-confirm" hidden></div>
 </section>
 
 <!-- W8 納管確認（#14）：偵測結果供確認 → 寫入。從 W7 選檔後進入。
@@ -1369,6 +1365,7 @@ async function draftSchema(detail, ui) {
     `替「${detail.name}」產生 schema？`,
     "會依目前的值記下每個參數的型別，存進設定庫的 .schemas/ 並留一筆變更紀錄。"
       + "之後這份 config 的修改會依它檢查型別。只記型別，不限制必填、多出來的參數或數值範圍。",
+    "產生 schema",
   );
   if (!ok) return;
   await whileBusy(ui.button, "產生中…", async () => {
@@ -2142,6 +2139,7 @@ async function revertTo(view, detail, version, differing, button) {
     "退回此版本？",
     `「${detail.name}」會回到版本 ${short} 的內容：${differing} 個參數會改變、並寫出到目標。` +
     "這會產生一筆新的變更紀錄；歷史不會被改寫，之後仍可再退。" + (SCHEMA_EFFECT_TEXT[version.schema_effect] || ""),
+    "退回此版本",
   );
   if (!ok) return;
   await whileBusy(button, "退版中…", async () => {
@@ -2273,7 +2271,11 @@ const RESOLVE_OPTIONS = [
   {
     action: "overwrite", label: "以來源覆蓋目標", testid: "resolve-overwrite",
     why: "現場改動是不該保留的臨時測試：把 repo 的來源寫回目標、捨棄現場修改；記一筆紀錄。",
-    confirm: ["以來源覆蓋目標？", "目標檔案會被 repo 的來源覆蓋，現場的修改全部丟掉，無法復原；會記一筆變更紀錄。"],
+    confirm: [
+      "以來源覆蓋目標？",
+      "目標檔案會被 repo 的來源覆蓋，現場的修改全部丟掉，無法復原；會記一筆變更紀錄。",
+      "以來源覆蓋",
+    ],
   },
   {
     action: "adopt", label: "將目標現況納入來源", testid: "resolve-adopt",
@@ -2283,7 +2285,12 @@ const RESOLVE_OPTIONS = [
   {
     action: "adopt_draft", label: "先納入、待修正", testid: "resolve-adopt-draft",
     why: "現場改動含非法值但不該丟：載入草稿供修正，進版前須改正；來源與目標都先不動。",
-    confirm: ["先納入、待修正？", "目標現況會載入為這份 config 的草稿（覆蓋既有草稿），非法值以警告標示，進版前須改正。"],
+    confirm: [
+      "先納入、待修正？",
+      "目標現況會載入為這份 config 的草稿（覆蓋既有草稿），非法值以警告標示，進版前須改正。"
+        + "來源與目標都先不動；不要了可以捨棄這份草稿。",
+      "先納入",
+    ],
   },
 ];
 
@@ -2300,7 +2307,7 @@ function resolveActions(detail, view) {
 
 async function resolveDrift(detail, option, view, errorEl, button) {
   if (option.confirm) {
-    const ok = await confirmAction(option.confirm[0], option.confirm[1]);
+    const ok = await confirmAction(...option.confirm);
     if (!ok) return;
   }
   await whileBusy(button, "處理中…", async () => {
@@ -2378,9 +2385,17 @@ function infer(values) {
 // 回到來源內容，不動來源也不動目標；不可逆，先經 W6 的確認對話框。
 const confirmDialog = document.querySelector("[data-testid='confirm-dialog']");
 
-function confirmAction(title, body) {
+// 所有要先確認的動作共用這一個對話框（#50），文案與行為一致：標題是問句、指名對象；內文說會
+// 發生什麼、什麼不會變、能不能復原；確認鈕寫的是那個動作本身（`okLabel`，不是一律「確認」），
+// 取消鈕永遠在、Esc 也是取消；**開啟時焦點在取消**——手滑按到 Enter 不會把東西刪掉。
+// `items` 是要一併列給人看的清單（例如移除白名單時受影響的項目），沒有就不顯示。
+function confirmAction(title, body, okLabel = "確認", items = []) {
   confirmDialog.querySelector("[data-testid='confirm-title']").textContent = title;
   confirmDialog.querySelector("[data-testid='confirm-body']").textContent = body;
+  const list = confirmDialog.querySelector("[data-testid='confirm-items']");
+  list.replaceChildren(...items.map((text) => element("li", { text })));
+  list.hidden = items.length === 0;
+  confirmDialog.querySelector("[data-testid='confirm-ok']").textContent = okLabel;
   return new Promise((resolve) => {
     const finish = (answer) => {
       okButton.removeEventListener("click", onOk);
@@ -2397,6 +2412,7 @@ function confirmAction(title, body) {
     cancelButton.addEventListener("click", onCancel);
     confirmDialog.addEventListener("close", onCancel);  // Esc
     confirmDialog.showModal();
+    cancelButton.focus();
   });
 }
 
@@ -2451,6 +2467,7 @@ async function discardDrafts(uid, name, button = discardAllButton) {
   const ok = await confirmAction(
     `捨棄${uid ? "這份" : "全部"}變更？`,
     `${scope}會被清除、回到來源內容。來源與目標檔案都不會改變；這個動作無法復原。`,
+    "捨棄變更",
   );
   if (!ok) return;
   await whileBusy(button, "捨棄中…", async () => {
@@ -2480,6 +2497,7 @@ async function unmanageConfig(detail, button) {
     `解除「${detail.name}」的納管？`,
     `系統不再追蹤這份檔案，它會從清單消失。目標檔案 ${detail.target} 保留、內容不動；`
       + "過去的變更歷史仍留在設定庫裡。之後要再管理它，得重新納管。",
+    "解除納管",
   );
   if (!ok) return;
   await whileBusy(button, "解除中…", async () => {
@@ -3093,6 +3111,7 @@ async function confirmAddRoot(prefix, showError) {
     "加入白名單？",
     `將開放「${prefix}」這個目錄與它底下的所有子目錄，供瀏覽與納管；目前底下有 ${shown}可納管檔。`
       + "這會留下一筆紀錄（誰在何時加入），之後可以在白名單維護移除。",
+    "加入白名單",
   );
 }
 
@@ -3152,7 +3171,6 @@ const whitelistRootsEl = document.querySelector("[data-testid='whitelist-roots']
 const whitelistAddInput = document.querySelector("[data-testid='whitelist-add-input']");
 const whitelistPreviewEl = document.querySelector("[data-testid='whitelist-preview']");
 const whitelistErrorEl = document.querySelector("[data-testid='whitelist-error']");
-const whitelistConfirmEl = document.querySelector("[data-testid='whitelist-remove-confirm']");
 // 每次預覽遞增；晚到的舊預覽若世代已變就丟棄——否則「此路徑下有 N 個可納管檔」會顯示上一次
 // 輸入的數字，與目前輸入框不符；加入成功時也遞增它，作廢加入前送出、仍在途的預覽（#252）。
 let previewGeneration = 0;
@@ -3171,12 +3189,10 @@ function showWhitelist() {
   whitelistAddInput.value = "";
   whitelistPreviewEl.hidden = true;
   whitelistErrorEl.hidden = true;
-  whitelistConfirmEl.hidden = true;
   loadWhitelist();
 }
 
 async function loadWhitelist() {
-  whitelistConfirmEl.hidden = true;
   try {
     const response = await apiFetch(`${API_BASE}/api/allowed-roots`);
     if (!response.ok) throw new Refused(await loadErrorText(response));
@@ -3199,7 +3215,7 @@ function whitelistRootRow(root) {
   const remove = element("button", {
     type: "button", "data-testid": "whitelist-remove", text: "移除",
   });
-  remove.addEventListener("click", () => beginRemoveRoot(root.prefix));
+  remove.addEventListener("click", () => beginRemoveRoot(root.prefix, remove));
   return element("li", { "data-testid": `whitelist-root-${root.prefix}`, "data-prefix": root.prefix }, [
     element("span", { class: "whitelist-prefix", text: root.prefix }),
     element("span", { class: "whitelist-resolved", text: root.resolved }),
@@ -3274,7 +3290,7 @@ async function addRoot(button) {
   });
 }
 
-async function beginRemoveRoot(prefix) {
+async function beginRemoveRoot(prefix, button) {
   // 先以 confirmed=false 問後端：有受影響的納管項目就列出＋要求確認，不靜默移除（AC3）。
   // 後端在未確認時一律回 409 confirm_required（含受影響清單，可能為空）。
   whitelistErrorEl.hidden = true;
@@ -3286,7 +3302,7 @@ async function beginRemoveRoot(prefix) {
     });
     const payload = await response.json();
     if (response.status === 409 && payload.detail && payload.detail.kind === "confirm_required") {
-      renderRemoveConfirm(prefix, payload.detail);
+      if (await confirmRemoval(prefix, payload.detail)) await confirmRemoveRoot(prefix, button);
       return;
     }
     whitelistErrorEl.textContent = detailText(payload.detail);
@@ -3297,30 +3313,19 @@ async function beginRemoveRoot(prefix) {
   }
 }
 
-function renderRemoveConfirm(prefix, detail) {
-  const affected = element("ul", { "data-testid": "whitelist-affected" },
-    (detail.affected || []).map((item) =>
-      element("li", { text: `${item.ref}：${item.target}` })));
-  const confirm = element("button", {
-    type: "button", "data-testid": "whitelist-confirm-remove", text: "確認移除",
-  });
-  confirm.addEventListener("click", () => confirmRemoveRoot(prefix, confirm));
-  const cancel = element("button", {
-    type: "button", "data-testid": "whitelist-cancel-remove", text: "取消",
-  });
-  cancel.addEventListener("click", () => { whitelistConfirmEl.hidden = true; });
-  // 這段是寫給按按鈕的人看的，由介面自己說：要移除的是哪一個、會怎樣、已納管的受不受影響。
-  const listed = (detail.affected || []).length;
-  const about = listed
-    ? `以下 ${listed} 份已納管的設定的目標在這個路徑底下——它們不受影響，仍會繼續管理：`
+// 移除的確認走共用的確認對話框（#50）。這段是寫給按按鈕的人看的，由介面自己說：要移除的是哪一個、
+// 會怎樣、已納管的受不受影響——受影響的項目列在對話框裡。
+function confirmRemoval(prefix, detail) {
+  const affected = (detail.affected || []).map((item) => `${item.ref}：${item.target}`);
+  const about = affected.length
+    ? `以下 ${affected.length} 份已納管的設定的目標在這個路徑底下——它們不受影響，仍會繼續管理：`
     : "目前沒有已納管的設定的目標在這個路徑底下。";
-  whitelistConfirmEl.replaceChildren(
-    element("p", {
-      class: "whitelist-confirm-msg",
-      text: `要把「${prefix}」從白名單移除嗎？移除後這個路徑底下的檔案不能再瀏覽或納管。${about}`,
-    }),
-    affected, confirm, cancel);
-  whitelistConfirmEl.hidden = false;
+  return confirmAction(
+    `把「${prefix}」從白名單移除？`,
+    `移除後這個路徑底下的檔案不能再瀏覽或納管；之後可以再加回來。${about}`,
+    "從白名單移除",
+    affected,
+  );
 }
 
 async function confirmRemoveRoot(prefix, button) {
@@ -3337,7 +3342,6 @@ async function confirmRemoveRoot(prefix, button) {
         whitelistErrorEl.hidden = false;
         return;
       }
-      whitelistConfirmEl.hidden = true;
       loadWhitelist();
     } catch (error) {
       whitelistErrorEl.textContent = failureText("移除白名單", error);
