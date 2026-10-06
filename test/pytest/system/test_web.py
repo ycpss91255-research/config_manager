@@ -1361,6 +1361,22 @@ def test_escape_cancels_the_confirm_dialog(open_page, repo):
     assert page.inner_text("[data-testid='promote-all']") == "進版 (1)"
 
 
+def test_escape_answers_the_confirmation_with_a_no(open_page, repo):
+    # Esc 不只是把對話框關掉——等著答案的那個動作要真的收到「取消」。不然它一直掛著，下一次別的
+    # 確認按下「確認」時，這個沒收尾的動作會跟著一起執行。
+    page = _with_a_draft(open_page, repo)
+    page.evaluate(
+        "() => { window.answer = 'pending';"
+        " confirmAction('要嗎？', '…').then((answer) => { window.answer = answer; }); }"
+    )
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+
+    page.keyboard.press("Escape")
+
+    page.wait_for_function("window.answer !== 'pending'")
+    assert page.evaluate("window.answer") is False
+
+
 def test_a_confirmation_opened_right_after_another_is_not_cancelled_by_the_first(open_page, repo):
     # 對話框關閉的事件晚一拍才到：上一個確認剛按下、下一個緊接著開，不能被那個晚到的事件當成取消。
     page = _with_a_draft(open_page, repo)
