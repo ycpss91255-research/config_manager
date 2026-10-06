@@ -839,20 +839,31 @@ function renderTree() {
     return;
   }
 
+  // 空狀態（#50）：每一種「這裡沒有東西」都說出是哪一種、接下來可以做什麼——一片空白會被讀成壞了，
+  // 而「還沒納管」與「搜尋沒找到」該做的事完全不同。
+  workspaceEmpty.textContent = rows.length
+    ? "從左側雙擊一份 config（或選取後按 Enter），這裡會顯示它的參數欄位表。"
+    : "納管第一份 config 之後，這裡會顯示它的參數欄位表。";
   if (!rows.length) {
-    // 什麼都還沒納管是合法狀態，不是錯誤——說出來，而不是留一片空白讓人以為壞了。
+    // 什麼都還沒納管是合法狀態，不是錯誤。
     tree.appendChild(element("p", {
       class: "notice",
       "data-testid": "empty-state",
-      text: "還沒有納管任何 config。",
+      text: "還沒有納管任何 config。" + (document.body.dataset.readonly === "true"
+        ? "" : "下一步：按上方的「納管」，挑一份檔案交給系統管理。"),
     }));
     return;
   }
   if (!visible.length) {
+    const query = search.value.trim();
+    const scope = searchScope.value;
     tree.appendChild(element("p", {
       class: "notice",
       "data-testid": "no-matches",
-      text: "沒有符合的項目。",
+      text: `沒有符合的項目：在「${scope}」範圍內找不到含「${query}」的 config。`
+        + (scope === "全部"
+          ? "下一步：換個關鍵字，或清空搜尋框看全部。"
+          : "下一步：換個關鍵字，或把搜尋範圍改成「全部」。"),
     }));
     return;
   }
@@ -2158,7 +2169,14 @@ async function loadHistory(view, detail, filter, generation) {
         class: "notice", "data-testid": "history-empty",
         text: filter === "all"
           ? "這份 config 還沒有任何變更紀錄。"
-          : "沒有內容變更的紀錄；切到「全部」可看到其他類型（納入管理、退回舊版本…）。",
+          : "這份 config 納管後還沒有改過內容，所以沒有內容變更的紀錄。"
+            + "下一步：切到「全部」可看到其他類型（納入管理、退回舊版本…）。",
+      }));
+    } else if (filter === "all" && changes.length === 1) {
+      // 只有一筆（通常就是納入管理那一筆）：說明為什麼沒有東西可比、可退，不讓人對著一筆紀錄找按鈕。
+      list.appendChild(element("li", {
+        class: "notice", "data-testid": "history-single",
+        text: "目前只有這一筆紀錄——還沒有更早的版本可以比較或退回。修改並進版之後，這裡會多出新的紀錄。",
       }));
     }
   } catch (error) {
@@ -3071,7 +3089,10 @@ async function loadBrowseRoots() {
     ));
     browseHintEl.textContent = whitelistRoots.length
       ? "挑一個允許瀏覽的根開始，或在上方貼一個絕對路徑。"
-      : "白名單目前是空的。";
+      : "白名單目前是空的，所以沒有可以瀏覽的目錄。下一步：" + (
+        currentIdentity && currentIdentity.role === "developer"
+          ? "回主畫面按「白名單」，加入要管理的目錄。"
+          : "請開發者把要管理的目錄加進白名單。");
   } catch (error) {
     browseHintEl.textContent = failureText("讀取白名單", error);
   }
@@ -3110,6 +3131,13 @@ async function browseTo(path) {
 }
 
 function renderBrowseEntries(entries) {
+  if (!entries.length) {
+    browseListEl.replaceChildren(element("li", {
+      class: "whitelist-empty", "data-testid": "browse-empty",
+      text: "這個目錄是空的，沒有可以納管的檔案。下一步：回上一層，或換一個目錄。",
+    }));
+    return;
+  }
   browseListEl.replaceChildren(...entries.map((entry) =>
     element("li", {
       "data-testid": `browse-entry-${entry.name}`,
@@ -3317,7 +3345,10 @@ async function loadWhitelist() {
     const roots = (await response.json()).roots;
     if (!roots.length) {
       whitelistRootsEl.replaceChildren(
-        element("li", { class: "whitelist-empty", text: "白名單目前是空的。" })
+        element("li", {
+          class: "whitelist-empty", "data-testid": "whitelist-empty",
+          text: "白名單目前是空的，所以沒有任何目錄可以瀏覽或納管。下一步：在上方輸入一個目錄的絕對路徑，按「加入白名單」。",
+        })
       );
       return;
     }

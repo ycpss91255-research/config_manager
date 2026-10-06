@@ -437,13 +437,19 @@ def test_search_says_so_when_nothing_matches(open_page, listing):
     page.fill("[data-testid='search-input']", "沒有這個東西")
 
     page.wait_for_selector("[data-testid='no-matches']")
-    assert page.inner_text("[data-testid='no-matches']") == "沒有符合的項目。"
+    said = page.inner_text("[data-testid='no-matches']")
+    # #50：說出在哪個範圍找什麼、接下來可以怎麼做——不只一句「沒有符合」。
+    assert "在「全部」範圍內找不到含「沒有這個東西」的 config" in said
+    assert "下一步：換個關鍵字，或清空搜尋框看全部。" in said
 
 
 def test_an_empty_config_list_is_a_legal_state_not_an_error(open_page):
     page = _enter_identity(open_page())
 
-    assert page.inner_text("[data-testid='empty-state']") == "還沒有納管任何 config。"
+    said = page.inner_text("[data-testid='empty-state']")
+    assert said.startswith("還沒有納管任何 config。")
+    assert "下一步：按上方的「納管」" in said  # #50：空狀態說得出接下來做什麼
+    assert "納管第一份 config 之後" in page.inner_text("[data-testid='workspace-empty']")
 
 
 def test_rescanning_shows_a_target_that_was_changed_behind_the_interface(open_page, listing, repo):
@@ -882,6 +888,83 @@ def test_an_error_without_a_reason_still_says_where_to_look(open_page, listing):
     text = page.inner_text("[data-testid='load-error']")
     assert "後端回了 502" in text
     assert "下一步：查看後端服務的紀錄" in text
+
+
+# ── 空狀態（#50）───────────────────────────────────────────────────────────────
+# 每一種「這裡沒有東西」都說出是哪一種、接下來可以做什麼。
+
+
+def test_a_narrowed_search_with_no_match_suggests_widening_the_scope(open_page, listing):
+    listing("a")
+    page = _enter_identity(open_page())
+    page.select_option("[data-testid='search-scope']", "參數值")
+
+    page.fill("[data-testid='search-input']", "zzz")
+
+    page.wait_for_selector("[data-testid='no-matches']")
+    said = page.inner_text("[data-testid='no-matches']")
+    assert "在「參數值」範圍內找不到含「zzz」的 config" in said
+    assert "把搜尋範圍改成「全部」" in said
+
+
+def test_the_empty_list_does_not_point_a_read_only_viewer_at_a_button_they_lack(open_page):
+    # 唯讀的人沒有「納管」可按：空狀態不叫他去按一顆不存在的按鈕。
+    holder = _enter_identity(open_page())
+    holder.wait_for_selector("[data-testid='promote-all']", state="visible")
+    viewer = open_page(same_browser_as=holder)
+    viewer.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+
+    viewer.evaluate("render()")
+
+    assert viewer.inner_text("[data-testid='empty-state']") == "還沒有納管任何 config。"
+
+
+def test_a_config_never_edited_explains_its_empty_history(open_page, browse_root, api):
+    # 剛納管、還沒改過：預設（只看內容變更）是空的——說明原因與去哪裡看，不留一片空白。
+    entry = _history_via_api(api, browse_root, ["count: 1\n"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"], expect_entries=False)
+
+    page.wait_for_selector("[data-testid='history-empty']")
+
+    said = page.inner_text("[data-testid='history-empty']")
+    assert "納管後還沒有改過內容" in said and "下一步：切到「全部」" in said
+
+
+def test_a_history_with_a_single_record_says_there_is_nothing_to_compare_yet(
+    open_page, browse_root, api
+):
+    entry = _history_via_api(api, browse_root, ["count: 1\n"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"], expect_entries=False)
+
+    page.click("[data-testid='history-filter'] button[data-filter='all']")
+
+    page.wait_for_selector("[data-testid='history-single']")
+    assert "還沒有更早的版本可以比較或退回" in page.inner_text("[data-testid='history-single']")
+
+
+def test_a_history_with_several_records_has_no_single_record_note(open_page, browse_root, api):
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    page.click("[data-testid='history-filter'] button[data-filter='all']")
+
+    page.wait_for_selector("[data-testid^='history-entry-']")
+    page.wait_for_timeout(200)
+    assert page.query_selector("[data-testid='history-single']") is None
+
+
+def test_an_empty_directory_says_so_while_browsing(open_page, browse_root):
+    (browse_root / "nothing_here").mkdir()
+    page = _enter_identity(open_page())
+    page.click("[data-testid='open-browse']")
+    page.wait_for_selector(f"[data-testid='browse-root-{browse_root}']")
+    page.click(f"[data-testid='browse-root-{browse_root}']")
+    page.wait_for_selector("[data-testid='browse-entry-nothing_here']")
+
+    page.click("[data-testid='browse-entry-nothing_here']")
+
+    page.wait_for_selector("[data-testid='browse-empty']")
+    assert "這個目錄是空的" in page.inner_text("[data-testid='browse-empty']")
 
 
 # ── 鍵盤操作（#50、§7.10）──────────────────────────────────────────────────────
@@ -3127,13 +3210,14 @@ def _history_via_api(api, browse_root, contents: list) -> dict:
     return entry
 
 
-def _open_history(page, uid: str):
+def _open_history(page, uid: str, expect_entries: bool = True):
     page.wait_for_selector("[data-testid='config-tree']", state="visible")
     page.dblclick(f"[data-testid='tree-item-{uid}']")
     page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
     page.get_by_role("button", name="歷史").click()
     page.wait_for_selector(f"[data-testid='history-{uid}']", state="visible")
-    page.wait_for_selector("[data-testid^='history-entry-']")
+    if expect_entries:  # 剛納管、沒改過的那一份，預設檢視是空的（見空狀態的規格）
+        page.wait_for_selector("[data-testid^='history-entry-']")
     return page
 
 
