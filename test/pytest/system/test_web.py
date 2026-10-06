@@ -788,6 +788,102 @@ def test_ten_idle_minutes_on_the_real_backend_end_the_page_session(open_page, li
         box.clock = real_clock
 
 
+# ── 錯誤訊息的三要素（#50）─────────────────────────────────────────────────────
+# 每則失敗訊息都要說得出發生什麼、在哪裡、該怎麼改。後端的訊息由 lint_messages 擋；這裡是頁面
+# 自己產生的那一類——請求根本沒送到後端時，瀏覽器只給一句「Failed to fetch」。
+
+
+def _failure_helper_source() -> tuple[str, str]:
+    """index.html 切成（failureText 這個函式本身、其餘全部）。"""
+    html = (_WEB_DIR / "index.html").read_text(encoding="utf-8")
+    start = html.index("function failureText(")
+    end = html.index("\n}\n", start) + len("\n}\n")
+    return html[start:end], html[:start] + html[end:]
+
+
+def test_every_failure_message_is_built_by_the_one_helper():
+    # 各處自己拼一句「送不出去：Failed to fetch」正是這張 issue 要收掉的東西：錯誤物件的訊息只在
+    # failureText 裡被讀，別處一律交給它。這一則擋的是之後新增的動作又繞過去。
+    helper, rest = _failure_helper_source()
+
+    code = "\n".join(line for line in rest.splitlines() if not line.lstrip().startswith("//"))
+    assert "下一步：" in helper
+    assert "error.message" not in code
+    assert "送不出去" not in code
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "trigger", "shown", "action"),
+    [
+        ("**/api/promote", "promoteAll()", "[data-testid='promote-error']", "進版"),
+        ("**/api/drafts", "discardDrafts.call(null, null, null)", None, "捨棄變更"),
+        ("**/api/session/lock", "acquireSession()", "[data-testid='readonly-banner']", "取得編輯階段"),
+    ],
+)
+def test_an_unreachable_backend_names_the_action_and_the_next_step(
+    open_page, listing, endpoint, trigger, shown, action
+):
+    listing("a")
+    page = _enter_identity(open_page())
+    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+    if shown is None:
+        # 捨棄變更先過確認對話框：在背後按下確認。
+        shown = "[data-testid='promote-error']"
+        trigger = (
+            "(discardDrafts(null, null),"
+            " document.querySelector(\"[data-testid='confirm-ok']\").click())"
+        )
+    page.evaluate("rememberToken(null)")  # 取得編輯階段那一則：不走「接續」那條路
+    page.route(endpoint, lambda route: route.abort())
+
+    page.evaluate(trigger)
+
+    page.wait_for_selector(f"{shown}:not([hidden])")
+    text = page.inner_text(shown)
+    assert f"「{action}」送不出去" in text
+    assert "這個動作沒有完成" in text
+    assert "下一步：確認後端服務在執行" in text
+
+
+def test_a_refusal_from_the_backend_is_shown_as_the_backend_wrote_it(open_page, listing):
+    # 後端回絕時訊息它已經寫好（含下一步）：原樣顯示，不套上「送不出去」那一套。
+    listing("a")
+    page = open_page(identity=_REMEMBERED)
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    page.route(
+        "**/api/configs",
+        lambda route: route.fulfill(
+            status=500, content_type="application/json",
+            body=json.dumps({"detail": "清單檔解析失敗。下一步：修正 config-list.toml 第 3 行"}),
+        ),
+    )
+
+    page.click("[data-testid='rescan']")
+
+    page.wait_for_selector("[data-testid='load-error']")
+    text = page.inner_text("[data-testid='load-error']")
+    assert "清單檔解析失敗。下一步：修正 config-list.toml 第 3 行" in text
+    assert "送不出去" not in text
+
+
+def test_an_error_without_a_reason_still_says_where_to_look(open_page, listing):
+    # 回應不是後端寫的形狀（中間的代理、或後端崩了）：不只丟一個「502 Bad Gateway」。
+    listing("a")
+    page = open_page(identity=_REMEMBERED)
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    page.route(
+        "**/api/configs",
+        lambda route: route.fulfill(status=502, content_type="text/html", body="<h1>Bad Gateway</h1>"),
+    )
+
+    page.click("[data-testid='rescan']")
+
+    page.wait_for_selector("[data-testid='load-error']")
+    text = page.inner_text("[data-testid='load-error']")
+    assert "後端回了 502" in text
+    assert "下一步：查看後端服務的紀錄" in text
+
+
 # ── 開發／部署模式徽章（#47）──────────────────────────────────────────────────
 # 模式由後端判定、前端只顯示（ADR-00000020：讓使用者清楚知道自己處於哪個模式，而非阻擋）。
 

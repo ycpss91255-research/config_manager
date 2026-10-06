@@ -666,7 +666,7 @@ function setDrafts(uids) {
 async function loadDrafts() {
   try {
     const response = await apiFetch(`${API_BASE}/api/drafts`);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const payload = await response.json();
     setDrafts(payload.drafts.map((draft) => draft.uid));
   } catch (error) {
@@ -675,7 +675,7 @@ async function loadDrafts() {
       class: "notice error", "data-testid": "drafts-error",
     }, [
       element("strong", { text: "讀不到草稿清單，樹上的草稿標記可能不準。" }),
-      element("pre", { text: String(error && error.message ? error.message : error) }),
+      element("pre", { text: failureText("讀取草稿清單", error) }),
     ]));
   }
 }
@@ -727,7 +727,7 @@ async function runSearch() {
   try {
     const params = new URLSearchParams({ q: query, scope: searchScope.value });
     const response = await apiFetch(`${API_BASE}/api/search?${params}`);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const payload = await response.json();
     if (generation !== searchGeneration) return;
     searchHits = new Set(payload.hits.map((hit) => hit.uid));
@@ -736,7 +736,7 @@ async function runSearch() {
   } catch (error) {
     if (generation !== searchGeneration) return;
     // 搜尋失敗不能靜默顯示成「沒有符合的項目」——那會讓人以為參數不存在（不變式 2、T14）。
-    searchError = String(error && error.message ? error.message : error);
+    searchError = failureText("搜尋", error);
   }
   render();
 }
@@ -911,14 +911,30 @@ async function loadErrorText(response) {
   const payload = await response.json().catch(() => null);
   const detail = payload && payload.detail;
   if (detail) return detailText(detail);
-  return `${response.status} ${response.statusText}`;
+  // 回應不是後端寫的那種形狀（中間有代理、或後端崩了）：至少說出狀態碼與去哪裡看原因。
+  return `後端回了 ${response.status} ${response.statusText}，沒有附原因。`
+    + "下一步：查看後端服務的紀錄（log）找出這個請求為什麼失敗。";
+}
+
+// 後端回絕（4xx／5xx）：訊息是後端寫好的（哪個欄位、為什麼、下一步），原樣顯示。
+class Refused extends Error {}
+
+// 一個動作失敗時要顯示的話（#50）：每則都要說得出發生什麼、在哪裡、該怎麼改。後端回絕的，訊息它
+// 已經寫好，原樣給；請求根本沒到後端的（斷線、後端沒起來、這個頁面的來源沒被放行），瀏覽器只給
+// 一句「Failed to fetch」——這裡補上是哪個動作、結果如何、下一步。失敗的訊息都從這裡出去，
+// 不在各處自己拼一句「送不出去」。
+function failureText(action, error) {
+  if (error instanceof Refused) return error.message;
+  const why = error && error.message ? error.message : String(error);
+  return `「${action}」送不出去（${why}）：後端沒有回應，這個動作沒有完成。`
+    + "下一步：確認後端服務在執行、這台電腦連得到它，再試一次。";
 }
 
 async function load() {
   const generation = ++loadGeneration;
   try {
     const response = await apiFetch(`${API_BASE}/api/configs`);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const data = await response.json();
     if (generation !== loadGeneration) return;  // 有更新的載入開始了，這次過時、丟棄
     rows = data;
@@ -929,7 +945,7 @@ async function load() {
     // 大聲失敗（不變式 2）：說出是什麼壞了，不是顯示一份空清單假裝沒事——空清單與「讀不到
     // 清單」看起來一樣，而那兩件事該做的處置完全不同。旗標讓錯誤黏住，經 render 重畫（見上）。
     if (generation !== loadGeneration) return;  // 過時的失敗不覆寫新結果
-    loadError = String(error && error.message ? error.message : error);
+    loadError = failureText("讀取 config 清單", error);
     render();
   }
 }
@@ -1048,7 +1064,7 @@ async function openPanel(uid, notice) {
   }
   try {
     const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(uid)}`);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const detail = await response.json();
     if (generation !== panelGenerations.get(uid)) return;
     const panel = panelNode(detail);
@@ -1061,7 +1077,7 @@ async function openPanel(uid, notice) {
       class: "notice error", "data-testid": `panel-error-${uid}`,
     }, [
       element("strong", { text: "讀不到這份 config 的內容。" }),
-      element("pre", { text: String(error && error.message ? error.message : error) }),
+      element("pre", { text: failureText("讀取這份 config 的內容", error) }),
     ]));
   }
 }
@@ -1296,7 +1312,7 @@ async function saveAttributes(detail, ui) {
       text: "已更新屬性，並記一筆變更紀錄。",
     }));
   } catch (error) {
-    renderSaveError(ui.error, `送不出去：${error && error.message ? error.message : error}`);
+    renderSaveError(ui.error, failureText("儲存屬性", error));
   } finally {
     ui.save.disabled = false;
   }
@@ -1330,7 +1346,7 @@ async function specifyType(detail, row, typeName, ui) {
         : `已把「${row.path}」的型別指定為 ${TYPE_LABEL[typeName]}，並記一筆變更紀錄。`,
     }));
   } catch (error) {
-    renderSaveError(ui.error, `送不出去：${error && error.message ? error.message : error}`);
+    renderSaveError(ui.error, failureText("指定型別", error));
     ui.reset();
   }
 }
@@ -1370,7 +1386,7 @@ async function draftSchema(detail, ui) {
       text: `已產生 schema（${payload.schema}），並記一筆變更紀錄。`,
     }));
   } catch (error) {
-    renderSaveError(ui.error, `送不出去：${error && error.message ? error.message : error}`);
+    renderSaveError(ui.error, failureText("產生 schema", error));
   } finally {
     ui.button.disabled = false;
   }
@@ -1495,7 +1511,7 @@ async function saveDraft(detail, entries, ui, overrides = {}) {
     if (skipped.length) renderRuleWarnings(detail, ui, skipped, overrides, false, true);
     else if (ui.warnings) ui.warnings.replaceChildren();
   } catch (error) {
-    renderSaveError(ui.error, `送不出去：${error && error.message ? error.message : error}`);
+    renderSaveError(ui.error, failureText("儲存草稿", error));
     ui.save.disabled = false;
   }
 }
@@ -2012,7 +2028,7 @@ async function loadHistory(view, detail, filter, generation) {
   const query = filter === "all" ? `?prefix=${ALL_KINDS}` : "";
   try {
     const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/history${query}`);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const changes = await response.json();
     if (generation !== historyGeneration) return;
     list.replaceChildren(...changes.map((change) => historyEntry(change, detail, view)));
@@ -2028,7 +2044,7 @@ async function loadHistory(view, detail, filter, generation) {
     if (generation !== historyGeneration) return;
     list.replaceChildren(element("li", { class: "notice error", "data-testid": "history-error" }, [
       element("strong", { text: "讀不到變更歷史。" }),
-      element("pre", { text: String(error && error.message ? error.message : error) }),
+      element("pre", { text: failureText("讀取變更歷史", error) }),
     ]));
   }
 }
@@ -2064,7 +2080,7 @@ async function selectChange(view, detail, change, node) {
   try {
     const url = `${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/history/${change.sha}`;
     const response = await apiFetch(url);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const version = await response.json();
     if (generation !== historyGeneration) return;
     renderDiff(diff, version, detail, view);
@@ -2072,7 +2088,7 @@ async function selectChange(view, detail, change, node) {
     if (generation !== historyGeneration) return;
     diff.replaceChildren(element("div", { class: "notice error", "data-testid": "history-diff-error" }, [
       element("strong", { text: "讀不到這一版的內容。" }),
-      element("pre", { text: String(error && error.message ? error.message : error) }),
+      element("pre", { text: failureText("讀取這一版的內容", error) }),
     ]));
   }
 }
@@ -2146,7 +2162,7 @@ async function revertTo(view, detail, version, differing) {
   } catch (error) {
     diff.prepend(element("div", { class: "notice error", "data-testid": "history-revert-error" }, [
       element("strong", { text: "沒有退版。" }),
-      element("pre", { text: `送不出去：${error && error.message ? error.message : error}` }),
+      element("pre", { text: failureText("退回此版本", error) }),
     ]));
   }
 }
@@ -2306,7 +2322,7 @@ async function resolveDrift(detail, option, view, errorEl) {
     promoteDoneEl.hidden = false;
     openPanel(detail.uid);
   } catch (error) {
-    renderSaveError(errorEl, `送不出去：${error && error.message ? error.message : error}`);
+    renderSaveError(errorEl, failureText("處置偏離", error));
   } finally {
     for (const button of view.querySelectorAll(".resolve-actions button")) button.disabled = false;
   }
@@ -2398,7 +2414,7 @@ async function promoteAll() {
     load();  // 目標變了，重掃狀態
     for (const uid of openUids()) openPanel(uid);  // 打開的那幾份現在來源＝剛進版的內容
   } catch (error) {
-    renderSaveError(promoteErrorEl, `送不出去：${error && error.message ? error.message : error}`);
+    renderSaveError(promoteErrorEl, failureText("進版", error));
     setDrafts(draftUids);
   }
 }
@@ -2424,7 +2440,7 @@ async function discardDrafts(uid, name) {
       if (!uid || uid === open) openPanel(open);  // 畫面回到來源內容
     }
   } catch (error) {
-    renderSaveError(promoteErrorEl, `送不出去：${error && error.message ? error.message : error}`);
+    renderSaveError(promoteErrorEl, failureText("捨棄變更", error));
   }
 }
 
@@ -2452,7 +2468,7 @@ async function unmanageConfig(detail) {
     promoteDoneEl.hidden = false;
     load();
   } catch (error) {
-    renderSaveError(promoteErrorEl, `送不出去：${error && error.message ? error.message : error}`);
+    renderSaveError(promoteErrorEl, failureText("解除納管", error));
   }
 }
 
@@ -2536,7 +2552,7 @@ async function acquireSession() {
     }
     if (!renewTimer) renewTimer = setInterval(() => renewSession(sessionToken), RENEW_EVERY_MS);
   } catch (error) {
-    setReadonly(null, null, `取不到編輯階段（送不出去：${error && error.message ? error.message : error}）。`);
+    setReadonly(null, null, `取不到編輯階段：${failureText("取得編輯階段", error)}`);
   }
 }
 
@@ -2836,7 +2852,7 @@ identityForm.addEventListener("submit", async (event) => {
     rememberIdentity(!rememberLabel.hidden && identityForm.elements.remember.checked ? payload : null);
     showList(payload);
   } catch (error) {
-    identityError.textContent = `送不出去：${error && error.message ? error.message : error}`;
+    identityError.textContent = failureText("送出身分", error);
     identityError.hidden = false;
   }
 });
@@ -2877,7 +2893,7 @@ async function loadBrowseRoots() {
   browseRejectedEl.hidden = true;
   try {
     const response = await apiFetch(`${API_BASE}/api/allowed-roots`);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     whitelistRoots = (await response.json()).prefixes;
     browseRootsEl.replaceChildren(...whitelistRoots.map((prefix) =>
       element("li", { "data-testid": `browse-root-${prefix}`, "data-path": prefix }, [
@@ -2888,7 +2904,7 @@ async function loadBrowseRoots() {
       ? "挑一個允許瀏覽的根開始，或在上方貼一個絕對路徑。"
       : "白名單目前是空的。";
   } catch (error) {
-    browseHintEl.textContent = `讀不到白名單：${error && error.message ? error.message : error}`;
+    browseHintEl.textContent = failureText("讀取白名單", error);
   }
 }
 
@@ -2920,7 +2936,7 @@ async function browseTo(path) {
     renderBrowseEntries(payload.entries);
   } catch (error) {
     if (generation !== browseGeneration) return;
-    browseHintEl.textContent = `瀏覽失敗：${error && error.message ? error.message : error}`;
+    browseHintEl.textContent = failureText("瀏覽目錄", error);
   }
 }
 
@@ -3036,7 +3052,7 @@ async function confirmAddRoot(prefix, showError) {
       return false;
     }
   } catch (error) {
-    showError(`數不出這個路徑底下有幾個檔案：${errText(error)}`);
+    showError(failureText("計算可納管檔案數", error));
     return false;
   }
   const shown = payload.capped ? `${payload.count} 個以上` : `${payload.count} 個`;
@@ -3072,7 +3088,7 @@ async function addToWhitelist(prefix) {
     browseRejectedEl.hidden = true;
     browseTo(prefix);  // 重跑被拒的瀏覽——該路徑現在在白名單內了
   } catch (error) {
-    showAddError(`送不出去：${error && error.message ? error.message : error}`);
+    showAddError(failureText("加入白名單", error));
   }
 }
 
@@ -3106,10 +3122,6 @@ const whitelistConfirmEl = document.querySelector("[data-testid='whitelist-remov
 // 輸入的數字，與目前輸入框不符；加入成功時也遞增它，作廢加入前送出、仍在途的預覽（#252）。
 let previewGeneration = 0;
 
-function errText(error) {
-  return error && error.message ? error.message : String(error);
-}
-
 // 端點的 detail 有兩形：純字串（add／remove 的值錯誤）或物件（candidate-count 與 DELETE
 // 確認的 {kind, message, …}）。兩者都取得出可行動訊息，不自造籠統字句（不變式 2）。
 function detailText(detail) {
@@ -3132,7 +3144,7 @@ async function loadWhitelist() {
   whitelistConfirmEl.hidden = true;
   try {
     const response = await apiFetch(`${API_BASE}/api/allowed-roots`);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const roots = (await response.json()).roots;
     if (!roots.length) {
       whitelistRootsEl.replaceChildren(
@@ -3143,7 +3155,7 @@ async function loadWhitelist() {
     whitelistRootsEl.replaceChildren(...roots.map(whitelistRootRow));
   } catch (error) {
     whitelistRootsEl.replaceChildren(
-      element("li", { class: "whitelist-empty", text: `讀不到白名單：${errText(error)}` })
+      element("li", { class: "whitelist-empty", text: failureText("讀取白名單", error) })
     );
   }
 }
@@ -3182,7 +3194,7 @@ async function previewCandidates() {
   } catch (error) {
     if (generation !== previewGeneration) return;
     whitelistPreviewEl.hidden = true;
-    whitelistErrorEl.textContent = `數不出來：${errText(error)}`;
+    whitelistErrorEl.textContent = failureText("計算可納管檔案數", error);
     whitelistErrorEl.hidden = false;
   }
 }
@@ -3220,7 +3232,7 @@ async function addRoot() {
     ++previewGeneration;  // 作廢加入前送出、仍在途的預覽，免得它稍後把已清空的預覽面板顯示回來（#252）
     loadWhitelist();
   } catch (error) {
-    whitelistErrorEl.textContent = `送不出去：${errText(error)}`;
+    whitelistErrorEl.textContent = failureText("加入白名單", error);
     whitelistErrorEl.hidden = false;
   }
 }
@@ -3243,7 +3255,7 @@ async function beginRemoveRoot(prefix) {
     whitelistErrorEl.textContent = detailText(payload.detail);
     whitelistErrorEl.hidden = false;
   } catch (error) {
-    whitelistErrorEl.textContent = `送不出去：${errText(error)}`;
+    whitelistErrorEl.textContent = failureText("移除白名單", error);
     whitelistErrorEl.hidden = false;
   }
 }
@@ -3290,7 +3302,7 @@ async function confirmRemoveRoot(prefix) {
     whitelistConfirmEl.hidden = true;
     loadWhitelist();
   } catch (error) {
-    whitelistErrorEl.textContent = `送不出去：${errText(error)}`;
+    whitelistErrorEl.textContent = failureText("移除白名單", error);
     whitelistErrorEl.hidden = false;
   }
 }
@@ -3393,7 +3405,7 @@ async function runInspect() {
     renderInspect(payload);
   } catch (error) {
     if (generation !== inspectGeneration) return;
-    renderOnboardError(String(error && error.message ? error.message : error));
+    renderOnboardError(failureText("偵測來源檔案", error));
   }
 }
 
@@ -3502,7 +3514,7 @@ async function submitOnboard() {
     }
     showList(currentIdentity);  // 回清單；load() 會重掃，新條目就出現在左側樹
   } catch (error) {
-    renderOnboardError(String(error && error.message ? error.message : error));
+    renderOnboardError(failureText("納管", error));
   }
 }
 
