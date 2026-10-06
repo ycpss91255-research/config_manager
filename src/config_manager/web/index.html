@@ -304,6 +304,8 @@
     font-size: 13px;
   }
   .who { color: var(--muted); font-size: 13px; }
+  .idle-warning { display: flex; gap: 12px; align-items: center; border-color: var(--warn); }
+  .idle-warning button { flex: none; }
   .who.mode { border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; }
   .scan-status { grid-column: 1 / -1; margin: 0; font-size: 13px; color: var(--muted); }
   .scan-status[data-state="done"] { color: var(--in-sync); }
@@ -444,6 +446,8 @@
     讓每一次改動追溯得到人。
   </p>
 
+  <!-- 逾時退出提示（#48）：部署模式閒置逾時後，這個瀏覽器被退出、回到這一頁時出現。 -->
+  <p class="notice" data-testid="session-timeout" role="status" hidden></p>
   <p class="error" data-testid="identity-error" hidden></p>
 
   <label>
@@ -509,6 +513,11 @@
   <!-- 進版的結果橫幅：失敗指名哪一份的哪一個參數（原樣列出後端的行號／原因／建議）、成功說進了幾份。 -->
   <!-- W6 唯讀橫幅（#33）：非持有分頁顯示；含持有者姓名、email、開始時間。 -->
   <div class="notice error banner" data-testid="readonly-banner" hidden></div>
+  <!-- 閒置提示（#48）：部署模式逾時前 1 分鐘出現，說明還剩多久、逾時會發生什麼，可按「繼續使用」延長。 -->
+  <div class="notice banner idle-warning" data-testid="idle-warning" role="alert" hidden>
+    <span data-testid="idle-warning-text"></span>
+    <button type="button" data-testid="idle-extend">繼續使用</button>
+  </div>
   <div class="notice error banner" data-testid="promote-error" hidden></div>
   <div class="notice banner" data-testid="promote-done" hidden></div>
   <!-- 「檢查差異」的回饋：檢查中／檢查完（幾份、結果）／失敗。全部一致時畫面不會變，沒有這一行
@@ -2553,6 +2562,8 @@ async function renewSession(token, resuming = false) {
       // 使用中的階段失效（逾時被回收或已釋放）：明確轉唯讀並說明，不替使用者悄悄重新取得。
       if (!resuming) {
         setReadonly(null, null, "編輯階段已失效（逾時被回收或已釋放），這個分頁現在是唯讀。重新整理頁面以重新取得。");
+        // 階段失效可能是因為這個瀏覽器閒置逾時被退出了：馬上問後端，是的話回身分輸入頁（#48）。
+        if (idleTimer) idleTick(false);
       }
     }
     return false;
@@ -2617,6 +2628,107 @@ function hideAllPageViews() {
   whitelistView.hidden = true;
 }
 
+// ── 閒置逾時（#48）──────────────────────────────────────────────────────────────
+// 部署模式：這個瀏覽器的人 10 分鐘沒操作就自動退出並釋放編輯階段；逾時前 1 分鐘提示，可延長。
+// **判定在後端**（它記最後一次操作的時間）：這裡只做三件事——把「有人在操作」回報上去、照後端說的
+// 剩餘時間顯示提示、後端說已逾時就回身分輸入頁。開發模式後端回「不逾時」，這裡就不啟動。
+const IDLE_TICK_MS = window.CM_IDLE_TICK_MS || 15_000;
+const idleWarning = document.querySelector("[data-testid='idle-warning']");
+const idleWarningText = document.querySelector("[data-testid='idle-warning-text']");
+const timeoutNotice = document.querySelector("[data-testid='session-timeout']");
+let idleTimer = null;
+let idleCountdown = null;
+let interacted = false;
+let lastActivityAt = 0;
+// 後端最近一次說的：{ seconds, at }——還剩幾秒、是在本機的哪個時刻說的（倒數顯示用）。
+let idleLeft = null;
+
+async function idleRequest(active) {
+  try {
+    const response = await apiFetch(
+      `${API_BASE}/api/session/${active ? "activity" : "idle"}`, { method: active ? "POST" : "GET" },
+    );
+    return response.ok ? await response.json() : null;
+  } catch (_error) {
+    return null;  // 問不到：下一輪再問。前端不自己判定逾時。
+  }
+}
+
+async function startIdleWatch() {
+  stopIdleWatch();
+  const view = await idleRequest(false);
+  if (!view || view.timeout_seconds === null) return;  // 開發模式（或問不到）：不逾時、不監看
+  idleTimer = setInterval(idleTick, IDLE_TICK_MS);
+  applyIdle(view);
+}
+
+function stopIdleWatch() {
+  if (idleTimer) { clearInterval(idleTimer); idleTimer = null; }
+  if (idleCountdown) { clearInterval(idleCountdown); idleCountdown = null; }
+  idleWarning.hidden = true;
+  idleLeft = null;
+  interacted = false;
+}
+
+async function idleTick(active = interacted) {
+  interacted = false;
+  if (active) lastActivityAt = Date.now();
+  applyIdle(await idleRequest(active));
+}
+
+function applyIdle(view) {
+  if (!view || !idleTimer) return;
+  if (view.timed_out || view.remaining_seconds === null) {
+    leaveForIdle(view.timeout_seconds);
+    return;
+  }
+  idleLeft = { seconds: view.remaining_seconds, at: Date.now() };
+  const warning = view.remaining_seconds <= view.warn_seconds;
+  idleWarning.hidden = !warning;
+  if (warning && !idleCountdown) idleCountdown = setInterval(showIdleCountdown, 1000);
+  if (!warning && idleCountdown) { clearInterval(idleCountdown); idleCountdown = null; }
+  showIdleCountdown();
+}
+
+// 提示上的秒數是顯示用的倒數（從後端最近一次的答案往下數）；數到 0 就立刻再問後端——退出與否
+// 由它說了算。
+function showIdleCountdown() {
+  if (!idleLeft || idleWarning.hidden) return;
+  const seconds = Math.max(0, Math.ceil(idleLeft.seconds - (Date.now() - idleLeft.at) / 1000));
+  const drafts = draftUids.size
+    ? `、${draftUids.size} 份未進版的草稿會被清除`
+    : "";
+  idleWarningText.textContent =
+    `已有一段時間沒有操作，約 ${seconds} 秒後將自動退出並釋放編輯階段${drafts}。要繼續請按「繼續使用」。`;
+  if (seconds === 0) idleTick(false);
+}
+
+// 逾時：後端已清掉這個瀏覽器的身分、釋放了它的編輯階段。回身分輸入頁並說明發生了什麼。
+function leaveForIdle(timeoutSeconds) {
+  stopIdleWatch();
+  if (renewTimer) { clearInterval(renewTimer); renewTimer = null; }
+  rememberToken(null);
+  currentIdentity = null;
+  // 表單清空、角色回到預設：下一個坐下來的可能是別人，不留上一個人的姓名、Email 與角色給他按。
+  identityForm.reset();
+  for (const button of roleToggle.querySelectorAll("button[data-role]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.role === "user"));
+  }
+  showIdentityForm(timeoutSeconds || true);
+}
+
+function noteInteraction() {
+  if (!idleTimer) return;
+  interacted = true;
+  // 安靜了一陣子之後的第一個動作立刻回報：等下一輪才報的話，人剛回來卻在那幾秒內被判逾時。
+  if (Date.now() - lastActivityAt >= IDLE_TICK_MS) idleTick(true);
+}
+
+for (const kind of ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"]) {
+  window.addEventListener(kind, noteInteraction, { passive: true });
+}
+document.querySelector("[data-testid='idle-extend']").addEventListener("click", () => idleTick(true));
+
 // 記住此裝置（#288）：姓名與 Email 存在這個瀏覽器自己的 localStorage，後端不存。角色刻意不存——
 // 每次開啟都要重新選，開發者身分不該因為上次勾過就自動帶著。
 const REMEMBERED_KEY = "cm.identity.remembered";
@@ -2641,8 +2753,17 @@ function rememberIdentity(identity) {
   }
 }
 
-function showIdentityForm() {
+// `timedOut`：因閒置被退出後回到這一頁（值是逾時的秒數，不知道就給 true）——說明發生了什麼，
+// 不留一張沒頭沒尾的表單。
+function showIdentityForm(timedOut = false) {
   hideAllPageViews();
+  timeoutNotice.hidden = !timedOut;
+  if (timedOut) {
+    const minutes = typeof timedOut === "number" ? `超過 ${Math.round(timedOut / 60) || 1} 分鐘` : "過久";
+    timeoutNotice.textContent =
+      `閒置${minutes}沒有操作，已自動退出；編輯階段已釋放，未進版的草稿（若有）已清除。`
+      + "下一步：重新輸入身分以繼續。";
+  }
   // 只在開發模式提供；模式未知時也不提供（不假設是開發模式，#47）。
   rememberLabel.hidden = document.body.dataset.mode !== "development";
   const remembered = rememberLabel.hidden ? null : rememberedIdentity();
@@ -2668,6 +2789,7 @@ function showList(identity) {
   whitelistButton.hidden = identity.role !== "developer";
   load();
   acquireSession();
+  startIdleWatch();
 }
 
 // 別人正持有編輯階段（#33）：沒有自己的身分也能看清單，但一切會寫入的控制項不出現。
@@ -3443,7 +3565,11 @@ async function loadMode() {
     // backend 連不上時仍顯示身分輸入頁：那是使用者唯一能操作的東西，
     // 而送出時的錯誤會說明真正的問題。
   }
+  // 沒有身分：先把身分輸入頁顯示出來（那是使用者唯一能操作的東西，不等任何請求），再問是不是
+  // 因閒置被退出的——是的話補上說明（重新整理後也一樣，#48）。
   showIdentityForm();
+  const idle = await idleRequest(false);
+  if (idle && idle.timed_out && !identityForm.hidden) showIdentityForm(idle.timeout_seconds || true);
 })();
 </script>
 

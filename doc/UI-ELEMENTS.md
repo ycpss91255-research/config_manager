@@ -201,7 +201,9 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 元素 | 選取器 | 行為 |
 |---|---|---|
 | 唯讀橫幅 | `data-testid="readonly-banner"` | 非持有分頁顯示；含持有者姓名、email、開始時間；階段失效（續期 410）時也用它說明。唯讀時 `body[data-readonly="true"]`，所有會寫入的控制項（`.editing-only`：納管、白名單、捨棄變更、進版、面板儲存／捨棄、退回此版本、處置三鍵）**不出現於 DOM 流程**（不是停用）；工具列 `current-role` 顯示「唯讀」（#33） |
-| 逾時退出提示 | `data-testid="session-timeout"` | 部署模式閒置逾時後出現，階段已釋放 |
+| 閒置提示 | `data-testid="idle-warning"` | 部署模式逾時前 1 分鐘出現（`role="alert"`）：文字（`idle-warning-text`）說還剩約幾秒、逾時會自動退出並釋放編輯階段、有幾份未進版草稿會被清除；秒數每秒倒數。剩餘時間充裕或開發模式不出現（#48） |
+| 繼續使用 | `data-testid="idle-extend"` | 在閒置提示上；按下回報「有在操作」、重新起算，提示消失。在頁面上動滑鼠、按鍵、點擊、捲動也會自動回報，不必按它（#48） |
+| 逾時退出提示 | `data-testid="session-timeout"` | 部署模式閒置逾時後，頁面回到身分輸入頁並在表單上方出現：說明閒置超過幾分鐘已自動退出、編輯階段已釋放、未進版草稿已清除、下一步重新輸入身分。姓名／Email 清空、角色回到預設；重新整理仍在，重新輸入身分後消失。判定在後端（`GET /api/session/idle`），頁面只顯示（#48） |
 | 確認對話框 | `data-testid="confirm-dialog"` | 退出丟草稿／**捨棄變更**／以來源覆蓋／退回此版本／先納入待修正共用；`<dialog>`，開啟時帶 `open`；標題 `confirm-title`、後果 `confirm-body` |
 | 對話框確認鈕 | 對話框內文字「確認」（`confirm-ok`） | 執行該動作 |
 | 對話框取消鈕 | 對話框內文字「取消」（`confirm-cancel`） | 關閉、不執行（Esc 同） |

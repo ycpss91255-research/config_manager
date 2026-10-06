@@ -28,7 +28,9 @@ T11 先前**沒有執行通路**：頁面裡的 `data-testid` 是給未來的測
 輸入身分」這件事取決於執行順序。一則一個，順序就不是變數。
 """
 
+import datetime
 import functools
+import gc
 import http.server
 import json
 import os
@@ -48,6 +50,7 @@ from playwright.sync_api import Error as BrowserError
 from playwright.sync_api import sync_playwright
 from v8_coverage import line_coverage
 
+from config_manager.api.lock import LockBox
 from config_manager.api.routes import create_app
 
 _ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -609,6 +612,180 @@ def test_unticking_remember_forgets_the_device(open_page, listing):
 
     page.wait_for_selector("[data-testid='identity-form']", state="visible")
     assert page.input_value("[data-testid='identity-name']") == ""
+
+
+# ── 閒置逾時的提示與退出（#48）──────────────────────────────────────────────────
+# 判定在後端；頁面只回報操作、照後端說的剩餘時間顯示提示、後端說逾時就回身分輸入頁。這裡把後端的
+# 回答換成指定的（後端真的數 10 分鐘的行為在 T9／T13 以注入時鐘驗）。
+
+_IDLE_WARNING = "[data-testid='idle-warning']"
+_TIMEOUT_NOTICE = "[data-testid='session-timeout']"
+
+
+def _idle_answers(page, **overrides):
+    """把閒置狀態兩支端點的回答換成指定的；回一個清單，記下頁面回報了幾次操作。"""
+    view = {
+        "timeout_seconds": 600, "warn_seconds": 60, "remaining_seconds": 600, "timed_out": False,
+    }
+    view.update(overrides)
+    reported = []
+
+    def answer(route):
+        if route.request.method == "POST":
+            reported.append(route.request.url)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(view))
+
+    page.route("**/api/session/idle", answer)
+    page.route("**/api/session/activity", answer)
+    return reported
+
+
+def _entered(open_page, listing):
+    listing("a")
+    page = _enter_identity(open_page())
+    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+    return page
+
+
+def test_no_warning_while_there_is_plenty_of_time_left(open_page, listing):
+    page = _entered(open_page, listing)
+    _idle_answers(page, remaining_seconds=300)
+
+    page.evaluate("idleTick(false)")
+
+    page.wait_for_timeout(200)
+    assert page.is_hidden(_IDLE_WARNING)
+
+
+def test_a_minute_before_the_timeout_a_warning_says_what_will_happen(open_page, listing):
+    page = _entered(open_page, listing)
+    _idle_answers(page, remaining_seconds=45)
+
+    page.evaluate("idleTick(false)")
+
+    page.wait_for_selector(_IDLE_WARNING, state="visible")
+    text = page.inner_text("[data-testid='idle-warning-text']")
+    assert "約 45 秒後將自動退出並釋放編輯階段" in text
+    assert page.is_visible("[data-testid='idle-extend']")
+
+
+def test_the_warning_counts_the_drafts_that_would_be_lost(open_page, listing, api):
+    page = _entered(open_page, listing)
+    page.evaluate("setDrafts(['mfz3k9q1'])")
+    _idle_answers(page, remaining_seconds=30)
+
+    page.evaluate("idleTick(false)")
+
+    page.wait_for_selector(_IDLE_WARNING, state="visible")
+    assert "1 份未進版的草稿會被清除" in page.inner_text("[data-testid='idle-warning-text']")
+
+
+def test_continuing_reports_activity_and_dismisses_the_warning(open_page, listing):
+    page = _entered(open_page, listing)
+    _idle_answers(page, remaining_seconds=45)
+    page.evaluate("idleTick(false)")
+    page.wait_for_selector(_IDLE_WARNING, state="visible")
+    page.unroute("**/api/session/idle")
+    page.unroute("**/api/session/activity")
+    reported = _idle_answers(page, remaining_seconds=600)
+    # 剛回報過操作（節流期間內）：按鈕仍要立刻回報、立刻收掉提示，不等下一輪。
+    page.evaluate("lastActivityAt = Date.now()")
+
+    page.click("[data-testid='idle-extend']")
+
+    page.wait_for_selector(_IDLE_WARNING, state="hidden")
+    assert any(url.endswith("/api/session/activity") for url in reported)
+
+
+def test_using_the_page_reports_activity_without_being_asked(open_page, listing):
+    # 人回來動了一下：立刻回報，不必等提示出現、也不必按任何按鈕。
+    page = _entered(open_page, listing)
+    reported = _idle_answers(page)
+
+    with page.expect_request("**/api/session/activity"):
+        page.mouse.move(200, 200)
+        page.keyboard.press("Shift")
+
+    assert reported
+
+
+def test_when_the_backend_says_timed_out_the_page_returns_to_the_identity_form(open_page, listing):
+    page = _entered(open_page, listing)
+    _idle_answers(page, remaining_seconds=None, timed_out=True)
+
+    page.evaluate("idleTick(false)")
+
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    assert "閒置超過 10 分鐘" in page.inner_text(_TIMEOUT_NOTICE)
+    assert "編輯階段已釋放" in page.inner_text(_TIMEOUT_NOTICE)
+    assert page.is_hidden("[data-testid='config-tree']")
+    # 下一個坐下來的可能是別人：不留上一個人的姓名與 Email。
+    assert page.input_value("[data-testid='identity-name']") == ""
+    assert page.input_value("[data-testid='identity-email']") == ""
+
+
+def test_after_timing_out_entering_an_identity_again_clears_the_notice(open_page, listing):
+    page = _entered(open_page, listing)
+    token = page.evaluate("sessionToken")
+    _idle_answers(page, remaining_seconds=None, timed_out=True)
+    page.evaluate("idleTick(false)")
+    page.wait_for_selector(_TIMEOUT_NOTICE, state="visible")
+    page.unroute("**/api/session/idle")
+    page.unroute("**/api/session/activity")
+    # 這裡的「逾時」是換掉回答演出來的；真的逾時時後端已釋放階段——補上那一步，重新進入才取得到。
+    page.evaluate(
+        "token => apiFetch(`${API_BASE}/api/session/lock`, {method: 'DELETE',"
+        " headers: {'content-type': 'application/json'}, body: JSON.stringify({token})})",
+        token,
+    )
+
+    _enter_identity(page)
+
+    assert page.is_hidden(_TIMEOUT_NOTICE)
+    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+
+
+def test_development_mode_starts_no_idle_watch(open_page, listing):
+    # 後端說「不逾時」（開發模式）：頁面不監看、動了也不回報。
+    listing("a")
+    page = open_page()
+    reported = _idle_answers(page, timeout_seconds=None, warn_seconds=None, remaining_seconds=None)
+    _enter_identity(page)
+    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+
+    page.mouse.move(200, 200)
+    page.wait_for_timeout(300)
+
+    assert reported == []
+    assert page.evaluate("idleTimer") is None
+
+
+def test_ten_idle_minutes_on_the_real_backend_end_the_page_session(open_page, listing):
+    # 不換回答、真的把後端的時鐘撥過 10 分鐘：頁面下一次問就被退出；重新整理仍說明原因；重新輸入
+    # 身分後取得得到編輯階段（後端已釋放）。
+    page = _entered(open_page, listing)
+    # 這個頁面的服務的那一個 LockBox：每則規格各起一個服務，先前的還留在物件圖裡，所以用「持有
+    # 階段的是這個瀏覽器的票」來認。
+    (ticket,) = [c["value"] for c in page.context.cookies() if c["name"] == "cm_browser"]
+    (box,) = [
+        found for found in gc.get_objects()
+        if isinstance(found, LockBox) and found.holder_ticket == ticket
+    ]
+    real_clock = box.clock
+    box.clock = lambda: real_clock() + datetime.timedelta(minutes=11)
+    try:
+        page.evaluate("idleTick(false)")
+        page.wait_for_selector("[data-testid='identity-form']", state="visible")
+        assert "閒置超過 10 分鐘" in page.inner_text(_TIMEOUT_NOTICE)
+
+        page.reload()
+        page.wait_for_selector(_TIMEOUT_NOTICE, state="visible")
+
+        _enter_identity(page)
+        page.wait_for_selector("[data-testid='promote-all']", state="visible")
+        assert page.is_hidden(_TIMEOUT_NOTICE)
+    finally:
+        box.clock = real_clock
 
 
 # ── 開發／部署模式徽章（#47）──────────────────────────────────────────────────
@@ -2986,7 +3163,11 @@ def test_a_release_that_arrives_after_the_reload_does_not_take_the_session_away(
     page.evaluate("sessionToken = null")
 
     page.reload()
-    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+    # 等新頁面**接續完成**（存著的識別碼換成新的）再讓釋放「到」：進版鈕在接續的回應回來之前就
+    # 看得到，只等它的話，讀識別碼時頁面可能還沒收到新的那一個（CI 上實際撞到過）。
+    page.wait_for_function(
+        "old => sessionStorage.getItem('cm.session.token') !== old", arg=old_token
+    )
     late = _api_json(api, "POST", "/api/session/lock/release", {"token": old_token})
 
     assert late == {"released": False}

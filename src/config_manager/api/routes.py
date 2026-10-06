@@ -11,7 +11,7 @@ app 由 create_app(repo) 產生而非模組層的全域物件：config-repo 的�
 import os
 from collections.abc import Iterable
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from subprocess import CalledProcessError
 from typing import cast
 
@@ -29,8 +29,14 @@ from config_manager.api.history import register_history, require_entry, source_u
 from config_manager.api.schema import register_schema, schema_view
 from config_manager.api.shapes import as_problem
 from config_manager.api.search import register_search
-from config_manager.api.lock import LockBox, register_session, require_permission, utc_now
-from config_manager.api.session import DEFAULT_RENEW_TIMEOUT, Identity, SessionLock
+from config_manager.api.lock import (
+    LockBox,
+    register_session,
+    require_permission,
+    seat_browsers,
+    utc_now,
+)
+from config_manager.api.session import Identity, SessionLock, Timeouts
 from config_manager.core.drafts import Stage
 from config_manager.core.errors import (
     ConfigListError,
@@ -153,7 +159,7 @@ DEFAULT_ORIGINS = ("http://127.0.0.1:8081", "http://localhost:8081")
 def create_app(
     repo: str,
     allowed_origins: Iterable[str] = DEFAULT_ORIGINS,
-    session_timeout: timedelta | None = None,
+    timeouts: Timeouts | None = None,
     clock: Callable[[], datetime] = utc_now,
     mode: str = DEPLOYMENT,
 ) -> FastAPI:
@@ -166,8 +172,12 @@ def create_app(
     `mode` 是開發／部署模式（#47）：由起服務的那一層判定（`api/cli` 讀 `CM_MODE`）、在這裡定住、
     以 `GET /api/mode` 回報給前端。沒有改它的端點——前端改不了，所以前端的改動繞不過它。
     不認得的值在這裡再擋一次：`create_app` 也會被測試直接呼叫，不只從 `serve_plan` 來。
+
+    `timeouts` 是兩種逾時（沒給就用預設）：續期逾時兩種模式都有；**閒置逾時只在部署模式生效**
+    （#48）——開發模式不因閒置退出，給了也不用。
     """
     mode = _checked_mode(mode)
+    timeouts = timeouts or Timeouts()
     app = FastAPI(title="config_manager", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
     app.add_middleware(
@@ -185,15 +195,16 @@ def create_app(
     # 清單檔指到的 schema 讀不出來：同樣是伺服器側資料的問題，同一種結構化 500（#39）。
     app.add_exception_handler(SchemaUnreadable, _preflight_error)
 
-    # 各瀏覽器宣告的身分（#288：身分屬於各自的瀏覽器，不是一份全域）。放在 app 上而不是一個模組層
-    # 的全域——後者會讓同一個行程裡起兩個 app 互相看見對方的身分。
-    browsers = Browsers()
     # 目前編輯階段裡的草稿（#18 的 D1：掛在 app 上、單一階段；階段生命週期是 #33）。app 級、
     # 重新整理頁面不丟。
     stage_box: dict[str, Stage] = {"stage": Stage()}
-    # 單一編輯階段（#33、ADR-00000014）：session_timeout 是續期逾時，沒給就用預設（兩種模式都有，
-    # 異常中斷的分頁才收得回來）；時鐘可注入（T13）。
-    lock_box = LockBox(SessionLock(session_timeout or DEFAULT_RENEW_TIMEOUT), clock)
+    # 單一編輯階段（#33、ADR-00000014）：續期逾時兩種模式都有，異常中斷的分頁才收得回來；時鐘
+    # 可注入（T13）。
+    lock_box = LockBox(SessionLock(timeouts.renew), clock)
+    # 各瀏覽器宣告的身分（#288：身分屬於各自的瀏覽器，不是一份全域）。放在 app 上而不是一個模組層
+    # 的全域——後者會讓同一個行程裡起兩個 app 互相看見對方的身分。部署模式下閒置逾時會退出並
+    # 釋放它持有的階段（#48）。
+    browsers = seat_browsers(stage_box, lock_box, timeouts.idle if mode == DEPLOYMENT else None)
 
     @app.get("/api/configs")
     def list_configs() -> list[dict[str, object]]:

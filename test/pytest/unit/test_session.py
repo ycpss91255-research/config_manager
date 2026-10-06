@@ -217,3 +217,89 @@ def test_resuming_a_session_that_is_gone_fails_loudly():
 
     with pytest.raises(SessionExpired):
         lock.resume(session.token, _T0 + timedelta(minutes=1))
+
+
+# ── 閒置逾時（T13，#48）────────────────────────────────────────────────────────
+# 部署模式：一個瀏覽器（以票為鍵）閒置達設定時間就退出；開發模式不逾時。時間全由呼叫端給（`now`）。
+
+from config_manager.api.session import IdleSeats  # noqa: E402
+
+_TEN = timedelta(minutes=10)
+
+
+def _seated(timeout=_TEN):
+    seats = IdleSeats(timeout)
+    seats.declare("ticket-a", _MING, _T0)
+    return seats
+
+
+def test_a_declared_identity_is_there_until_the_idle_timeout():
+    seats = _seated()
+
+    assert seats.identity("ticket-a", _T0 + timedelta(minutes=9, seconds=59)) == _MING
+
+
+def test_an_identity_idle_for_the_timeout_is_gone():
+    seats = _seated()
+
+    assert seats.identity("ticket-a", _T0 + _TEN) is None
+
+
+def test_activity_restarts_the_idle_clock():
+    seats = _seated()
+    seats.touch("ticket-a", _T0 + timedelta(minutes=9))
+
+    assert seats.identity("ticket-a", _T0 + timedelta(minutes=18)) == _MING
+    assert seats.identity("ticket-a", _T0 + timedelta(minutes=19)) is None
+
+
+def test_activity_after_the_timeout_does_not_bring_the_identity_back():
+    # 逾時就是退出：晚到的一次操作不能把已經退出的人悄悄接回來（下一個坐下的可能是別人）。
+    seats = _seated()
+
+    assert seats.touch("ticket-a", _T0 + timedelta(minutes=11)) is False
+    assert seats.identity("ticket-a", _T0 + timedelta(minutes=11)) is None
+
+
+def test_expire_reports_each_idle_ticket_exactly_once():
+    seats = _seated()
+    seats.declare("ticket-b", _LIN, _T0 + timedelta(minutes=5))
+
+    assert seats.expire(_T0 + timedelta(minutes=10)) == ["ticket-a"]
+    assert seats.expire(_T0 + timedelta(minutes=11)) == []  # 回報過的不再回報
+    assert seats.identity("ticket-b", _T0 + timedelta(minutes=11)) == _LIN  # 別人不受影響
+
+
+def test_remaining_counts_down_to_the_timeout():
+    seats = _seated()
+
+    assert seats.remaining("ticket-a", _T0 + timedelta(minutes=9)) == timedelta(minutes=1)
+    assert seats.remaining("ticket-a", _T0 + timedelta(minutes=12)) == timedelta(0)
+
+
+def test_a_timed_out_ticket_is_remembered_as_timed_out_until_it_declares_again():
+    # 介面據此顯示「逾時退出」而不是一張沒頭沒尾的身分輸入頁；重新輸入身分後就不再是逾時狀態。
+    seats = _seated()
+    seats.expire(_T0 + _TEN)
+
+    assert seats.timed_out("ticket-a") is True
+    seats.declare("ticket-a", _LIN, _T0 + timedelta(minutes=11))
+    assert seats.timed_out("ticket-a") is False
+    assert seats.identity("ticket-a", _T0 + timedelta(minutes=12)) == _LIN
+
+
+def test_without_a_timeout_nothing_ever_goes_idle():
+    # 開發模式：不因閒置退出。
+    seats = _seated(timeout=None)
+
+    assert seats.identity("ticket-a", _T0 + timedelta(days=30)) == _MING
+    assert seats.expire(_T0 + timedelta(days=30)) == []
+    assert seats.remaining("ticket-a", _T0 + timedelta(days=30)) is None
+
+
+def test_an_unknown_ticket_has_no_identity_and_is_not_timed_out():
+    seats = _seated()
+
+    assert seats.identity("never-seen", _T0) is None
+    assert seats.timed_out("never-seen") is False
+    assert seats.remaining("never-seen", _T0) is None

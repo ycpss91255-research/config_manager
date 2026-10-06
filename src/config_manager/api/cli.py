@@ -29,10 +29,12 @@ import uvicorn
 
 from config_manager.api.errors import (
     ConfigRepoMissing,
+    IdleTimeoutInvalid,
     ModeInvalid,
     ServePortInvalid,
     SessionTimeoutInvalid,
 )
+from config_manager.api.session import Timeouts
 from config_manager.core.roles import DEPLOYMENT, MODES
 from config_manager.api.routes import DEFAULT_ORIGINS, create_app
 
@@ -42,6 +44,8 @@ _DEFAULT_API = f"http://{_DEFAULT_HOST}:{_DEFAULT_PORT}"
 _TIMEOUT = 5
 # TCP 埠的上界（16-bit）。具名以避開對字面量的比較（ruff PLR2004）。
 _MAX_PORT = 65535
+# 閒置逾時的上限（秒）：超過一天的「逾時」在現場等於沒有逾時（#48）。
+_MAX_IDLE_SECONDS = 86_400
 
 # 狀態的中文說法取自 CONTEXT.md。與網頁用的是同一組字，因為使用者在兩邊看到的
 # 是同一件事——CLI 說「偏離」而畫面說別的，等於憑介面決定術語。
@@ -72,6 +76,21 @@ class ServePlan:
     session_timeout: float | None = None
     # 開發／部署模式（#47）：由後端依環境變數判定、回報給前端；前端改不了它。
     mode: str = DEPLOYMENT
+    # 部署模式的閒置逾時（秒）；None＝用預設值（10 分鐘，#48）。開發模式不逾時，設了也不生效。
+    idle_timeout: float | None = None
+
+    @property
+    def timeouts(self) -> Timeouts:
+        """交給 `create_app` 的兩種逾時：沒設定的用預設值。"""
+        default = Timeouts()
+        return Timeouts(
+            renew=_seconds(self.session_timeout, default.renew),
+            idle=_seconds(self.idle_timeout, default.idle),
+        )
+
+
+def _seconds(value: float | None, default: timedelta) -> timedelta:
+    return default if value is None else timedelta(seconds=value)
 
 
 def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
@@ -102,6 +121,7 @@ def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
         allowed_origins=_allowed_origins(environ),
         session_timeout=_session_timeout(environ),
         mode=_mode(environ),
+        idle_timeout=_idle_timeout(environ),
     )
 
 
@@ -120,6 +140,27 @@ def _session_timeout(environ: Mapping[str, str]) -> float | None:
         raise SessionTimeoutInvalid(
             f"CM_SESSION_TIMEOUT 必須是正數（秒），現在是 {raw!r}。"
             "下一步：改成如 150（秒），或取消設定改用預設值"
+        )
+    return seconds
+
+
+def _idle_timeout(environ: Mapping[str, str]) -> float | None:
+    """`CM_IDLE_TIMEOUT`（秒）：部署模式下，一個瀏覽器的人這麼久沒操作就自動退出並釋放編輯階段
+    （#48）。未設＝預設 10 分鐘。**不是一天以內的正數就具名拒絕**——寫錯的值（含 nan、inf、
+    大到等於不逾時的數）不能靜默當成不逾時，那正是部署模式要防的事（不變式 4）。開發模式不逾時，
+    設了也不生效。"""
+    raw = environ.get("CM_IDLE_TIMEOUT", "").strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = -1.0
+    # 寫成「落在範圍內才放行」：nan 與任何數比較都是 False，寫成「超出範圍就拒絕」會放它過去。
+    if not 0 < seconds <= _MAX_IDLE_SECONDS:
+        raise IdleTimeoutInvalid(
+            f"CM_IDLE_TIMEOUT 必須是一天以內的正數（秒），現在是 {raw!r}。"
+            "下一步：改成如 600（秒），或取消設定改用預設的 10 分鐘"
         )
     return seconds
 
@@ -436,17 +477,18 @@ def _unexpected_response(api: str, error: Exception) -> int:
 def _serve(host: str, port: int) -> int:
     try:
         plan = serve_plan(host, port, os.environ)
-    except (ConfigRepoMissing, ModeInvalid, ServePortInvalid, SessionTimeoutInvalid) as error:
+    except (
+        ConfigRepoMissing,
+        IdleTimeoutInvalid,
+        ModeInvalid,
+        ServePortInvalid,
+        SessionTimeoutInvalid,
+    ) as error:
         print(f"config_manager: {error}", file=sys.stderr)
         return 2
 
     uvicorn.run(
-        create_app(
-            plan.repo,
-            plan.allowed_origins,
-            None if plan.session_timeout is None else timedelta(seconds=plan.session_timeout),
-            mode=plan.mode,
-        ),
+        create_app(plan.repo, plan.allowed_origins, plan.timeouts, mode=plan.mode),
         host=plan.host,
         port=plan.port,
         log_level="warning",

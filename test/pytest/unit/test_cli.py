@@ -10,6 +10,7 @@ config-repo、放行哪些來源、讀不到端點時的結束碼、清單怎麼
 同一個函式裡，而測試不會去跑 uvicorn.run，於是它們一起量不到。
 """
 
+import datetime
 import io
 import json
 import urllib.error
@@ -17,7 +18,12 @@ import urllib.error
 import pytest
 
 from config_manager.api.cli import main, serve_plan
-from config_manager.api.errors import ConfigRepoMissing, ModeInvalid, SessionTimeoutInvalid
+from config_manager.api.errors import (
+    ConfigRepoMissing,
+    IdleTimeoutInvalid,
+    ModeInvalid,
+    SessionTimeoutInvalid,
+)
 from config_manager.api.routes import DEFAULT_ORIGINS, create_app
 
 # 2 是「用法錯誤／接線不對」，1 是「跑了但沒成功」。serve 少了 CM_CONFIG_REPO
@@ -415,3 +421,35 @@ def test_create_app_refuses_an_unknown_mode_even_when_called_directly():
     # create_app 不只從 serve_plan 來（測試、別的接線會直接呼叫），所以它自己也擋。
     with pytest.raises(ValueError, match="mode 必須是"):
         create_app("/srv/r", mode="staging")
+
+
+# ── CM_IDLE_TIMEOUT（#48）───────────────────────────────────────────────────────
+# 部署模式的閒置逾時：預設 10 分鐘（§7.2.3.2），可用環境變數調（人工驗證不必真的等 10 分鐘）。
+# 寫錯的值大聲失敗——靜默當成不逾時正是部署模式要防的事。
+
+
+def test_serve_plan_idles_out_after_ten_minutes_by_default():
+    plan = serve_plan("0.0.0.0", 9000, {"CM_CONFIG_REPO": "/srv/r"})
+
+    assert plan.timeouts.idle == datetime.timedelta(minutes=10)
+
+
+def test_serve_plan_reads_the_idle_timeout_from_the_environment():
+    plan = serve_plan("0.0.0.0", 9000, {"CM_CONFIG_REPO": "/srv/r", "CM_IDLE_TIMEOUT": "120"})
+
+    assert plan.timeouts.idle == datetime.timedelta(minutes=2)
+
+
+def test_the_idle_timeout_leaves_the_renew_timeout_alone():
+    # 兩種逾時各管一件事：調閒置逾時不會動到續期逾時，反之亦然。
+    environ = {"CM_CONFIG_REPO": "/srv/r", "CM_IDLE_TIMEOUT": "120", "CM_SESSION_TIMEOUT": "45"}
+
+    plan = serve_plan("0.0.0.0", 9000, environ)
+
+    assert plan.timeouts.renew == datetime.timedelta(seconds=45)
+
+
+@pytest.mark.parametrize("raw", ["0", "-5", "abc", "nan", "inf", "1e12"])
+def test_serve_plan_refuses_an_idle_timeout_that_would_mean_never(raw):
+    with pytest.raises(IdleTimeoutInvalid, match="CM_IDLE_TIMEOUT"):
+        serve_plan("0.0.0.0", 9000, {"CM_CONFIG_REPO": "/srv/r", "CM_IDLE_TIMEOUT": raw})

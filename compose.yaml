@@ -50,6 +50,9 @@ services:
       # **部署**（沒設定時落向較嚴的那一種）；這份 compose 是開發用的接線，所以這裡明寫開發模式。
       # 現場機器以 .env 設 CM_MODE=deployment，或乾脆不設——兩者都是部署模式。
       CM_MODE: ${CM_MODE:-development}
+      # 部署模式的閒置逾時（秒，#48）：一個瀏覽器的人這麼久沒操作就自動退出並釋放編輯階段。
+      # 沒設＝10 分鐘；開發模式不逾時，設了也不生效。
+      CM_IDLE_TIMEOUT: ${CM_IDLE_TIMEOUT:-}
     # 是 config_manager.api.cli，不是 api.cli——見 Dockerfile 的 CMD（#90）。
     command: ["python", "-m", "config_manager.api.cli", "serve", "--host", "127.0.0.1", "--port", "8080"]
 
