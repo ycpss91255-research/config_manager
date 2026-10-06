@@ -818,31 +818,30 @@ def test_every_failure_message_is_built_by_the_one_helper():
     assert "送不出去" not in code
 
 
-@pytest.mark.parametrize(
-    ("endpoint", "trigger", "shown", "action"),
-    [
-        ("**/api/promote", "promoteAll()", "[data-testid='promote-error']", "進版"),
-        ("**/api/drafts", "discardDrafts.call(null, null, null)", None, "捨棄變更"),
-        ("**/api/session/lock", "acquireSession()", "[data-testid='readonly-banner']", "取得編輯階段"),
-    ],
-)
-def test_an_unreachable_backend_names_the_action_and_the_next_step(
-    open_page, listing, endpoint, trigger, shown, action
-):
+_PROMOTE_ERROR = "[data-testid='promote-error']"
+_CONFIRM_OK_CLICK = "document.querySelector(\"[data-testid='confirm-ok']\").click()"
+# (被擋掉的端點, 觸發動作的指令, 訊息出現的地方, 訊息裡該指名的動作)
+_UNREACHABLE = [
+    ("**/api/promote", "promoteAll()", _PROMOTE_ERROR, "進版"),
+    # 捨棄變更先過確認對話框：觸發後在同一個指令裡按下確認。
+    (
+        "**/api/drafts", f"(discardDrafts(null, null), {_CONFIRM_OK_CLICK})",
+        _PROMOTE_ERROR, "捨棄變更",
+    ),
+    ("**/api/session/lock", "acquireSession()", "[data-testid='readonly-banner']", "取得編輯階段"),
+]
+
+
+@pytest.mark.parametrize("case", _UNREACHABLE, ids=[case[3] for case in _UNREACHABLE])
+def test_an_unreachable_backend_names_the_action_and_the_next_step(open_page, listing, case):
+    endpoint, trigger, shown, action = case
     listing("a")
     page = _enter_identity(open_page())
     page.wait_for_selector("[data-testid='promote-all']", state="visible")
-    if shown is None:
-        # 捨棄變更先過確認對話框：在背後按下確認。
-        shown = "[data-testid='promote-error']"
-        trigger = (
-            "(discardDrafts(null, null),"
-            " document.querySelector(\"[data-testid='confirm-ok']\").click())"
-        )
     page.evaluate("rememberToken(null)")  # 取得編輯階段那一則：不走「接續」那條路
     page.route(endpoint, lambda route: route.abort())
 
-    page.evaluate(trigger)
+    page.evaluate(f"() => {{ {trigger}; }}")
 
     page.wait_for_selector(f"{shown}:not([hidden])")
     text = page.inner_text(shown)
@@ -879,7 +878,9 @@ def test_an_error_without_a_reason_still_says_where_to_look(open_page, listing):
     page.wait_for_selector("[data-testid='config-tree']", state="visible")
     page.route(
         "**/api/configs",
-        lambda route: route.fulfill(status=502, content_type="text/html", body="<h1>Bad Gateway</h1>"),
+        lambda route: route.fulfill(
+            status=502, content_type="text/html", body="<h1>Bad Gateway</h1>"
+        ),
     )
 
     page.click("[data-testid='rescan']")
@@ -1006,8 +1007,8 @@ def test_discarding_one_draft_keeps_the_focus_inside_that_panel(open_page, repo)
     page.evaluate("uid => { discardDrafts(uid, 'a', null); }", _PARAM_UID)
     page.click("[data-testid='confirm-ok']")
     page.wait_for_function(
-        "uid => document.querySelector(`[data-testid='panel-${uid}'] li[data-name='camera.fps'] input`)"
-        ".value === '30'",
+        "uid => document.querySelector("
+        "`[data-testid='panel-${uid}'] li[data-name='camera.fps'] input`).value === '30'",
         arg=_PARAM_UID,
     )
 
@@ -1390,7 +1391,8 @@ def test_removing_a_root_lists_the_affected_configs_in_the_same_dialog(open_page
     ).click()
 
     page.wait_for_selector(f"{_CONFIRM}[open]")
-    assert page.inner_text("[data-testid='confirm-items']") == f"nav@amr01-abc：{browse_root}/nav.yaml"
+    listed = page.inner_text("[data-testid='confirm-items']")
+    assert listed == f"nav@amr01-abc：{browse_root}/nav.yaml"
     assert "以下 1 份已納管的設定" in page.inner_text("[data-testid='confirm-body']")
     assert "不受影響" in page.inner_text("[data-testid='confirm-body']")
 
