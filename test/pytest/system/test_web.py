@@ -437,13 +437,19 @@ def test_search_says_so_when_nothing_matches(open_page, listing):
     page.fill("[data-testid='search-input']", "沒有這個東西")
 
     page.wait_for_selector("[data-testid='no-matches']")
-    assert page.inner_text("[data-testid='no-matches']") == "沒有符合的項目。"
+    said = page.inner_text("[data-testid='no-matches']")
+    # #50：說出在哪個範圍找什麼、接下來可以怎麼做——不只一句「沒有符合」。
+    assert "在「全部」範圍內找不到含「沒有這個東西」的 config" in said
+    assert "下一步：換個關鍵字，或清空搜尋框看全部。" in said
 
 
 def test_an_empty_config_list_is_a_legal_state_not_an_error(open_page):
     page = _enter_identity(open_page())
 
-    assert page.inner_text("[data-testid='empty-state']") == "還沒有納管任何 config。"
+    said = page.inner_text("[data-testid='empty-state']")
+    assert said.startswith("還沒有納管任何 config。")
+    assert "下一步：按上方的「納管」" in said  # #50：空狀態說得出接下來做什麼
+    assert "納管第一份 config 之後" in page.inner_text("[data-testid='workspace-empty']")
 
 
 def test_rescanning_shows_a_target_that_was_changed_behind_the_interface(open_page, listing, repo):
@@ -786,6 +792,789 @@ def test_ten_idle_minutes_on_the_real_backend_end_the_page_session(open_page, li
         assert page.is_hidden(_TIMEOUT_NOTICE)
     finally:
         box.clock = real_clock
+
+
+# ── 錯誤訊息的三要素（#50）─────────────────────────────────────────────────────
+# 每則失敗訊息都要說得出發生什麼、在哪裡、該怎麼改。後端的訊息由 lint_messages 擋；這裡是頁面
+# 自己產生的那一類——請求根本沒送到後端時，瀏覽器只給一句「Failed to fetch」。
+
+
+def _failure_helper_source() -> tuple[str, str]:
+    """index.html 切成（failureText 這個函式本身、其餘全部）。"""
+    html = (_WEB_DIR / "index.html").read_text(encoding="utf-8")
+    start = html.index("function failureText(")
+    end = html.index("\n}\n", start) + len("\n}\n")
+    return html[start:end], html[:start] + html[end:]
+
+
+def test_every_failure_message_is_built_by_the_one_helper():
+    # 各處自己拼一句「送不出去：Failed to fetch」正是這張 issue 要收掉的東西：錯誤物件的訊息只在
+    # failureText 裡被讀，別處一律交給它。這一則擋的是之後新增的動作又繞過去。
+    helper, rest = _failure_helper_source()
+
+    code = "\n".join(line for line in rest.splitlines() if not line.lstrip().startswith("//"))
+    assert "下一步：" in helper
+    assert "error.message" not in code
+    assert "送不出去" not in code
+
+
+_PROMOTE_ERROR = "[data-testid='promote-error']"
+_CONFIRM_OK_CLICK = "document.querySelector(\"[data-testid='confirm-ok']\").click()"
+# (被擋掉的端點, 觸發動作的指令, 訊息出現的地方, 訊息裡該指名的動作)
+_UNREACHABLE = [
+    ("**/api/promote", "promoteAll()", _PROMOTE_ERROR, "進版"),
+    # 捨棄變更先過確認對話框：觸發後在同一個指令裡按下確認。
+    (
+        "**/api/drafts", f"(discardDrafts(null, null), {_CONFIRM_OK_CLICK})",
+        _PROMOTE_ERROR, "捨棄變更",
+    ),
+    ("**/api/session/lock", "acquireSession()", "[data-testid='readonly-banner']", "取得編輯階段"),
+]
+
+
+@pytest.mark.parametrize("case", _UNREACHABLE, ids=[case[3] for case in _UNREACHABLE])
+def test_an_unreachable_backend_names_the_action_and_the_next_step(open_page, listing, case):
+    endpoint, trigger, shown, action = case
+    listing("a")
+    page = _enter_identity(open_page())
+    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+    page.evaluate("rememberToken(null)")  # 取得編輯階段那一則：不走「接續」那條路
+    page.route(endpoint, lambda route: route.abort())
+
+    page.evaluate(f"() => {{ {trigger}; }}")
+
+    page.wait_for_selector(f"{shown}:not([hidden])")
+    text = page.inner_text(shown)
+    assert f"「{action}」送不出去" in text
+    assert "這個動作沒有完成" in text
+    assert "下一步：確認後端服務在執行" in text
+
+
+def test_a_refusal_from_the_backend_is_shown_as_the_backend_wrote_it(open_page, listing):
+    # 後端回絕時訊息它已經寫好（含下一步）：原樣顯示，不套上「送不出去」那一套。
+    listing("a")
+    page = open_page(identity=_REMEMBERED)
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    page.route(
+        "**/api/configs",
+        lambda route: route.fulfill(
+            status=500, content_type="application/json",
+            body=json.dumps({"detail": "清單檔解析失敗。下一步：修正 config-list.toml 第 3 行"}),
+        ),
+    )
+
+    page.click("[data-testid='rescan']")
+
+    page.wait_for_selector("[data-testid='load-error']")
+    text = page.inner_text("[data-testid='load-error']")
+    assert "清單檔解析失敗。下一步：修正 config-list.toml 第 3 行" in text
+    assert "送不出去" not in text
+
+
+def test_an_error_without_a_reason_still_says_where_to_look(open_page, listing):
+    # 回應不是後端寫的形狀（中間的代理、或後端崩了）：不只丟一個「502 Bad Gateway」。
+    listing("a")
+    page = open_page(identity=_REMEMBERED)
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    page.route(
+        "**/api/configs",
+        lambda route: route.fulfill(
+            status=502, content_type="text/html", body="<h1>Bad Gateway</h1>"
+        ),
+    )
+
+    page.click("[data-testid='rescan']")
+
+    page.wait_for_selector("[data-testid='load-error']")
+    text = page.inner_text("[data-testid='load-error']")
+    assert "後端回了 502" in text
+    assert "下一步：查看後端服務的紀錄" in text
+
+
+# ── 操作後的回饋與位置保持（#50）────────────────────────────────────────────────
+# 做完一個動作：說一聲成了，而且人剛才的位置（折疊了什麼、捲到哪、焦點在哪）要留著。
+
+_NESTED = "robot:\n  name: amr\n  speed: 1.5\ncamera:\n  fps: 30\n" + "".join(
+    f"filler_{index}: {index}\n" for index in range(40)
+)
+
+
+def _collapsed(page, uid) -> list:
+    return page.evaluate(
+        "uid => [...document.querySelectorAll(`[data-testid='panel-${uid}']"
+        " li[data-container='true'][data-collapsed='true']`)].map(node => node.dataset.name)",
+        uid,
+    )
+
+
+def _open_nested(open_page, repo):
+    _listing_many(repo, {"a": _NESTED})
+    page = _enter_identity(open_page())
+    page.set_viewport_size({"width": 1200, "height": 500})
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    return page
+
+
+def test_saving_a_draft_says_it_was_saved_and_is_not_yet_promoted(open_page, repo):
+    page = _open_nested(open_page, repo)
+    page.fill(f"{_row('camera.fps')} input", "60")
+
+    _save(page, _PARAM_UID)
+
+    note = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save-note']"
+    page.wait_for_selector(note, state="visible")
+    assert page.inner_text(note).startswith("已存為草稿——還沒進版")
+
+
+def test_the_saved_note_goes_away_once_the_field_is_edited_again(open_page, repo):
+    # 那句話說的是上一次儲存；又動了欄位還留著，就變成在描述一個已經不成立的狀態。
+    page = _open_nested(open_page, repo)
+    page.fill(f"{_row('camera.fps')} input", "60")
+    _save(page, _PARAM_UID)
+    note = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save-note']"
+    page.wait_for_selector(note, state="visible")
+
+    page.fill(f"{_row('camera.fps')} input", "90")
+
+    page.wait_for_selector(note, state="hidden")
+
+
+def _row_top(page, path) -> float:
+    """那一列離視窗頂端多遠——「人眼前的東西有沒有動」看的是這個，不是 scrollY。"""
+    return page.evaluate(
+        "name => [...document.querySelectorAll('li[data-name]')]"
+        ".find(node => node.dataset.name === name).getBoundingClientRect().top",
+        path,
+    )
+
+
+def _scrolled_to_an_edit_far_down(open_page, repo):
+    """折疊 robot、改最底下附近的一格、把那一列放在視窗中段——接下來的動作不該把它移走。"""
+    page = _open_nested(open_page, repo)
+    page.click(f"{_row('robot')} .param-name")  # 折疊 robot
+    page.fill(f"{_row('filler_35')} input", "350")
+    page.evaluate(
+        "name => { const row = [...document.querySelectorAll('li[data-name]')]"
+        ".find(node => node.dataset.name === name);"
+        " window.scrollBy(0, row.getBoundingClientRect().top - 200); }",
+        "filler_35",
+    )
+    assert page.evaluate("window.scrollY") > 0
+    return page
+
+
+def test_saving_keeps_what_was_collapsed_and_where_the_page_was_scrolled(open_page, repo):
+    page = _scrolled_to_an_edit_far_down(open_page, repo)
+    before = _row_top(page, "filler_35")
+
+    page.keyboard.press("Control+s")  # 焦點在剛改的那一格；用鍵盤存，不讓點擊自己去捲頁面
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="attached")
+
+    assert _collapsed(page, _PARAM_UID) == ["robot"]
+    assert abs(_row_top(page, "filler_35") - before) <= 1
+
+
+def test_promoting_keeps_what_was_collapsed_and_where_the_page_was_scrolled(open_page, repo):
+    # 進版後打開的區塊整個重畫（來源變了），上方還多出一條結果橫幅：眼前那一列不能因此跳走、
+    # 折疊的不能全部展開。
+    page = _scrolled_to_an_edit_far_down(open_page, repo)
+    page.keyboard.press("Control+s")
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="attached")
+    before = _row_top(page, "filler_35")
+
+    page.evaluate("() => { promoteAll(); }")  # 按鈕在頁面頂端；直接觸發，不讓點擊把頁面捲回去
+    page.wait_for_selector("[data-testid='promote-done']:not([hidden])", state="attached")
+    page.wait_for_function(
+        "uid => !document.querySelector(`[data-testid='panel-draft-${uid}']:not([hidden])`)"
+        " && document.querySelector(`[data-testid='panel-${uid}'] li[data-name='filler_35']"
+        " .param-source`).textContent.includes('350')",
+        arg=_PARAM_UID,
+    )
+
+    assert _collapsed(page, _PARAM_UID) == ["robot"]
+    assert abs(_row_top(page, "filler_35") - before) <= 1
+
+
+def test_discarding_one_draft_keeps_the_focus_inside_that_panel(open_page, repo):
+    page = _open_nested(open_page, repo)
+    page.fill(f"{_row('camera.fps')} input", "60")
+    _save(page, _PARAM_UID)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    page.focus(f"{_row('camera.fps')} input")
+
+    # 不回傳那個 promise：它要等確認對話框被回答，而回答在下一行——回傳的話 evaluate 會一直等。
+    page.evaluate("uid => { discardDrafts(uid, 'a', null); }", _PARAM_UID)
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_function(
+        "uid => document.querySelector("
+        "`[data-testid='panel-${uid}'] li[data-name='camera.fps'] input`).value === '30'",
+        arg=_PARAM_UID,
+    )
+
+    assert "已捨棄「a」的草稿" in page.inner_text("[data-testid='promote-done']")
+    focused = page.evaluate("document.activeElement.closest('li[data-name]')?.dataset.name")
+    assert focused == "camera.fps"
+
+
+def test_onboarding_says_it_worked_and_selects_the_new_config(open_page, browse_root):
+    (browse_root / "fresh.yaml").write_text("count: 1\n", encoding="utf-8")
+    page = _open_confirm(open_page(), browse_root, "fresh.yaml")
+    page.get_by_role("button", name="確認寫入").click()
+
+    page.wait_for_selector("[data-testid='promote-done']:not([hidden])")
+    said = page.inner_text("[data-testid='promote-done']")
+    assert f"已納管「{browse_root.name}-fresh@" in said and "fresh.yaml" in said
+    page.wait_for_selector("#tree li[aria-selected='true']")
+    assert "fresh" in page.inner_text("#tree li[aria-selected='true']")
+
+
+# ── 空狀態（#50）───────────────────────────────────────────────────────────────
+# 每一種「這裡沒有東西」都說出是哪一種、接下來可以做什麼。
+
+
+def test_a_narrowed_search_with_no_match_suggests_widening_the_scope(open_page, listing):
+    listing("a")
+    page = _enter_identity(open_page())
+    page.select_option("[data-testid='search-scope']", "參數值")
+
+    page.fill("[data-testid='search-input']", "zzz")
+
+    page.wait_for_selector("[data-testid='no-matches']")
+    said = page.inner_text("[data-testid='no-matches']")
+    assert "在「參數值」範圍內找不到含「zzz」的 config" in said
+    assert "把搜尋範圍改成「全部」" in said
+
+
+def test_the_empty_list_does_not_point_a_read_only_viewer_at_a_button_they_lack(open_page):
+    # 唯讀的人沒有「納管」可按：空狀態不叫他去按一顆不存在的按鈕。
+    holder = _enter_identity(open_page())
+    holder.wait_for_selector("[data-testid='promote-all']", state="visible")
+    viewer = open_page(same_browser_as=holder)
+    viewer.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+
+    viewer.evaluate("render()")
+
+    assert viewer.inner_text("[data-testid='empty-state']") == "還沒有納管任何 config。"
+
+
+def test_a_config_never_edited_explains_its_empty_history(open_page, browse_root, api):
+    # 剛納管、還沒改過：預設（只看內容變更）是空的——說明原因與去哪裡看，不留一片空白。
+    entry = _history_via_api(api, browse_root, ["count: 1\n"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"], expect_entries=False)
+
+    page.wait_for_selector("[data-testid='history-empty']")
+
+    said = page.inner_text("[data-testid='history-empty']")
+    assert "納管後還沒有改過內容" in said and "下一步：切到「全部」" in said
+
+
+def test_a_history_with_a_single_record_says_there_is_nothing_to_compare_yet(
+    open_page, browse_root, api
+):
+    entry = _history_via_api(api, browse_root, ["count: 1\n"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"], expect_entries=False)
+
+    page.click("[data-testid='history-filter'] button[data-filter='all']")
+
+    page.wait_for_selector("[data-testid='history-single']")
+    assert "還沒有更早的版本可以比較或退回" in page.inner_text("[data-testid='history-single']")
+
+
+def test_a_history_with_several_records_has_no_single_record_note(open_page, browse_root, api):
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    page.click("[data-testid='history-filter'] button[data-filter='all']")
+
+    page.wait_for_selector("[data-testid^='history-entry-']")
+    page.wait_for_timeout(200)
+    assert page.query_selector("[data-testid='history-single']") is None
+
+
+def test_an_empty_directory_says_so_while_browsing(open_page, browse_root):
+    (browse_root / "nothing_here").mkdir()
+    page = _enter_identity(open_page())
+    page.click("[data-testid='open-browse']")
+    page.wait_for_selector(f"[data-testid='browse-root-{browse_root}']")
+    page.click(f"[data-testid='browse-root-{browse_root}']")
+    page.wait_for_selector("[data-testid='browse-entry-nothing_here']")
+
+    page.click("[data-testid='browse-entry-nothing_here']")
+
+    page.wait_for_selector("[data-testid='browse-empty']")
+    assert "這個目錄是空的" in page.inner_text("[data-testid='browse-empty']")
+
+
+# ── 鍵盤操作（#50、§7.10）──────────────────────────────────────────────────────
+# 樹：↑／↓ 移動（Home／End 到頭尾）、Enter 展開、Esc 收合；Ctrl+S 儲存目前區塊。
+
+_TREE_ITEMS = "[...document.querySelectorAll('#tree li[data-uid]')]"
+
+
+def _tree_order(page) -> list:
+    return page.evaluate(f"{_TREE_ITEMS}.map(node => node.dataset.uid)")
+
+
+def _selected(page):
+    return page.evaluate(
+        "(document.querySelector(\"#tree li[aria-selected='true']\") || {dataset: {}}).dataset.uid"
+    )
+
+
+def _focused_uid(page):
+    return page.evaluate("document.activeElement.dataset.uid")
+
+
+def _three_configs(open_page, repo):
+    _listing_many(repo, {"a": "count: 3\n", "b": "speed: 1.5\n", "c": "gain: 2\n"})
+    page = _enter_identity(open_page())
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}']")
+    return page
+
+
+def test_arrow_keys_move_through_the_tree_in_the_order_shown(open_page, repo):
+    page = _three_configs(open_page, repo)
+    first, second, third = _tree_order(page)
+    page.click(f"[data-testid='tree-item-{first}']")
+
+    page.keyboard.press("ArrowDown")
+    after_down = (_selected(page), _focused_uid(page))
+    page.keyboard.press("ArrowDown")
+    page.keyboard.press("ArrowDown")  # 已經在最後一個：停住，不繞回開頭
+    at_end = _selected(page)
+    page.keyboard.press("ArrowUp")
+
+    assert after_down == (second, second)
+    assert at_end == third
+    assert _selected(page) == second
+
+
+def test_home_and_end_jump_to_the_first_and_last_config(open_page, repo):
+    page = _three_configs(open_page, repo)
+    first, _second, third = _tree_order(page)
+    page.click(f"[data-testid='tree-item-{first}']")
+
+    page.keyboard.press("End")
+    at_end = _selected(page)
+    page.keyboard.press("Home")
+
+    assert (at_end, _selected(page)) == (third, first)
+
+
+def test_the_tree_is_one_tab_stop(open_page, repo):
+    # Tab 只停在一個節點上、節點之間用方向鍵：不必 Tab 過整棵樹才到得了工作區。
+    page = _three_configs(open_page, repo)
+
+    stops = page.evaluate(f"{_TREE_ITEMS}.filter(node => node.tabIndex === 0).length")
+
+    assert stops == 1
+
+
+def test_enter_expands_the_selected_config_and_escape_collapses_it(open_page, repo):
+    page = _three_configs(open_page, repo)
+    page.click(f"[data-testid='tree-item-{_PARAM_UID}']")
+
+    page.keyboard.press("Enter")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.keyboard.press("Escape")
+
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="detached")
+    assert _focused_uid(page) == _PARAM_UID  # 焦點還在樹上，可以繼續用方向鍵
+
+
+def test_the_selection_and_focus_survive_a_rescan(open_page, repo):
+    # 樹重畫時整棵換掉；選取與焦點要留著，否則方向鍵走到一半就掉回開頭。
+    page = _three_configs(open_page, repo)
+    _first, second, _third = _tree_order(page)
+    page.click(f"[data-testid='tree-item-{second}']")
+
+    page.evaluate("load()")
+    page.wait_for_timeout(300)
+    page.keyboard.press("ArrowDown")
+
+    assert _selected(page) == _tree_order(page)[2]
+
+
+def test_escape_inside_a_panel_collapses_it_and_returns_focus_to_the_tree(open_page, repo):
+    page = _three_configs(open_page, repo)
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.focus(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-history']")
+
+    page.keyboard.press("Escape")
+
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="detached")
+    assert _focused_uid(page) == _PARAM_UID
+
+
+def test_escape_while_typing_in_a_field_does_not_collapse_the_panel(open_page, repo):
+    page = _three_configs(open_page, repo)
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.fill(f"{_row('count')} input", "4")
+
+    page.keyboard.press("Escape")
+
+    page.wait_for_timeout(200)
+    assert page.is_visible(f"[data-testid='panel-{_PARAM_UID}']")
+    assert page.input_value(f"{_row('count')} input") == "4"
+    assert page.is_hidden(_CONFIRM)  # 連「要不要關」都不該問：這個 Esc 不是在收合
+
+
+def test_collapsing_a_panel_with_unsaved_edits_asks_first(open_page, repo):
+    # 關掉就沒了：先問。取消→區塊與改動都還在；確認→才收合。× 與 Esc 走同一條路。
+    page = _three_configs(open_page, repo)
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.fill(f"{_row('count')} input", "4")
+    close = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-close']"
+
+    page.click(close)
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+    asked = page.inner_text("[data-testid='confirm-body']")
+    label = page.inner_text("[data-testid='confirm-ok']")
+    page.click("[data-testid='confirm-cancel']")
+    kept = page.input_value(f"{_row('count')} input")
+    page.click(close)
+    page.click("[data-testid='confirm-ok']")
+
+    assert "有還沒儲存的改動" in asked and label == "關閉並丟掉改動"
+    assert kept == "4"
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="detached")
+
+
+def test_collapsing_a_panel_without_edits_does_not_ask(open_page, repo):
+    page = _three_configs(open_page, repo)
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+
+    page.click(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-close']")
+
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="detached")
+    assert page.is_hidden(_CONFIRM)
+
+
+def test_ctrl_s_saves_the_panel_being_edited(open_page, repo):
+    page = _three_configs(open_page, repo)
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.fill(f"{_row('count')} input", "4")
+
+    page.keyboard.press("Control+s")
+
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (1)"
+
+
+def test_ctrl_s_saves_only_the_panel_that_has_the_focus(open_page, repo):
+    page = _three_configs(open_page, repo)
+    for uid in (_PARAM_UID, _SECOND_UID):
+        page.dblclick(f"[data-testid='tree-item-{uid}']")
+        page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
+    page.fill(f"[data-testid='panel-{_PARAM_UID}'] li[data-name='count'] input", "4")
+    page.fill(f"[data-testid='panel-{_SECOND_UID}'] li[data-name='speed'] input", "2.5")
+
+    page.keyboard.press("Control+s")  # 焦點在第二份（剛填的那一格）
+
+    page.wait_for_selector(_draft_dot(_SECOND_UID), state="visible")
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (1)"
+    assert page.query_selector(_draft_dot(_PARAM_UID)) is None
+
+
+def test_ctrl_s_from_the_tree_saves_the_selected_config(open_page, repo):
+    page = _three_configs(open_page, repo)
+    for uid in (_PARAM_UID, _SECOND_UID):
+        page.dblclick(f"[data-testid='tree-item-{uid}']")
+        page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
+    page.fill(f"[data-testid='panel-{_PARAM_UID}'] li[data-name='count'] input", "4")
+    page.click(f"[data-testid='tree-item-{_PARAM_UID}']")
+
+    page.keyboard.press("Control+s")
+
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+
+
+def test_ctrl_s_with_nothing_to_save_says_so(open_page, repo):
+    # 按了卻什麼都沒發生最讓人困惑：說出為什麼沒存。
+    page = _three_configs(open_page, repo)
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.focus(f"{_row('count')} input")
+
+    page.keyboard.press("Control+s")
+
+    note = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save-note']"
+    page.wait_for_selector(note, state="visible")
+    assert page.inner_text(note) == "沒有還沒儲存的改動。"
+
+
+# ── 確認對話框的一致性（#50）───────────────────────────────────────────────────
+# 所有要先確認的動作共用一個對話框：確認鈕寫的是動作本身、開啟時焦點在取消、Esc 是取消。
+
+_CONFIRM = "[data-testid='confirm-dialog']"
+
+
+def _with_a_draft(open_page, repo):
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    return page
+
+
+def test_the_confirm_button_names_the_action_instead_of_a_generic_confirm(open_page, repo):
+    page = _with_a_draft(open_page, repo)
+
+    page.click("[data-testid='discard-all']")
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+    discard = page.inner_text("[data-testid='confirm-ok']")
+    page.click("[data-testid='confirm-cancel']")
+    page.click(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-unmanage']")
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+    unmanage = page.inner_text("[data-testid='confirm-ok']")
+
+    assert (discard, unmanage) == ("捨棄變更", "解除納管")
+
+
+def test_the_confirm_dialog_opens_with_focus_on_cancel(open_page, repo):
+    # 手滑按到 Enter 不會把東西丟掉：預設落在安全的那一邊。
+    page = _with_a_draft(open_page, repo)
+    page.click("[data-testid='discard-all']")
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+
+    focused = page.evaluate("document.activeElement.dataset.testid")
+    page.keyboard.press("Enter")
+
+    assert focused == "confirm-cancel"
+    page.wait_for_selector(f"{_CONFIRM}:not([open])", state="attached")
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (1)"  # 草稿還在
+
+
+def test_escape_cancels_the_confirm_dialog(open_page, repo):
+    page = _with_a_draft(open_page, repo)
+    page.click("[data-testid='discard-all']")
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+
+    page.keyboard.press("Escape")
+
+    page.wait_for_selector(f"{_CONFIRM}:not([open])", state="attached")
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (1)"
+
+
+def test_escape_answers_the_confirmation_with_a_no(open_page, repo):
+    # Esc 不只是把對話框關掉——等著答案的那個動作要真的收到「取消」。不然它一直掛著，下一次別的
+    # 確認按下「確認」時，這個沒收尾的動作會跟著一起執行。
+    page = _with_a_draft(open_page, repo)
+    page.evaluate(
+        "() => { window.answer = 'pending';"
+        " confirmAction('要嗎？', '…').then((answer) => { window.answer = answer; }); }"
+    )
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+
+    page.keyboard.press("Escape")
+
+    page.wait_for_function("window.answer !== 'pending'")
+    assert page.evaluate("window.answer") is False
+
+
+def test_a_confirmation_opened_right_after_another_is_not_cancelled_by_the_first(open_page, repo):
+    # 對話框關閉的事件晚一拍才到：上一個確認剛按下、下一個緊接著開，不能被那個晚到的事件當成取消。
+    page = _with_a_draft(open_page, repo)
+    page.evaluate(
+        """() => {
+          window.answers = [];
+          confirmAction("第一個？", "…").then((answer) => {
+            window.answers.push(answer);
+            confirmAction("第二個？", "…").then((second) => window.answers.push(second));
+          });
+          document.querySelector("[data-testid='confirm-ok']").click();
+        }"""
+    )
+
+    page.wait_for_timeout(300)
+
+    assert page.evaluate("window.answers") == [True]  # 第二個還在等人回答
+    assert page.inner_text("[data-testid='confirm-title']") == "第二個？"
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_function("window.answers.length === 2")
+    assert page.evaluate("window.answers") == [True, True]
+
+
+def test_a_confirmation_without_listed_items_shows_no_empty_list(open_page, repo):
+    page = _with_a_draft(open_page, repo)
+
+    page.click("[data-testid='discard-all']")
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+
+    assert page.is_hidden("[data-testid='confirm-items']")
+
+
+def test_removing_a_root_lists_the_affected_configs_in_the_same_dialog(open_page, browse_root):
+    # 移除白名單的確認也走共用的對話框，受影響的納管項目列在裡面（資訊性：它們不會被解除納管）。
+    page = _open_whitelist_as_developer(open_page())
+    page.wait_for_selector(f"[data-testid='whitelist-root-{browse_root}']")
+    affected = [{"ref": "nav@amr01-abc", "target": f"{browse_root}/nav.yaml"}]
+
+    def answer(route):
+        if route.request.method != "DELETE":
+            route.continue_()
+            return
+        detail = {"kind": "confirm_required", "message": "需要確認", "affected": affected}
+        route.fulfill(
+            status=409, content_type="application/json", body=json.dumps({"detail": detail})
+        )
+
+    page.route("**/api/allowed-roots", answer)
+
+    page.locator(
+        f"[data-testid='whitelist-root-{browse_root}'] [data-testid='whitelist-remove']"
+    ).click()
+
+    page.wait_for_selector(f"{_CONFIRM}[open]")
+    listed = page.inner_text("[data-testid='confirm-items']")
+    assert listed == f"nav@amr01-abc：{browse_root}/nav.yaml"
+    assert "以下 1 份已納管的設定" in page.inner_text("[data-testid='confirm-body']")
+    assert "不受影響" in page.inner_text("[data-testid='confirm-body']")
+
+
+# ── 進行中的指示（#50）─────────────────────────────────────────────────────────
+# 會寫入或要等一下的動作：按下後按鈕標成進行中（aria-busy、文字「…中」），做完還原；進行中再按
+# 不會送出第二次。這裡把請求扣住不放，看那段期間的畫面。
+
+
+def _hold(page, pattern, method="POST"):
+    """把符合的請求扣住不回；回 (被扣住的清單, 放行函式)。其他方法照常放行。"""
+    held = []
+
+    def handler(route):
+        if route.request.method == method:
+            held.append(route)
+        else:
+            route.continue_()
+
+    page.route(pattern, handler)
+
+    def release():
+        waiting, held[:] = list(held), []
+        for route in waiting:
+            route.continue_()
+        page.unroute(pattern)
+
+    return held, release
+
+
+def _busy(page, selector) -> bool:
+    return page.get_attribute(selector, "aria-busy") == "true"
+
+
+def test_promote_shows_it_is_running_and_cannot_be_sent_twice(open_page, repo):
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    held, release = _hold(page, "**/api/promote")
+    button = "[data-testid='promote-all']"
+
+    page.click(button)
+    page.wait_for_selector(f"{button}[aria-busy='true']")
+    assert page.inner_text(button) == "進版中…"
+    page.evaluate("document.querySelector(\"[data-testid='promote-all']\").click()")  # 再按一下
+    page.wait_for_timeout(200)
+    assert len(held) == 1  # 沒有送出第二次
+
+    release()
+
+    page.wait_for_selector("[data-testid='promote-done']:not([hidden])")
+    assert page.inner_text(button) == "進版 (0)"
+    assert not _busy(page, button)
+
+
+def test_saving_a_draft_shows_it_is_running(open_page, repo):
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(open_page())
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.fill(f"{_row('count')} input", "4")
+    _held, release = _hold(page, "**/api/drafts")
+    save = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save']"
+
+    page.click(save)
+
+    page.wait_for_selector(f"{save}[aria-busy='true']")
+    assert page.inner_text(save) == "儲存中…"
+    release()
+    page.wait_for_selector(f"[data-testid='panel-draft-{_PARAM_UID}']")
+
+
+def test_a_confirmed_action_is_busy_only_after_the_confirmation(open_page, repo):
+    # 確認對話框還開著時動作還沒開始：按鈕不該已經寫著「捨棄中…」。
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    held, release = _hold(page, "**/api/drafts", method="DELETE")
+    button = "[data-testid='discard-all']"
+
+    page.click(button)
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    assert not _busy(page, button) and page.inner_text(button) == "捨棄變更"
+    page.click("[data-testid='confirm-ok']")
+
+    page.wait_for_selector(f"{button}[aria-busy='true']")
+    assert page.inner_text(button) == "捨棄中…"
+    assert len(held) == 1
+    release()
+    page.wait_for_function("document.querySelector(\"[data-testid='discard-all']\").disabled")
+    assert page.inner_text(button) == "捨棄變更"
+
+
+def test_entering_the_identity_shows_it_is_running(open_page):
+    page = open_page()
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    held, release = _hold(page, "**/api/session")
+
+    _fill_identity(page)
+
+    page.wait_for_selector("#identity button.enter[aria-busy='true']")
+    assert page.inner_text("#identity button.enter") == "進入中…"
+    # 等的時候在欄位裡再按一次 Enter：表單會再送出一次，但不會多打一發請求。
+    page.press("[data-testid='identity-name']", "Enter")
+    page.wait_for_timeout(200)
+    assert len(held) == 1
+    release()
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+
+
+def test_a_running_action_does_not_reopen_its_confirmation(open_page, repo):
+    # 捨棄中又被觸發一次：不再跳一次確認對話框、也不多送一發。
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    held, release = _hold(page, "**/api/drafts", method="DELETE")
+    page.click("[data-testid='discard-all']")
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_selector("[data-testid='discard-all'][aria-busy='true']")
+
+    page.evaluate("() => { discardDrafts(null, null); }")
+    page.wait_for_timeout(200)
+
+    assert page.is_hidden("[data-testid='confirm-dialog']")
+    assert len(held) == 1
+    release()
+    page.wait_for_function("document.querySelector(\"[data-testid='discard-all']\").disabled")
+
+
+def test_checking_for_differences_marks_the_button_busy(open_page, listing):
+    listing("a")
+    page = _enter_identity(open_page())
+    page.wait_for_selector("[data-testid='tree-item-mfz3k9q1']")
+    _held, release = _hold(page, "**/api/configs", method="GET")
+
+    page.click("[data-testid='rescan']")
+
+    page.wait_for_selector("[data-testid='rescan'][aria-busy='true']")
+    assert page.inner_text("[data-testid='rescan']") == "檢查中…"
+    release()
+    page.wait_for_selector("[data-testid='scan-status'][data-state='done']")
+    assert page.inner_text("[data-testid='rescan']") == "檢查差異"
 
 
 # ── 開發／部署模式徽章（#47）──────────────────────────────────────────────────
@@ -1477,11 +2266,12 @@ def test_removing_a_root_asks_for_confirmation_then_removes(open_page, browse_ro
     page.locator(
         f"[data-testid='whitelist-root-{browse_root}'] [data-testid='whitelist-remove']"
     ).click()
-    page.wait_for_selector("[data-testid='whitelist-remove-confirm']", state="visible")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
     # 人工驗證 U15：確認區是寫給按按鈕的人看的——說要移除哪一個、會怎樣，不出現 API 的參數名。
-    said = page.inner_text("[data-testid='whitelist-remove-confirm']")
+    said = page.inner_text("[data-testid='confirm-dialog']")
     assert str(browse_root) in said and "不能再瀏覽或納管" in said and "confirmed" not in said
-    page.get_by_role("button", name="確認移除").click()
+    assert page.inner_text("[data-testid='confirm-ok']") == "從白名單移除"
+    page.click("[data-testid='confirm-ok']")
 
     page.wait_for_selector(f"[data-testid='whitelist-root-{browse_root}']", state="detached")
 
@@ -1494,9 +2284,10 @@ def test_cancelling_a_removal_keeps_the_root(open_page, browse_root):
     page.locator(
         f"[data-testid='whitelist-root-{browse_root}'] [data-testid='whitelist-remove']"
     ).click()
-    page.wait_for_selector("[data-testid='whitelist-remove-confirm']", state="visible")
-    page.get_by_role("button", name="取消").click()
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-cancel']")
 
+    page.wait_for_selector("[data-testid='confirm-dialog']:not([open])", state="attached")
     assert page.is_visible(f"[data-testid='whitelist-root-{browse_root}']")
 
 
@@ -1511,23 +2302,29 @@ def test_returning_from_the_whitelist_panel_hides_it_rather_than_stacking_on_the
     assert page.is_hidden("[data-testid='whitelist']")
 
 
-def test_the_remove_confirm_control_does_not_survive_leaving_the_whitelist_panel(
-    open_page, browse_root
-):
-    # #252 發現1（更嚴重的一面）：開了移除確認框後直接按「返回」，那顆綁著 confirmRemoveRoot
-    # 的「確認移除」按鈕若隨殘留面板留在看似清單的畫面上、還可點，就能觸發不可逆的白名單刪除。
-    # 驗離開白名單後該控制不再可觸達。
+def test_the_removal_confirmation_blocks_everything_else_until_answered(open_page, browse_root):
+    # #252 發現1 的那個洞：舊的確認區是頁面裡的一塊，開著它按「返回」，那顆「確認移除」會跟著殘留
+    # 在看似清單的畫面上。現在確認走共用的對話框（#50），是 modal——沒回答之前按不到後面的東西。
     page = _open_whitelist_as_developer(open_page())
     page.wait_for_selector(f"[data-testid='whitelist-root-{browse_root}']")
     page.locator(
         f"[data-testid='whitelist-root-{browse_root}'] [data-testid='whitelist-remove']"
     ).click()
-    page.wait_for_selector("[data-testid='whitelist-remove-confirm']", state="visible")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
 
-    page.click("[data-testid='whitelist-back']")
-    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    covered = page.evaluate(
+        """() => {
+          const back = document.querySelector("[data-testid='whitelist-back']");
+          const box = back.getBoundingClientRect();
+          const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+          return hit !== back && !back.contains(hit);
+        }"""
+    )
 
-    assert page.is_hidden("[data-testid='whitelist-confirm-remove']")
+    assert covered  # 「返回」被對話框擋著，點不到
+    page.keyboard.press("Escape")
+    page.wait_for_selector("[data-testid='confirm-dialog']:not([open])", state="attached")
+    assert page.is_visible(f"[data-testid='whitelist-root-{browse_root}']")  # Esc＝取消，根還在
 
 
 def test_a_structured_load_error_shows_the_backend_message_not_a_bare_status(open_page):
@@ -2616,13 +3413,14 @@ def _history_via_api(api, browse_root, contents: list) -> dict:
     return entry
 
 
-def _open_history(page, uid: str):
+def _open_history(page, uid: str, expect_entries: bool = True):
     page.wait_for_selector("[data-testid='config-tree']", state="visible")
     page.dblclick(f"[data-testid='tree-item-{uid}']")
     page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
     page.get_by_role("button", name="歷史").click()
     page.wait_for_selector(f"[data-testid='history-{uid}']", state="visible")
-    page.wait_for_selector("[data-testid^='history-entry-']")
+    if expect_entries:  # 剛納管、沒改過的那一份，預設檢視是空的（見空狀態的規格）
+        page.wait_for_selector("[data-testid^='history-entry-']")
     return page
 
 

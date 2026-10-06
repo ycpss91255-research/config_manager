@@ -40,6 +40,10 @@
     }
   }
   * { box-sizing: border-box; }
+  /* 上方的橫幅出現或消失時，頁面自己把捲動位置補回來（#50，見 keepWorkspaceInPlace）。瀏覽器內建的
+     scroll anchoring 只有部分瀏覽器有（Safari 沒有），兩者同時作用會補兩次——所以關掉內建的，
+     各瀏覽器行為一致。 */
+  html { overflow-anchor: none; }
   /* 瀏覽器預設的 [hidden]{display:none} 會被下面任何一條 display 宣告蓋過
      ——header 的 display:flex 就蓋掉了它，於是「隱藏」的頁首照樣顯示。
      這是 hidden 屬性最常見的失效方式，用 !important 釘住。 */
@@ -183,6 +187,8 @@
   .panel[data-collapsed="true"] > :not(.panel-head) { display: none !important; }
   .panel-close { margin-left: 4px; padding: 2px 8px; font-size: 13px; line-height: 1.2; }
   li[aria-selected="true"] { outline: 2px solid var(--fg); outline-offset: -2px; }
+  /* 鍵盤焦點所在的樹節點（#50）：與選取分開畫，看得出方向鍵現在走到哪。 */
+  #tree li[data-uid]:focus-visible { outline: 2px dashed var(--fg); outline-offset: -2px; }
   /* 樹的排列（#34） */
   .tree-layout { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
   .tree-layout select { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
@@ -199,6 +205,7 @@
   .confirm::backdrop { background: rgba(0, 0, 0, .35); }
   .confirm h3 { margin: 0 0 8px; font-size: 16px; }
   .confirm p { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
+  .confirm ul { margin: -8px 0 18px; padding-left: 20px; color: var(--muted); font-size: 13px; max-height: 30vh; overflow: auto; }
   .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
   .group { margin-bottom: 22px; }
   .group > h2 {
@@ -304,6 +311,8 @@
     font-size: 13px;
   }
   .who { color: var(--muted); font-size: 13px; }
+  /* 進行中（#50）：看得出在跑、也點不到第二次。 */
+  button[aria-busy="true"] { pointer-events: none; opacity: 0.6; cursor: progress; }
   .idle-warning { display: flex; gap: 12px; align-items: center; border-color: var(--warn); }
   .idle-warning button { flex: none; }
   .who.mode { border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; }
@@ -387,11 +396,6 @@
   .whitelist-resolved { color: var(--muted); font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
   .whitelist-who { color: var(--muted); font-size: 12px; margin-left: auto; }
   .whitelist-empty { color: var(--muted); font-size: 13px; }
-  .whitelist-remove-confirm {
-    margin-top: 12px; padding: 12px; border: 1px solid var(--drift); border-radius: 8px;
-  }
-  .whitelist-remove-confirm[hidden] { display: none; }
-  .whitelist-affected { margin: 8px 0; padding-left: 18px; font-size: 13px; color: var(--muted); }
 
   /* W8 納管確認 */
   #onboard-confirm { padding: 16px 20px 40px; }
@@ -503,6 +507,7 @@
 <dialog data-testid="confirm-dialog" class="confirm">
   <h3 data-testid="confirm-title"></h3>
   <p data-testid="confirm-body"></p>
+  <ul data-testid="confirm-items" hidden></ul>
   <div class="confirm-actions">
     <button type="button" data-testid="confirm-cancel">取消</button>
     <button type="button" data-testid="confirm-ok">確認</button>
@@ -578,7 +583,6 @@
   <p class="whitelist-preview" data-testid="whitelist-preview" hidden></p>
   <p class="whitelist-error" data-testid="whitelist-error" hidden></p>
   <ul data-testid="whitelist-roots" class="whitelist-roots"></ul>
-  <div class="whitelist-remove-confirm" data-testid="whitelist-remove-confirm" hidden></div>
 </section>
 
 <!-- W8 納管確認（#14）：偵測結果供確認 → 寫入。從 W7 選檔後進入。
@@ -666,7 +670,7 @@ function setDrafts(uids) {
 async function loadDrafts() {
   try {
     const response = await apiFetch(`${API_BASE}/api/drafts`);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const payload = await response.json();
     setDrafts(payload.drafts.map((draft) => draft.uid));
   } catch (error) {
@@ -675,7 +679,7 @@ async function loadDrafts() {
       class: "notice error", "data-testid": "drafts-error",
     }, [
       element("strong", { text: "讀不到草稿清單，樹上的草稿標記可能不準。" }),
-      element("pre", { text: String(error && error.message ? error.message : error) }),
+      element("pre", { text: failureText("讀取草稿清單", error) }),
     ]));
   }
 }
@@ -727,7 +731,7 @@ async function runSearch() {
   try {
     const params = new URLSearchParams({ q: query, scope: searchScope.value });
     const response = await apiFetch(`${API_BASE}/api/search?${params}`);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const payload = await response.json();
     if (generation !== searchGeneration) return;
     searchHits = new Set(payload.hits.map((hit) => hit.uid));
@@ -736,7 +740,7 @@ async function runSearch() {
   } catch (error) {
     if (generation !== searchGeneration) return;
     // 搜尋失敗不能靜默顯示成「沒有符合的項目」——那會讓人以為參數不存在（不變式 2、T14）。
-    searchError = String(error && error.message ? error.message : error);
+    searchError = failureText("搜尋", error);
   }
   render();
 }
@@ -807,7 +811,15 @@ function rowNode(row) {
   return node;
 }
 
+// 樹每次重畫（重掃、搜尋、草稿變動）都整棵換掉：選取與鍵盤焦點要跟著留下來（#50），否則用方向鍵
+// 走到一半、背景重掃一次就掉回開頭。
 function render() {
+  const hadFocus = tree.contains(document.activeElement);
+  renderTree();
+  selectItem(selectedUid, hadFocus);
+}
+
+function renderTree() {
   if (loadError !== null) {
     // 載入失敗是黏性的：重畫 load-error，不讀 rows。否則搜尋輸入一觸發 render 就把錯誤
     // 蓋成空清單／過期清單，而「讀不到」與「沒有」該做的處置完全不同（不變式 2）。
@@ -831,20 +843,31 @@ function render() {
     return;
   }
 
+  // 空狀態（#50）：每一種「這裡沒有東西」都說出是哪一種、接下來可以做什麼——一片空白會被讀成壞了，
+  // 而「還沒納管」與「搜尋沒找到」該做的事完全不同。
+  workspaceEmpty.textContent = rows.length
+    ? "從左側雙擊一份 config（或選取後按 Enter），這裡會顯示它的參數欄位表。"
+    : "納管第一份 config 之後，這裡會顯示它的參數欄位表。";
   if (!rows.length) {
-    // 什麼都還沒納管是合法狀態，不是錯誤——說出來，而不是留一片空白讓人以為壞了。
+    // 什麼都還沒納管是合法狀態，不是錯誤。
     tree.appendChild(element("p", {
       class: "notice",
       "data-testid": "empty-state",
-      text: "還沒有納管任何 config。",
+      text: "還沒有納管任何 config。" + (document.body.dataset.readonly === "true"
+        ? "" : "下一步：按上方的「納管」，挑一份檔案交給系統管理。"),
     }));
     return;
   }
   if (!visible.length) {
+    const query = search.value.trim();
+    const scope = searchScope.value;
     tree.appendChild(element("p", {
       class: "notice",
       "data-testid": "no-matches",
-      text: "沒有符合的項目。",
+      text: `沒有符合的項目：在「${scope}」範圍內找不到含「${query}」的 config。`
+        + (scope === "全部"
+          ? "下一步：換個關鍵字，或清空搜尋框看全部。"
+          : "下一步：換個關鍵字，或把搜尋範圍改成「全部」。"),
     }));
     return;
   }
@@ -911,14 +934,30 @@ async function loadErrorText(response) {
   const payload = await response.json().catch(() => null);
   const detail = payload && payload.detail;
   if (detail) return detailText(detail);
-  return `${response.status} ${response.statusText}`;
+  // 回應不是後端寫的那種形狀（中間有代理、或後端崩了）：至少說出狀態碼與去哪裡看原因。
+  return `後端回了 ${response.status} ${response.statusText}，沒有附原因。`
+    + "下一步：查看後端服務的紀錄（log）找出這個請求為什麼失敗。";
+}
+
+// 後端回絕（4xx／5xx）：訊息是後端寫好的（哪個欄位、為什麼、下一步），原樣顯示。
+class Refused extends Error {}
+
+// 一個動作失敗時要顯示的話（#50）：每則都要說得出發生什麼、在哪裡、該怎麼改。後端回絕的，訊息它
+// 已經寫好，原樣給；請求根本沒到後端的（斷線、後端沒起來、這個頁面的來源沒被放行），瀏覽器只給
+// 一句「Failed to fetch」——這裡補上是哪個動作、結果如何、下一步。失敗的訊息都從這裡出去，
+// 不在各處自己拼一句「送不出去」。
+function failureText(action, error) {
+  if (error instanceof Refused) return error.message;
+  const why = error && error.message ? error.message : String(error);
+  return `「${action}」送不出去（${why}）：後端沒有回應，這個動作沒有完成。`
+    + "下一步：確認後端服務在執行、這台電腦連得到它，再試一次。";
 }
 
 async function load() {
   const generation = ++loadGeneration;
   try {
     const response = await apiFetch(`${API_BASE}/api/configs`);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const data = await response.json();
     if (generation !== loadGeneration) return;  // 有更新的載入開始了，這次過時、丟棄
     rows = data;
@@ -929,7 +968,7 @@ async function load() {
     // 大聲失敗（不變式 2）：說出是什麼壞了，不是顯示一份空清單假裝沒事——空清單與「讀不到
     // 清單」看起來一樣，而那兩件事該做的處置完全不同。旗標讓錯誤黏住，經 render 重畫（見上）。
     if (generation !== loadGeneration) return;  // 過時的失敗不覆寫新結果
-    loadError = String(error && error.message ? error.message : error);
+    loadError = failureText("讀取 config 清單", error);
     render();
   }
 }
@@ -969,7 +1008,7 @@ async function rescan() {
   }
 }
 
-rescanButton.addEventListener("click", rescan);
+rescanButton.addEventListener("click", () => whileBusy(rescanButton, "檢查中…", rescan));
 
 // ── W3 參數欄位表（#20）──────────────────────────────────────────────────────
 // 這不是線上 YAML 編輯器（ADR-00000013、設計 §7.5）：一列一個參數，依型別給控制項——bool 核取方塊、
@@ -987,16 +1026,64 @@ const TYPE_LABEL = {
 // 每次開啟遞增；晚到的舊回應不覆蓋新開的那份（同 load／browse 的世代守門，#252）。
 let panelGeneration = 0;
 
+// 選取記在這裡而不是只記在 DOM 上（樹重畫時 DOM 整棵換掉）。
+let selectedUid = null;
+
+function treeItems() {
+  return [...tree.querySelectorAll("li[data-uid]")];
+}
+
+// 選取一個節點（`uid` 不在樹上就是沒有選取）。Tab 只停在一個節點上——選取的那個，沒有選取就是
+// 第一個——節點之間用方向鍵走，不必 Tab 過整棵樹。`focus`：把鍵盤焦點也移過去。
+function selectItem(uid, focus) {
+  const items = treeItems();
+  const chosen = items.find((node) => node.dataset.uid === uid) || null;
+  for (const node of items) {
+    if (node === chosen) node.setAttribute("aria-selected", "true");
+    else node.removeAttribute("aria-selected");
+    node.tabIndex = node === (chosen || items[0]) ? 0 : -1;
+  }
+  const target = chosen || items[0];
+  if (focus && target) {
+    target.focus();
+    target.scrollIntoView({ block: "nearest" });
+  }
+}
+
 // 單擊＝選取（高亮），雙擊＝展開到右側工作區堆疊（§7.4.1、#35）。
 tree.addEventListener("click", (event) => {
   const item = event.target.closest("li[data-uid]");
   if (!item) return;
-  for (const node of tree.querySelectorAll("li[aria-selected='true']")) node.removeAttribute("aria-selected");
-  item.setAttribute("aria-selected", "true");
+  selectedUid = item.dataset.uid;
+  selectItem(selectedUid, false);
 });
 tree.addEventListener("dblclick", (event) => {
   const item = event.target.closest("li[data-uid]");
   if (item) openPanel(item.dataset.uid);
+});
+
+// 鍵盤操作（#50、§7.10）：↑／↓ 在節點之間移動（Home／End 到頭尾）、Enter 展開到工作區、Esc 收合
+// 那一份的區塊。跨群組照畫面上的順序走。
+tree.addEventListener("keydown", (event) => {
+  const item = event.target.closest("li[data-uid]");
+  if (!item) return;
+  const items = treeItems();
+  const at = items.indexOf(item);
+  const moves = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 };
+  if (event.key in moves) {
+    event.preventDefault();
+    const next = items[Math.min(items.length - 1, Math.max(0, moves[event.key]))];
+    selectedUid = next.dataset.uid;
+    selectItem(selectedUid, true);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    selectedUid = item.dataset.uid;
+    selectItem(selectedUid, false);
+    openPanel(selectedUid);
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    requestClose(item.dataset.uid);
+  }
 });
 
 // ── 右側工作區的堆疊（#36）：每份 config 一個槽（data-uid），槽裡是欄位表／歷史／差異檢視之一，
@@ -1014,6 +1101,65 @@ function mountView(uid, view, kind) {
   if (existing) existing.replaceWith(view);
   else workspace.prepend(view);
   refreshWorkspaceEmpty();
+}
+
+// 收合一份 config 的區塊（按 ×、或在樹上／區塊裡按 Esc）。裡面有還沒儲存的改動就先問——關掉就
+// 沒了，不悄悄丟（不變式 2；#50 的破壞性操作二次確認）。已儲存的草稿在後端，不受影響。
+async function requestClose(uid) {
+  const slot = slotFor(uid);
+  if (!slot) return;
+  if (slot.querySelector("[data-dirty='true']")) {
+    const row = rows.find((item) => item.uid === uid);
+    const ok = await confirmAction(
+      "關閉這個區塊？",
+      `「${row ? row.name : uid}」有還沒儲存的改動，關閉後這些改動會丟掉；已儲存的草稿不受影響。`,
+      "關閉並丟掉改動",
+    );
+    if (!ok) return;
+  }
+  const hadFocus = slot.contains(document.activeElement);
+  closeSlot(uid);
+  // 焦點原本在被收掉的區塊裡：交還給樹上的那個節點，鍵盤才接得下去。
+  if (hadFocus) {
+    selectedUid = uid;
+    selectItem(uid, true);
+  }
+}
+
+// Esc 在區塊裡也是收合那個區塊——但正在輸入框裡打字時不是（那裡的 Esc 是瀏覽器自己的事）。
+// Ctrl+S／⌘S 儲存「目前區塊」：焦點所在的那個區塊；焦點在樹上就是選取的那一份；都不是而只開著
+// 一個區塊，就是它。主畫面上一律不讓瀏覽器跳出「另存網頁」。
+document.addEventListener("keydown", (event) => {
+  if (listView.hidden || confirmDialog.open) return;
+  const active = document.activeElement;
+  const slot = active && active.closest ? active.closest("[data-testid='workspace'] [data-uid]") : null;
+  if (event.key === "Escape" && slot && !active.matches("input, select, textarea")) {
+    event.preventDefault();
+    requestClose(slot.dataset.uid);
+    return;
+  }
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s") return;
+  event.preventDefault();
+  saveCurrentPanel(slot);
+});
+
+function saveCurrentPanel(focused) {
+  const open = [...workspace.querySelectorAll("[data-uid][data-view='panel']")];
+  const fromTree = tree.contains(document.activeElement) && selectedUid ? slotFor(selectedUid) : null;
+  const slot = focused || fromTree || (open.length === 1 ? open[0] : null);
+  const save = slot ? slot.querySelector("[data-testid='panel-save']") : null;
+  if (!save || save.hidden) return;
+  const note = slot.querySelector("[data-testid='panel-save-note']");
+  if (!save.disabled) {
+    note.hidden = true;
+    save.click();
+    return;
+  }
+  // 按了卻什麼都沒發生最讓人困惑：說出為什麼沒存（沒有改動，或有欄位沒通過驗證）。
+  note.textContent = slot.querySelector("[data-valid='false']")
+    ? "有欄位沒通過驗證，還不能儲存。下一步：依那一列的說明修正後再存。"
+    : "沒有還沒儲存的改動。";
+  note.hidden = false;
 }
 
 function closeSlot(uid) {
@@ -1048,12 +1194,16 @@ async function openPanel(uid, notice) {
   }
   try {
     const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(uid)}`);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const detail = await response.json();
     if (generation !== panelGenerations.get(uid)) return;
     const panel = panelNode(detail);
     if (notice) panel.insertBefore(notice, panel.children[1] || null);  // 上一個動作的結果放在標頭下
+    // 重畫一個已經開著的區塊（進版、捨棄、改屬性之後）：位置在換上去之前才量，換完還原。
+    const previous = slotFor(uid);
+    const position = previous && previous.dataset.view === "panel" ? panelPosition(previous) : null;
     mountView(uid, panel, "panel");
+    if (position) restorePanelPosition(panel, position);
   } catch (error) {
     if (generation !== panelGenerations.get(uid)) return;
     // 大聲失敗（不變式 2）：說出讀不到，不留一個空表假裝這份 config 沒有參數。
@@ -1061,9 +1211,66 @@ async function openPanel(uid, notice) {
       class: "notice error", "data-testid": `panel-error-${uid}`,
     }, [
       element("strong", { text: "讀不到這份 config 的內容。" }),
-      element("pre", { text: String(error && error.message ? error.message : error) }),
+      element("pre", { text: failureText("讀取這份 config 的內容", error) }),
     ]));
   }
+}
+
+// 工作區上方的東西變高或變矮時（結果橫幅出現／消失、唯讀橫幅、閒置提示、工具列換行），下面的內容
+// 會整個被推動——人正在看的那一列就從眼前跑掉。這裡在畫出來之前把捲動位置補回同樣的量，畫面上的
+// 內容不動。在頁面頂端時不補：那時橫幅本來就該被看見、內容往下讓位。
+let workspaceTop = null;
+
+function keepWorkspaceInPlace() {
+  const now = workspace.getBoundingClientRect().top + window.scrollY;
+  if (workspaceTop !== null && window.scrollY > 0 && !listView.hidden) {
+    window.scrollBy(0, now - workspaceTop);
+  }
+  workspaceTop = now;
+}
+
+if (window.ResizeObserver) {
+  const above = new ResizeObserver(keepWorkspaceInPlace);
+  for (const node of document.querySelectorAll("header, main > .banner, main > .scan-status")) {
+    above.observe(node);
+  }
+}
+
+// 操作後的位置保持（#50）：區塊因為進版、捨棄、改屬性而整個重畫時，人剛才的位置要留著——折疊了
+// 哪些巢狀參數、整個區塊是不是收著、頁面捲到哪、鍵盤焦點在哪一列。不留的話每做一個動作，畫面
+// 就跳回區塊開頭、全部展開，得重新找剛才在看的那一列。
+function panelPosition(panel) {
+  const active = panel.contains(document.activeElement) ? document.activeElement : null;
+  const row = active ? active.closest("li[data-name]") : null;
+  return {
+    collapsed: [...panel.querySelectorAll("li[data-container='true'][data-collapsed='true']")]
+      .map((node) => node.dataset.name),
+    folded: panel.dataset.collapsed === "true",
+    scrollY: window.scrollY,
+    focusRow: row ? row.dataset.name : null,
+    focusControl: active && !row ? active.dataset.testid || null : null,
+  };
+}
+
+function restorePanelPosition(panel, position) {
+  const list = panel.querySelector("[data-testid='param-table']");
+  const rowNamed = (name) => (list
+    ? [...list.querySelectorAll("li[data-name]")].find((node) => node.dataset.name === name)
+    : null);
+  for (const name of position.collapsed) {
+    const container = rowNamed(name);
+    // 那個參數可能已經不在了（退版、改型別）：沒有就略過，其餘照樣還原。
+    if (container && container.dataset.container === "true" && container.dataset.collapsed !== "true") {
+      toggleCollapse(list, container);
+    }
+  }
+  if (position.folded) panel.dataset.collapsed = "true";
+  window.scrollTo(window.scrollX, position.scrollY);
+  const row = position.focusRow ? rowNamed(position.focusRow) : null;
+  const control = row
+    ? row.querySelector("input, select, textarea, button")
+    : position.focusControl && panel.querySelector(`[data-testid='${position.focusControl}']`);
+  if (control && !control.hidden) control.focus({ preventScroll: true });
 }
 
 function panelNode(detail) {
@@ -1101,8 +1308,8 @@ function panelNode(detail) {
     if (event.target.closest("button")) return;
     panel.dataset.collapsed = panel.dataset.collapsed === "true" ? "false" : "true";
   });
-  close.addEventListener("click", () => closeSlot(detail.uid));
-  unmanageButton.addEventListener("click", () => unmanageConfig(detail));
+  close.addEventListener("click", () => requestClose(detail.uid));
+  unmanageButton.addEventListener("click", () => unmanageConfig(detail, unmanageButton));
   if (attributesButton) {
     attributesButton.addEventListener("click", () => {
       const open = panel.querySelector(`[data-testid='attributes-${detail.uid}']`);
@@ -1155,10 +1362,16 @@ function panelNode(detail) {
   const specify = currentIdentity && currentIdentity.role === "developer"
     ? (row, typeName, reset) => specifyType(detail, row, typeName, { entries, error: saveError, reset })
     : null;
+  // 儲存這個動作的結果說明（存成了、或為什麼沒存），放在儲存鈕旁；又動了欄位就收掉——那句話說的
+  // 是上一次儲存，不是現在畫面上的東西。
+  const saveNote = element("span", {
+    class: "hint", "data-testid": "panel-save-note", role: "status", hidden: "",
+  });
   const refreshSave = () => {
     const invalid = entries.some((entry) => entry.node.dataset.valid === "false");
     const dirty = entries.some((entry) => entry.node.dataset.dirty === "true");
     saveButton.disabled = invalid || !dirty;
+    if (dirty) saveNote.hidden = true;
   };
   const list = element("ul", { class: "param-table", "data-testid": "param-table" }, [
     element("li", { class: "param-row param-head" }, [
@@ -1183,14 +1396,14 @@ function panelNode(detail) {
     type: "button", class: "editing-only", "data-testid": "panel-discard", text: "捨棄變更",
   });
   discardButton.hidden = !detail.draft_values;
-  discardButton.addEventListener("click", () => discardDrafts(detail.uid, detail.name));
+  discardButton.addEventListener("click", () => discardDrafts(detail.uid, detail.name, discardButton));
   // 第 3 層規則的警告區（#44／#45）：違反規則時列出每一條與理由欄，填了理由才存得成。
   const warningsSlot = element("div", { class: "rule-warnings-slot" });
   const ui = {
     save: saveButton, error: saveError, draft: draftMark, discard: discardButton,
-    warnings: warningsSlot, entries,
+    warnings: warningsSlot, entries, note: saveNote,
   };
-  saveButton.addEventListener("click", () => saveDraft(detail, entries, ui));
+  saveButton.addEventListener("click", () => whileBusy(saveButton, "儲存中…", () => saveDraft(detail, entries, ui)));
   if ((detail.draft_warnings || []).some((problem) => problem.rule)) {
     // 重開一份有草稿的 config（例如「先納入、待修正」載入的）：還有哪些規則要填理由，一開就看到。
     renderRuleWarnings(detail, ui, detail.draft_warnings, detail.draft_overrides || {}, false);
@@ -1224,6 +1437,7 @@ function panelNode(detail) {
   panel.append(list, warningsSlot, saveError, element("div", { class: "panel-actions" }, [
     ...actions,
     element("span", { class: "hint", text: "「儲存」只是存為草稿——不記錄、不寫到目標；工具列的「進版」才會。" }),
+    saveNote,
     discardButton,
     saveButton,
   ]));
@@ -1259,7 +1473,9 @@ function attributesPanel(detail, hasUnsavedEdits) {
     element("div", { class: "attributes-actions" }, [cancel, save]),
   ]);
   cancel.addEventListener("click", () => form.remove());
-  save.addEventListener("click", () => saveAttributes(detail, { inputs, error, save, hasUnsavedEdits }));
+  save.addEventListener("click", () => whileBusy(
+    save, "儲存中…", () => saveAttributes(detail, { inputs, error, save, hasUnsavedEdits }),
+  ));
   return form;
 }
 
@@ -1296,7 +1512,7 @@ async function saveAttributes(detail, ui) {
       text: "已更新屬性，並記一筆變更紀錄。",
     }));
   } catch (error) {
-    renderSaveError(ui.error, `送不出去：${error && error.message ? error.message : error}`);
+    renderSaveError(ui.error, failureText("儲存屬性", error));
   } finally {
     ui.save.disabled = false;
   }
@@ -1330,7 +1546,7 @@ async function specifyType(detail, row, typeName, ui) {
         : `已把「${row.path}」的型別指定為 ${TYPE_LABEL[typeName]}，並記一筆變更紀錄。`,
     }));
   } catch (error) {
-    renderSaveError(ui.error, `送不出去：${error && error.message ? error.message : error}`);
+    renderSaveError(ui.error, failureText("指定型別", error));
     ui.reset();
   }
 }
@@ -1345,35 +1561,39 @@ function schemaBadge(uid, path) {
 // 產生 schema 骨架（#38）。不可悄悄開啟一道把關：先說會發生什麼。成功後就地換上標示、拿掉按鈕，
 // **不重畫欄位表**——還沒儲存的改動不能因此消失（不變式 2）。
 async function draftSchema(detail, ui) {
+  if (isBusy(ui.button)) return;
   const ok = await confirmAction(
     `替「${detail.name}」產生 schema？`,
     "會依目前的值記下每個參數的型別，存進設定庫的 .schemas/ 並留一筆變更紀錄。"
       + "之後這份 config 的修改會依它檢查型別。只記型別，不限制必填、多出來的參數或數值範圍。",
+    "產生 schema",
   );
   if (!ok) return;
-  ui.error.hidden = true;
-  ui.button.disabled = true;
-  try {
-    const response = await apiFetch(
-      `${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/schema`, { method: "POST" },
-    );
-    const payload = await response.json();
-    if (!response.ok) {
-      renderSaveError(ui.error, payload.detail);
-      return;
+  await whileBusy(ui.button, "產生中…", async () => {
+    ui.error.hidden = true;
+    ui.button.disabled = true;
+    try {
+      const response = await apiFetch(
+        `${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/schema`, { method: "POST" },
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        renderSaveError(ui.error, payload.detail);
+        return;
+      }
+      detail.schema = payload.schema;
+      ui.button.remove();
+      ui.head.insertBefore(schemaBadge(detail.uid, payload.schema), ui.close);
+      ui.head.after(element("p", {
+        class: "notice", "data-testid": "schema-drafted-notice",
+        text: `已產生 schema（${payload.schema}），並記一筆變更紀錄。`,
+      }));
+    } catch (error) {
+      renderSaveError(ui.error, failureText("產生 schema", error));
+    } finally {
+      ui.button.disabled = false;
     }
-    detail.schema = payload.schema;
-    ui.button.remove();
-    ui.head.insertBefore(schemaBadge(detail.uid, payload.schema), ui.close);
-    ui.head.after(element("p", {
-      class: "notice", "data-testid": "schema-drafted-notice",
-      text: `已產生 schema（${payload.schema}），並記一筆變更紀錄。`,
-    }));
-  } catch (error) {
-    renderSaveError(ui.error, `送不出去：${error && error.message ? error.message : error}`);
-  } finally {
-    ui.button.disabled = false;
-  }
+  });
 }
 
 // 後端回的問題若指名了欄位（第 2 層帶 `path`，#39），就標在那一列：標紅、寫出原因與修正建議
@@ -1403,7 +1623,7 @@ function renderRuleWarnings(detail, ui, problems, reasons, missing, saved = fals
   });
   submit.addEventListener("click", () => {
     const given = Object.fromEntries(Object.entries(inputs).map(([rule, input]) => [rule, input.value]));
-    saveDraft(detail, ui.entries, ui, given);
+    whileBusy(submit, "儲存中…", () => saveDraft(detail, ui.entries, ui, given));
   });
   const children = [
     element("strong", {
@@ -1494,8 +1714,13 @@ async function saveDraft(detail, entries, ui, overrides = {}) {
     const skipped = (payload.warnings || []).filter((problem) => problem.rule);
     if (skipped.length) renderRuleWarnings(detail, ui, skipped, overrides, false, true);
     else if (ui.warnings) ui.warnings.replaceChildren();
+    // 存成了要說一聲（#50）：畫面留在原處不動，只靠一個小圓點看不出剛才那一下有沒有生效。
+    if (ui.note) {
+      ui.note.textContent = "已存為草稿——還沒進版；要記錄並寫到目標，按工具列的「進版」。";
+      ui.note.hidden = false;
+    }
   } catch (error) {
-    renderSaveError(ui.error, `送不出去：${error && error.message ? error.message : error}`);
+    renderSaveError(ui.error, failureText("儲存草稿", error));
     ui.save.disabled = false;
   }
 }
@@ -2012,7 +2237,7 @@ async function loadHistory(view, detail, filter, generation) {
   const query = filter === "all" ? `?prefix=${ALL_KINDS}` : "";
   try {
     const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/history${query}`);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const changes = await response.json();
     if (generation !== historyGeneration) return;
     list.replaceChildren(...changes.map((change) => historyEntry(change, detail, view)));
@@ -2021,14 +2246,21 @@ async function loadHistory(view, detail, filter, generation) {
         class: "notice", "data-testid": "history-empty",
         text: filter === "all"
           ? "這份 config 還沒有任何變更紀錄。"
-          : "沒有內容變更的紀錄；切到「全部」可看到其他類型（納入管理、退回舊版本…）。",
+          : "這份 config 納管後還沒有改過內容，所以沒有內容變更的紀錄。"
+            + "下一步：切到「全部」可看到其他類型（納入管理、退回舊版本…）。",
+      }));
+    } else if (filter === "all" && changes.length === 1) {
+      // 只有一筆（通常就是納入管理那一筆）：說明為什麼沒有東西可比、可退，不讓人對著一筆紀錄找按鈕。
+      list.appendChild(element("li", {
+        class: "notice", "data-testid": "history-single",
+        text: "目前只有這一筆紀錄——還沒有更早的版本可以比較或退回。修改並進版之後，這裡會多出新的紀錄。",
       }));
     }
   } catch (error) {
     if (generation !== historyGeneration) return;
     list.replaceChildren(element("li", { class: "notice error", "data-testid": "history-error" }, [
       element("strong", { text: "讀不到變更歷史。" }),
-      element("pre", { text: String(error && error.message ? error.message : error) }),
+      element("pre", { text: failureText("讀取變更歷史", error) }),
     ]));
   }
 }
@@ -2064,7 +2296,7 @@ async function selectChange(view, detail, change, node) {
   try {
     const url = `${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/history/${change.sha}`;
     const response = await apiFetch(url);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const version = await response.json();
     if (generation !== historyGeneration) return;
     renderDiff(diff, version, detail, view);
@@ -2072,7 +2304,7 @@ async function selectChange(view, detail, change, node) {
     if (generation !== historyGeneration) return;
     diff.replaceChildren(element("div", { class: "notice error", "data-testid": "history-diff-error" }, [
       element("strong", { text: "讀不到這一版的內容。" }),
-      element("pre", { text: String(error && error.message ? error.message : error) }),
+      element("pre", { text: failureText("讀取這一版的內容", error) }),
     ]));
   }
 }
@@ -2089,7 +2321,7 @@ function renderDiff(target, version, detail, view) {
   });
   revertButton.disabled = differing === 0;
   revertButton.title = differing === 0 ? "這一版與目前版本相同，沒有東西可退" : "";
-  revertButton.addEventListener("click", () => revertTo(view, detail, version, differing));
+  revertButton.addEventListener("click", () => revertTo(view, detail, version, differing, revertButton));
   target.replaceChildren(
     element("p", {
       class: "diff-summary", "data-testid": "history-diff-summary",
@@ -2114,41 +2346,45 @@ const SCHEMA_DONE_TEXT = {
   remove: "這份現在沒有 schema。",
 };
 
-async function revertTo(view, detail, version, differing) {
+async function revertTo(view, detail, version, differing, button) {
+  if (isBusy(button)) return;
   const short = version.sha.slice(0, 7);
   const ok = await confirmAction(
     "退回此版本？",
     `「${detail.name}」會回到版本 ${short} 的內容：${differing} 個參數會改變、並寫出到目標。` +
     "這會產生一筆新的變更紀錄；歷史不會被改寫，之後仍可再退。" + (SCHEMA_EFFECT_TEXT[version.schema_effect] || ""),
+    "退回此版本",
   );
   if (!ok) return;
-  const diff = view.querySelector("[data-testid='history-diff']");
-  try {
-    const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/revert`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ version: version.sha }),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      // 409（有未進版草稿）／422／500：原樣顯示後端的原因與下一步，差異區保留讓人重看。
+  await whileBusy(button, "退版中…", async () => {
+    const diff = view.querySelector("[data-testid='history-diff']");
+    try {
+      const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/revert`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: version.sha }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        // 409（有未進版草稿）／422／500：原樣顯示後端的原因與下一步，差異區保留讓人重看。
+        diff.prepend(element("div", { class: "notice error", "data-testid": "history-revert-error" }, [
+          element("strong", { text: "沒有退版。" }),
+          element("pre", { text: detailText(payload.detail) }),
+        ]));
+        return;
+      }
+      // 目前版本變了：重抓單筆內容、重開歷史（列表多一筆退回舊版本），左側樹重掃狀態。
+      load();
+      const fresh = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`);
+      const freshDetail = fresh.ok ? await fresh.json() : detail;
+      openHistory(freshDetail, `已退回到版本 ${short}，並寫出到目標。${SCHEMA_DONE_TEXT[payload.schema_effect] || ""}`);
+    } catch (error) {
       diff.prepend(element("div", { class: "notice error", "data-testid": "history-revert-error" }, [
         element("strong", { text: "沒有退版。" }),
-        element("pre", { text: detailText(payload.detail) }),
+        element("pre", { text: failureText("退回此版本", error) }),
       ]));
-      return;
     }
-    // 目前版本變了：重抓單筆內容、重開歷史（列表多一筆退回舊版本），左側樹重掃狀態。
-    load();
-    const fresh = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`);
-    const freshDetail = fresh.ok ? await fresh.json() : detail;
-    openHistory(freshDetail, `已退回到版本 ${short}，並寫出到目標。${SCHEMA_DONE_TEXT[payload.schema_effect] || ""}`);
-  } catch (error) {
-    diff.prepend(element("div", { class: "notice error", "data-testid": "history-revert-error" }, [
-      element("strong", { text: "沒有退版。" }),
-      element("pre", { text: `送不出去：${error && error.message ? error.message : error}` }),
-    ]));
-  }
+  });
 }
 
 // ── W5 差異檢視（#30）────────────────────────────────────────────────────────
@@ -2249,7 +2485,11 @@ const RESOLVE_OPTIONS = [
   {
     action: "overwrite", label: "以來源覆蓋目標", testid: "resolve-overwrite",
     why: "現場改動是不該保留的臨時測試：把 repo 的來源寫回目標、捨棄現場修改；記一筆紀錄。",
-    confirm: ["以來源覆蓋目標？", "目標檔案會被 repo 的來源覆蓋，現場的修改全部丟掉，無法復原；會記一筆變更紀錄。"],
+    confirm: [
+      "以來源覆蓋目標？",
+      "目標檔案會被 repo 的來源覆蓋，現場的修改全部丟掉，無法復原；會記一筆變更紀錄。",
+      "以來源覆蓋",
+    ],
   },
   {
     action: "adopt", label: "將目標現況納入來源", testid: "resolve-adopt",
@@ -2259,7 +2499,12 @@ const RESOLVE_OPTIONS = [
   {
     action: "adopt_draft", label: "先納入、待修正", testid: "resolve-adopt-draft",
     why: "現場改動含非法值但不該丟：載入草稿供修正，進版前須改正；來源與目標都先不動。",
-    confirm: ["先納入、待修正？", "目標現況會載入為這份 config 的草稿（覆蓋既有草稿），非法值以警告標示，進版前須改正。"],
+    confirm: [
+      "先納入、待修正？",
+      "目標現況會載入為這份 config 的草稿（覆蓋既有草稿），非法值以警告標示，進版前須改正。"
+        + "來源與目標都先不動；不要了可以捨棄這份草稿。",
+      "先納入",
+    ],
   },
 ];
 
@@ -2268,48 +2513,51 @@ function resolveActions(detail, view) {
   error.hidden = true;
   const options = RESOLVE_OPTIONS.map((option) => {
     const button = element("button", { type: "button", "data-testid": option.testid, text: option.label });
-    button.addEventListener("click", () => resolveDrift(detail, option, view, error));
+    button.addEventListener("click", () => resolveDrift(detail, option, view, error, button));
     return element("div", { class: "resolve-option" }, [button, element("span", { class: "why", text: option.why })]);
   });
   return element("div", {}, [error, element("div", { class: "resolve-actions editing-only" }, options)]);
 }
 
-async function resolveDrift(detail, option, view, errorEl) {
+async function resolveDrift(detail, option, view, errorEl, button) {
+  if (isBusy(button)) return;
   if (option.confirm) {
-    const ok = await confirmAction(option.confirm[0], option.confirm[1]);
+    const ok = await confirmAction(...option.confirm);
     if (!ok) return;
   }
-  errorEl.hidden = true;
-  for (const button of view.querySelectorAll(".resolve-actions button")) button.disabled = true;
-  try {
-    const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/resolve`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: option.action }),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      // 422（納入：現況含非法值，列行號／原因／建議並指去先納入待修正）／409／500：原樣顯示，差異區保留。
-      renderSaveError(errorEl, payload.detail);
-      return;
+  await whileBusy(button, "處理中…", async () => {
+    errorEl.hidden = true;
+    for (const button of view.querySelectorAll(".resolve-actions button")) button.disabled = true;
+    try {
+      const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: option.action }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        // 422（納入：現況含非法值，列行號／原因／建議並指去先納入待修正）／409／500：原樣顯示，差異區保留。
+        renderSaveError(errorEl, payload.detail);
+        return;
+      }
+      clearPromoteBanners();
+      if (option.action === "adopt_draft") {
+        setDrafts(payload.drafts.map((draft) => draft.uid));
+        openPanel(detail.uid, adoptDraftNotice(payload.warnings));
+        return;
+      }
+      load();  // 覆蓋／納入後狀態回到一致，樹重掃
+      promoteDoneEl.textContent = option.action === "overwrite"
+        ? `已以來源覆蓋「${detail.name}」的目標，並記一筆變更紀錄。`
+        : `已將「${detail.name}」的目標現況納入來源（採納現場調整），並寫出。`;
+      promoteDoneEl.hidden = false;
+      openPanel(detail.uid);
+    } catch (error) {
+      renderSaveError(errorEl, failureText("處置偏離", error));
+    } finally {
+      for (const button of view.querySelectorAll(".resolve-actions button")) button.disabled = false;
     }
-    clearPromoteBanners();
-    if (option.action === "adopt_draft") {
-      setDrafts(payload.drafts.map((draft) => draft.uid));
-      openPanel(detail.uid, adoptDraftNotice(payload.warnings));
-      return;
-    }
-    load();  // 覆蓋／納入後狀態回到一致，樹重掃
-    promoteDoneEl.textContent = option.action === "overwrite"
-      ? `已以來源覆蓋「${detail.name}」的目標，並記一筆變更紀錄。`
-      : `已將「${detail.name}」的目標現況納入來源（採納現場調整），並寫出。`;
-    promoteDoneEl.hidden = false;
-    openPanel(detail.uid);
-  } catch (error) {
-    renderSaveError(errorEl, `送不出去：${error && error.message ? error.message : error}`);
-  } finally {
-    for (const button of view.querySelectorAll(".resolve-actions button")) button.disabled = false;
-  }
+  });
 }
 
 function adoptDraftNotice(warnings) {
@@ -2352,14 +2600,22 @@ function infer(values) {
 // 回到來源內容，不動來源也不動目標；不可逆，先經 W6 的確認對話框。
 const confirmDialog = document.querySelector("[data-testid='confirm-dialog']");
 
-function confirmAction(title, body) {
+// 所有要先確認的動作共用這一個對話框（#50），文案與行為一致：標題是問句、指名對象；內文說會
+// 發生什麼、什麼不會變、能不能復原；確認鈕寫的是那個動作本身（`okLabel`，不是一律「確認」），
+// 取消鈕永遠在、Esc 也是取消；**開啟時焦點在取消**——手滑按到 Enter 不會把東西刪掉。
+// `items` 是要一併列給人看的清單（例如移除白名單時受影響的項目），沒有就不顯示。
+function confirmAction(title, body, okLabel = "確認", items = []) {
   confirmDialog.querySelector("[data-testid='confirm-title']").textContent = title;
   confirmDialog.querySelector("[data-testid='confirm-body']").textContent = body;
+  const list = confirmDialog.querySelector("[data-testid='confirm-items']");
+  list.replaceChildren(...items.map((text) => element("li", { text })));
+  list.hidden = items.length === 0;
+  confirmDialog.querySelector("[data-testid='confirm-ok']").textContent = okLabel;
   return new Promise((resolve) => {
     const finish = (answer) => {
       okButton.removeEventListener("click", onOk);
       cancelButton.removeEventListener("click", onCancel);
-      confirmDialog.removeEventListener("close", onCancel);
+      confirmDialog.removeEventListener("cancel", onCancel);
       if (confirmDialog.open) confirmDialog.close();
       resolve(answer);
     };
@@ -2369,9 +2625,36 @@ function confirmAction(title, body) {
     const cancelButton = confirmDialog.querySelector("[data-testid='confirm-cancel']");
     okButton.addEventListener("click", onOk);
     cancelButton.addEventListener("click", onCancel);
-    confirmDialog.addEventListener("close", onCancel);  // Esc
+    // Esc 走 `cancel` 事件，不聽 `close`：`close` 連我們自己關對話框時也會發、而且是晚一拍才發——
+    // 上一個確認剛關、下一個確認緊接著開的話，那個晚到的 `close` 會把新的這一個當成被取消。
+    confirmDialog.addEventListener("cancel", onCancel);
     confirmDialog.showModal();
+    cancelButton.focus();
   });
+}
+
+// 進行中的指示（#50）：會寫入或要等一下的動作，按下後那顆按鈕標成進行中（`aria-busy`、文字換成
+// 「…中」、不能再按），做完還原——看得出有在跑，也不會因為多按一下而送出兩次。
+async function whileBusy(button, label, work) {
+  if (!button) return work();
+  if (isBusy(button)) return undefined;  // 已經在跑：這一下不算（例如表單被 Enter 再送一次）
+  const idle = button.textContent;
+  button.setAttribute("aria-busy", "true");
+  button.inert = true;  // 滑鼠與鍵盤都按不到；不動 disabled——那是各個動作自己在管的
+  button.textContent = label;
+  try {
+    return await work();
+  } finally {
+    button.removeAttribute("aria-busy");
+    button.inert = false;
+    // 動作自己改過按鈕文字（例如進版後變成「進版 (0)」）就不動它。
+    if (button.textContent === label) button.textContent = idle;
+  }
+}
+
+// 要先確認的動作在最前面問這個：已經在跑就不再開一次確認對話框。
+function isBusy(button) {
+  return Boolean(button) && button.getAttribute("aria-busy") === "true";
 }
 
 function clearPromoteBanners() {
@@ -2398,65 +2681,77 @@ async function promoteAll() {
     load();  // 目標變了，重掃狀態
     for (const uid of openUids()) openPanel(uid);  // 打開的那幾份現在來源＝剛進版的內容
   } catch (error) {
-    renderSaveError(promoteErrorEl, `送不出去：${error && error.message ? error.message : error}`);
+    renderSaveError(promoteErrorEl, failureText("進版", error));
     setDrafts(draftUids);
   }
 }
 
-async function discardDrafts(uid, name) {
+async function discardDrafts(uid, name, button = discardAllButton) {
+  if (isBusy(button)) return;
   const scope = uid ? `「${name}」的草稿` : `全部 ${draftUids.size} 份草稿`;
   const ok = await confirmAction(
     `捨棄${uid ? "這份" : "全部"}變更？`,
     `${scope}會被清除、回到來源內容。來源與目標檔案都不會改變；這個動作無法復原。`,
+    "捨棄變更",
   );
   if (!ok) return;
-  clearPromoteBanners();
-  try {
-    const path = uid ? `/api/drafts/${encodeURIComponent(uid)}` : "/api/drafts";
-    const response = await apiFetch(`${API_BASE}${path}`, { method: "DELETE" });
-    const payload = await response.json();
-    if (!response.ok) {
-      renderSaveError(promoteErrorEl, payload.detail);
-      return;
+  await whileBusy(button, "捨棄中…", async () => {
+    clearPromoteBanners();
+    try {
+      const path = uid ? `/api/drafts/${encodeURIComponent(uid)}` : "/api/drafts";
+      const response = await apiFetch(`${API_BASE}${path}`, { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) {
+        renderSaveError(promoteErrorEl, payload.detail);
+        return;
+      }
+      setDrafts(payload.drafts.map((draft) => draft.uid));
+      promoteDoneEl.textContent = uid
+        ? `已捨棄「${name}」的草稿，畫面回到來源內容。來源與目標檔案都沒有改變。`
+        : "已捨棄全部草稿，畫面回到來源內容。來源與目標檔案都沒有改變。";
+      promoteDoneEl.hidden = false;
+      for (const open of openUids()) {
+        if (!uid || uid === open) openPanel(open);  // 畫面回到來源內容
+      }
+    } catch (error) {
+      renderSaveError(promoteErrorEl, failureText("捨棄變更", error));
     }
-    setDrafts(payload.drafts.map((draft) => draft.uid));
-    for (const open of openUids()) {
-      if (!uid || uid === open) openPanel(open);  // 畫面回到來源內容
-    }
-  } catch (error) {
-    renderSaveError(promoteErrorEl, `送不出去：${error && error.message ? error.message : error}`);
-  }
+  });
 }
 
 // 解除納管（#287，後端 #28）：不可逆，先說實際會發生的事再做（設計原則 2）。成功後這份從樹與
 // 工作區消失；目標檔案不動。後端拒絕（有草稿、寫入失敗）時原因原樣顯示，項目留在原處。
-async function unmanageConfig(detail) {
+async function unmanageConfig(detail, button) {
+  if (isBusy(button)) return;
   const ok = await confirmAction(
     `解除「${detail.name}」的納管？`,
     `系統不再追蹤這份檔案，它會從清單消失。目標檔案 ${detail.target} 保留、內容不動；`
       + "過去的變更歷史仍留在設定庫裡。之後要再管理它，得重新納管。",
+    "解除納管",
   );
   if (!ok) return;
-  clearPromoteBanners();
-  try {
-    const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`, {
-      method: "DELETE",
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      renderSaveError(promoteErrorEl, payload.detail);
-      return;
+  await whileBusy(button, "解除中…", async () => {
+    clearPromoteBanners();
+    try {
+      const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        renderSaveError(promoteErrorEl, payload.detail);
+        return;
+      }
+      closeSlot(detail.uid);
+      promoteDoneEl.textContent = `已解除「${detail.name}」的納管，並記一筆變更紀錄。目標檔案保留在 ${detail.target}。`;
+      promoteDoneEl.hidden = false;
+      load();
+    } catch (error) {
+      renderSaveError(promoteErrorEl, failureText("解除納管", error));
     }
-    closeSlot(detail.uid);
-    promoteDoneEl.textContent = `已解除「${detail.name}」的納管，並記一筆變更紀錄。目標檔案保留在 ${detail.target}。`;
-    promoteDoneEl.hidden = false;
-    load();
-  } catch (error) {
-    renderSaveError(promoteErrorEl, `送不出去：${error && error.message ? error.message : error}`);
-  }
+  });
 }
 
-promoteButton.addEventListener("click", promoteAll);
+promoteButton.addEventListener("click", () => whileBusy(promoteButton, "進版中…", promoteAll));
 discardAllButton.addEventListener("click", () => discardDrafts(null, null));
 
 // ── 編輯階段（#33、§7.2.2、ADR-00000014）──────────────────────────────────────
@@ -2536,7 +2831,7 @@ async function acquireSession() {
     }
     if (!renewTimer) renewTimer = setInterval(() => renewSession(sessionToken), RENEW_EVERY_MS);
   } catch (error) {
-    setReadonly(null, null, `取不到編輯階段（送不出去：${error && error.message ? error.message : error}）。`);
+    setReadonly(null, null, `取不到編輯階段：${failureText("取得編輯階段", error)}`);
   }
 }
 
@@ -2814,31 +3109,33 @@ identityForm.addEventListener("submit", async (event) => {
     role: selectedRole(),
   };
 
-  try {
-    const response = await apiFetch(`${API_BASE}/api/session`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const payload = await response.json();
-    if (response.status === 409 && payload.detail && payload.detail.kind === "held") {
-      // 別人正在編輯：不換身分（否則對方的紀錄會掛到你頭上），改以唯讀進清單（§7.2.2）。
-      showReadonlyList(payload.detail);
-      return;
-    }
-    if (!response.ok) {
-      // 端點的訊息已經寫成可行動的樣子（欄位＋原因＋下一步），原樣顯示，
-      // 不在這裡改寫成一句籠統的「輸入無效」（不變式 2）。
-      identityError.textContent = detailText(payload.detail) || `${response.status} ${response.statusText}`;
+  await whileBusy(identityForm.querySelector("button.enter"), "進入中…", async () => {
+    try {
+      const response = await apiFetch(`${API_BASE}/api/session`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (response.status === 409 && payload.detail && payload.detail.kind === "held") {
+        // 別人正在編輯：不換身分（否則對方的紀錄會掛到你頭上），改以唯讀進清單（§7.2.2）。
+        showReadonlyList(payload.detail);
+        return;
+      }
+      if (!response.ok) {
+        // 端點的訊息已經寫成可行動的樣子（欄位＋原因＋下一步），原樣顯示，
+        // 不在這裡改寫成一句籠統的「輸入無效」（不變式 2）。
+        identityError.textContent = detailText(payload.detail) || `${response.status} ${response.statusText}`;
+        identityError.hidden = false;
+        return;
+      }
+      rememberIdentity(!rememberLabel.hidden && identityForm.elements.remember.checked ? payload : null);
+      showList(payload);
+    } catch (error) {
+      identityError.textContent = failureText("送出身分", error);
       identityError.hidden = false;
-      return;
     }
-    rememberIdentity(!rememberLabel.hidden && identityForm.elements.remember.checked ? payload : null);
-    showList(payload);
-  } catch (error) {
-    identityError.textContent = `送不出去：${error && error.message ? error.message : error}`;
-    identityError.hidden = false;
-  }
+  });
 });
 
 // ── W7 檔案瀏覽（#13）─────────────────────────────────────────────────────────
@@ -2877,7 +3174,7 @@ async function loadBrowseRoots() {
   browseRejectedEl.hidden = true;
   try {
     const response = await apiFetch(`${API_BASE}/api/allowed-roots`);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     whitelistRoots = (await response.json()).prefixes;
     browseRootsEl.replaceChildren(...whitelistRoots.map((prefix) =>
       element("li", { "data-testid": `browse-root-${prefix}`, "data-path": prefix }, [
@@ -2886,9 +3183,12 @@ async function loadBrowseRoots() {
     ));
     browseHintEl.textContent = whitelistRoots.length
       ? "挑一個允許瀏覽的根開始，或在上方貼一個絕對路徑。"
-      : "白名單目前是空的。";
+      : "白名單目前是空的，所以沒有可以瀏覽的目錄。下一步：" + (
+        currentIdentity && currentIdentity.role === "developer"
+          ? "回主畫面按「白名單」，加入要管理的目錄。"
+          : "請開發者把要管理的目錄加進白名單。");
   } catch (error) {
-    browseHintEl.textContent = `讀不到白名單：${error && error.message ? error.message : error}`;
+    browseHintEl.textContent = failureText("讀取白名單", error);
   }
 }
 
@@ -2920,11 +3220,18 @@ async function browseTo(path) {
     renderBrowseEntries(payload.entries);
   } catch (error) {
     if (generation !== browseGeneration) return;
-    browseHintEl.textContent = `瀏覽失敗：${error && error.message ? error.message : error}`;
+    browseHintEl.textContent = failureText("瀏覽目錄", error);
   }
 }
 
 function renderBrowseEntries(entries) {
+  if (!entries.length) {
+    browseListEl.replaceChildren(element("li", {
+      class: "whitelist-empty", "data-testid": "browse-empty",
+      text: "這個目錄是空的，沒有可以納管的檔案。下一步：回上一層，或換一個目錄。",
+    }));
+    return;
+  }
   browseListEl.replaceChildren(...entries.map((entry) =>
     element("li", {
       "data-testid": `browse-entry-${entry.name}`,
@@ -2991,7 +3298,7 @@ function renderBrowseRejection(detail, attempted) {
       // 白名單根必須是目錄，用原字串會在目標是檔案或有 symlink 時加入失敗（#13）。可編輯。
       prefixInput.value = detail.suggested || detail.resolved || attempted;
       const addButton = element("button", { type: "button", text: "加入白名單" });
-      addButton.addEventListener("click", () => addToWhitelist(prefixInput.value));
+      addButton.addEventListener("click", () => addToWhitelist(prefixInput.value, addButton));
       children.push(element("div", { class: "add-row" }, [prefixInput, addButton]));
     } else {
       children.push(element("p", {
@@ -3036,7 +3343,7 @@ async function confirmAddRoot(prefix, showError) {
       return false;
     }
   } catch (error) {
-    showError(`數不出這個路徑底下有幾個檔案：${errText(error)}`);
+    showError(failureText("計算可納管檔案數", error));
     return false;
   }
   const shown = payload.capped ? `${payload.count} 個以上` : `${payload.count} 個`;
@@ -3044,36 +3351,40 @@ async function confirmAddRoot(prefix, showError) {
     "加入白名單？",
     `將開放「${prefix}」這個目錄與它底下的所有子目錄，供瀏覽與納管；目前底下有 ${shown}可納管檔。`
       + "這會留下一筆紀錄（誰在何時加入），之後可以在白名單維護移除。",
+    "加入白名單",
   );
 }
 
-async function addToWhitelist(prefix) {
+async function addToWhitelist(prefix, button) {
+  if (isBusy(button)) return;
   const showAddError = (text) => {
     const slot = browseRejectedEl.querySelector(".msg");
     if (slot) slot.textContent = text;
   };
   if (!await confirmAddRoot(prefix, showAddError)) return;
-  try {
-    const response = await apiFetch(`${API_BASE}/api/allowed-roots`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ prefix }),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      // 端點的訊息已可行動（含下一步），原樣顯示，不改寫（不變式 2）。
-      const text = typeof payload.detail === "string"
-        ? payload.detail
-        : (payload.detail && payload.detail.message) || `${response.status}`;
-      showAddError(text);
-      return;
+  await whileBusy(button, "加入中…", async () => {
+    try {
+      const response = await apiFetch(`${API_BASE}/api/allowed-roots`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prefix }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        // 端點的訊息已可行動（含下一步），原樣顯示，不改寫（不變式 2）。
+        const text = typeof payload.detail === "string"
+          ? payload.detail
+          : (payload.detail && payload.detail.message) || `${response.status}`;
+        showAddError(text);
+        return;
+      }
+      whitelistRoots = payload.prefixes;
+      browseRejectedEl.hidden = true;
+      browseTo(prefix);  // 重跑被拒的瀏覽——該路徑現在在白名單內了
+    } catch (error) {
+      showAddError(failureText("加入白名單", error));
     }
-    whitelistRoots = payload.prefixes;
-    browseRejectedEl.hidden = true;
-    browseTo(prefix);  // 重跑被拒的瀏覽——該路徑現在在白名單內了
-  } catch (error) {
-    showAddError(`送不出去：${error && error.message ? error.message : error}`);
-  }
+  });
 }
 
 browseRootsEl.addEventListener("click", (event) => {
@@ -3101,14 +3412,9 @@ const whitelistRootsEl = document.querySelector("[data-testid='whitelist-roots']
 const whitelistAddInput = document.querySelector("[data-testid='whitelist-add-input']");
 const whitelistPreviewEl = document.querySelector("[data-testid='whitelist-preview']");
 const whitelistErrorEl = document.querySelector("[data-testid='whitelist-error']");
-const whitelistConfirmEl = document.querySelector("[data-testid='whitelist-remove-confirm']");
 // 每次預覽遞增；晚到的舊預覽若世代已變就丟棄——否則「此路徑下有 N 個可納管檔」會顯示上一次
 // 輸入的數字，與目前輸入框不符；加入成功時也遞增它，作廢加入前送出、仍在途的預覽（#252）。
 let previewGeneration = 0;
-
-function errText(error) {
-  return error && error.message ? error.message : String(error);
-}
 
 // 端點的 detail 有兩形：純字串（add／remove 的值錯誤）或物件（candidate-count 與 DELETE
 // 確認的 {kind, message, …}）。兩者都取得出可行動訊息，不自造籠統字句（不變式 2）。
@@ -3124,26 +3430,27 @@ function showWhitelist() {
   whitelistAddInput.value = "";
   whitelistPreviewEl.hidden = true;
   whitelistErrorEl.hidden = true;
-  whitelistConfirmEl.hidden = true;
   loadWhitelist();
 }
 
 async function loadWhitelist() {
-  whitelistConfirmEl.hidden = true;
   try {
     const response = await apiFetch(`${API_BASE}/api/allowed-roots`);
-    if (!response.ok) throw new Error(await loadErrorText(response));
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const roots = (await response.json()).roots;
     if (!roots.length) {
       whitelistRootsEl.replaceChildren(
-        element("li", { class: "whitelist-empty", text: "白名單目前是空的。" })
+        element("li", {
+          class: "whitelist-empty", "data-testid": "whitelist-empty",
+          text: "白名單目前是空的，所以沒有任何目錄可以瀏覽或納管。下一步：在上方輸入一個目錄的絕對路徑，按「加入白名單」。",
+        })
       );
       return;
     }
     whitelistRootsEl.replaceChildren(...roots.map(whitelistRootRow));
   } catch (error) {
     whitelistRootsEl.replaceChildren(
-      element("li", { class: "whitelist-empty", text: `讀不到白名單：${errText(error)}` })
+      element("li", { class: "whitelist-empty", text: failureText("讀取白名單", error) })
     );
   }
 }
@@ -3152,7 +3459,7 @@ function whitelistRootRow(root) {
   const remove = element("button", {
     type: "button", "data-testid": "whitelist-remove", text: "移除",
   });
-  remove.addEventListener("click", () => beginRemoveRoot(root.prefix));
+  remove.addEventListener("click", () => beginRemoveRoot(root.prefix, remove));
   return element("li", { "data-testid": `whitelist-root-${root.prefix}`, "data-prefix": root.prefix }, [
     element("span", { class: "whitelist-prefix", text: root.prefix }),
     element("span", { class: "whitelist-resolved", text: root.resolved }),
@@ -3182,7 +3489,7 @@ async function previewCandidates() {
   } catch (error) {
     if (generation !== previewGeneration) return;
     whitelistPreviewEl.hidden = true;
-    whitelistErrorEl.textContent = `數不出來：${errText(error)}`;
+    whitelistErrorEl.textContent = failureText("計算可納管檔案數", error);
     whitelistErrorEl.hidden = false;
   }
 }
@@ -3193,7 +3500,8 @@ function clearPreview() {
   whitelistPreviewEl.textContent = "";
 }
 
-async function addRoot() {
+async function addRoot(button) {
+  if (isBusy(button)) return;
   whitelistErrorEl.hidden = true;
   clearPreview();  // 舊的預覽不留到這次的結果旁邊——那會被誤認成目前路徑的數字
   const prefix = whitelistAddInput.value.trim();
@@ -3203,29 +3511,32 @@ async function addRoot() {
     whitelistErrorEl.hidden = false;
   };
   if (!await confirmAddRoot(prefix, showError)) return;
-  try {
-    const response = await apiFetch(`${API_BASE}/api/allowed-roots`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ prefix }),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      whitelistErrorEl.textContent = detailText(payload.detail);
+  await whileBusy(button, "加入中…", async () => {
+    try {
+      const response = await apiFetch(`${API_BASE}/api/allowed-roots`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prefix }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        whitelistErrorEl.textContent = detailText(payload.detail);
+        whitelistErrorEl.hidden = false;
+        return;
+      }
+      whitelistAddInput.value = "";
+      whitelistPreviewEl.hidden = true;
+      ++previewGeneration;  // 作廢加入前送出、仍在途的預覽，免得它稍後把已清空的預覽面板顯示回來（#252）
+      loadWhitelist();
+    } catch (error) {
+      whitelistErrorEl.textContent = failureText("加入白名單", error);
       whitelistErrorEl.hidden = false;
-      return;
     }
-    whitelistAddInput.value = "";
-    whitelistPreviewEl.hidden = true;
-    ++previewGeneration;  // 作廢加入前送出、仍在途的預覽，免得它稍後把已清空的預覽面板顯示回來（#252）
-    loadWhitelist();
-  } catch (error) {
-    whitelistErrorEl.textContent = `送不出去：${errText(error)}`;
-    whitelistErrorEl.hidden = false;
-  }
+  });
 }
 
-async function beginRemoveRoot(prefix) {
+async function beginRemoveRoot(prefix, button) {
+  if (isBusy(button)) return;
   // 先以 confirmed=false 問後端：有受影響的納管項目就列出＋要求確認，不靜默移除（AC3）。
   // 後端在未確認時一律回 409 confirm_required（含受影響清單，可能為空）。
   whitelistErrorEl.hidden = true;
@@ -3237,62 +3548,52 @@ async function beginRemoveRoot(prefix) {
     });
     const payload = await response.json();
     if (response.status === 409 && payload.detail && payload.detail.kind === "confirm_required") {
-      renderRemoveConfirm(prefix, payload.detail);
+      if (await confirmRemoval(prefix, payload.detail)) await confirmRemoveRoot(prefix, button);
       return;
     }
     whitelistErrorEl.textContent = detailText(payload.detail);
     whitelistErrorEl.hidden = false;
   } catch (error) {
-    whitelistErrorEl.textContent = `送不出去：${errText(error)}`;
+    whitelistErrorEl.textContent = failureText("移除白名單", error);
     whitelistErrorEl.hidden = false;
   }
 }
 
-function renderRemoveConfirm(prefix, detail) {
-  const affected = element("ul", { "data-testid": "whitelist-affected" },
-    (detail.affected || []).map((item) =>
-      element("li", { text: `${item.ref}：${item.target}` })));
-  const confirm = element("button", {
-    type: "button", "data-testid": "whitelist-confirm-remove", text: "確認移除",
-  });
-  confirm.addEventListener("click", () => confirmRemoveRoot(prefix));
-  const cancel = element("button", {
-    type: "button", "data-testid": "whitelist-cancel-remove", text: "取消",
-  });
-  cancel.addEventListener("click", () => { whitelistConfirmEl.hidden = true; });
-  // 這段是寫給按按鈕的人看的，由介面自己說：要移除的是哪一個、會怎樣、已納管的受不受影響。
-  const listed = (detail.affected || []).length;
-  const about = listed
-    ? `以下 ${listed} 份已納管的設定的目標在這個路徑底下——它們不受影響，仍會繼續管理：`
+// 移除的確認走共用的確認對話框（#50）。這段是寫給按按鈕的人看的，由介面自己說：要移除的是哪一個、
+// 會怎樣、已納管的受不受影響——受影響的項目列在對話框裡。
+function confirmRemoval(prefix, detail) {
+  const affected = (detail.affected || []).map((item) => `${item.ref}：${item.target}`);
+  const about = affected.length
+    ? `以下 ${affected.length} 份已納管的設定的目標在這個路徑底下——它們不受影響，仍會繼續管理：`
     : "目前沒有已納管的設定的目標在這個路徑底下。";
-  whitelistConfirmEl.replaceChildren(
-    element("p", {
-      class: "whitelist-confirm-msg",
-      text: `要把「${prefix}」從白名單移除嗎？移除後這個路徑底下的檔案不能再瀏覽或納管。${about}`,
-    }),
-    affected, confirm, cancel);
-  whitelistConfirmEl.hidden = false;
+  return confirmAction(
+    `把「${prefix}」從白名單移除？`,
+    `移除後這個路徑底下的檔案不能再瀏覽或納管；之後可以再加回來。${about}`,
+    "從白名單移除",
+    affected,
+  );
 }
 
-async function confirmRemoveRoot(prefix) {
-  try {
-    const response = await apiFetch(`${API_BASE}/api/allowed-roots`, {
-      method: "DELETE",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ prefix, confirmed: true }),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      whitelistErrorEl.textContent = detailText(payload.detail);
+async function confirmRemoveRoot(prefix, button) {
+  await whileBusy(button, "移除中…", async () => {
+    try {
+      const response = await apiFetch(`${API_BASE}/api/allowed-roots`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prefix, confirmed: true }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        whitelistErrorEl.textContent = detailText(payload.detail);
+        whitelistErrorEl.hidden = false;
+        return;
+      }
+      loadWhitelist();
+    } catch (error) {
+      whitelistErrorEl.textContent = failureText("移除白名單", error);
       whitelistErrorEl.hidden = false;
-      return;
     }
-    whitelistConfirmEl.hidden = true;
-    loadWhitelist();
-  } catch (error) {
-    whitelistErrorEl.textContent = `送不出去：${errText(error)}`;
-    whitelistErrorEl.hidden = false;
-  }
+  });
 }
 
 whitelistButton.addEventListener("click", showWhitelist);
@@ -3300,8 +3601,8 @@ whitelistView.querySelector("[data-testid='whitelist-back']")
   .addEventListener("click", () => showList(currentIdentity));
 whitelistView.querySelector("[data-testid='whitelist-preview-button']")
   .addEventListener("click", previewCandidates);
-whitelistView.querySelector("[data-testid='whitelist-add']")
-  .addEventListener("click", addRoot);
+const whitelistAddButton = whitelistView.querySelector("[data-testid='whitelist-add']");
+whitelistAddButton.addEventListener("click", () => addRoot(whitelistAddButton));
 // 路徑一改，先前的預覽就不是這個路徑的了：清掉，不留著讓人誤認。
 whitelistAddInput.addEventListener("input", () => {
   clearPreview();
@@ -3393,7 +3694,7 @@ async function runInspect() {
     renderInspect(payload);
   } catch (error) {
     if (generation !== inspectGeneration) return;
-    renderOnboardError(String(error && error.message ? error.message : error));
+    renderOnboardError(failureText("偵測來源檔案", error));
   }
 }
 
@@ -3500,9 +3801,14 @@ async function submitOnboard() {
       renderOnboardError(payload.detail);
       return;
     }
-    showList(currentIdentity);  // 回清單；load() 會重掃，新條目就出現在左側樹
+    // 回清單（load() 會重掃，新條目出現在左側樹）、選到剛納管的那一份、說一聲納管成了。
+    selectedUid = payload.uid;
+    clearPromoteBanners();
+    showList(currentIdentity);
+    promoteDoneEl.textContent = `已納管「${payload.ref}」，並記一筆變更紀錄。目標檔案：${payload.target}。`;
+    promoteDoneEl.hidden = false;
   } catch (error) {
-    renderOnboardError(String(error && error.message ? error.message : error));
+    renderOnboardError(failureText("納管", error));
   }
 }
 
@@ -3510,7 +3816,7 @@ onboardStartEl.addEventListener("click", () => {
   if (selectedSourcePath) openConfirm(selectedSourcePath);
 });
 onboardFormatEl.addEventListener("change", runInspect);
-onboardSubmitEl.addEventListener("click", submitOnboard);
+onboardSubmitEl.addEventListener("click", () => whileBusy(onboardSubmitEl, "納管中…", submitOnboard));
 onboardTypesEl.addEventListener("click", (event) => {
   const container = event.target.closest("li[data-container='true']");
   if (!container) return;
