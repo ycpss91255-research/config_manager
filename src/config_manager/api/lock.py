@@ -83,7 +83,10 @@ def seat_browsers(
         box.cleared_drafts += len(stage_box["stage"].drafts)
         stage_box["stage"] = discard(stage_box["stage"])
 
-    return Browsers(lambda: box.clock(), idle_timeout, release_idle)
+    def now() -> datetime:
+        return box.clock()
+
+    return Browsers(now, idle_timeout, release_idle)
 
 
 def register_session(

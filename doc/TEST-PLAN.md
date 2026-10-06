@@ -324,8 +324,17 @@ sweep(now) -> [被回收的階段]
 | **續期逾時後階段自動回收**，他人可取得 |
 | 部署模式：閒置達設定時間後階段被回收 |
 | 開發模式：不因閒置回收 |
+| **閒置以瀏覽器為單位**（`IdleSeats`，#48）：達逾時身分清掉、每張票只回報一次；有操作就重新起算；**過了時間才到的操作不把人接回來** |
+| 逾時退出的瀏覽器記得自己是「逾時退出」，直到重新輸入身分 |
 | 已失效的階段續期 → 明確失敗，不靜默重新取得 |
 | **階段逾時釋放時，草稿一併清除**，且回報「有 N 份草稿被清除」而非靜默丟棄 |
+
+**閒置逾時與續期逾時是兩件事（#48）。** 續期逾時管「分頁還在不在」（頁面開著就一直續期，兩種模式都有）；
+閒置逾時管「人還在不在」（`IdleSeats(timeout)`，以 #288 的瀏覽器票為鍵，`declare`／`identity`／`touch`／`expire`／
+`remaining`／`timed_out`，每個操作收 `now`；`timeout=None` 即開發模式、不逾時）。頁面的續期心跳**不算操作**。
+HTTP 層（`GET /api/session/idle`、`POST /api/session/activity`、逾時時釋放階段並清草稿）在 T9 以注入的時鐘驗；
+兩支端點是本 repo 對 §3.5.3 的追加，比照 `GET /api/session`。逾時長度預設 10 分鐘、提示提前 1 分鐘，
+`CM_IDLE_TIMEOUT`（秒）可調（T10 的 `serve_plan`）。
 
 **必須注入時鐘。** 這個測試介面的**階段**部分行為全部與時間相關，若讀系統時間，測
 「10 分鐘後逾時」就要真的等 10 分鐘。**這是設計要求，不是測試技巧**——讀系統時間的
@@ -1422,7 +1431,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `api/schema` | T9 | 已落地（`POST /api/configs/{uid}/schema`——僅開發者，產生 schema 骨架，#38；`schema_view` 供單筆內容帶欄位提示、人工指定的型別與 schema 的錯誤，#40／#285；`POST /api/configs/{uid}/types` 指定／清除型別、`as_specified` 讓指定成 double 的欄位寫出帶小數點，#285） |
 | `api/history` | T9 | 已落地（`GET /api/configs/{uid}/history`、`GET /api/configs/{uid}/history/{sha}`、`POST /api/configs/{uid}/revert`——歷史與退版的端點與邏輯，自 `api/routes` 拆出以免該模組超過千行，#24） |
 | `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`）；`import` 以 `--name`／`--email`（`--role`）自帶作者——CLI 不是瀏覽器，沒有頁面上輸入過的身分可沿用（#288） |
-| `api/browser` | T9 | 已落地（`Browsers`：以後端發的瀏覽器票（cookie `cm_browser`，HttpOnly、SameSite=Lax、session cookie）為鍵記各瀏覽器的身分；端點以 `Depends(browsers.current)` 取「這個請求的瀏覽器」的身分；形狀不合的票當沒帶、重新發，#288） |
+| `api/browser` | T9 | 已落地（`Browsers`：以後端發的瀏覽器票（cookie `cm_browser`，HttpOnly、SameSite=Lax、session cookie）為鍵記各瀏覽器的身分；端點以 `Depends(browsers.current)` 取「這個請求的瀏覽器」的身分；形狀不合的票當沒帶、重新發，#288；閒置逾時的 HTTP 這一層——讀注入的時鐘、逾時的票交給 `on_timeout`、`idle_view` 給介面顯示，#48） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 已落地：身分（`author`）；階段 `SessionLock` 的 acquire／renew／resume（重新整理後接續、換識別碼）／release／sweep，時鐘注入（#33） |
 | `api/lock` | T9 | 已落地（`POST`／`GET /api/session` 與編輯階段的取得／續期／釋放／狀態端點——設身分要看階段有沒有被別人持有，接線放一起；逾時回收清草稿並回報，#33；權限門檻 `require_permission` 也在這裡，白名單維護、候選數預覽、產生 schema、型別指定與屬性編輯共用，誰能做什麼問 `core/roles.permits`，#47） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |

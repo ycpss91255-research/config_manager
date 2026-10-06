@@ -2132,6 +2132,7 @@ def test_the_page_can_release_its_session_with_a_plain_text_beacon(api):
 
 _IN_PLACE_ONLY = "需就地注入時鐘，外部映像控不了 server 端模組"
 _TEN_MINUTES = 600
+_HALF_MINUTE = 30
 
 
 @contextlib.contextmanager
@@ -2169,7 +2170,7 @@ def test_the_idle_status_says_how_long_is_left_and_when_the_warning_starts(api):
         status = _get(api, "/api/session/idle")
 
     assert (status["timeout_seconds"], status["warn_seconds"]) == (_TEN_MINUTES, 60)
-    assert 25 <= status["remaining_seconds"] <= 30  # 9.5 分鐘後還剩約半分鐘
+    assert _HALF_MINUTE - 5 <= status["remaining_seconds"] <= _HALF_MINUTE  # 9.5 分鐘後
     assert status["timed_out"] is False
 
 
@@ -2261,8 +2262,8 @@ def test_development_mode_never_idles_out(api_developing):
         still = _get(api_developing, "/api/session")
         renewed = _lock(api_developing, path="/api/session/lock/renew", payload={"token": token})
 
-    assert status == {
-        "timeout_seconds": None, "warn_seconds": None, "remaining_seconds": None, "timed_out": False,
+    assert status == dict.fromkeys(("timeout_seconds", "warn_seconds", "remaining_seconds")) | {
+        "timed_out": False
     }
     assert still["name"] == "陳小明"
     assert renewed["holder"]["name"] == "陳小明"

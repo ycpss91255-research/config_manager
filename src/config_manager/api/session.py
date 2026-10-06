@@ -275,4 +275,3 @@ class IdleSeats:
 
     def _idle(self, seat: _Seat, now: datetime) -> bool:
         return self.timeout is not None and now - seat.active_at >= self.timeout
-

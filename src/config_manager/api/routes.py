@@ -11,7 +11,7 @@ app 由 create_app(repo) 產生而非模組層的全域物件：config-repo 的�
 import os
 from collections.abc import Iterable
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from subprocess import CalledProcessError
 from typing import cast
 

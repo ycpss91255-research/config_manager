@@ -453,4 +453,3 @@ def test_the_idle_timeout_leaves_the_renew_timeout_alone():
 def test_serve_plan_refuses_an_idle_timeout_that_would_mean_never(raw):
     with pytest.raises(IdleTimeoutInvalid, match="CM_IDLE_TIMEOUT"):
         serve_plan("0.0.0.0", 9000, {"CM_CONFIG_REPO": "/srv/r", "CM_IDLE_TIMEOUT": raw})
-
