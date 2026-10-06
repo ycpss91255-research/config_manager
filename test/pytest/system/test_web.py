@@ -688,6 +688,8 @@ def test_continuing_reports_activity_and_dismisses_the_warning(open_page, listin
     page.unroute("**/api/session/idle")
     page.unroute("**/api/session/activity")
     reported = _idle_answers(page, remaining_seconds=600)
+    # 剛回報過操作（節流期間內）：按鈕仍要立刻回報、立刻收掉提示，不等下一輪。
+    page.evaluate("lastActivityAt = Date.now()")
 
     page.click("[data-testid='idle-extend']")
 
