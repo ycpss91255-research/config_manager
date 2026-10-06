@@ -1489,14 +1489,37 @@ def test_a_confirmed_action_is_busy_only_after_the_confirmation(open_page, repo)
 def test_entering_the_identity_shows_it_is_running(open_page):
     page = open_page()
     page.wait_for_selector("[data-testid='identity-form']", state="visible")
-    _held, release = _hold(page, "**/api/session")
+    held, release = _hold(page, "**/api/session")
 
     _fill_identity(page)
 
     page.wait_for_selector("#identity button.enter[aria-busy='true']")
     assert page.inner_text("#identity button.enter") == "進入中…"
+    # 等的時候在欄位裡再按一次 Enter：表單會再送出一次，但不會多打一發請求。
+    page.press("[data-testid='identity-name']", "Enter")
+    page.wait_for_timeout(200)
+    assert len(held) == 1
     release()
     page.wait_for_selector("[data-testid='config-tree']", state="visible")
+
+
+def test_a_running_action_does_not_reopen_its_confirmation(open_page, repo):
+    # 捨棄中又被觸發一次：不再跳一次確認對話框、也不多送一發。
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    held, release = _hold(page, "**/api/drafts", method="DELETE")
+    page.click("[data-testid='discard-all']")
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_selector("[data-testid='discard-all'][aria-busy='true']")
+
+    page.evaluate("() => { discardDrafts(null, null); }")
+    page.wait_for_timeout(200)
+
+    assert page.is_hidden("[data-testid='confirm-dialog']")
+    assert len(held) == 1
+    release()
+    page.wait_for_function("document.querySelector(\"[data-testid='discard-all']\").disabled")
 
 
 def test_checking_for_differences_marks_the_button_busy(open_page, listing):

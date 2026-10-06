@@ -1561,6 +1561,7 @@ function schemaBadge(uid, path) {
 // 產生 schema 骨架（#38）。不可悄悄開啟一道把關：先說會發生什麼。成功後就地換上標示、拿掉按鈕，
 // **不重畫欄位表**——還沒儲存的改動不能因此消失（不變式 2）。
 async function draftSchema(detail, ui) {
+  if (isBusy(ui.button)) return;
   const ok = await confirmAction(
     `替「${detail.name}」產生 schema？`,
     "會依目前的值記下每個參數的型別，存進設定庫的 .schemas/ 並留一筆變更紀錄。"
@@ -2346,6 +2347,7 @@ const SCHEMA_DONE_TEXT = {
 };
 
 async function revertTo(view, detail, version, differing, button) {
+  if (isBusy(button)) return;
   const short = version.sha.slice(0, 7);
   const ok = await confirmAction(
     "退回此版本？",
@@ -2518,6 +2520,7 @@ function resolveActions(detail, view) {
 }
 
 async function resolveDrift(detail, option, view, errorEl, button) {
+  if (isBusy(button)) return;
   if (option.confirm) {
     const ok = await confirmAction(...option.confirm);
     if (!ok) return;
@@ -2632,17 +2635,24 @@ function confirmAction(title, body, okLabel = "確認", items = []) {
 // 「…中」、不能再按），做完還原——看得出有在跑，也不會因為多按一下而送出兩次。
 async function whileBusy(button, label, work) {
   if (!button) return work();
-  if (button.getAttribute("aria-busy") === "true") return undefined;  // 已經在跑：這一下不算
+  if (isBusy(button)) return undefined;  // 已經在跑：這一下不算（例如表單被 Enter 再送一次）
   const idle = button.textContent;
   button.setAttribute("aria-busy", "true");
+  button.inert = true;  // 滑鼠與鍵盤都按不到；不動 disabled——那是各個動作自己在管的
   button.textContent = label;
   try {
     return await work();
   } finally {
     button.removeAttribute("aria-busy");
+    button.inert = false;
     // 動作自己改過按鈕文字（例如進版後變成「進版 (0)」）就不動它。
     if (button.textContent === label) button.textContent = idle;
   }
+}
+
+// 要先確認的動作在最前面問這個：已經在跑就不再開一次確認對話框。
+function isBusy(button) {
+  return Boolean(button) && button.getAttribute("aria-busy") === "true";
 }
 
 function clearPromoteBanners() {
@@ -2675,6 +2685,7 @@ async function promoteAll() {
 }
 
 async function discardDrafts(uid, name, button = discardAllButton) {
+  if (isBusy(button)) return;
   const scope = uid ? `「${name}」的草稿` : `全部 ${draftUids.size} 份草稿`;
   const ok = await confirmAction(
     `捨棄${uid ? "這份" : "全部"}變更？`,
@@ -2709,6 +2720,7 @@ async function discardDrafts(uid, name, button = discardAllButton) {
 // 解除納管（#287，後端 #28）：不可逆，先說實際會發生的事再做（設計原則 2）。成功後這份從樹與
 // 工作區消失；目標檔案不動。後端拒絕（有草稿、寫入失敗）時原因原樣顯示，項目留在原處。
 async function unmanageConfig(detail, button) {
+  if (isBusy(button)) return;
   const ok = await confirmAction(
     `解除「${detail.name}」的納管？`,
     `系統不再追蹤這份檔案，它會從清單消失。目標檔案 ${detail.target} 保留、內容不動；`
@@ -3342,6 +3354,7 @@ async function confirmAddRoot(prefix, showError) {
 }
 
 async function addToWhitelist(prefix, button) {
+  if (isBusy(button)) return;
   const showAddError = (text) => {
     const slot = browseRejectedEl.querySelector(".msg");
     if (slot) slot.textContent = text;
@@ -3486,6 +3499,7 @@ function clearPreview() {
 }
 
 async function addRoot(button) {
+  if (isBusy(button)) return;
   whitelistErrorEl.hidden = true;
   clearPreview();  // 舊的預覽不留到這次的結果旁邊——那會被誤認成目前路徑的數字
   const prefix = whitelistAddInput.value.trim();
@@ -3520,6 +3534,7 @@ async function addRoot(button) {
 }
 
 async function beginRemoveRoot(prefix, button) {
+  if (isBusy(button)) return;
   // 先以 confirmed=false 問後端：有受影響的納管項目就列出＋要求確認，不靜默移除（AC3）。
   // 後端在未確認時一律回 409 confirm_required（含受影響清單，可能為空）。
   whitelistErrorEl.hidden = true;
