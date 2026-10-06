@@ -3565,9 +3565,11 @@ async function loadMode() {
     // backend 連不上時仍顯示身分輸入頁：那是使用者唯一能操作的東西，
     // 而送出時的錯誤會說明真正的問題。
   }
-  // 沒有身分。若是因閒置被退出的（重新整理後也一樣），說明原因（#48）。
+  // 沒有身分：先把身分輸入頁顯示出來（那是使用者唯一能操作的東西，不等任何請求），再問是不是
+  // 因閒置被退出的——是的話補上說明（重新整理後也一樣，#48）。
+  showIdentityForm();
   const idle = await idleRequest(false);
-  showIdentityForm(idle && idle.timed_out ? idle.timeout_seconds || true : false);
+  if (idle && idle.timed_out && !identityForm.hidden) showIdentityForm(idle.timeout_seconds || true);
 })();
 </script>
 
