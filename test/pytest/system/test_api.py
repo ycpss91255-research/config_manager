@@ -2247,9 +2247,12 @@ def test_someone_elses_idleness_does_not_end_my_identity(api):
 
         mine = _get(api, "/api/session")
         theirs, _ = _request_as(other, api, "/api/session", method="GET")
+        held = _lock(api, "GET")
 
     assert mine["name"] == "陳小明"
     assert theirs is None
+    # 退出的是沒在操作的那一個；編輯階段是我持有的，不因別人逾時而被釋放。
+    assert held["held"] is True and held["holder"]["name"] == "陳小明"
 
 
 def test_development_mode_never_idles_out(api_developing):
