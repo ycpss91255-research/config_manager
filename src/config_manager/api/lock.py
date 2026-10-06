@@ -14,12 +14,12 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from config_manager.api.browser import Browsers
+from config_manager.api.browser import Browsers, ticket_of
 from config_manager.api.errors import InvalidAuthor
 from config_manager.api.session import (
     EditingSession,
@@ -64,6 +64,26 @@ class LockBox:
     lock: SessionLock
     clock: Clock
     cleared_drafts: int = 0
+    # 持有階段的是哪個瀏覽器（票，#288）。它閒置逾時退出時，階段跟著釋放（#48）。
+    holder_ticket: str | None = None
+
+
+def seat_browsers(
+    stage_box: dict[str, Stage], box: LockBox, idle_timeout: timedelta | None
+) -> Browsers:
+    """建立各瀏覽器的身分表，並把它接上編輯階段：一個瀏覽器閒置逾時退出時，它持有的階段釋放、
+    草稿清除並記下數量（#48）——與續期逾時同一條規則（`sweep`）：不清的話，下一個人會把上一個人
+    的草稿以自己的名字進版。時鐘讀 `box.clock`（每次都讀，測試換掉它兩邊一起變）。"""
+
+    def release_idle(ticket: str) -> None:
+        current = box.lock.current
+        if current is None or box.holder_ticket != ticket:
+            return
+        box.lock.release(current.token)
+        box.cleared_drafts += len(stage_box["stage"].drafts)
+        stage_box["stage"] = discard(stage_box["stage"])
+
+    return Browsers(lambda: box.clock(), idle_timeout, release_idle)
 
 
 def register_session(
@@ -84,7 +104,7 @@ def register_session(
         **這不是登入。** 沒有密碼、不驗證、角色是自我宣告（ADR-00000020）。身分記在這個瀏覧器的
         票上；第一次來會發票（回應的 Set-Cookie）。
         """
-        identity = _checked_identity(box, stage_box, payload)
+        identity = _checked_identity(browsers, box, stage_box, payload)
         browsers.declare(request, response, identity)
         return _as_session(identity)
 
@@ -92,8 +112,21 @@ def register_session(
     def get_session(
         identity: Identity | None = Depends(browsers.current),
     ) -> dict[str, str] | None:
-        """這個瀏覽器目前的身分，尚未輸入則回 null。"""
+        """這個瀏覽器目前的身分，尚未輸入（或已閒置逾時退出）則回 null。"""
         return _as_session(identity) if identity else None
+
+    @app.get("/api/session/idle")
+    def idle_status(request: Request) -> dict[str, object]:
+        """這個瀏覽器的閒置狀態（#48）：還剩幾秒、何時開始提示、是不是剛因閒置被退出。開發模式
+        不逾時，`timeout_seconds` 是 null。問這一支**不算操作**。"""
+        return browsers.idle_view(request)
+
+    @app.post("/api/session/activity")
+    def note_activity(request: Request) -> dict[str, object]:
+        """這個瀏覽器的人有在操作（頁面回報，或按了「繼續使用」）：重新起算閒置。已逾時就不動
+        ——逾時是退出，要重新輸入身分。回更新後的閒置狀態。"""
+        browsers.active(request)
+        return browsers.idle_view(request)
 
     register_lock(app, browsers, stage_box, box)
 
@@ -106,13 +139,15 @@ def register_lock(
     @app.get("/api/session/lock")
     def lock_status() -> dict[str, object]:
         """誰在編輯（無人→`held: false`）。不回識別碼。"""
-        sweep(stage_box, box)
+        sweep(browsers, stage_box, box)
         return _status(box)
 
     @app.post("/api/session/lock")
-    def acquire_lock(identity: Identity | None = Depends(browsers.current)) -> dict[str, object]:
+    def acquire_lock(
+        request: Request, identity: Identity | None = Depends(browsers.current)
+    ) -> dict[str, object]:
         """以這個瀏覽器的身分取得編輯階段；已被占用→409（持有者姓名、email、開始時間）。"""
-        sweep(stage_box, box)
+        sweep(browsers, stage_box, box)
         if identity is None:
             raise HTTPException(
                 status_code=409,
@@ -123,6 +158,7 @@ def register_lock(
             session = box.lock.acquire(identity, box.clock())
         except SessionHeld as error:
             raise HTTPException(status_code=409, detail=_held_detail(error)) from error
+        box.holder_ticket = ticket_of(request)
         cleared, box.cleared_drafts = box.cleared_drafts, 0
         return {**_session_view(session), "token": session.token, "cleared_drafts": cleared}
 
@@ -132,7 +168,7 @@ def register_lock(
         的識別碼（`token`）：一般續期不變，`resume`（重新整理後接續）會換新的。"""
         # 先在 API 層 sweep：逾時的階段要在這裡清草稿、清身分並記下數量——SessionLock 自己的
         # sweep 只會把階段丟掉，之後就沒人知道有東西該清。
-        sweep(stage_box, box)
+        sweep(browsers, stage_box, box)
         try:
             keep = box.lock.resume if payload.resume else box.lock.renew
             session = keep(payload.token, box.clock())
@@ -160,15 +196,17 @@ def register_lock(
         return {"released": box.lock.release(payload.token)}
 
 
-def sweep(stage_box: dict[str, Stage], box: LockBox) -> None:
-    """回收逾時的階段：草稿一併清除並記下數量（下次取得時回報）。身分不隨階段清掉（見 release）。"""
+def sweep(browsers: Browsers, stage_box: dict[str, Stage], box: LockBox) -> None:
+    """回收逾時的階段：草稿一併清除並記下數量（下次取得時回報）。先讓閒置逾時的瀏覽器退出（#48，
+    它持有的階段在那裡釋放），再回收續期逾時的。續期逾時不清身分（分頁斷了，人不一定走了）。"""
+    browsers.sweep()
     for _expired in box.lock.sweep(box.clock()):
         box.cleared_drafts += len(stage_box["stage"].drafts)
         stage_box["stage"] = discard(stage_box["stage"])
 
 
 def _checked_identity(
-    lock_box: LockBox, stage_box: dict[str, Stage], payload: SessionInput
+    browsers: Browsers, lock_box: LockBox, stage_box: dict[str, Stage], payload: SessionInput
 ) -> Identity:
     """設定身分的檢查。422：值不合法（訊息已是可行動的樣子，原樣傳）；409：別人正持有編輯階段
     ——後來者此時進不了編輯，帶持有者資訊讓前端以唯讀進清單並說明是誰（#33、#288 的條件 7）；
@@ -177,7 +215,7 @@ def _checked_identity(
         identity = author(payload.name, payload.email, payload.role)
     except InvalidAuthor as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    occupied = held_by_other(lock_box, identity, stage_box)
+    occupied = held_by_other(browsers, lock_box, identity, stage_box)
     if occupied is not None:
         raise HTTPException(
             status_code=409,
@@ -201,11 +239,11 @@ def _as_session(identity: Identity) -> dict[str, str]:
 
 
 def held_by_other(
-    box: LockBox, identity: Identity, stage_box: dict[str, Stage]
+    browsers: Browsers, box: LockBox, identity: Identity, stage_box: dict[str, Stage]
 ) -> SessionHeld | None:
     """別人正持有編輯階段時，換身分會把持有者的變更紀錄掛到別人頭上——擋在設定身分這一步。
     同一個人（姓名＋email 相同）再設一次不擋（第二個分頁：之後取得階段會被 409、轉唯讀）。"""
-    sweep(stage_box, box)
+    sweep(browsers, stage_box, box)
     current = box.lock.current
     if current is None:
         return None
@@ -265,5 +303,5 @@ def _timeout_seconds(box: LockBox) -> float:
 
 __all__ = [
     "LockBox", "SessionInput", "drafts_view", "register_lock", "register_session",
-    "require_permission", "sweep", "utc_now",
+    "require_permission", "seat_browsers", "sweep", "utc_now",
 ]

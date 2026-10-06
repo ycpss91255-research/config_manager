@@ -184,3 +184,95 @@ class SessionLock:
 
     def holds(self, token: str) -> bool:
         return self.current is not None and self.current.token == token
+
+
+# ── 閒置逾時（#48）────────────────────────────────────────────────────────────
+
+# 部署模式閒置多久自動退出、退出前多久提示（§7.2.3.2）。提示的提前量不超過逾時的一半——把逾時
+# 調短來驗證時（`CM_IDLE_TIMEOUT`），不會一開頁面就在提示。
+DEFAULT_IDLE_TIMEOUT = timedelta(minutes=10)
+_IDLE_WARNING = timedelta(minutes=1)
+
+
+def idle_warning(timeout: timedelta) -> timedelta:
+    """逾時前多久開始提示。"""
+    return min(_IDLE_WARNING, timeout / 2)
+
+
+@dataclass(frozen=True)
+class Timeouts:
+    """兩種逾時，各管一件事：`renew` 是編輯階段的續期逾時（分頁還在不在，兩種模式都有）；`idle` 是
+    閒置逾時（人還在不在，只在部署模式生效）。"""
+
+    renew: timedelta = DEFAULT_RENEW_TIMEOUT
+    idle: timedelta = DEFAULT_IDLE_TIMEOUT
+
+
+@dataclass
+class _Seat:
+    identity: Identity | None
+    active_at: datetime
+    timed_out: bool = False
+
+
+class IdleSeats:
+    """各瀏覽器（以票為鍵，#288）的身分與最後一次操作的時間。
+
+    `timeout` 是**閒置逾時**：這個瀏覽器的人這麼久沒操作就退出——現場機器多人共用，留著身分
+    會讓下一個人的變更記到上一個人名下（#48）。`None`＝不逾時（開發模式）。與 `SessionLock` 的
+    續期逾時是兩件事：那個管「分頁還在不在」（頁面開著就一直續期），這個管「人還在不在」。
+
+    純邏輯、不讀時鐘：每個操作收 `now`（T13）。逾時是**退出**，不是暫停：過了時間之後才到的操作
+    不會把人接回來，要重新輸入身分。
+    """
+
+    def __init__(self, timeout: timedelta | None) -> None:
+        self.timeout = timeout
+        self._seats: dict[str, _Seat] = {}
+
+    def declare(self, ticket: str, identity: Identity, now: datetime) -> None:
+        """這個瀏覽器說了自己是誰：從現在起算閒置，先前的逾時狀態一筆勾銷。"""
+        self._seats[ticket] = _Seat(identity, now)
+
+    def identity(self, ticket: str, now: datetime) -> Identity | None:
+        """這個瀏覽器此刻的身分；沒說過、或已閒置逾時回 None。"""
+        seat = self._seats.get(ticket)
+        if seat is None or self._idle(seat, now):
+            return None
+        return seat.identity
+
+    def touch(self, ticket: str, now: datetime) -> bool:
+        """有人在操作：重新起算閒置。已逾時（或沒身分）回 False、什麼都不動。"""
+        seat = self._seats.get(ticket)
+        if seat is None or seat.identity is None or self._idle(seat, now):
+            return False
+        seat.active_at = now
+        return True
+
+    def expire(self, now: datetime) -> list[str]:
+        """讓閒置逾時的瀏覽器退出：清掉身分、記下「逾時退出」。回這次新退出的票——每張只回報一次，
+        呼叫端據此釋放它持有的編輯階段。"""
+        gone = [
+            ticket
+            for ticket, seat in self._seats.items()
+            if seat.identity is not None and self._idle(seat, now)
+        ]
+        for ticket in gone:
+            self._seats[ticket] = _Seat(None, now, timed_out=True)
+        return gone
+
+    def remaining(self, ticket: str, now: datetime) -> timedelta | None:
+        """離逾時還有多久（不會是負的）。不逾時、或這個瀏覽器沒有身分回 None。"""
+        seat = self._seats.get(ticket)
+        if self.timeout is None or seat is None or seat.identity is None:
+            return None
+        return max(self.timeout - (now - seat.active_at), timedelta(0))
+
+    def timed_out(self, ticket: str) -> bool:
+        """這個瀏覽器是不是因閒置被退出、而且還沒重新輸入身分。"""
+        seat = self._seats.get(ticket)
+        return seat is not None and seat.timed_out
+
+    def _idle(self, seat: _Seat, now: datetime) -> bool:
+        return self.timeout is not None and now - seat.active_at >= self.timeout
+
