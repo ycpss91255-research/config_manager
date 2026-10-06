@@ -3163,7 +3163,11 @@ def test_a_release_that_arrives_after_the_reload_does_not_take_the_session_away(
     page.evaluate("sessionToken = null")
 
     page.reload()
-    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+    # 等新頁面**接續完成**（存著的識別碼換成新的）再讓釋放「到」：進版鈕在接續的回應回來之前就
+    # 看得到，只等它的話，讀識別碼時頁面可能還沒收到新的那一個（CI 上實際撞到過）。
+    page.wait_for_function(
+        "old => sessionStorage.getItem('cm.session.token') !== old", arg=old_token
+    )
     late = _api_json(api, "POST", "/api/session/lock/release", {"token": old_token})
 
     assert late == {"released": False}
