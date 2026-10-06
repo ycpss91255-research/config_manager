@@ -890,6 +890,144 @@ def test_an_error_without_a_reason_still_says_where_to_look(open_page, listing):
     assert "下一步：查看後端服務的紀錄" in text
 
 
+# ── 操作後的回饋與位置保持（#50）────────────────────────────────────────────────
+# 做完一個動作：說一聲成了，而且人剛才的位置（折疊了什麼、捲到哪、焦點在哪）要留著。
+
+_NESTED = "robot:\n  name: amr\n  speed: 1.5\ncamera:\n  fps: 30\n" + "".join(
+    f"filler_{index}: {index}\n" for index in range(40)
+)
+
+
+def _collapsed(page, uid) -> list:
+    return page.evaluate(
+        "uid => [...document.querySelectorAll(`[data-testid='panel-${uid}']"
+        " li[data-container='true'][data-collapsed='true']`)].map(node => node.dataset.name)",
+        uid,
+    )
+
+
+def _open_nested(open_page, repo):
+    _listing_many(repo, {"a": _NESTED})
+    page = _enter_identity(open_page())
+    page.set_viewport_size({"width": 1200, "height": 500})
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    return page
+
+
+def test_saving_a_draft_says_it_was_saved_and_is_not_yet_promoted(open_page, repo):
+    page = _open_nested(open_page, repo)
+    page.fill(f"{_row('camera.fps')} input", "60")
+
+    _save(page, _PARAM_UID)
+
+    note = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save-note']"
+    page.wait_for_selector(note, state="visible")
+    assert page.inner_text(note).startswith("已存為草稿——還沒進版")
+
+
+def test_the_saved_note_goes_away_once_the_field_is_edited_again(open_page, repo):
+    # 那句話說的是上一次儲存；又動了欄位還留著，就變成在描述一個已經不成立的狀態。
+    page = _open_nested(open_page, repo)
+    page.fill(f"{_row('camera.fps')} input", "60")
+    _save(page, _PARAM_UID)
+    note = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save-note']"
+    page.wait_for_selector(note, state="visible")
+
+    page.fill(f"{_row('camera.fps')} input", "90")
+
+    page.wait_for_selector(note, state="hidden")
+
+
+def _row_top(page, path) -> float:
+    """那一列離視窗頂端多遠——「人眼前的東西有沒有動」看的是這個，不是 scrollY。"""
+    return page.evaluate(
+        "name => [...document.querySelectorAll('li[data-name]')]"
+        ".find(node => node.dataset.name === name).getBoundingClientRect().top",
+        path,
+    )
+
+
+def _scrolled_to_an_edit_far_down(open_page, repo):
+    """折疊 robot、改最底下附近的一格、把那一列放在視窗中段——接下來的動作不該把它移走。"""
+    page = _open_nested(open_page, repo)
+    page.click(f"{_row('robot')} .param-name")  # 折疊 robot
+    page.fill(f"{_row('filler_35')} input", "350")
+    page.evaluate(
+        "name => { const row = [...document.querySelectorAll('li[data-name]')]"
+        ".find(node => node.dataset.name === name);"
+        " window.scrollBy(0, row.getBoundingClientRect().top - 200); }",
+        "filler_35",
+    )
+    assert page.evaluate("window.scrollY") > 0
+    return page
+
+
+def test_saving_keeps_what_was_collapsed_and_where_the_page_was_scrolled(open_page, repo):
+    page = _scrolled_to_an_edit_far_down(open_page, repo)
+    before = _row_top(page, "filler_35")
+
+    page.keyboard.press("Control+s")  # 焦點在剛改的那一格；用鍵盤存，不讓點擊自己去捲頁面
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="attached")
+
+    assert _collapsed(page, _PARAM_UID) == ["robot"]
+    assert abs(_row_top(page, "filler_35") - before) <= 1
+
+
+def test_promoting_keeps_what_was_collapsed_and_where_the_page_was_scrolled(open_page, repo):
+    # 進版後打開的區塊整個重畫（來源變了），上方還多出一條結果橫幅：眼前那一列不能因此跳走、
+    # 折疊的不能全部展開。
+    page = _scrolled_to_an_edit_far_down(open_page, repo)
+    page.keyboard.press("Control+s")
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="attached")
+    before = _row_top(page, "filler_35")
+
+    page.evaluate("() => { promoteAll(); }")  # 按鈕在頁面頂端；直接觸發，不讓點擊把頁面捲回去
+    page.wait_for_selector("[data-testid='promote-done']:not([hidden])", state="attached")
+    page.wait_for_function(
+        "uid => !document.querySelector(`[data-testid='panel-draft-${uid}']:not([hidden])`)"
+        " && document.querySelector(`[data-testid='panel-${uid}'] li[data-name='filler_35']"
+        " .param-source`).textContent.includes('350')",
+        arg=_PARAM_UID,
+    )
+
+    assert _collapsed(page, _PARAM_UID) == ["robot"]
+    assert abs(_row_top(page, "filler_35") - before) <= 1
+
+
+def test_discarding_one_draft_keeps_the_focus_inside_that_panel(open_page, repo):
+    page = _open_nested(open_page, repo)
+    page.fill(f"{_row('camera.fps')} input", "60")
+    _save(page, _PARAM_UID)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    page.focus(f"{_row('camera.fps')} input")
+
+    # 不回傳那個 promise：它要等確認對話框被回答，而回答在下一行——回傳的話 evaluate 會一直等。
+    page.evaluate("uid => { discardDrafts(uid, 'a', null); }", _PARAM_UID)
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_function(
+        "uid => document.querySelector(`[data-testid='panel-${uid}'] li[data-name='camera.fps'] input`)"
+        ".value === '30'",
+        arg=_PARAM_UID,
+    )
+
+    assert "已捨棄「a」的草稿" in page.inner_text("[data-testid='promote-done']")
+    focused = page.evaluate("document.activeElement.closest('li[data-name]')?.dataset.name")
+    assert focused == "camera.fps"
+
+
+def test_onboarding_says_it_worked_and_selects_the_new_config(open_page, browse_root):
+    (browse_root / "fresh.yaml").write_text("count: 1\n", encoding="utf-8")
+    page = _open_confirm(open_page(), browse_root, "fresh.yaml")
+    page.get_by_role("button", name="確認寫入").click()
+
+    page.wait_for_selector("[data-testid='promote-done']:not([hidden])")
+    said = page.inner_text("[data-testid='promote-done']")
+    assert f"已納管「{browse_root.name}-fresh@" in said and "fresh.yaml" in said
+    page.wait_for_selector("#tree li[aria-selected='true']")
+    assert "fresh" in page.inner_text("#tree li[aria-selected='true']")
+
+
 # ── 空狀態（#50）───────────────────────────────────────────────────────────────
 # 每一種「這裡沒有東西」都說出是哪一種、接下來可以做什麼。
 

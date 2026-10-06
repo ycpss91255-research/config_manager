@@ -40,6 +40,10 @@
     }
   }
   * { box-sizing: border-box; }
+  /* 上方的橫幅出現或消失時，頁面自己把捲動位置補回來（#50，見 keepWorkspaceInPlace）。瀏覽器內建的
+     scroll anchoring 只有部分瀏覽器有（Safari 沒有），兩者同時作用會補兩次——所以關掉內建的，
+     各瀏覽器行為一致。 */
+  html { overflow-anchor: none; }
   /* 瀏覽器預設的 [hidden]{display:none} 會被下面任何一條 display 宣告蓋過
      ——header 的 display:flex 就蓋掉了它，於是「隱藏」的頁首照樣顯示。
      這是 hidden 屬性最常見的失效方式，用 !important 釘住。 */
@@ -1195,7 +1199,11 @@ async function openPanel(uid, notice) {
     if (generation !== panelGenerations.get(uid)) return;
     const panel = panelNode(detail);
     if (notice) panel.insertBefore(notice, panel.children[1] || null);  // 上一個動作的結果放在標頭下
+    // 重畫一個已經開著的區塊（進版、捨棄、改屬性之後）：位置在換上去之前才量，換完還原。
+    const previous = slotFor(uid);
+    const position = previous && previous.dataset.view === "panel" ? panelPosition(previous) : null;
     mountView(uid, panel, "panel");
+    if (position) restorePanelPosition(panel, position);
   } catch (error) {
     if (generation !== panelGenerations.get(uid)) return;
     // 大聲失敗（不變式 2）：說出讀不到，不留一個空表假裝這份 config 沒有參數。
@@ -1206,6 +1214,63 @@ async function openPanel(uid, notice) {
       element("pre", { text: failureText("讀取這份 config 的內容", error) }),
     ]));
   }
+}
+
+// 工作區上方的東西變高或變矮時（結果橫幅出現／消失、唯讀橫幅、閒置提示、工具列換行），下面的內容
+// 會整個被推動——人正在看的那一列就從眼前跑掉。這裡在畫出來之前把捲動位置補回同樣的量，畫面上的
+// 內容不動。在頁面頂端時不補：那時橫幅本來就該被看見、內容往下讓位。
+let workspaceTop = null;
+
+function keepWorkspaceInPlace() {
+  const now = workspace.getBoundingClientRect().top + window.scrollY;
+  if (workspaceTop !== null && window.scrollY > 0 && !listView.hidden) {
+    window.scrollBy(0, now - workspaceTop);
+  }
+  workspaceTop = now;
+}
+
+if (window.ResizeObserver) {
+  const above = new ResizeObserver(keepWorkspaceInPlace);
+  for (const node of document.querySelectorAll("header, main > .banner, main > .scan-status")) {
+    above.observe(node);
+  }
+}
+
+// 操作後的位置保持（#50）：區塊因為進版、捨棄、改屬性而整個重畫時，人剛才的位置要留著——折疊了
+// 哪些巢狀參數、整個區塊是不是收著、頁面捲到哪、鍵盤焦點在哪一列。不留的話每做一個動作，畫面
+// 就跳回區塊開頭、全部展開，得重新找剛才在看的那一列。
+function panelPosition(panel) {
+  const active = panel.contains(document.activeElement) ? document.activeElement : null;
+  const row = active ? active.closest("li[data-name]") : null;
+  return {
+    collapsed: [...panel.querySelectorAll("li[data-container='true'][data-collapsed='true']")]
+      .map((node) => node.dataset.name),
+    folded: panel.dataset.collapsed === "true",
+    scrollY: window.scrollY,
+    focusRow: row ? row.dataset.name : null,
+    focusControl: active && !row ? active.dataset.testid || null : null,
+  };
+}
+
+function restorePanelPosition(panel, position) {
+  const list = panel.querySelector("[data-testid='param-table']");
+  const rowNamed = (name) => (list
+    ? [...list.querySelectorAll("li[data-name]")].find((node) => node.dataset.name === name)
+    : null);
+  for (const name of position.collapsed) {
+    const container = rowNamed(name);
+    // 那個參數可能已經不在了（退版、改型別）：沒有就略過，其餘照樣還原。
+    if (container && container.dataset.container === "true" && container.dataset.collapsed !== "true") {
+      toggleCollapse(list, container);
+    }
+  }
+  if (position.folded) panel.dataset.collapsed = "true";
+  window.scrollTo(window.scrollX, position.scrollY);
+  const row = position.focusRow ? rowNamed(position.focusRow) : null;
+  const control = row
+    ? row.querySelector("input, select, textarea, button")
+    : position.focusControl && panel.querySelector(`[data-testid='${position.focusControl}']`);
+  if (control && !control.hidden) control.focus({ preventScroll: true });
 }
 
 function panelNode(detail) {
@@ -1297,10 +1362,16 @@ function panelNode(detail) {
   const specify = currentIdentity && currentIdentity.role === "developer"
     ? (row, typeName, reset) => specifyType(detail, row, typeName, { entries, error: saveError, reset })
     : null;
+  // 儲存這個動作的結果說明（存成了、或為什麼沒存），放在儲存鈕旁；又動了欄位就收掉——那句話說的
+  // 是上一次儲存，不是現在畫面上的東西。
+  const saveNote = element("span", {
+    class: "hint", "data-testid": "panel-save-note", role: "status", hidden: "",
+  });
   const refreshSave = () => {
     const invalid = entries.some((entry) => entry.node.dataset.valid === "false");
     const dirty = entries.some((entry) => entry.node.dataset.dirty === "true");
     saveButton.disabled = invalid || !dirty;
+    if (dirty) saveNote.hidden = true;
   };
   const list = element("ul", { class: "param-table", "data-testid": "param-table" }, [
     element("li", { class: "param-row param-head" }, [
@@ -1330,7 +1401,7 @@ function panelNode(detail) {
   const warningsSlot = element("div", { class: "rule-warnings-slot" });
   const ui = {
     save: saveButton, error: saveError, draft: draftMark, discard: discardButton,
-    warnings: warningsSlot, entries,
+    warnings: warningsSlot, entries, note: saveNote,
   };
   saveButton.addEventListener("click", () => whileBusy(saveButton, "儲存中…", () => saveDraft(detail, entries, ui)));
   if ((detail.draft_warnings || []).some((problem) => problem.rule)) {
@@ -1366,7 +1437,7 @@ function panelNode(detail) {
   panel.append(list, warningsSlot, saveError, element("div", { class: "panel-actions" }, [
     ...actions,
     element("span", { class: "hint", text: "「儲存」只是存為草稿——不記錄、不寫到目標；工具列的「進版」才會。" }),
-    element("span", { class: "hint", "data-testid": "panel-save-note", role: "status", hidden: "" }),
+    saveNote,
     discardButton,
     saveButton,
   ]));
@@ -1642,6 +1713,11 @@ async function saveDraft(detail, entries, ui, overrides = {}) {
     const skipped = (payload.warnings || []).filter((problem) => problem.rule);
     if (skipped.length) renderRuleWarnings(detail, ui, skipped, overrides, false, true);
     else if (ui.warnings) ui.warnings.replaceChildren();
+    // 存成了要說一聲（#50）：畫面留在原處不動，只靠一個小圓點看不出剛才那一下有沒有生效。
+    if (ui.note) {
+      ui.note.textContent = "已存為草稿——還沒進版；要記錄並寫到目標，按工具列的「進版」。";
+      ui.note.hidden = false;
+    }
   } catch (error) {
     renderSaveError(ui.error, failureText("儲存草稿", error));
     ui.save.disabled = false;
@@ -2617,6 +2693,10 @@ async function discardDrafts(uid, name, button = discardAllButton) {
         return;
       }
       setDrafts(payload.drafts.map((draft) => draft.uid));
+      promoteDoneEl.textContent = uid
+        ? `已捨棄「${name}」的草稿，畫面回到來源內容。來源與目標檔案都沒有改變。`
+        : "已捨棄全部草稿，畫面回到來源內容。來源與目標檔案都沒有改變。";
+      promoteDoneEl.hidden = false;
       for (const open of openUids()) {
         if (!uid || uid === open) openPanel(open);  // 畫面回到來源內容
       }
@@ -3704,7 +3784,12 @@ async function submitOnboard() {
       renderOnboardError(payload.detail);
       return;
     }
-    showList(currentIdentity);  // 回清單；load() 會重掃，新條目就出現在左側樹
+    // 回清單（load() 會重掃，新條目出現在左側樹）、選到剛納管的那一份、說一聲納管成了。
+    selectedUid = payload.uid;
+    clearPromoteBanners();
+    showList(currentIdentity);
+    promoteDoneEl.textContent = `已納管「${payload.ref}」，並記一筆變更紀錄。目標檔案：${payload.target}。`;
+    promoteDoneEl.hidden = false;
   } catch (error) {
     renderOnboardError(failureText("納管", error));
   }
