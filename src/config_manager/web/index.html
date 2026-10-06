@@ -2615,7 +2615,7 @@ function confirmAction(title, body, okLabel = "確認", items = []) {
     const finish = (answer) => {
       okButton.removeEventListener("click", onOk);
       cancelButton.removeEventListener("click", onCancel);
-      confirmDialog.removeEventListener("close", onCancel);
+      confirmDialog.removeEventListener("cancel", onCancel);
       if (confirmDialog.open) confirmDialog.close();
       resolve(answer);
     };
@@ -2625,7 +2625,9 @@ function confirmAction(title, body, okLabel = "確認", items = []) {
     const cancelButton = confirmDialog.querySelector("[data-testid='confirm-cancel']");
     okButton.addEventListener("click", onOk);
     cancelButton.addEventListener("click", onCancel);
-    confirmDialog.addEventListener("close", onCancel);  // Esc
+    // Esc 走 `cancel` 事件，不聽 `close`：`close` 連我們自己關對話框時也會發、而且是晚一拍才發——
+    // 上一個確認剛關、下一個確認緊接著開的話，那個晚到的 `close` 會把新的這一個當成被取消。
+    confirmDialog.addEventListener("cancel", onCancel);
     confirmDialog.showModal();
     cancelButton.focus();
   });

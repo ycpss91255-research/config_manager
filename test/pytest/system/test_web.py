@@ -1219,6 +1219,7 @@ def test_escape_while_typing_in_a_field_does_not_collapse_the_panel(open_page, r
     page.wait_for_timeout(200)
     assert page.is_visible(f"[data-testid='panel-{_PARAM_UID}']")
     assert page.input_value(f"{_row('count')} input") == "4"
+    assert page.is_hidden(_CONFIRM)  # 連「要不要關」都不該問：這個 Esc 不是在收合
 
 
 def test_collapsing_a_panel_with_unsaved_edits_asks_first(open_page, repo):
@@ -1358,6 +1359,29 @@ def test_escape_cancels_the_confirm_dialog(open_page, repo):
 
     page.wait_for_selector(f"{_CONFIRM}:not([open])", state="attached")
     assert page.inner_text("[data-testid='promote-all']") == "進版 (1)"
+
+
+def test_a_confirmation_opened_right_after_another_is_not_cancelled_by_the_first(open_page, repo):
+    # 對話框關閉的事件晚一拍才到：上一個確認剛按下、下一個緊接著開，不能被那個晚到的事件當成取消。
+    page = _with_a_draft(open_page, repo)
+    page.evaluate(
+        """() => {
+          window.answers = [];
+          confirmAction("第一個？", "…").then((answer) => {
+            window.answers.push(answer);
+            confirmAction("第二個？", "…").then((second) => window.answers.push(second));
+          });
+          document.querySelector("[data-testid='confirm-ok']").click();
+        }"""
+    )
+
+    page.wait_for_timeout(300)
+
+    assert page.evaluate("window.answers") == [True]  # 第二個還在等人回答
+    assert page.inner_text("[data-testid='confirm-title']") == "第二個？"
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_function("window.answers.length === 2")
+    assert page.evaluate("window.answers") == [True, True]
 
 
 def test_a_confirmation_without_listed_items_shows_no_empty_list(open_page, repo):
