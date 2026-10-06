@@ -884,6 +884,123 @@ def test_an_error_without_a_reason_still_says_where_to_look(open_page, listing):
     assert "下一步：查看後端服務的紀錄" in text
 
 
+# ── 進行中的指示（#50）─────────────────────────────────────────────────────────
+# 會寫入或要等一下的動作：按下後按鈕標成進行中（aria-busy、文字「…中」），做完還原；進行中再按
+# 不會送出第二次。這裡把請求扣住不放，看那段期間的畫面。
+
+
+def _hold(page, pattern, method="POST"):
+    """把符合的請求扣住不回；回 (被扣住的清單, 放行函式)。其他方法照常放行。"""
+    held = []
+
+    def handler(route):
+        if route.request.method == method:
+            held.append(route)
+        else:
+            route.continue_()
+
+    page.route(pattern, handler)
+
+    def release():
+        waiting, held[:] = list(held), []
+        for route in waiting:
+            route.continue_()
+        page.unroute(pattern)
+
+    return held, release
+
+
+def _busy(page, selector) -> bool:
+    return page.get_attribute(selector, "aria-busy") == "true"
+
+
+def test_promote_shows_it_is_running_and_cannot_be_sent_twice(open_page, repo):
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    held, release = _hold(page, "**/api/promote")
+    button = "[data-testid='promote-all']"
+
+    page.click(button)
+    page.wait_for_selector(f"{button}[aria-busy='true']")
+    assert page.inner_text(button) == "進版中…"
+    page.evaluate("document.querySelector(\"[data-testid='promote-all']\").click()")  # 再按一下
+    page.wait_for_timeout(200)
+    assert len(held) == 1  # 沒有送出第二次
+
+    release()
+
+    page.wait_for_selector("[data-testid='promote-done']:not([hidden])")
+    assert page.inner_text(button) == "進版 (0)"
+    assert not _busy(page, button)
+
+
+def test_saving_a_draft_shows_it_is_running(open_page, repo):
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(open_page())
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.fill(f"{_row('count')} input", "4")
+    _held, release = _hold(page, "**/api/drafts")
+    save = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save']"
+
+    page.click(save)
+
+    page.wait_for_selector(f"{save}[aria-busy='true']")
+    assert page.inner_text(save) == "儲存中…"
+    release()
+    page.wait_for_selector(f"[data-testid='panel-draft-{_PARAM_UID}']")
+
+
+def test_a_confirmed_action_is_busy_only_after_the_confirmation(open_page, repo):
+    # 確認對話框還開著時動作還沒開始：按鈕不該已經寫著「捨棄中…」。
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    held, release = _hold(page, "**/api/drafts", method="DELETE")
+    button = "[data-testid='discard-all']"
+
+    page.click(button)
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    assert not _busy(page, button) and page.inner_text(button) == "捨棄變更"
+    page.click("[data-testid='confirm-ok']")
+
+    page.wait_for_selector(f"{button}[aria-busy='true']")
+    assert page.inner_text(button) == "捨棄中…"
+    assert len(held) == 1
+    release()
+    page.wait_for_function("document.querySelector(\"[data-testid='discard-all']\").disabled")
+    assert page.inner_text(button) == "捨棄變更"
+
+
+def test_entering_the_identity_shows_it_is_running(open_page):
+    page = open_page()
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    _held, release = _hold(page, "**/api/session")
+
+    _fill_identity(page)
+
+    page.wait_for_selector("#identity button.enter[aria-busy='true']")
+    assert page.inner_text("#identity button.enter") == "進入中…"
+    release()
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+
+
+def test_checking_for_differences_marks_the_button_busy(open_page, listing):
+    listing("a")
+    page = _enter_identity(open_page())
+    page.wait_for_selector("[data-testid='tree-item-mfz3k9q1']")
+    _held, release = _hold(page, "**/api/configs", method="GET")
+
+    page.click("[data-testid='rescan']")
+
+    page.wait_for_selector("[data-testid='rescan'][aria-busy='true']")
+    assert page.inner_text("[data-testid='rescan']") == "檢查中…"
+    release()
+    page.wait_for_selector("[data-testid='scan-status'][data-state='done']")
+    assert page.inner_text("[data-testid='rescan']") == "檢查差異"
+
+
 # ── 開發／部署模式徽章（#47）──────────────────────────────────────────────────
 # 模式由後端判定、前端只顯示（ADR-00000020：讓使用者清楚知道自己處於哪個模式，而非阻擋）。
 
