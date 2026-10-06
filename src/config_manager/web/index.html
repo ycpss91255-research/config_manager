@@ -168,7 +168,10 @@
   .diff-row[data-change="changed"] .diff-to, .diff-row[data-change="added"] .diff-to { color: var(--drift); font-weight: 600; }
   .diff-row[data-change="removed"] .diff-from { color: var(--drift); text-decoration: line-through; }
   /* W5 差異檢視（#30）：偏離橫幅＋來源／目標並排；顏色語言同 W4。 */
-  .drift-banner { margin: 12px 14px 0; }
+  .drift-banner, .missing-banner { margin: 12px 14px 0; }
+  .missing-banner { border-color: var(--missing); }
+  .missing-banner .actions { margin-top: 8px; display: flex; gap: 8px; }
+  .missing-banner .notice { margin-top: 8px; }
   .drift-banner .actions { margin-top: 8px; display: flex; gap: 8px; }
   .diff-head { display: flex; gap: 10px; padding: 8px 14px 0; font-size: 12px; color: var(--muted); font-weight: 600; }
   .diff-head .diff-name { flex: 1.2; }
@@ -1329,6 +1332,7 @@ function panelNode(detail) {
     head.insertBefore(schemaBadge(detail.uid, detail.schema), close);
   }
   if (row && row.state === "drift") panel.appendChild(driftBanner(detail, true));
+  if (row && !row.error && row.state === "missing") panel.appendChild(missingBanner(detail));
   if (detail.schema_error) {
     // schema 讀不出來（#40）：值照樣看得到，但明說這份在修好之前存不了——不讓人改了半天才被擋。
     panel.appendChild(element("div", { class: "notice error", "data-testid": "panel-schema-error" }, [
@@ -2405,6 +2409,77 @@ function driftBanner(detail, withEntry) {
     banner.appendChild(element("div", { class: "actions" }, [open]));
   }
   return banner;
+}
+
+// ── 未部署的寫出修復（#306；後端 #29、設計 §5.4）───────────────────────────────
+// 目標檔案不在了（被刪、被搬走）：說明是哪個路徑，給「寫出到目標」把來源內容與記下的權限寫回去。
+// 設定庫不變、不留紀錄——按之前就寫在這裡。只在**未部署**時出現：偏離是目標「在、但不一樣」，
+// 那要人判斷哪一邊對（差異檢視的三個處置），不是一鍵蓋掉。
+function missingBanner(detail) {
+  const error = element("div", { class: "notice error", "data-testid": "apply-error", hidden: "" });
+  const apply = element("button", { type: "button", "data-testid": "panel-apply", text: "寫出到目標" });
+  apply.addEventListener("click", () => whileBusy(apply, "寫出中…", () => applyMissing(detail, error)));
+  return element("div", { class: "notice missing-banner", "data-testid": "missing-banner" }, [
+    element("strong", { text: "未部署：目標檔案不存在。" }),
+    element("p", {
+      text: `設定庫裡有這份 config 的來源，但 ${detail.target} 這個位置沒有檔案（可能被刪除或搬走）。`
+        + "按「寫出到目標」會把來源內容與記下的權限寫回這個位置；設定庫不變，所以不會多一筆變更紀錄。",
+    }),
+    error,
+    element("div", { class: "actions editing-only" }, [apply]),
+  ]);
+}
+
+// 畫面上的「未部署」是上一次比對的結果。按下時先重新比對：這段時間目標要是出現了，就不寫——
+// 後端的寫出不看目標在不在，照寫的話等於不留紀錄地蓋掉現場的內容。狀態變了就說明原因並顯示現況。
+function noLongerMissing(detail, fresh) {
+  if (!fresh) {
+    return `「${detail.name}」已經不在清單裡（可能已被解除納管），所以沒有寫出。`
+      + "下一步：看左側的清單確認現況。";
+  }
+  if (fresh.error) {
+    return `目標現在判不出狀態（${fresh.error}），所以沒有寫出。下一步：先排除這個原因，再按「檢查差異」。`;
+  }
+  if (fresh.state === "drift") {
+    return `目標檔案已經存在（${detail.target}），而且內容與來源不同，所以沒有寫出——照寫會不留紀錄地`
+      + "蓋掉現場的內容。下一步：按「檢視差異」比對兩邊，再決定以來源覆蓋或把現況納入來源。";
+  }
+  if (fresh.state === "in_sync") {
+    return `目標檔案已經存在（${detail.target}），而且與來源一致，不需要寫出。下一步：不必處理，畫面已是現況。`;
+  }
+  return null;
+}
+
+async function applyMissing(detail, errorEl) {
+  errorEl.hidden = true;
+  try {
+    const listing = await apiFetch(`${API_BASE}/api/configs`);
+    if (!listing.ok) throw new Refused(await loadErrorText(listing));
+    const changed = noLongerMissing(detail, (await listing.json()).find((row) => row.uid === detail.uid));
+    if (changed) {
+      await load();  // 樹先換成現況，重畫的區塊才認得新的狀態
+      openPanel(detail.uid, element("div", {
+        class: "notice error", "data-testid": "apply-error",
+      }, [element("strong", { text: changed })]));
+      return;
+    }
+    const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/apply`, {
+      method: "POST",
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      renderSaveError(errorEl, payload.detail);  // 後端的原因（哪個路徑、為什麼、下一步）原樣顯示
+      return;
+    }
+    clearPromoteBanners();
+    promoteDoneEl.textContent = `已把「${detail.name}」的來源寫出到 ${payload.target}，狀態回到一致。`
+      + "設定庫沒有改變，所以沒有變更紀錄。";
+    promoteDoneEl.hidden = false;
+    await load();
+    openPanel(detail.uid);
+  } catch (error) {
+    renderSaveError(errorEl, failureText("寫出到目標", error));
+  }
 }
 
 // 兩棵值樹以參數為單位比：same／changed／added（右邊有、左邊沒有）／removed（左邊有、右邊沒有）。

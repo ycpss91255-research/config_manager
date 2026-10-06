@@ -82,6 +82,9 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 工作區 | `data-testid="workspace"` | 右側容器；尚未點選時顯示 `workspace-empty` 提示 |
 | 展開區塊 | `data-testid="panel-<uid>"` | **可同時存在多個**（#36），新開的在最上面；工作區每份 config 一個槽（`data-uid`／`data-view`＝panel／history／diff），歷史與差異檢視只換自己那一槽。標頭（`panel-head`）單擊折疊／展開（`data-collapsed`），`panel-close` 關閉。讀不到內容時顯示 `panel-error-<uid>`（原樣錯誤，不留空表） |
 | 狀態標籤 | `data-testid="panel-status-<uid>"` | 文字為一致／偏離／未部署 |
+| 未部署橫幅 | `data-testid="missing-banner"` | **只在未部署時出現**（一致、偏離、判不出狀態都沒有）。說明目標檔案不存在、是哪個路徑，以及「寫出到目標」會把來源內容與記下的權限寫回去、設定庫不變所以不會多一筆變更紀錄。唯讀時說明仍在、入口不出現（#306） |
+| 寫出到目標 | 文字「寫出到目標」（`data-testid="panel-apply"`） | 在未部署橫幅內（`.editing-only`）。按下先重新比對：仍是未部署才 `POST /api/configs/{uid}/apply`，成功→`promote-done`（寫到哪個路徑、沒有變更紀錄）、樹與區塊回到一致、橫幅消失。這段時間目標已經出現（偏離／一致）、判不出狀態或已不在清單→**不寫出**，樹與區塊換成現況並以 `apply-error` 說明原因與下一步。進行中文字「寫出中…」、`aria-busy`，不會送出第二次。不經確認對話框（只補回不存在的檔案，不覆蓋任何東西）（#306） |
+| 寫出錯誤 | `data-testid="apply-error"` | 後端拒絕（原因原樣顯示）、送不出去（指名「寫出到目標」與下一步），或狀態已不是未部署（見上）（#306） |
 | 草稿指示 | `data-testid="panel-draft-<uid>"` | 該區塊有草稿時出現（`GET /api/configs/{uid}` 回 `draft_values`） |
 | 儲存按鈕 | 文字「儲存」（`data-testid="panel-save"`） | **存為草稿**（`POST /api/drafts`，送相對來源的全部改動），不記錄也不寫出。驗證未過或沒有改動時停用 |
 | 儲存說明 | `data-testid="panel-save-note"`（`role="status"`） | 在儲存鈕旁說明上一次儲存的結果：存成了→「已存為草稿——還沒進版…」，又動了欄位就收掉；按 Ctrl+S 卻沒有東西可存→「沒有還沒儲存的改動。」或「有欄位沒通過驗證，還不能儲存…」（#50） |

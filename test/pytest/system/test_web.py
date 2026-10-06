@@ -3614,6 +3614,150 @@ def test_an_in_sync_config_has_no_drift_banner(open_page, repo):
     assert page.query_selector("[data-testid='drift-banner']") is None
 
 
+# ── 未部署的寫出修復（#306；後端 #29）─────────────────────────────────────────
+# 目標檔案不在了：區塊說明是哪個路徑、給「寫出到目標」入口。偏離走上面的差異檢視，不走這裡。
+
+_MISSING = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='missing-banner']"
+_APPLY = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-apply']"
+
+
+def _missing(repo, content: str = "count: 3\n"):
+    """一筆納管的 config，目標檔案被拿走 → 未部署。回目標路徑。"""
+    target = _listing_many(repo, {"p": content})["p"]
+    target.chmod(0o640)
+    target.unlink()
+    return target
+
+
+def _open_missing(open_page):
+    page = _enter_identity(open_page())
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    return page
+
+
+def test_a_missing_config_says_where_the_file_should_be_and_offers_to_write_it(open_page, repo):
+    target = _missing(repo)
+    page = _open_missing(open_page)
+
+    banner = page.inner_text(_MISSING)
+
+    assert "未部署" in banner and str(target) in banner
+    assert "不會多一筆變更紀錄" in banner  # 按之前就知道這個動作不留紀錄
+    assert page.inner_text(_APPLY) == "寫出到目標"
+
+
+def test_writing_out_restores_the_target_and_leaves_the_repo_alone(open_page, repo):
+    target = _missing(repo, "count: 3\nname: amr\n")
+    _commit_listing(repo)
+    before = _git_log(repo, 1)
+    page = _open_missing(open_page)
+
+    page.click(_APPLY)
+
+    page.wait_for_selector("[data-testid='promote-done']:not([hidden])")
+    assert target.read_text(encoding="utf-8") == "count: 3\nname: amr\n"
+    assert oct(target.stat().st_mode & 0o777) == "0o644"  # 清單記下的權限，不是被刪前碰巧的那個
+    said = page.inner_text("[data-testid='promote-done']")
+    assert str(target) in said and "沒有變更紀錄" in said
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'] [data-state='in_sync']")
+    page.wait_for_selector(f"[data-testid='panel-status-{_PARAM_UID}']:has-text('一致')")
+    assert page.query_selector(_MISSING) is None  # 修好了，入口跟著消失
+    assert _git_log(repo, 1) == before  # 設定庫不變、不留紀錄
+
+
+def test_in_sync_and_drifted_configs_have_no_write_out_entry(open_page, repo):
+    # 偏離時目標「在、但不一樣」：那要人判斷哪一邊對（差異檢視的三個處置），不是一鍵蓋掉。
+    targets = _listing_many(repo, {"p": "count: 3\n", "q": "count: 5\n"})
+    targets["q"].write_text("count: 9\n", encoding="utf-8")
+    page = _enter_identity(open_page())
+    for uid in (_PARAM_UID, _SECOND_UID):
+        page.dblclick(f"[data-testid='tree-item-{uid}']")
+        page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
+
+    assert page.query_selector("[data-testid='panel-apply']") is None
+    assert page.query_selector("[data-testid='missing-banner']") is None
+    assert page.is_visible(f"[data-testid='panel-{_SECOND_UID}'] [data-testid='drift-banner']")
+
+
+def test_the_write_out_entry_is_absent_while_read_only(open_page, repo):
+    _missing(repo)
+    holder = _enter_identity(open_page())
+    holder.wait_for_selector("[data-testid='promote-all']", state="visible")
+    viewer = open_page(same_browser_as=holder)
+    viewer.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+    viewer.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    viewer.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+
+    assert "未部署" in viewer.inner_text(_MISSING)  # 說明看得到
+    assert viewer.is_hidden(_APPLY)  # 會寫入的入口不出現
+
+
+def test_writing_out_is_refused_when_the_target_has_appeared_meanwhile(open_page, repo):
+    # 畫面上還寫著未部署，但這段時間有人把檔案放回去了（內容還不一樣）：不能照舊按一下就蓋掉——
+    # 那等於不留紀錄地覆蓋現場的內容。先重新比對，狀態變了就不寫、說明原因、顯示現況。
+    target = _missing(repo)
+    page = _open_missing(open_page)
+    target.write_text("count: 9\n", encoding="utf-8")
+
+    page.click(_APPLY)
+
+    error = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='apply-error']"
+    page.wait_for_selector(error, state="visible")
+    assert "目標檔案已經存在" in page.inner_text(error)
+    assert "下一步：" in page.inner_text(error)
+    assert target.read_text(encoding="utf-8") == "count: 9\n"  # 沒被蓋掉
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'] [data-state='drift']")
+
+
+def test_a_refused_write_out_shows_the_backend_reason(open_page, repo):
+    _missing(repo)
+    page = _open_missing(open_page)
+    page.route(
+        "**/apply",
+        lambda route: route.fulfill(
+            status=500, content_type="application/json",
+            body=json.dumps({"detail": "目標目錄不可寫入。下一步：檢查 /srv 的權限"}),
+        ),
+    )
+
+    page.click(_APPLY)
+
+    error = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='apply-error']"
+    page.wait_for_selector(error, state="visible")
+    assert "目標目錄不可寫入。下一步：檢查 /srv 的權限" in page.inner_text(error)
+    assert page.is_hidden("[data-testid='promote-done']")
+
+
+def test_writing_out_shows_it_is_running_and_cannot_be_sent_twice(open_page, repo):
+    _missing(repo)
+    page = _open_missing(open_page)
+    held, release = _hold(page, "**/apply")
+
+    page.click(_APPLY)
+    page.wait_for_selector(f"{_APPLY}[aria-busy='true']")
+    assert page.inner_text(_APPLY) == "寫出中…"
+    page.evaluate("selector => document.querySelector(selector).click()", _APPLY)
+    page.wait_for_timeout(200)
+    assert len(held) == 1
+
+    release()
+    page.wait_for_selector("[data-testid='promote-done']:not([hidden])")
+
+
+def test_an_unreachable_backend_while_writing_out_names_the_action(open_page, repo):
+    target = _missing(repo)
+    page = _open_missing(open_page)
+    page.route("**/apply", lambda route: route.abort())
+
+    page.click(_APPLY)
+
+    error = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='apply-error']"
+    page.wait_for_selector(error, state="visible")
+    assert "「寫出到目標」送不出去" in page.inner_text(error)
+    assert not target.exists()
+
+
 def test_the_diff_view_compares_source_and_target_side_by_side_per_parameter(open_page, repo):
     # AC2／AC3／AC4：左來源、右目標，逐參數一列；沒變的標 same、改了的標 changed、目標多出的標
     # added——與 W4 歷史差異同一套 data-change 與顏色語言。
