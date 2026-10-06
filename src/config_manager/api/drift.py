@@ -11,11 +11,12 @@ from __future__ import annotations
 from subprocess import CalledProcessError
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from config_manager.api.history import require_entry
 from config_manager.api.checks import checks_for
+from config_manager.api.browser import Browsers
 from config_manager.api.session import Identity
 from config_manager.api.shapes import as_problem, drafts_view
 from config_manager.core.drafts import Stage, adopt_draft
@@ -40,14 +41,16 @@ class ResolveInput(BaseModel):
 
 
 def register_drift(
-    app: FastAPI, repo: str, held: dict[str, Identity], stage_box: dict[str, Stage]
+    app: FastAPI, repo: str, browsers: Browsers, stage_box: dict[str, Stage]
 ) -> None:
     """把偏離處置與寫出修復的端點掛上 app。抽出來的理由同 `register_history`（C901）。"""
 
     @app.post("/api/configs/{uid}/resolve")
-    def resolve_drift(uid: str, payload: ResolveInput) -> dict[str, object]:
+    def resolve_drift(
+        uid: str, payload: ResolveInput, identity: Identity | None = Depends(browsers.current)
+    ) -> dict[str, object]:
         """處置一份偏離的 config（設計文件 §3.5.3、§5.4）。三個出口都由人選、都留下痕跡。"""
-        return _resolve(repo, held, stage_box, uid, payload.action)
+        return _resolve(repo, identity, stage_box, uid, payload.action)
 
     @app.post("/api/configs/{uid}/apply")
     def apply_missing(uid: str) -> dict[str, object]:
@@ -87,9 +90,8 @@ def _target_text(entry: FileEntry) -> str | None:
 
 
 def _resolve(
-    repo: str, held: dict[str, Identity], stage_box: dict[str, Stage], uid: str, action: str
+    repo: str, identity: Identity | None, stage_box: dict[str, Stage], uid: str, action: str
 ) -> dict[str, object]:
-    identity = held.get("identity")
     if identity is None:
         raise HTTPException(
             status_code=409,

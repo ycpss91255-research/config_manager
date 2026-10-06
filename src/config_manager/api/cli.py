@@ -14,6 +14,7 @@
 
 import argparse
 import http.client
+import http.cookiejar
 import json
 import os
 from datetime import timedelta
@@ -172,6 +173,11 @@ def _parser() -> argparse.ArgumentParser:
     _formats = "yaml/json/toml/ini/raw"
     importing.add_argument("--format", required=True, help=f"確認過的 format（{_formats}）")
     importing.add_argument("--note", default="", help="歧義確認結果，寫入 commit 內文（可省略）")
+    # 身分屬於各自的 client（#288）：CLI 不是瀏覽器，沒有頁面上輸入過的身分可沿用，納管的作者
+    # 要在這裡明寫。角色預設一般使用者（預設值落向安全）。
+    importing.add_argument("--name", required=True, help="納管紀錄的作者姓名")
+    importing.add_argument("--email", required=True, help="納管紀錄的作者 email")
+    importing.add_argument("--role", default="user", help="角色：user（預設）或 developer")
 
     browsing = subcommands.add_parser("browse", help="列出白名單內某目錄的內容")
     browsing.add_argument("--api", default=_DEFAULT_API, help=f"預設 {_DEFAULT_API}")
@@ -191,7 +197,10 @@ def main(argv: list[str]) -> int:
     if args.command == "serve":
         return _serve(args.host, args.port)
     if args.command == "import":
-        return _import(args.api, args.source, args.format, args.note)
+        wanted = ImportRequest(
+            args.source, args.format, args.note, args.name, args.email, args.role
+        )
+        return _import(args.api, wanted)
     if args.command == "browse":
         return _browse(args.api, args.path)
     if args.command == "inspect":
@@ -241,21 +250,35 @@ def _list(api: str) -> int:
     return 0
 
 
-def _import(api: str, source: str, fmt: str, note: str) -> int:
-    """納管一份 config：POST 到與畫面相同的 /api/configs（ADR-00000009）。
+@dataclass(frozen=True)
+class ImportRequest:
+    """一次納管要送的東西：來源、確認過的 format、歧義確認，以及作者（姓名、email、角色）。"""
+
+    source: str
+    fmt: str
+    note: str
+    name: str
+    email: str
+    role: str
+
+
+def _import(api: str, wanted: ImportRequest) -> int:
+    """納管一份 config：先以 `--name`／`--email` 設身分，再 POST 到與畫面相同的 /api/configs
+    （ADR-00000009）。
 
     偵測（format／歧義）是確認畫面的事；CLI 這一層要求 `--format` 明寫，與端點收
-    「已確認的值」對齊，不在 CLI 自己重做一套偵測。
+    「已確認的值」對齊，不在 CLI 自己重做一套偵測。身分屬於各自的 client（#288）：後端發的
+    瀏覽器票在 cookie 裡，兩個請求用同一個 cookie 罐，第二個才接得上第一個設的身分。
     """
-    payload = {"source_path": source, "format": fmt, "ambiguity_note": note}
-    request = urllib.request.Request(
-        f"{api}/api/configs",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"content-type": "application/json"},
-        method="POST",
+    jar = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
     )
+    who = {"name": wanted.name, "email": wanted.email, "role": wanted.role}
+    payload = {"source_path": wanted.source, "format": wanted.fmt, "ambiguity_note": wanted.note}
     try:
-        with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+        with jar.open(_json_request(f"{api}/api/session", who), timeout=_TIMEOUT):
+            pass
+        with jar.open(_json_request(f"{api}/api/configs", payload), timeout=_TIMEOUT) as response:
             entry = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         # 端點以結構化訊息回絕（白名單外、重複、未設身分）。把它的 detail 帶出來——
@@ -278,6 +301,15 @@ def _import(api: str, source: str, fmt: str, note: str) -> int:
     except (KeyError, TypeError) as error:
         return _unexpected_response(api, error)
     return 0
+
+
+def _json_request(url: str, payload: dict[str, str]) -> urllib.request.Request:
+    return urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
 
 
 def _browse(api: str, path: str) -> int:

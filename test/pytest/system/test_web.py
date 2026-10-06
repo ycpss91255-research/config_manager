@@ -38,6 +38,7 @@ import subprocess
 import threading
 import time
 import tomllib
+import http.cookiejar
 import urllib.error
 import urllib.request
 
@@ -263,18 +264,44 @@ def browser():
 def open_page(browser, site, api, web_coverage):
     """開一個頁面，離開時把它執行到的行併進 web 的覆蓋率。"""
     opened = []
+    contexts = []
 
-    def _open(unreachable: str | None = None):
+    def _open(
+        unreachable: str | None = None,
+        identity: dict | None = None,
+        same_browser_as=None,
+        mode: str | None = None,
+    ):
         """`unreachable` 是一個端點樣式，配到的請求一律失敗——連載入時那一發也算。
 
         在 `goto` 之前就掛上，因為頁面一載入就會打 `/api/session`：載入後才掛的
         攔截放過了那一發，於是「backend 從頭到尾都不在」這件事根本沒被測到。
+
+        每次呼叫預設是**另一個瀏覽器**（新 context＝新的 cookie 罐，身分各自，#288）；
+        `same_browser_as=<page>` 則是同一個瀏覽器的另一個分頁（共用 cookie，身分也共用）。
+        `identity` 在開頁前先以這個瀏覽器的 cookie 罐走端點記下身分——觀察「已經輸入過之後」的樣子。
+        `mode` 把 `GET /api/mode` 的回應換成指定的模式（就地起的服務是部署模式；開發模式那一邊的
+        介面行為以攔截回應驗）。
         """
-        context = browser.new_context()
+        if same_browser_as is not None:
+            context = same_browser_as.context
+        else:
+            context = browser.new_context()
+            contexts.append(context)
+        if identity is not None:
+            # context.request 與頁面共用 cookie 罐：這裡設的身分就是這個瀏覽器的。
+            context.request.post(f"{api}/api/session", data=identity)
         page = context.new_page()
         page.add_init_script(f"window.CM_API_BASE = {json.dumps(api)};")
         if unreachable:
             page.route(unreachable, lambda route: route.abort())
+        if mode:
+            page.route(
+                "**/api/mode",
+                lambda route: route.fulfill(
+                    status=200, content_type="application/json", body=json.dumps({"mode": mode})
+                ),
+            )
 
         cdp = context.new_cdp_session(page)
         cdp.send("Debugger.enable")
@@ -282,14 +309,15 @@ def open_page(browser, site, api, web_coverage):
         cdp.send("Profiler.startPreciseCoverage", {"callCount": True, "detailed": True})
 
         url = f"{site}/index.html"
-        opened.append((context, cdp, url))
+        opened.append((cdp, url))
         page.goto(url)
         return page
 
     yield _open
 
-    for context, cdp, url in opened:
+    for cdp, url in opened:
         web_coverage.absorb(cdp, url)
+    for context in contexts:
         context.close()
 
 
@@ -429,9 +457,7 @@ def test_rescanning_shows_a_target_that_was_changed_behind_the_interface(open_pa
 
 def test_the_page_says_it_cannot_read_the_list_instead_of_showing_an_empty_one(open_page, api):
     # 空清單與「讀不到清單」看起來一樣，該做的處置卻完全不同（不變式 2）。
-    _remember_identity(api)
-
-    page = open_page(unreachable="**/api/configs")
+    page = open_page(unreachable="**/api/configs", identity=_REMEMBERED)
 
     page.wait_for_selector("[data-testid='load-error']")
 
@@ -440,8 +466,7 @@ def test_typing_in_search_does_not_silently_clear_the_load_error(open_page, api)
     # render() 綁在搜尋輸入上、每次無條件從 rows 重畫。載入失敗時 rows 仍是空／過期的，
     # 一在錯誤態打字就會把 load-error 蓋成空清單或舊清單——把「讀不到」靜默改寫成「沒有」
     # 或「這是現況」（不變式 2）。錯誤要黏住。
-    _remember_identity(api)
-    page = open_page(unreachable="**/api/configs")
+    page = open_page(unreachable="**/api/configs", identity=_REMEMBERED)
     page.wait_for_selector("[data-testid='load-error']")
 
     page.fill("[data-testid='search-input']", "x")
@@ -480,21 +505,110 @@ def test_an_identity_that_would_break_the_author_string_is_shown_the_reason(open
 def test_an_identity_already_entered_does_not_have_to_be_entered_again(open_page, listing, api):
     # 重新整理不必再填一次身分。
     listing("a")
-    _remember_identity(api)
-
-    page = open_page()
+    page = open_page(identity=_REMEMBERED)
 
     page.wait_for_selector("[data-testid='config-tree']", state="visible")
     assert page.is_hidden("[data-testid='identity-form']")
 
 
 def test_the_header_says_who_is_looking_and_in_which_role(open_page, api):
-    _remember_identity(api)
-
-    page = open_page()
+    page = open_page(identity=_REMEMBERED)
 
     page.wait_for_selector("[data-testid='current-role']:not(:empty)")
     assert page.inner_text("[data-testid='current-role']") == f"{_NAME}・一般使用者"
+
+
+# ── 身分屬於各自的瀏覽器、記住此裝置（#288）─────────────────────────────────────
+# 身分綁在後端發給該瀏覽器的票上；另一個瀏覽器開頁一律先看到身分輸入頁。「記住此裝置」只記姓名
+# 與 Email、只存在這個瀏覽器、只在開發模式提供；角色每次重選。
+
+_REMEMBER = "[data-testid='remember-device']"
+
+
+def test_a_fresh_browser_is_asked_who_it_is_even_after_someone_else_entered(open_page, listing):
+    listing("a")
+    _enter_identity(open_page())
+
+    other = open_page()
+
+    other.wait_for_selector("[data-testid='identity-form']", state="visible")
+    assert other.is_hidden("[data-testid='config-tree']")
+
+
+def test_refreshing_keeps_the_identity_whether_or_not_it_is_remembered(open_page, listing):
+    # 部署模式（沒有記住此裝置可勾）也一樣：重新整理不掉身分，票在 cookie 裡。
+    listing("a")
+    page = _enter_identity(open_page())
+
+    page.reload()
+
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    assert page.is_hidden("[data-testid='identity-form']")
+    assert page.inner_text("[data-testid='current-role']").startswith(_NAME)
+
+
+def test_remember_device_is_offered_in_development_mode_only(open_page):
+    deployed = open_page()
+    deployed.wait_for_selector("[data-testid='identity-form']", state="visible")
+    assert deployed.is_hidden(_REMEMBER)
+
+    developing = open_page(mode="development")
+    developing.wait_for_selector("[data-testid='identity-form']", state="visible")
+    assert developing.is_visible(_REMEMBER)
+    assert not developing.is_checked(f"{_REMEMBER} input")  # 預設不勾
+
+
+def test_a_remembered_device_prefills_name_and_email_but_asks_the_role_again(open_page, listing):
+    listing("a")
+    page = open_page(mode="development")
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    page.check(f"{_REMEMBER} input")
+    page.click("[data-testid='role-toggle'] button[data-role='developer']")
+    _enter_identity(page)
+
+    page.context.clear_cookies()  # 關閉瀏覽器＝票沒了；localStorage 還在
+    page.reload()
+
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    assert page.input_value("[data-testid='identity-name']") == _NAME
+    assert page.input_value("[data-testid='identity-email']") == _EMAIL
+    assert page.is_checked(f"{_REMEMBER} input")
+    role = "[data-testid='role-toggle'] button[data-role='user']"
+    assert page.get_attribute(role, "aria-pressed") == "true"  # 角色沒被記住：回到預設
+
+
+def test_without_remember_the_next_session_starts_blank(open_page, listing):
+    listing("a")
+    page = open_page(mode="development")
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    _enter_identity(page)  # 沒勾
+
+    page.context.clear_cookies()
+    page.reload()
+
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    assert page.input_value("[data-testid='identity-name']") == ""
+    assert page.input_value("[data-testid='identity-email']") == ""
+
+
+def test_unticking_remember_forgets_the_device(open_page, listing):
+    listing("a")
+    page = open_page(mode="development")
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    page.check(f"{_REMEMBER} input")
+    _enter_identity(page)
+    page.context.clear_cookies()
+    page.reload()
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    assert page.input_value("[data-testid='identity-name']") == _NAME
+
+    page.uncheck(f"{_REMEMBER} input")
+    _enter_identity(page)
+    page.context.clear_cookies()
+    page.reload()
+
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    assert page.input_value("[data-testid='identity-name']") == ""
 
 
 # ── 開發／部署模式徽章（#47）──────────────────────────────────────────────────
@@ -502,9 +616,7 @@ def test_the_header_says_who_is_looking_and_in_which_role(open_page, api):
 
 
 def test_the_header_says_which_mode_the_backend_is_running_in(open_page, api):
-    _remember_identity(api)
-
-    page = open_page()
+    page = open_page(identity=_REMEMBERED)
 
     page.wait_for_selector("[data-testid='current-mode']:not(:empty)")
     assert page.inner_text("[data-testid='current-mode']") == "部署模式"
@@ -513,8 +625,7 @@ def test_the_header_says_which_mode_the_backend_is_running_in(open_page, api):
 
 def test_a_development_mode_answer_shows_as_development(open_page, api):
     # 就地起的服務是部署模式；開發模式那一邊以攔截回應驗——文案對照表兩格都要真的走到。
-    _remember_identity(api)
-    page = open_page()
+    page = open_page(identity=_REMEMBERED)
     page.wait_for_selector("[data-testid='current-mode']:not(:empty)")
     page.route(
         "**/api/mode",
@@ -531,9 +642,7 @@ def test_a_development_mode_answer_shows_as_development(open_page, api):
 
 def test_an_unknown_mode_is_shown_as_unknown_not_assumed(open_page, api):
     # 問不到模式時不假設任何一種：假設成開發模式會讓依模式開關的行為在部署機上開錯邊（不變式 4）。
-    _remember_identity(api)
-
-    page = open_page(unreachable="**/api/mode")
+    page = open_page(unreachable="**/api/mode", identity=_REMEMBERED)
 
     page.wait_for_selector("[data-testid='current-mode']:has-text('模式未知')")
     assert page.get_attribute("body", "data-mode") is None
@@ -1007,16 +1116,8 @@ def _identity_error(page) -> str:
     return page.inner_text("[data-testid='identity-error']")
 
 
-def _remember_identity(api: str) -> None:
-    """走端點記下身分，不經由頁面——這幾則要觀察的是「已經輸入過之後」的樣子。"""
-    request = urllib.request.Request(
-        f"{api}/api/session",
-        data=json.dumps({"name": _NAME, "email": _EMAIL}).encode("utf-8"),
-        headers={"content-type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=_STARTUP_TIMEOUT) as response:
-        response.read()
+# 「已經輸入過身分」的瀏覽器：交給 `open_page(identity=…)`，以該瀏覽器自己的 cookie 罐走端點記下。
+_REMEMBERED = {"name": _NAME, "email": _EMAIL}
 
 
 def _html_line_offset(script_source: str) -> int:
@@ -1553,7 +1654,7 @@ def test_list_controls_are_absent_while_read_only(open_page, repo):
     _listing_many(repo, {"p": _LIST_YAML})
     holder = _enter_identity(open_page())
     holder.wait_for_selector("[data-testid='promote-all']", state="visible")
-    second = open_page()
+    second = open_page(same_browser_as=holder)
     second.wait_for_selector("[data-testid='readonly-banner']", state="visible")
     second.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
     second.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
@@ -1894,9 +1995,8 @@ def test_a_normal_user_sees_the_specified_mark_but_cannot_change_or_clear(open_p
     _commit_listing(repo)
     _api_json(api, "POST", "/api/session", {"name": _NAME, "email": _EMAIL, "role": "developer"})
     _api_json(api, "POST", f"/api/configs/{_PARAM_UID}/types", {"path": "timeout", "type": "float"})
-    # 身分換回一般使用者；頁面開啟時沿用這個身分直接進清單。
-    _api_json(api, "POST", "/api/session", {"name": _NAME, "email": _EMAIL, "role": "user"})
-    page = open_page()
+    # 頁面的瀏覽器以一般使用者身分開啟，直接進清單。
+    page = open_page(identity={"name": _NAME, "email": _EMAIL, "role": "user"})
     page.wait_for_selector("[data-testid='config-tree']", state="visible")
     page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
     page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
@@ -1956,7 +2056,7 @@ def test_the_type_selector_is_hidden_while_read_only(open_page, repo):
     holder.click("[data-testid='role-toggle'] button[data-role='developer']")
     _enter_identity(holder)
     holder.wait_for_selector("[data-testid='promote-all']", state="visible")
-    second = open_page()
+    second = open_page(same_browser_as=holder)
     second.wait_for_selector("[data-testid='readonly-banner']", state="visible")
 
     second.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
@@ -2054,7 +2154,7 @@ def test_a_draft_adopted_with_a_rule_warning_asks_for_the_reason_when_reopened(
     (repo / "targets" / "p.yaml").write_text("lo: 9\nhi: 5\n", encoding="utf-8")
     _api_json(api, "POST", "/api/session", {"name": _NAME, "email": _EMAIL, "role": "user"})
     _api_json(api, "POST", f"/api/configs/{_PARAM_UID}/resolve", {"action": "adopt_draft"})
-    page = open_page()
+    page = open_page(identity={"name": _NAME, "email": _EMAIL, "role": "user"})
     page.wait_for_selector("[data-testid='config-tree']", state="visible")
     page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
     page.wait_for_selector(_RULE_WARNINGS, state="visible")
@@ -2310,12 +2410,18 @@ def test_discarding_one_config_leaves_the_other_draft_and_shows_the_source_again
 # （走端點、不經頁面——這幾則要觀察的是歷史檢視，不是納管與進版的畫面）。
 
 
+# 以端點種資料用的「瀏覽器」：自己一罐 cookie，與頁面的瀏覽器各自有身分（#288）。
+_API_BROWSER = urllib.request.build_opener(
+    urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+)
+
+
 def _api_json(api, method, path, payload=None):
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         f"{api}{path}", data=data, headers={"content-type": "application/json"}, method=method
     )
-    with urllib.request.urlopen(request, timeout=_STARTUP_TIMEOUT) as response:
+    with _API_BROWSER.open(request, timeout=_STARTUP_TIMEOUT) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -2346,7 +2452,7 @@ def _open_history(page, uid: str):
 def test_history_lists_each_change_as_a_behaviour_with_author_and_time(open_page, browse_root, api):
     # #25：每筆顯示行為描述（修改參數）、作者與時間；列表上不出現 cfg／revert／import 這些代號。
     entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n", "count: 3\n"])
-    page = _open_history(open_page(), entry["uid"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
 
     entries = page.eval_on_selector_all(
         "[data-testid^='history-entry-']",
@@ -2364,7 +2470,7 @@ def test_history_lists_each_change_as_a_behaviour_with_author_and_time(open_page
 def test_history_filter_all_shows_onboarding_as_a_behaviour(open_page, browse_root, api):
     # #25：篩選器以行為描述呈現：「全部」列出納入管理那筆，仍不出現代號。
     entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
-    page = _open_history(open_page(), entry["uid"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
 
     page.click("[data-testid='history-filter'] button[data-filter='all']")
     page.wait_for_selector("text=納入管理")
@@ -2383,7 +2489,7 @@ def test_selecting_a_change_shows_which_parameters_differ_from_the_current_versi
     entry = _history_via_api(
         api, browse_root, ["count: 1\nspeed: 5\n", "count: 2\nspeed: 5\n", "count: 3\nspeed: 5\n"]
     )
-    page = _open_history(open_page(), entry["uid"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
     older = page.eval_on_selector_all(
         "[data-testid^='history-entry-']", "els => els[els.length - 1].dataset.testid"
     )
@@ -2400,7 +2506,7 @@ def test_selecting_a_change_shows_which_parameters_differ_from_the_current_versi
 
 def test_returning_from_history_shows_the_parameter_table_again(open_page, browse_root, api):
     entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
-    page = _open_history(open_page(), entry["uid"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
 
     page.get_by_role("button", name="返回欄位表").click()
 
@@ -2429,7 +2535,7 @@ def test_reverting_from_history_puts_the_target_back_to_the_first_version(
     # AC2／AC3：連續修改三次後可退回第一版，目標內容確實回到第一版；歷史多一筆「退回舊版本」。
     versions = ["count: 1\n", "count: 2\n", "count: 3\n", "count: 4\n"]
     entry = _history_via_api(api, browse_root, versions)
-    page = _open_history(open_page(), entry["uid"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
     _select_first_version(page)
 
     page.click("[data-testid='history-revert']")
@@ -2446,7 +2552,7 @@ def test_reverting_from_history_puts_the_target_back_to_the_first_version(
 def test_cancelling_the_revert_confirmation_changes_nothing(open_page, browse_root, api):
     # AC4：破壞性操作二次確認——取消什麼都不變（與捨棄變更共用同一個對話框）。
     entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
-    page = _open_history(open_page(), entry["uid"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
     _select_first_version(page)
 
     page.click("[data-testid='history-revert']")
@@ -2462,7 +2568,7 @@ def test_reverting_while_a_draft_is_pending_shows_the_reason(open_page, browse_r
     # 後端擋（409：草稿以退版前的來源為底）→ 原樣顯示原因與下一步，目標不動。
     entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
     _api_json(api, "POST", "/api/drafts", {"uid": entry["uid"], "edits": {"count": 9}})
-    page = _open_history(open_page(), entry["uid"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
     _select_first_version(page)
 
     page.click("[data-testid='history-revert']")
@@ -2480,7 +2586,7 @@ def test_reverting_says_the_schema_goes_back_too_before_doing_it(open_page, brow
     _api_json(api, "POST", f"/api/configs/{entry['uid']}/schema")
     _api_json(api, "POST", "/api/drafts", {"uid": entry["uid"], "edits": {"count": 3}})
     _api_json(api, "POST", "/api/promote", {})
-    page = _open_history(open_page(), entry["uid"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
     # 最舊的那一筆內容變更（count: 2）是在產生 schema 之前——那一版當時還沒有 schema。
     page.click("[data-testid='history-list'] li[data-testid^='history-entry-']:last-child")
     page.wait_for_selector("[data-testid='history-revert']")
@@ -2497,7 +2603,7 @@ def test_reverting_says_the_schema_goes_back_too_before_doing_it(open_page, brow
 
 def test_a_revert_that_leaves_the_schema_alone_does_not_mention_it(open_page, browse_root, api):
     entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n", "count: 3\n"])
-    page = _open_history(open_page(), entry["uid"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
     _select_first_version(page)
 
     page.click("[data-testid='history-revert']")
@@ -2695,7 +2801,7 @@ def test_a_second_tab_is_read_only_and_names_the_holder(open_page, listing):
     holder = _enter_identity(open_page())
     holder.wait_for_selector("[data-testid='promote-all']", state="visible")
 
-    second = open_page()  # 新 context＝新分頁：GET /api/session 有身分 → 進清單 → 取階段被拒
+    second = open_page(same_browser_as=holder)  # 同一瀏覽器的分頁：有身分 → 進清單 → 取階段被拒
     second.wait_for_selector("[data-testid='readonly-banner']", state="visible")
 
     banner = second.inner_text("[data-testid='readonly-banner']")
@@ -2708,14 +2814,11 @@ def test_a_second_tab_is_read_only_and_names_the_holder(open_page, listing):
 
 
 def test_entering_another_identity_while_someone_holds_the_session_is_read_only(open_page, listing):
-    # 換身分會把持有者的紀錄掛到別人頭上——後端擋下（409），前端以唯讀進清單並說明是誰。被拒過的
-    # 分頁重新整理後不沿用持有者的身分，回到身分表單。
+    # 另一個瀏覽器（另一個人）在有人持有階段時進來：先看到身分輸入頁（身分不沿用別人的，#288），
+    # 填了自己的身分後後端擋下進入編輯（409），前端以唯讀進清單並說明是誰；重新整理仍回身分表單。
     listing("a")
     _enter_identity(open_page())
     second = open_page()
-    second.wait_for_selector("[data-testid='readonly-banner']", state="visible")
-
-    second.reload()
     second.wait_for_selector("[data-testid='identity-form']", state="visible")
     _fill_identity(second, "林巡檢")
 
@@ -2724,6 +2827,9 @@ def test_entering_another_identity_while_someone_holds_the_session_is_read_only(
     assert second.inner_text("[data-testid='current-role']") == "唯讀"
     assert second.is_hidden("[data-testid='promote-all']")
 
+    second.reload()
+    second.wait_for_selector("[data-testid='identity-form']", state="visible")
+
 
 def test_when_the_holder_leaves_the_next_person_can_edit(open_page, listing):
     # 正常關閉頁面主動釋放（pagehide）→ 下一個人重新整理、填自己的身分即可取得編輯階段。
@@ -2731,6 +2837,8 @@ def test_when_the_holder_leaves_the_next_person_can_edit(open_page, listing):
     holder = _enter_identity(open_page())
     holder.wait_for_selector("[data-testid='promote-all']", state="visible")
     second = open_page()
+    second.wait_for_selector("[data-testid='identity-form']", state="visible")
+    _fill_identity(second, "林巡檢")
     second.wait_for_selector("[data-testid='readonly-banner']", state="visible")
 
     holder.evaluate("window.dispatchEvent(new Event('pagehide'))")
@@ -2817,7 +2925,7 @@ def test_the_unmanage_entry_is_absent_while_read_only(open_page, listing):
     listing("a")
     holder = _enter_identity(open_page())
     holder.wait_for_selector("[data-testid='promote-all']", state="visible")
-    second = open_page()
+    second = open_page(same_browser_as=holder)
     second.wait_for_selector("[data-testid='readonly-banner']", state="visible")
 
     second.dblclick("[data-testid='tree-item-mfz3k9q1']")

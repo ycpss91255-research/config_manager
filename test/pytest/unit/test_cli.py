@@ -23,6 +23,8 @@ from config_manager.api.routes import DEFAULT_ORIGINS, create_app
 # 2 是「用法錯誤／接線不對」，1 是「跑了但沒成功」。serve 少了 CM_CONFIG_REPO
 # 屬於前者：不是服務起不來，是根本沒有東西可服務。
 _MISCONFIGURED = 2
+# import 的作者（#288）：CLI 不是瀏覽器，沒有頁面上輸入過的身分可沿用。
+_AUTHOR = ("--name", "陳小明", "--email", "ming@example.com")
 
 _ROWS = [
     {"ref": "a@amr01-mfz3k9q1", "target": "/etc/a.yaml", "state": "in_sync"},
@@ -58,6 +60,11 @@ def answers(monkeypatch):
             return _Response(rows)
 
         monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        # import 走自己的 cookie 罐（#288：先設身分、再納管，兩個請求要接得上同一張票），所以
+        # 不經 urlopen 而經 OpenerDirector.open——同一個記錄器兩邊都接。
+        monkeypatch.setattr(
+            "urllib.request.OpenerDirector.open", lambda _self, url, timeout=None: _urlopen(url)
+        )
         return called
 
     return _answer
@@ -237,30 +244,45 @@ def test_list_relays_a_server_error_instead_of_saying_the_backend_is_down(monkey
 
 
 def test_import_posts_the_source_to_the_configs_endpoint(answers, capsys):
-    # 把關的是位址與方法：自己另做一套的實作不會 POST 到 --api 指的 /api/configs。
+    # 把關的是位址與方法：自己另做一套的實作不會 POST 到 --api 指的 /api/configs。身分先設
+    # （#288：CLI 不是瀏覽器，作者在命令列明寫），納管接著走同一支端點。
     called = answers({"ref": "nav2@amr01-abc", "target": "/etc/nav2.yaml"})
 
     code = main(
         ["config_manager", "import", "--api", "http://amr01:8080",
-         "--source", "/etc/nav2.yaml", "--format", "yaml"]
+         "--source", "/etc/nav2.yaml", "--format", "yaml", *_AUTHOR]
     )
 
     assert code == 0
-    assert called[0].full_url == "http://amr01:8080/api/configs"
-    assert called[0].method == "POST"
+    assert [request.full_url for request in called] == [
+        "http://amr01:8080/api/session", "http://amr01:8080/api/configs",
+    ]
+    assert called[1].method == "POST"
+    assert json.loads(called[0].data)["name"] == "陳小明"
     assert "已納管" in capsys.readouterr().out
+
+
+def test_import_without_an_author_is_a_usage_error(capsys):
+    # 沒有 --name／--email 就沒有作者可署名：argparse 的用法錯誤（結束碼 2），不會打到端點。
+    with pytest.raises(SystemExit) as exc:
+        main(["config_manager", "import", "--source", "/a.yaml", "--format", "raw"])
+
+    assert exc.value.code == _MISCONFIGURED
+    assert "--name" in capsys.readouterr().err
 
 
 def test_import_relays_the_endpoint_reason_and_fails_nonzero(monkeypatch, capsys):
     # 端點以結構化訊息回絕（白名單外／重複／未設身分）：把它的原因帶出來，非零結束。
     monkeypatch.setattr(
-        "urllib.request.urlopen",
-        lambda request, timeout=None: (_ for _ in ()).throw(_http_error(422, "來源在白名單外")),
+        "urllib.request.OpenerDirector.open",
+        lambda _self, request, timeout=None: (_ for _ in ()).throw(
+            _http_error(422, "來源在白名單外")
+        ),
     )
 
     code = main(
         ["config_manager", "import", "--api", "http://x",
-         "--source", "/outside.yaml", "--format", "yaml"]
+         "--source", "/outside.yaml", "--format", "yaml", *_AUTHOR]
     )
 
     assert code == 1

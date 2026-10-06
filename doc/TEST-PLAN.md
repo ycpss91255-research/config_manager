@@ -815,6 +815,11 @@ host networking。那半邊由 compose 自己的規格負責（#90）。**兩邊
 
 端點集合由設計文件 §3.5.3 的表決定，不在實作時發明。
 
+**身分屬於各自的瀏覽器（#288）。** `POST /api/session` 把身分記在後端發給該瀏覽器的票上（回應 `Set-Cookie: cm_browser=…`，
+HttpOnly、關閉瀏覽器即失效），之後每個請求以 cookie 帶票；`GET /api/session` 只回這個瀏覽器自己宣告過的身分，別的
+瀏覽器看到 null、沒有身分的請求在需要作者的端點得到 409。CORS 因此 `allow_credentials`，前端 fetch 一律帶 `credentials`。
+規格以兩罐 cookie 對照（`_browser`／`_another_browser`）。
+
 **`GET /api/session` 是本 repo 對那張表的一筆追加，記在這裡。** §3.5.3 只列了
 `POST /api/session`，但單一編輯階段（ADR-00000014）要求頁面重新整理後恢復目前
 身分，那需要一個讀取端點；`configs` 在表上也是 GET／POST 成對，`session` 少了
@@ -1416,7 +1421,8 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `api/attributes` | T9 | 已落地（`POST /api/configs/{uid}/attributes`——僅開發者，修改名稱／群組／主機／說明，#286） |
 | `api/schema` | T9 | 已落地（`POST /api/configs/{uid}/schema`——僅開發者，產生 schema 骨架，#38；`schema_view` 供單筆內容帶欄位提示、人工指定的型別與 schema 的錯誤，#40／#285；`POST /api/configs/{uid}/types` 指定／清除型別、`as_specified` 讓指定成 double 的欄位寫出帶小數點，#285） |
 | `api/history` | T9 | 已落地（`GET /api/configs/{uid}/history`、`GET /api/configs/{uid}/history/{sha}`、`POST /api/configs/{uid}/revert`——歷史與退版的端點與邏輯，自 `api/routes` 拆出以免該模組超過千行，#24） |
-| `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`） |
+| `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`）；`import` 以 `--name`／`--email`（`--role`）自帶作者——CLI 不是瀏覽器，沒有頁面上輸入過的身分可沿用（#288） |
+| `api/browser` | T9 | 已落地（`Browsers`：以後端發的瀏覽器票（cookie `cm_browser`，HttpOnly、SameSite=Lax、session cookie）為鍵記各瀏覽器的身分；端點以 `Depends(browsers.current)` 取「這個請求的瀏覽器」的身分；形狀不合的票當沒帶、重新發，#288） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 已落地：身分（`author`）；階段 `SessionLock` 的 acquire／renew／resume（重新整理後接續、換識別碼）／release／sweep，時鐘注入（#33） |
 | `api/lock` | T9 | 已落地（`POST`／`GET /api/session` 與編輯階段的取得／續期／釋放／狀態端點——設身分要看階段有沒有被別人持有，接線放一起；逾時回收清草稿並回報，#33；權限門檻 `require_permission` 也在這裡，白名單維護、候選數預覽、產生 schema、型別指定與屬性編輯共用，誰能做什麼問 `core/roles.permits`，#47） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |

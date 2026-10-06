@@ -289,6 +289,8 @@
   }
   /* 角色是兩個並排的選項按鈕，明顯可見，不藏在選單裡（ADR-00000020、W1）。 */
   .roles { display: flex; gap: 8px; margin: 4px 0 20px; }
+  .remember { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 20px; font-size: 14px; color: var(--muted); }
+  .remember input { margin-top: 5px; }
   .roles button { flex: 1; }
   .roles button[aria-pressed="true"] {
     border-color: var(--fg);
@@ -459,6 +461,13 @@
     <button type="button" data-role="developer" aria-pressed="false">🔧 開發者</button>
   </div>
 
+  <!-- 記住此裝置（#288）：只記姓名與 Email、只存在這個瀏覽器；角色每次重選。只在開發模式出現
+       （部署模式不提供，#49）。 -->
+  <label class="remember" data-testid="remember-device" hidden>
+    <input type="checkbox" name="remember">
+    <span>記住此裝置——下次開啟不必再輸入姓名與 Email（角色每次重選）</span>
+  </label>
+
   <button type="submit" class="enter">進入</button>
 </form>
 
@@ -612,6 +621,12 @@ const STATE_TEXT = {
 // 對應的來源，見 CM_ALLOWED_ORIGINS。
 const API_BASE = window.CM_API_BASE || `${location.protocol}//${location.hostname}:8080`;
 
+// 對 backend 的每一個請求都走這裡：身分綁在後端發給這個瀏覽器的票（cookie）上（#288），而 API 在
+// 另一個 port，跨來源的 fetch 預設不帶 cookie——少了 credentials 就等於每次都是「還沒說自己是誰」。
+function apiFetch(url, init = {}) {
+  return fetch(url, { credentials: "include", ...init });
+}
+
 const UNGROUPED = "ungrouped";
 const tree = document.querySelector("[data-testid='config-tree']");
 const search = document.querySelector("[data-testid='search-input']");
@@ -641,7 +656,7 @@ function setDrafts(uids) {
 
 async function loadDrafts() {
   try {
-    const response = await fetch(`${API_BASE}/api/drafts`);
+    const response = await apiFetch(`${API_BASE}/api/drafts`);
     if (!response.ok) throw new Error(await loadErrorText(response));
     const payload = await response.json();
     setDrafts(payload.drafts.map((draft) => draft.uid));
@@ -702,7 +717,7 @@ async function runSearch() {
   }
   try {
     const params = new URLSearchParams({ q: query, scope: searchScope.value });
-    const response = await fetch(`${API_BASE}/api/search?${params}`);
+    const response = await apiFetch(`${API_BASE}/api/search?${params}`);
     if (!response.ok) throw new Error(await loadErrorText(response));
     const payload = await response.json();
     if (generation !== searchGeneration) return;
@@ -893,7 +908,7 @@ async function loadErrorText(response) {
 async function load() {
   const generation = ++loadGeneration;
   try {
-    const response = await fetch(`${API_BASE}/api/configs`);
+    const response = await apiFetch(`${API_BASE}/api/configs`);
     if (!response.ok) throw new Error(await loadErrorText(response));
     const data = await response.json();
     if (generation !== loadGeneration) return;  // 有更新的載入開始了，這次過時、丟棄
@@ -1023,7 +1038,7 @@ async function openPanel(uid, notice) {
     }), "loading");
   }
   try {
-    const response = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(uid)}`);
+    const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(uid)}`);
     if (!response.ok) throw new Error(await loadErrorText(response));
     const detail = await response.json();
     if (generation !== panelGenerations.get(uid)) return;
@@ -1254,7 +1269,7 @@ async function saveAttributes(detail, ui) {
   };
   ui.save.disabled = true;
   try {
-    const response = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/attributes`, {
+    const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/attributes`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -1288,7 +1303,7 @@ async function specifyType(detail, row, typeName, ui) {
     return;
   }
   try {
-    const response = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/types`, {
+    const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/types`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ path: row.path, type: typeName }),
@@ -1330,7 +1345,7 @@ async function draftSchema(detail, ui) {
   ui.error.hidden = true;
   ui.button.disabled = true;
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/schema`, { method: "POST" },
     );
     const payload = await response.json();
@@ -1442,7 +1457,7 @@ async function saveDraft(detail, entries, ui, overrides = {}) {
   ui.error.hidden = true;
   ui.save.disabled = true;
   try {
-    const response = await fetch(`${API_BASE}/api/drafts`, {
+    const response = await apiFetch(`${API_BASE}/api/drafts`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ uid: detail.uid, edits, overrides }),
@@ -1987,7 +2002,7 @@ async function loadHistory(view, detail, filter, generation) {
   list.replaceChildren(element("li", { class: "notice", text: "載入中…" }));
   const query = filter === "all" ? `?prefix=${ALL_KINDS}` : "";
   try {
-    const response = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/history${query}`);
+    const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/history${query}`);
     if (!response.ok) throw new Error(await loadErrorText(response));
     const changes = await response.json();
     if (generation !== historyGeneration) return;
@@ -2039,7 +2054,7 @@ async function selectChange(view, detail, change, node) {
   diff.replaceChildren(element("p", { class: "notice", text: "載入中…" }));
   try {
     const url = `${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/history/${change.sha}`;
-    const response = await fetch(url);
+    const response = await apiFetch(url);
     if (!response.ok) throw new Error(await loadErrorText(response));
     const version = await response.json();
     if (generation !== historyGeneration) return;
@@ -2100,7 +2115,7 @@ async function revertTo(view, detail, version, differing) {
   if (!ok) return;
   const diff = view.querySelector("[data-testid='history-diff']");
   try {
-    const response = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/revert`, {
+    const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/revert`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ version: version.sha }),
@@ -2116,7 +2131,7 @@ async function revertTo(view, detail, version, differing) {
     }
     // 目前版本變了：重抓單筆內容、重開歷史（列表多一筆退回舊版本），左側樹重掃狀態。
     load();
-    const fresh = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`);
+    const fresh = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`);
     const freshDetail = fresh.ok ? await fresh.json() : detail;
     openHistory(freshDetail, `已退回到版本 ${short}，並寫出到目標。${SCHEMA_DONE_TEXT[payload.schema_effect] || ""}`);
   } catch (error) {
@@ -2258,7 +2273,7 @@ async function resolveDrift(detail, option, view, errorEl) {
   errorEl.hidden = true;
   for (const button of view.querySelectorAll(".resolve-actions button")) button.disabled = true;
   try {
-    const response = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/resolve`, {
+    const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/resolve`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: option.action }),
@@ -2359,7 +2374,7 @@ async function promoteAll() {
   clearPromoteBanners();
   promoteButton.disabled = true;
   try {
-    const response = await fetch(`${API_BASE}/api/promote`, { method: "POST" });
+    const response = await apiFetch(`${API_BASE}/api/promote`, { method: "POST" });
     const payload = await response.json();
     if (!response.ok) {
       renderSaveError(promoteErrorEl, payload.detail);  // 同一種結構化形：message＋逐條行號／原因／建議
@@ -2389,7 +2404,7 @@ async function discardDrafts(uid, name) {
   clearPromoteBanners();
   try {
     const path = uid ? `/api/drafts/${encodeURIComponent(uid)}` : "/api/drafts";
-    const response = await fetch(`${API_BASE}${path}`, { method: "DELETE" });
+    const response = await apiFetch(`${API_BASE}${path}`, { method: "DELETE" });
     const payload = await response.json();
     if (!response.ok) {
       renderSaveError(promoteErrorEl, payload.detail);
@@ -2415,7 +2430,7 @@ async function unmanageConfig(detail) {
   if (!ok) return;
   clearPromoteBanners();
   try {
-    const response = await fetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`, {
+    const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`, {
       method: "DELETE",
     });
     const payload = await response.json();
@@ -2441,8 +2456,6 @@ discardAllButton.addEventListener("click", () => discardDrafts(null, null));
 // 橫幅指名持有者與開始時間，會寫入的控制項不出現（不是停用）。不提供強制接管。
 const readonlyBanner = document.querySelector("[data-testid='readonly-banner']");
 const SESSION_TOKEN_KEY = "cm.session.token";
-// 這個分頁曾被拒（別人持有）：之後重新整理不自動沿用 app 上的身分——那是持有者的，不是你的。
-const REFUSED_KEY = "cm.session.refused";
 const RENEW_EVERY_MS = 30_000;
 let sessionToken = null;
 let renewTimer = null;
@@ -2459,19 +2472,6 @@ function rememberToken(token) {
   } catch (_error) {
     // 私密視窗等存不進去：識別碼還在記憶體裡，只是重新整理後要重新取得。
   }
-}
-
-function markRefused(flag) {
-  try {
-    if (flag) sessionStorage.setItem(REFUSED_KEY, "1");
-    else sessionStorage.removeItem(REFUSED_KEY);
-  } catch (_error) {
-    // 存不進去就算了：只是少一層「重新整理後不沿用別人身分」的保護，後端的 409 仍擋著換身分。
-  }
-}
-
-function wasRefused() {
-  try { return sessionStorage.getItem(REFUSED_KEY) === "1"; } catch (_error) { return false; }
 }
 
 function setReadonly(holder, startedAt, reason) {
@@ -2508,10 +2508,9 @@ async function acquireSession() {
   const token = storedToken();
   if (token && await renewSession(token, true)) return;
   try {
-    const response = await fetch(`${API_BASE}/api/session/lock`, { method: "POST" });
+    const response = await apiFetch(`${API_BASE}/api/session/lock`, { method: "POST" });
     const payload = await response.json();
     if (response.status === 409 && payload.detail && payload.detail.kind === "held") {
-      markRefused(true);
       setReadonly(payload.detail.holder, payload.detail.started_at, null);
       return;
     }
@@ -2520,7 +2519,6 @@ async function acquireSession() {
       return;
     }
     rememberToken(payload.token);
-    markRefused(false);
     setEditing();
     if (payload.cleared_drafts) {
       // 上一個階段逾時釋放時的草稿被清掉——說出來，不靜默丟棄（T13）。
@@ -2538,7 +2536,7 @@ async function acquireSession() {
 async function renewSession(token, resuming = false) {
   if (!token) return false;
   try {
-    const response = await fetch(`${API_BASE}/api/session/lock/renew`, {
+    const response = await apiFetch(`${API_BASE}/api/session/lock/renew`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ token, resume: resuming }),
@@ -2570,7 +2568,7 @@ window.addEventListener("pagehide", () => {
   const body = new Blob([JSON.stringify({ token: sessionToken })], { type: "text/plain" });
   const sent = navigator.sendBeacon && navigator.sendBeacon(`${API_BASE}/api/session/lock/release`, body);
   if (!sent) {
-    fetch(`${API_BASE}/api/session/lock`, {
+    apiFetch(`${API_BASE}/api/session/lock`, {
       method: "DELETE",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ token: sessionToken }),
@@ -2619,8 +2617,40 @@ function hideAllPageViews() {
   whitelistView.hidden = true;
 }
 
+// 記住此裝置（#288）：姓名與 Email 存在這個瀏覽器自己的 localStorage，後端不存。角色刻意不存——
+// 每次開啟都要重新選，開發者身分不該因為上次勾過就自動帶著。
+const REMEMBERED_KEY = "cm.identity.remembered";
+const rememberLabel = document.querySelector("[data-testid='remember-device']");
+
+function rememberedIdentity() {
+  try {
+    const raw = localStorage.getItem(REMEMBERED_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed.name === "string" && typeof parsed.email === "string" ? parsed : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function rememberIdentity(identity) {
+  try {
+    if (identity) localStorage.setItem(REMEMBERED_KEY, JSON.stringify({ name: identity.name, email: identity.email }));
+    else localStorage.removeItem(REMEMBERED_KEY);
+  } catch (_error) {
+    // 存不進去（私密視窗等）：只是下次要再打一次姓名與 Email。
+  }
+}
+
 function showIdentityForm() {
   hideAllPageViews();
+  // 只在開發模式提供；模式未知時也不提供（不假設是開發模式，#47）。
+  rememberLabel.hidden = document.body.dataset.mode !== "development";
+  const remembered = rememberLabel.hidden ? null : rememberedIdentity();
+  if (remembered) {
+    identityForm.elements.name.value = remembered.name;
+    identityForm.elements.email.value = remembered.email;
+    identityForm.elements.remember.checked = true;
+  }
   identityForm.hidden = false;
 }
 
@@ -2663,7 +2693,7 @@ identityForm.addEventListener("submit", async (event) => {
   };
 
   try {
-    const response = await fetch(`${API_BASE}/api/session`, {
+    const response = await apiFetch(`${API_BASE}/api/session`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -2681,6 +2711,7 @@ identityForm.addEventListener("submit", async (event) => {
       identityError.hidden = false;
       return;
     }
+    rememberIdentity(!rememberLabel.hidden && identityForm.elements.remember.checked ? payload : null);
     showList(payload);
   } catch (error) {
     identityError.textContent = `送不出去：${error && error.message ? error.message : error}`;
@@ -2723,7 +2754,7 @@ async function loadBrowseRoots() {
   browseSelectionEl.hidden = true;
   browseRejectedEl.hidden = true;
   try {
-    const response = await fetch(`${API_BASE}/api/allowed-roots`);
+    const response = await apiFetch(`${API_BASE}/api/allowed-roots`);
     if (!response.ok) throw new Error(await loadErrorText(response));
     whitelistRoots = (await response.json()).prefixes;
     browseRootsEl.replaceChildren(...whitelistRoots.map((prefix) =>
@@ -2747,7 +2778,7 @@ async function browseTo(path) {
   onboardStartEl.hidden = true;
   selectedSourcePath = null;
   try {
-    const response = await fetch(`${API_BASE}/api/browse?path=${encodeURIComponent(path)}`);
+    const response = await apiFetch(`${API_BASE}/api/browse?path=${encodeURIComponent(path)}`);
     const payload = await response.json();
     if (generation !== browseGeneration) return;  // 有更新的導覽開始了，這個回應過時、丟棄
     if (!response.ok) {
@@ -2862,7 +2893,7 @@ async function confirmAddRoot(prefix, showError) {
   // 等於白按一次（複驗回饋）。只比對得出字面或後端解析過的路徑；符號連結等後端送出時仍會擋。
   const wanted = prefix.replace(/\/+$/, "") || prefix;
   try {
-    const listed = await fetch(`${API_BASE}/api/allowed-roots`);
+    const listed = await apiFetch(`${API_BASE}/api/allowed-roots`);
     if (listed.ok) {
       const roots = (await listed.json()).roots || [];
       const same = roots.find((root) => [root.prefix, root.resolved].includes(wanted));
@@ -2876,7 +2907,7 @@ async function confirmAddRoot(prefix, showError) {
   }
   let payload;
   try {
-    const response = await fetch(`${API_BASE}/api/candidate-count?prefix=${encodeURIComponent(prefix)}`);
+    const response = await apiFetch(`${API_BASE}/api/candidate-count?prefix=${encodeURIComponent(prefix)}`);
     payload = await response.json();
     if (!response.ok) {
       showError(detailText(payload.detail));
@@ -2901,7 +2932,7 @@ async function addToWhitelist(prefix) {
   };
   if (!await confirmAddRoot(prefix, showAddError)) return;
   try {
-    const response = await fetch(`${API_BASE}/api/allowed-roots`, {
+    const response = await apiFetch(`${API_BASE}/api/allowed-roots`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ prefix }),
@@ -2978,7 +3009,7 @@ function showWhitelist() {
 async function loadWhitelist() {
   whitelistConfirmEl.hidden = true;
   try {
-    const response = await fetch(`${API_BASE}/api/allowed-roots`);
+    const response = await apiFetch(`${API_BASE}/api/allowed-roots`);
     if (!response.ok) throw new Error(await loadErrorText(response));
     const roots = (await response.json()).roots;
     if (!roots.length) {
@@ -3014,7 +3045,7 @@ async function previewCandidates() {
   if (!prefix) { whitelistPreviewEl.hidden = true; return; }
   const generation = ++previewGeneration;
   try {
-    const response = await fetch(`${API_BASE}/api/candidate-count?prefix=${encodeURIComponent(prefix)}`);
+    const response = await apiFetch(`${API_BASE}/api/candidate-count?prefix=${encodeURIComponent(prefix)}`);
     const payload = await response.json();
     if (generation !== previewGeneration) return;  // 有更新的預覽／加入開始了，這個回應過時、丟棄
     if (!response.ok) {
@@ -3051,7 +3082,7 @@ async function addRoot() {
   };
   if (!await confirmAddRoot(prefix, showError)) return;
   try {
-    const response = await fetch(`${API_BASE}/api/allowed-roots`, {
+    const response = await apiFetch(`${API_BASE}/api/allowed-roots`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ prefix }),
@@ -3077,7 +3108,7 @@ async function beginRemoveRoot(prefix) {
   // 後端在未確認時一律回 409 confirm_required（含受影響清單，可能為空）。
   whitelistErrorEl.hidden = true;
   try {
-    const response = await fetch(`${API_BASE}/api/allowed-roots`, {
+    const response = await apiFetch(`${API_BASE}/api/allowed-roots`, {
       method: "DELETE",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ prefix, confirmed: false }),
@@ -3123,7 +3154,7 @@ function renderRemoveConfirm(prefix, detail) {
 
 async function confirmRemoveRoot(prefix) {
   try {
-    const response = await fetch(`${API_BASE}/api/allowed-roots`, {
+    const response = await apiFetch(`${API_BASE}/api/allowed-roots`, {
       method: "DELETE",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ prefix, confirmed: true }),
@@ -3223,7 +3254,7 @@ async function runInspect() {
   onboardSubmitEl.disabled = true;
   clearInspectResults();
   try {
-    const response = await fetch(`${API_BASE}/api/inspect`, {
+    const response = await apiFetch(`${API_BASE}/api/inspect`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -3333,7 +3364,7 @@ async function submitOnboard() {
     .join("；");
   onboardErrorEl.hidden = true;
   try {
-    const response = await fetch(`${API_BASE}/api/configs`, {
+    const response = await apiFetch(`${API_BASE}/api/configs`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -3387,7 +3418,7 @@ const MODE_TEXT = { development: "開發模式", deployment: "部署模式" };
 async function loadMode() {
   const badge = document.querySelector("[data-testid='current-mode']");
   try {
-    const response = await fetch(`${API_BASE}/api/mode`);
+    const response = await apiFetch(`${API_BASE}/api/mode`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const { mode } = await response.json();
     document.body.dataset.mode = mode;
@@ -3401,10 +3432,10 @@ async function loadMode() {
 (async function start() {
   await loadMode();
   try {
-    const response = await fetch(`${API_BASE}/api/session`);
+    const response = await apiFetch(`${API_BASE}/api/session`);
+    // 身分屬於這個瀏覽器（#288）：後端只回這個瀏覽器自己宣告過的身分，有就直接進清單。
     const identity = response.ok ? await response.json() : null;
-    // 這個分頁曾被拒（別人持有）就不沿用 app 上的身分——那是持有者的；請填自己的（#33）。
-    if (identity && !wasRefused()) {
+    if (identity) {
       showList(identity);
       return;
     }

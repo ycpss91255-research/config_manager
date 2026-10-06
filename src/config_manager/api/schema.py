@@ -16,10 +16,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from subprocess import CalledProcessError
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from config_manager.api.lock import require_permission
+from config_manager.api.browser import Browsers
 from config_manager.api.session import Identity
 from config_manager.core.errors import ManualTypeError, SyntaxParse, TypeNotSpecified
 from config_manager.core.manual_types import manual_types
@@ -46,28 +47,32 @@ class TypeInput(BaseModel):
     type: str | None = None
 
 
-def register_schema(app: FastAPI, repo: str, held: dict[str, Identity]) -> None:
+def register_schema(app: FastAPI, repo: str, browsers: Browsers) -> None:
     """把 schema 骨架的端點掛上 app。"""
 
     @app.post("/api/configs/{uid}/schema")
-    def draft_config_schema(uid: str) -> dict[str, object]:
+    def draft_config_schema(
+        uid: str, identity: Identity | None = Depends(browsers.current)
+    ) -> dict[str, object]:
         """產生 schema 骨架：存進 `.schemas/`、條目記下路徑、記一筆 meta。回 uid 與 schema 路徑。"""
-        return _draft(repo, held, uid)
+        return _draft(repo, identity, uid)
 
     @app.post("/api/configs/{uid}/types")
-    def specify_parameter_type(uid: str, payload: TypeInput) -> dict[str, object]:
+    def specify_parameter_type(
+        uid: str, payload: TypeInput, identity: Identity | None = Depends(browsers.current)
+    ) -> dict[str, object]:
         """人工指定一個參數的型別（#285）；`type` 為 null 是清除那個指定。寫進 schema、
         記一筆 meta。"""
-        return _specify(repo, held, uid, payload)
+        return _specify(repo, identity, uid, payload)
 
 
-def _draft(repo: str, held: dict[str, Identity], uid: str) -> dict[str, object]:
+def _draft(repo: str, identity: Identity | None, uid: str) -> dict[str, object]:
     """產生骨架的邏輯：開發者門檻（沒身分 409、角色不足 403）之後交給 `io/schema`。
 
     定位不到 404、已有 schema 409（不覆寫）、沒有結構可推導 422（raw／頂層不是物件）；來源
     複本讀不到或解析不了、寫入／commit／回滾失敗是伺服器側的錯，帶訊息的 500。
     """
-    identity = require_permission(held, SPECIFY_TYPES)
+    identity = require_permission(identity, SPECIFY_TYPES)
     try:
         entry = draft_skeleton(repo, uid, identity.git_author)
     except SchemaNotFound as error:
@@ -126,14 +131,14 @@ def as_specified(
 
 
 def _specify(
-    repo: str, held: dict[str, Identity], uid: str, payload: TypeInput
+    repo: str, identity: Identity | None, uid: str, payload: TypeInput
 ) -> dict[str, object]:
     """指定／清除型別的邏輯：開發者門檻之後交給 `io/manual_type`。
 
     送錯的請求 422（不認得的型別、不能指定的路徑、與現值不相容、raw）；要清除的欄位沒有指定
     409；定位不到 404；寫入／commit／回滾失敗是伺服器側的錯，帶訊息的 500。
     """
-    identity = require_permission(held, SPECIFY_TYPES)
+    identity = require_permission(identity, SPECIFY_TYPES)
     try:
         entry = specify_type(repo, uid, payload.path, payload.type, identity.git_author)
     except SchemaNotFound as error:

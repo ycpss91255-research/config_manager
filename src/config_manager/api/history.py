@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from subprocess import CalledProcessError
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from config_manager.api.checks import overrides_in
+from config_manager.api.browser import Browsers
 from config_manager.api.session import Identity
 from config_manager.core.drafts import Promotion, Stage
 from config_manager.core.errors import SyntaxParse
@@ -34,7 +35,7 @@ class RevertInput(BaseModel):
 
 
 def register_history(
-    app: FastAPI, repo: str, held: dict[str, Identity], stage_box: dict[str, Stage]
+    app: FastAPI, repo: str, browsers: Browsers, stage_box: dict[str, Stage]
 ) -> None:
     """把歷史與退版的端點（§7.6）掛上 app（#23／#24）。抽出來的理由同 `_register_allowed_roots`
     （C901）。"""
@@ -51,9 +52,11 @@ def register_history(
         return _version_detail(repo, uid, sha)
 
     @app.post("/api/configs/{uid}/revert")
-    def revert_config(uid: str, payload: RevertInput) -> dict[str, object]:
+    def revert_config(
+        uid: str, payload: RevertInput, identity: Identity | None = Depends(browsers.current)
+    ) -> dict[str, object]:
         """退版（設計文件 §3.5.3、§5.3）：以反向變更寫回舊版內容並寫出目標，不改寫歷史（#24）。"""
-        return _revert_config(repo, held, stage_box, uid, payload)
+        return _revert_config(repo, identity, stage_box, uid, payload)
 
 
 # 歷史預設只看內容變更（§7.6.1、圖 7）：cfg 與 adopt 才真的改了內容；revert／meta 會干擾判讀，
@@ -137,7 +140,7 @@ def _find_version(repo: str, entry: FileEntry, sha: str) -> Change:
 
 def _revert_config(
     repo: str,
-    held: dict[str, Identity],
+    identity: Identity | None,
     stage_box: dict[str, Stage],
     uid: str,
     payload: RevertInput,
@@ -152,7 +155,6 @@ def _revert_config(
     版本必須是**這份 config** 歷史裡的一筆（拿別份的 sha 會把別人的內容寫進來→422）；這份有未進版
     的草稿時不退（草稿是以退版前的來源為底做的，退了就對不起來——先進版或捨棄，409，不變式 4）。
     """
-    identity = held.get("identity")
     if identity is None:
         raise HTTPException(
             status_code=409,
