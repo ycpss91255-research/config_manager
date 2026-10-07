@@ -257,16 +257,20 @@ def test_filling_in_refuses_a_directory_at_the_target(tmp_path):
 
 
 def test_a_target_that_appears_at_the_last_moment_is_not_overwritten(tmp_path, monkeypatch):
-    # 「先看有沒有、再寫」擋不住這個：檢查之後、寫上去之前，有人把檔案放了回去。這裡在內容都
-    # 準備好、就差放上去的那一刻（套權限時）讓目標出現——仍然不能被蓋掉。
+    # 「先看有沒有、再放上去」擋不住這個：看的時候還沒有，放上去之前的那一瞬間有人把檔案放了回去。
+    # 這裡讓目標在**最後那個把檔案放上去的系統呼叫之前**出現——不管實作用的是哪一個（link 或
+    # rename／replace），都在它前面插隊。只有「放上去」這一步自己不覆蓋，才過得了。
     target = tmp_path / "params.yaml"
-    real_chmod = os.chmod
 
-    def appear_then_chmod(path, mode, **kwargs):
-        target.write_text("put back by someone else\n")
-        real_chmod(path, mode, **kwargs)
+    def racing(real):
+        def placed(source, destination, *args, **kwargs):
+            if str(destination) == str(target) and not target.exists():
+                target.write_text("put back by someone else\n")
+            return real(source, destination, *args, **kwargs)
+        return placed
 
-    monkeypatch.setattr(os, "chmod", appear_then_chmod)
+    for name in ("link", "replace", "rename"):
+        monkeypatch.setattr(os, name, racing(getattr(os, name)))
 
     with pytest.raises(TargetExists):
         write(str(target), "from the repo\n", _own_permissions(), [str(tmp_path)],
