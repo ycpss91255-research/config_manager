@@ -13,6 +13,15 @@ class TargetNotWritable(WriterError):
     """目標所在的目錄不可寫。"""
 
 
+class TargetExists(WriterError):
+    """只補回不存在的檔案時（寫出修復），目標那個位置已經有東西了——一般檔、目錄或符號連結
+    （含懸空的）都算。
+
+    不覆蓋：寫出修復不留變更紀錄，覆蓋就成了「無紀錄地改掉現場的內容」。覆蓋既有內容要走以
+    來源覆蓋目標（先確認、留一筆有作者的紀錄）。
+    """
+
+
 class TargetOutsideRoots(WriterError):
     """目標路徑（或其父目錄）解析後落在允許的根目錄之外。"""
 

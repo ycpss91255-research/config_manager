@@ -3874,6 +3874,30 @@ def test_writing_out_is_refused_when_the_target_has_appeared_meanwhile(open_page
     page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'] [data-state='drift']")
 
 
+def test_the_backend_refuses_even_when_the_page_still_believes_the_target_is_missing(
+    open_page, repo
+):
+    # 頁面的重新比對不是防線：比對之後、寫出之前目標才出現（這裡讓比對拿到舊的答案來演），
+    # 真的服務仍然拒絕、檔案沒被蓋掉，原因顯示在畫面上。
+    target = _missing(repo)
+    page = _open_missing(open_page)
+    stale = page.evaluate("apiFetch(`${API_BASE}/api/configs`).then((r) => r.text())")
+    target.write_text("count: 9\n", encoding="utf-8")
+    page.route(
+        "**/api/configs",
+        lambda route: route.fulfill(status=200, content_type="application/json", body=stale),
+    )
+
+    page.click(_APPLY)
+
+    error = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='apply-error']"
+    page.wait_for_selector(error, state="visible")
+    said = page.inner_text(error)
+    assert "目標檔案已經存在" in said and "以來源覆蓋目標" in said
+    assert target.read_text(encoding="utf-8") == "count: 9\n"
+    assert page.is_hidden("[data-testid='promote-done']")
+
+
 def test_a_refused_write_out_shows_the_backend_reason(open_page, repo):
     _missing(repo)
     page = _open_missing(open_page)

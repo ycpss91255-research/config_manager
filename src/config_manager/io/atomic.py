@@ -14,7 +14,7 @@ import os
 import tempfile
 from collections.abc import Callable
 
-from config_manager.io.errors import TargetNotWritable, TemporaryLeftBehind
+from config_manager.io.errors import TargetExists, TargetNotWritable, TemporaryLeftBehind
 
 _PREFIX = ".config_manager-"
 _SUFFIX = ".tmp"
@@ -25,8 +25,12 @@ def replace_atomically(
     content: bytes,
     *,
     finalize: Callable[[str], None] | None = None,
+    only_if_missing: bool = False,
 ) -> None:
     """把 `target` 原子替換成 `content`。要嘛完整寫入，要嘛完全不動。
+
+    `only_if_missing`：只在 target 那個位置什麼都沒有時才放上去，已經有東西就丟
+    `TargetExists`、不覆蓋（見 `_place_if_missing`）。
 
     順序是暫存檔 → `fsync` → `finalize` → `rename`。rename 在同一個 filesystem 內是
     原子操作，所以任何時刻去看 target，看到的要嘛是舊內容、要嘛是新內容，不會是寫到
@@ -55,7 +59,10 @@ def replace_atomically(
             os.fsync(handle.fileno())
         if finalize is not None:
             finalize(temporary)
-        os.replace(temporary, target)
+        if only_if_missing:
+            _place_if_missing(temporary, target)
+        else:
+            os.replace(temporary, target)
     except BaseException as failure:
         # 走到這裡就代表 rename 沒成功，暫存檔不留在目標目錄裡。清理完把原本的失敗
         # 原封不動往上拋——它才是使用者要處理的那件事。
@@ -64,6 +71,32 @@ def replace_atomically(
         # 訊息要同時說出兩件事，而 finally 裡只能靠 sys.exception() 去撈。
         _discard_temporary(temporary, failure)
         raise
+
+
+def _place_if_missing(temporary: str, target: str) -> None:
+    """把寫好的暫存檔放到 `target`——只在那個名字還不存在的時候。
+
+    用 hard link 而不是「先看有沒有、再 rename」：建立一個名字在檔案系統裡是原子的，那個名字
+    已經在（一般檔、目錄、符號連結，懸空的也算）就失敗，**不會覆蓋**。先檢查再 rename 的話，
+    檢查之後、rename 之前有人把檔案放回去，rename 會照樣把它蓋掉——而這條路不留變更紀錄。
+
+    放上去的是一個完整的檔案（內容已 fsync、權限已套好），所以仍是「要嘛完整、要嘛沒有」。
+    檔案系統不支援 hard link 時大聲失敗，不退回會覆蓋的做法（不變式 4）。
+    """
+    try:
+        os.link(temporary, target)
+    except FileExistsError as error:
+        raise TargetExists(
+            f"目標位置已經有東西了：{target}。沒有寫出——這個動作只補回不存在的檔案，不覆蓋既有內容。"
+            f"下一步：先比對目標與來源；要以來源蓋過它，走「以來源覆蓋目標」（會留下變更紀錄）。"
+        ) from error
+    except OSError as error:
+        raise TargetNotWritable(
+            f"無法在 {target} 建立檔案（{error.strerror}）。"
+            f"下一步：確認該目錄的權限與擁有者；若是這個檔案系統不支援 hard link，"
+            f"請手動把檔案放回該路徑，再按「檢查差異」。"
+        ) from error
+    os.unlink(temporary)
 
 
 def _discard_temporary(temporary: str, failure: BaseException) -> None:

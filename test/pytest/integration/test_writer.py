@@ -17,6 +17,7 @@ import pytest
 
 from config_manager.core.models import Permissions
 from config_manager.io.errors import (
+    TargetExists,
     OwnershipRefused,
     TargetNotWritable,
     TargetOutsideRoots,
@@ -186,3 +187,105 @@ def test_ownership_it_cannot_set_fails_loudly_without_writing(tmp_path):
         write(str(target), "x\n", root_owned, [str(tmp_path)])
 
     assert not target.exists()
+
+
+# ── 只補回不存在的檔案（寫出修復；#29 的修正）─────────────────────────────────
+# 寫出修復是「目標不見了，把來源放回去」——不留變更紀錄。所以它絕不能覆蓋任何既有的東西：
+# 覆蓋既有內容要走以來源覆蓋目標（先確認、留紀錄）。`only_if_missing` 讓這件事由檔案系統保證。
+
+
+def test_filling_in_a_missing_target_writes_the_content_and_mode(tmp_path):
+    target = tmp_path / "params.yaml"
+
+    write(str(target), "max_vel: 0.8\n", _own_permissions(_MODE), [str(tmp_path)],
+          only_if_missing=True)
+
+    assert target.read_text() == "max_vel: 0.8\n"
+    assert stat.S_IMODE(target.stat().st_mode) == _MODE_BITS
+    assert os.listdir(tmp_path) == ["params.yaml"]  # 沒有留下暫存檔
+
+
+def test_filling_in_refuses_an_existing_target_and_leaves_it_untouched(tmp_path):
+    target = tmp_path / "params.yaml"
+    target.write_text("changed on site\n")
+    before = target.stat()
+
+    with pytest.raises(TargetExists) as caught:
+        write(str(target), "from the repo\n", _own_permissions(), [str(tmp_path)],
+              only_if_missing=True)
+
+    assert target.read_text() == "changed on site\n"
+    after = target.stat()
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)  # 連碰都沒碰
+    assert os.listdir(tmp_path) == ["params.yaml"]
+    assert str(target) in str(caught.value) and "下一步：" in str(caught.value)
+
+
+def test_filling_in_refuses_a_target_identical_to_what_it_would_write(tmp_path):
+    # 內容一樣也不寫：「目標在不在」是唯一的條件，不去比內容——比了再寫，中間就有空窗。
+    target = tmp_path / "params.yaml"
+    target.write_text("same\n")
+    before = target.stat().st_ino
+
+    with pytest.raises(TargetExists):
+        write(str(target), "same\n", _own_permissions(), [str(tmp_path)], only_if_missing=True)
+
+    assert target.stat().st_ino == before
+
+
+def test_filling_in_refuses_a_dangling_symlink_at_the_target(tmp_path):
+    # 懸空的符號連結：`exists()` 說不在，但那個名字有東西。照寫會把連結換成一般檔案
+    # （ADR-00000003 的靜默失效）。
+    target = tmp_path / "params.yaml"
+    target.symlink_to(tmp_path / "elsewhere.yaml")
+
+    with pytest.raises(TargetExists):
+        write(str(target), "x\n", _own_permissions(), [str(tmp_path)], only_if_missing=True)
+
+    assert target.is_symlink() and os.readlink(target) == str(tmp_path / "elsewhere.yaml")
+    assert not (tmp_path / "elsewhere.yaml").exists()
+
+
+def test_filling_in_refuses_a_directory_at_the_target(tmp_path):
+    target = tmp_path / "params.yaml"
+    target.mkdir()
+
+    with pytest.raises(TargetExists):
+        write(str(target), "x\n", _own_permissions(), [str(tmp_path)], only_if_missing=True)
+
+    assert target.is_dir()
+
+
+def test_a_target_that_appears_at_the_last_moment_is_not_overwritten(tmp_path, monkeypatch):
+    # 「先看有沒有、再放上去」擋不住這個：看的時候還沒有，放上去之前的那一瞬間有人把檔案放了回去。
+    # 這裡讓目標在**最後那個把檔案放上去的系統呼叫之前**出現——不管實作用的是哪一個（link 或
+    # rename／replace），都在它前面插隊。只有「放上去」這一步自己不覆蓋，才過得了。
+    target = tmp_path / "params.yaml"
+
+    def racing(real):
+        def placed(source, destination, *args, **kwargs):
+            if str(destination) == str(target) and not target.exists():
+                target.write_text("put back by someone else\n")
+            return real(source, destination, *args, **kwargs)
+        return placed
+
+    for name in ("link", "replace", "rename"):
+        monkeypatch.setattr(os, name, racing(getattr(os, name)))
+
+    with pytest.raises(TargetExists):
+        write(str(target), "from the repo\n", _own_permissions(), [str(tmp_path)],
+              only_if_missing=True)
+
+    assert target.read_text() == "put back by someone else\n"
+    assert os.listdir(tmp_path) == ["params.yaml"]
+
+
+def test_the_ordinary_write_still_overwrites(tmp_path):
+    # 進版、以來源覆蓋、退版都靠覆蓋：`only_if_missing` 是另外開的門，預設不變。
+    target = tmp_path / "params.yaml"
+    target.write_text("old\n")
+
+    write(str(target), "new\n", _own_permissions(), [str(tmp_path)])
+
+    assert target.read_text() == "new\n"
+
