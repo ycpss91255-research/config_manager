@@ -1956,13 +1956,18 @@ function paramRow(row, table) {
     typeCell(row, specify),
   ]);
   row.node = node;
-  if (row.owner && row.segments.length === 1) node.appendChild(listOps(row, table));
+  // 清單的元素（不管在第幾層）：這一列有 ↑↓ 與移除。元素的最後一段位置是數字，物件的欄位是鍵。
+  if (row.owner && typeof row.segments[row.segments.length - 1] === "number") {
+    node.appendChild(listOps(row, table));
+  }
   if (row.container) {
     if (row.working) {
       // 清單的擁有者：新增元素的入口在這一列；清單整體有沒有改動也標在這一列（#46）。
       node.appendChild(listAdd(row, table));
       entries.push({ row, node, refresh: () => updateOwner(row, onChange) });
       updateOwner(row, null);
+    } else if (row.type === "list" && row.owner) {
+      node.appendChild(listAdd(row, table));  // 清單裡的清單：一樣可以加一項
     }
     return node;
   }
@@ -2030,10 +2035,25 @@ function updateOwner(owner, onChange) {
   if (onChange) onChange();
 }
 
+// 擁有者底下某個清單——`segments` 是它相對擁有者的位置，空的就是擁有者自己——在工作副本與影子裡
+// 的那兩個陣列。影子先補到一樣長（新增的元素在影子裡是空位）；影子那邊整段沒有（外層元素本身
+// 就是新增的）回 null，那就沒有東西要跟著搬。
+function listsAt(owner, segments) {
+  const walk = (root) => segments.reduce(
+    (node, segment) => (node === null || node === undefined ? undefined : node[segment]), root,
+  );
+  const items = walk(owner.working);
+  const found = walk(owner.shadow);
+  const mirror = Array.isArray(found) ? found : null;
+  while (mirror && mirror.length < items.length) mirror.push(undefined);
+  return { items, mirror };
+}
+
 function listOps(row, table) {
   const owner = row.owner;
-  const index = row.segments[0];
-  const last = owner.working.length - 1;
+  const parent = row.segments.slice(0, -1);  // 這個元素所在的清單
+  const index = row.segments[row.segments.length - 1];
+  const last = listsAt(owner, parent).items.length - 1;
   const button = (testid, text, title, disabled, act) => {
     const made = element("button", {
       type: "button", class: "list-op editing-only", "data-testid": testid, title, text,
@@ -2043,19 +2063,18 @@ function listOps(row, table) {
     return made;
   };
   const move = (to) => {
-    const items = owner.working;
+    const { items, mirror } = listsAt(owner, parent);
     [items[index], items[to]] = [items[to], items[index]];
-    // 影子跟著搬（先補到一樣長：新增的元素在影子裡是空位）。
-    while (owner.shadow.length < items.length) owner.shadow.push(undefined);
-    [owner.shadow[index], owner.shadow[to]] = [owner.shadow[to], owner.shadow[index]];
+    if (mirror) [mirror[index], mirror[to]] = [mirror[to], mirror[index]];  // 影子跟著搬
     rerenderList(owner, table);
   };
   return element("span", { class: "list-ops" }, [
     button("list-up", "↑", "往上移一位", index === 0, () => move(index - 1)),
     button("list-down", "↓", "往下移一位", index === last, () => move(index + 1)),
     button("list-remove", "✕", "移除這一項", false, () => {
-      owner.working.splice(index, 1);
-      owner.shadow.splice(index, 1);
+      const { items, mirror } = listsAt(owner, parent);
+      items.splice(index, 1);
+      if (mirror) mirror.splice(index, 1);
       rerenderList(owner, table);
     }),
   ]);
@@ -2065,23 +2084,26 @@ function listOps(row, table) {
 // （欄位齊、再改值），清單還是空的且不知道元素型別時給空字串（未結構化編輯）。
 const EMPTY_BY_TYPE = { int: 0, float: 0, bool: false, string: "" };
 
-function listAdd(owner, table) {
+function listAdd(listRow, table) {
+  const owner = listRow.owner || listRow;  // 清單裡的清單由最外層那份擁有
+  const segments = listRow.segments || [];
   const button = element("button", {
     type: "button", class: "list-op editing-only", "data-testid": "list-add", text: "＋ 新增",
     title: "在清單末端加一項",
   });
   button.addEventListener("click", () => {
-    const elementType = table.detail.types[`${owner.typePath}[]`] || "unknown";
-    const lastItem = owner.working[owner.working.length - 1];
+    const elementType = table.detail.types[`${listRow.typePath}[]`] || "unknown";
+    const { items } = listsAt(owner, segments);
+    const lastItem = items[items.length - 1];
     let fresh = EMPTY_BY_TYPE[elementType];
     if (elementType === "dict" || elementType === "list") fresh = lastItem === undefined ? {} : clone(lastItem);
     if (fresh === undefined) fresh = "";
-    owner.working.push(fresh);
+    items.push(fresh);
     // 影子在同一個位置留空位：新增的元素沒有來源值，就算以最後一項為樣板也一樣。
-    while (owner.shadow.length < owner.working.length) owner.shadow.push(undefined);
+    listsAt(owner, segments);
     rerenderList(owner, table);
     const added = table.list.querySelector(
-      `[data-name='${owner.path}[${owner.working.length - 1}]'] [data-testid='param-value']`,
+      `[data-name='${listRow.path}[${items.length - 1}]'] [data-testid='param-value']`,
     );
     if (added && added.focus) added.focus();
   });

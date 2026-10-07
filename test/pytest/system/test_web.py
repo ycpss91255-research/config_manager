@@ -2587,7 +2587,8 @@ def test_moving_an_edited_element_keeps_its_own_source_value(open_page, repo):
 
     page.click(f"{_row('recovery[1]')} [data-testid='list-up']")
 
-    assert (_value_of(page, "recovery[0]"), _source_of(page, "recovery[0]")) == ("retreat", "backup")
+    moved = (_value_of(page, "recovery[0]"), _source_of(page, "recovery[0]"))
+    assert moved == ("retreat", "backup")
     assert (_value_of(page, "recovery[1]"), _source_of(page, "recovery[1]")) == ("spin", "spin")
     # 改過的那一項仍標著已改動、沒改的不標——不因換了位置而顛倒。
     assert page.get_attribute(_row("recovery[0]"), "data-changed") == "true"
@@ -2618,7 +2619,8 @@ def test_a_new_element_has_no_source_value_even_after_moving(open_page, repo):
 
 
 def test_reordering_never_changes_what_the_source_column_says_overall(open_page, repo):
-    # 不管怎麼調序，來源值欄列出的仍是設定庫裡的那幾個值（只是跟著元素換位置）——沒有任何編輯值混進去。
+    # 不管怎麼調序，來源值欄列出的仍是設定庫裡的那幾個值（只是跟著元素換位置）——沒有任何
+    # 編輯值混進去。
     _listing_many(repo, {"p": _LIST_YAML})
     page = _open_panel(open_page())
     for index, text in enumerate(("x", "y", "z")):
@@ -2630,6 +2632,73 @@ def test_reordering_never_changes_what_the_source_column_says_overall(open_page,
 
     sources = sorted(_source_of(page, f"recovery[{index}]") for index in range(3))
     assert sources == ["backup", "spin", "wait"]
+
+
+# ── 清單裡的清單也能增刪調序（U36 的核對：#46 的「list → 可增刪的列＋↑↓」沒有排除內層）──────
+
+
+def test_a_list_inside_a_list_element_can_be_reordered_added_to_and_removed_from(open_page, repo):
+    targets = _listing_many(repo, {"p": _NESTED_LISTS})
+    page = _open_panel(open_page())
+    ports = "services[1].ports"  # alpha 的：8101、8002
+
+    page.click(f"{_row(f'{ports}[1]')} [data-testid='list-up']")  # → 8002、8101
+    page.click(f"{_row(ports)} [data-testid='list-add']")  # → 8002、8101、（新的）
+    page.fill(_param_value(f"{ports}[2]"), "8300")
+    page.click(f"{_row(f'{ports}[1]')} [data-testid='list-remove']")  # 移除 8101 → 8002、8300
+
+    assert [_value_of(page, f"{ports}[{index}]") for index in range(2)] == ["8002", "8300"]
+    assert [_source_of(page, f"{ports}[{index}]") for index in range(2)] == ["8002", "—"]
+    assert _value_of(page, "services[0].ports[0]") == "9001"  # beta 的那一份沒被碰到
+    assert page.query_selector(_row(f"{ports}[2]")) is None
+
+    _save(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector("[data-testid='promote-done']", state="visible")
+
+    assert targets["p"].read_text(encoding="utf-8") == _NESTED_LISTS.replace(
+        "      - 8101\n      - 8002\n", "      - 8002\n      - 8300\n"
+    )
+
+
+def test_inner_list_controls_respect_the_ends_of_their_own_list(open_page, repo):
+    _listing_many(repo, {"p": _NESTED_LISTS})
+    page = _open_panel(open_page())
+
+    alpha = "services[1].ports"
+    assert page.is_disabled(f"{_row(f'{alpha}[0]')} [data-testid='list-up']")
+    assert page.is_enabled(f"{_row(f'{alpha}[0]')} [data-testid='list-down']")
+    assert page.is_disabled(f"{_row(f'{alpha}[1]')} [data-testid='list-down']")
+    # beta 只有一個 port：上下都不能動（邊界看的是自己那一層，不是外層有幾個物件）。
+    only = _row("services[0].ports[0]")
+    assert page.is_disabled(f"{only} [data-testid='list-up']")
+    assert page.is_disabled(f"{only} [data-testid='list-down']")
+
+
+def test_moving_the_outer_object_carries_its_reordered_inner_list(open_page, repo):
+    _listing_many(repo, {"p": _NESTED_LISTS})
+    page = _open_panel(open_page())
+    page.click(f"{_row('services[1].ports[1]')} [data-testid='list-up']")  # alpha：8002、8101
+
+    page.click(f"{_row('services[1]')} [data-testid='list-up']")  # alpha 整個上移
+
+    assert [_value_of(page, f"services[0].ports[{i}]") for i in range(2)] == ["8002", "8101"]
+    assert [_source_of(page, f"services[0].ports[{i}]") for i in range(2)] == ["8002", "8101"]
+    assert _value_of(page, "services[1].ports[0]") == "9001"
+
+
+def test_an_inner_list_emptied_can_be_filled_again(open_page, repo):
+    _listing_many(repo, {"p": _NESTED_LISTS})
+    page = _open_panel(open_page())
+    beta = "services[0].ports"
+
+    page.click(f"{_row(f'{beta}[0]')} [data-testid='list-remove']")
+    assert page.query_selector(_row(f"{beta}[0]")) is None
+    page.click(f"{_row(beta)} [data-testid='list-add']")
+
+    assert _value_of(page, f"{beta}[0]") == "0"  # 元素型別是整數：給 0，不是空字串
+    assert _source_of(page, f"{beta}[0]") == "—"
 
 
 def test_the_first_element_cannot_move_up_and_the_last_cannot_move_down(open_page, repo):
