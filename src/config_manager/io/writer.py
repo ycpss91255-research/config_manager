@@ -58,8 +58,14 @@ def write(
     content: str,
     permissions: Permissions,
     allowed_roots: Iterable[str],
+    *,
+    only_if_missing: bool = False,
 ) -> None:
     """把內容寫到目標位置。要嘛完整寫入，要嘛完全不動。
+
+    `only_if_missing`：只補回不存在的檔案（寫出修復用）。目標那個位置已經有東西——一般檔、
+    目錄、符號連結——就丟 `TargetExists`、一個位元組都不動。預設（進版、以來源覆蓋、退版）
+    是覆蓋。
 
     原子替換（暫存檔 → fsync → rename）由 `io/atomic.replace_atomically` 負責——那份
     實作 `io/repo` 也用（ADR-00000006 的原子寫出只該有一份）。這裡在它之上加的是**部署
@@ -95,4 +101,6 @@ def write(
             ) from error
         os.chmod(temporary, int(permissions.mode, 8))
 
-    replace_atomically(target, as_bytes(content), finalize=_apply_ownership)
+    replace_atomically(
+        target, as_bytes(content), finalize=_apply_ownership, only_if_missing=only_if_missing
+    )

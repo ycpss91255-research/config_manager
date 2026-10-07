@@ -24,7 +24,7 @@ from config_manager.core.models import FileEntry, Permissions
 from config_manager.core.validate import ERROR, check
 from config_manager.io.allowed_roots import root_prefixes
 from config_manager.io.drift import adoption, overwrite
-from config_manager.io.errors import PromoteLeftBehind, WriterError
+from config_manager.io.errors import PromoteLeftBehind, TargetExists, WriterError
 from config_manager.io.git import history
 from config_manager.io.parsers import as_text
 from config_manager.io.parsers import read_source as read_source_copy
@@ -54,7 +54,8 @@ def register_drift(
 
     @app.post("/api/configs/{uid}/apply")
     def apply_missing(uid: str) -> dict[str, object]:
-        """未部署的寫出修復（設計文件 §5.4）：把來源寫到 target。repo 沒變、不留紀錄。"""
+        """未部署的寫出修復（設計文件 §5.4）：目標不存在時把來源寫到 target；repo 沒變、不留
+        紀錄。目標已存在→409，不覆蓋。"""
         return _apply_missing(repo, uid)
 
 
@@ -186,11 +187,24 @@ def _latest(repo: str, uid: str) -> dict[str, object]:
 
 
 def _apply_missing(repo: str, uid: str) -> dict[str, object]:
-    """寫出修復：來源寫到 target。target 已在時仍可寫（等於再套一次來源），不留紀錄。"""
+    """寫出修復：目標**不存在**時把來源寫到 target，不留紀錄。
+
+    目標那個位置已經有東西（一般檔、目錄、符號連結）→ 409，一個位元組都不動。這條路不要身分、
+    不留紀錄，所以它不能覆蓋任何既有內容——那會是「無紀錄地改掉現場」。要以來源蓋過既有的檔案，
+    走 `resolve` 的 `overwrite`（要身分、留一筆紀錄；介面上先確認）。「在不在」由寫入那一步
+    自己原子地判定（`only_if_missing`），不是先看再寫。
+    """
     entry, permissions = _permissions_of(repo, uid)
     try:
         source_text = read_source_copy(repo, entry.source, entry.format)
-        write(entry.target, source_text, permissions, root_prefixes(repo))
+        write(entry.target, source_text, permissions, root_prefixes(repo), only_if_missing=True)
+    except TargetExists as error:
+        raise HTTPException(
+            status_code=409,
+            detail=f"目標檔案已經存在（{entry.target}），沒有寫出——寫出修復只補回不存在的檔案，"
+            "不覆蓋既有內容。下一步：按「檢查差異」確認狀態；內容與來源不同（偏離）的話，"
+            "到差異檢視選「以來源覆蓋目標」（會先確認，並留下變更紀錄）",
+        ) from error
     except (WriterError, OSError) as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
     return {"uid": uid, "target": entry.target}

@@ -1788,6 +1788,66 @@ def test_apply_repairs_a_missing_target_from_the_source_without_a_record(api, so
     assert [c["sha"] for c in _history(api, entry["uid"], every)] == before
 
 
+def test_apply_refuses_a_target_that_exists_and_differs_and_leaves_it_alone(api, sources_root):
+    # 寫出修復不留紀錄，所以它不能覆蓋任何既有內容：目標在、而且跟來源不同（偏離）時直接打這支
+    # 端點，原本會無紀錄地把現場內容蓋掉。現在 409，檔案一個位元組都沒動。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "apply_drift.yaml", b"count: 1\n")
+    target = pathlib.Path(entry["target"])
+    target.write_bytes(b"count: 9  # changed on site\n")
+    before = target.stat()
+    every = "import,cfg,revert,adopt,meta,unmanage"
+    history = [c["sha"] for c in _history(api, entry["uid"], every)]
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, f"/api/configs/{entry['uid']}/apply", {})
+
+    assert exc.value.code == _CONFLICT
+    detail = _detail(exc.value)
+    assert str(target) in detail and "以來源覆蓋目標" in detail and "下一步：" in detail
+    assert target.read_bytes() == b"count: 9  # changed on site\n"
+    after = target.stat()
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    assert _state_of(api, entry["uid"]) == "drift"
+    assert [c["sha"] for c in _history(api, entry["uid"], every)] == history
+
+
+def test_apply_refuses_a_target_that_exists_even_when_it_matches_the_source(api, sources_root):
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "apply_in_sync.yaml", b"count: 1\n")
+    target = pathlib.Path(entry["target"])
+    before = target.stat()
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, f"/api/configs/{entry['uid']}/apply", {})
+
+    assert exc.value.code == _CONFLICT
+    after = target.stat()
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    assert _state_of(api, entry["uid"]) == "in_sync"
+
+
+def test_overwriting_an_existing_target_goes_through_resolve_and_leaves_a_record(
+    api, sources_root
+):
+    # 被寫出修復拒絕之後，正路還在：以來源覆蓋目標——要身分、留一筆有作者的紀錄。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "apply_then_overwrite.yaml", b"count: 1\n")
+    target = pathlib.Path(entry["target"])
+    target.write_bytes(b"count: 9\n")
+    every = "import,cfg,revert,adopt,meta,unmanage"
+    before = len(_history(api, entry["uid"], every))
+    with pytest.raises(urllib.error.HTTPError):
+        _post(api, f"/api/configs/{entry['uid']}/apply", {})
+
+    _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "overwrite"})
+
+    assert target.read_bytes() == b"count: 1\n"
+    records = _history(api, entry["uid"], every)
+    assert len(records) == before + 1
+    assert records[0]["author"] == "陳小明 <ming@example.com>"
+
+
 def test_resolving_a_missing_target_points_to_apply_instead(api, sources_root):
     _clear_drafts(api)
     entry = _onboard(api, sources_root, "missing_resolve.yaml", b"count: 1\n")

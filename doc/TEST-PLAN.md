@@ -533,6 +533,7 @@ write(目標路徑, 內容, 權限) -> 成功 | 例外
 |---|
 | 寫出後內容正確、owner／group／mode 符合指定 |
 | 目標已存在時被覆蓋 |
+| **`only_if_missing`（只補回不存在的檔案，寫出修復用）：目標不存在→寫入內容與權限；目標那個位置已有東西（一般檔——內容相同也算——、目錄、符號連結含懸空的）→ `TargetExists`，一個位元組都不動、inode 與 mtime 不變、不留暫存檔；內容都準備好之後目標才出現（先看再寫擋不住的空窗）也不覆蓋；不帶這個選項時照舊覆蓋** |
 | **寫入過程中斷 → 目標維持原內容，不出現半殘檔案** |
 | **目標路徑（或其父目錄）經 realpath 解析後逃出白名單 → 具名例外，且寫出不發生**；不靜默跟隨或改寫連結所指的檔案 |
 | 目標目錄不可寫 → 具名例外（訊息含路徑＋原因＋下一步，不只說「操作失敗」） |
@@ -887,7 +888,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **單筆內容（`GET /api/configs/{uid}`，§3.5.3 表上既有）：回 metadata（name／hostname／ref／target／source／format／groups／permissions〔條目自己的、沒寫回 defaults〕）＋`types`（欄位路徑→型別，與 inspect 同形）＋`values`（來源複本解析後的值樹），供 W3 欄位表渲染（#20）；有未進版草稿時另回 `draft_values`（草稿文字解析後的值樹，介面以它當「目前值」、`values` 當「來源值」並列，#21）；另回 `target_values`（target 磁碟現況解析後的值樹，差異檢視據此並排，#30；target 不存在→null、讀不到／非 UTF-8／解析不了→null 並在 `target_error` 說原因——現況壞掉是要呈現的事實、不是 500）；`raw`→`types` 空、`values` 為 null（不假裝 0 個欄位，§7.5.4）；uid 不在清單→404；來源複本讀不到／解析不了→帶檔名與下一步的 500** |
 | **變更歷史（`GET /api/configs/{uid}/history?prefix=…`，§3.5.3 表上既有）：回該 uid 的紀錄、最新在前，每筆 `{sha, kind, summary, author, at, body}`；`prefix` 逗號分隔的類型清單，不給就只看內容變更（`cfg`＋`adopt`，§7.6.1／圖 7——`import`／`revert`／`meta`／`unmanage` 要明點）；含未知類型→422 列出允許值（不靜默當成沒過濾）；uid 不在清單→404（#23）** |
 | **解除納管（`DELETE /api/configs/{uid}`，§3.5.3 表上既有）：從清單檔移除條目、來源複本自 repo 拿掉、記一筆 `unmanage`；**不刪 target**（§5.5：解除管理不改變系統當前行為）；回被解除的條目、清單不再列它；有未進版草稿→409、未設身分→409、uid 不在→404；寫入失敗整批回滾、帶訊息的 500（#28）** |
-| **偏離處置（`POST /api/configs/{uid}/resolve`，body `{action}`，§3.5.3 的 resolve 動作）：`overwrite`→來源寫回目標、記一筆空 `cfg`（以來源覆蓋目標）；`adopt`→目標現況走第 1 層驗證，過→一筆 `adopt` 進版資料走 apply（來源＝現場、寫出、狀態回一致），含非法值→422 列問題、來源不動；`adopt_draft`→現況載入草稿並回 `warnings`（不擋、不碰 repo 與目標）。目標與來源一致→409（沒有偏離）、目標不存在→409 指去寫出修復、未設身分→409、uid 不在→404、目標白名單外／非 UTF-8→422。**寫出修復（`POST /api/configs/{uid}/apply`，§3.5.3 的 apply 動作）**：來源寫到目標、不留紀錄（#29）** |
+| **偏離處置（`POST /api/configs/{uid}/resolve`，body `{action}`，§3.5.3 的 resolve 動作）：`overwrite`→來源寫回目標、記一筆空 `cfg`（以來源覆蓋目標）；`adopt`→目標現況走第 1 層驗證，過→一筆 `adopt` 進版資料走 apply（來源＝現場、寫出、狀態回一致），含非法值→422 列問題、來源不動；`adopt_draft`→現況載入草稿並回 `warnings`（不擋、不碰 repo 與目標）。目標與來源一致→409（沒有偏離）、目標不存在→409 指去寫出修復、未設身分→409、uid 不在→404、目標白名單外／非 UTF-8→422。**寫出修復（`POST /api/configs/{uid}/apply`，§3.5.3 的 apply 動作）**：目標**不存在**時來源寫到目標、不留紀錄（#29）；**目標已存在→409、檔案不動（內容、inode、mtime）、狀態與歷史不變**——與來源不同或相同都一樣；要蓋過既有的檔案走 `resolve` 的 `overwrite`（要身分、留一筆有作者的紀錄）** |
 | **搜尋（`GET /api/search?q=&scope=`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：五檔範圍、預設「全部」；回以 config 為單位的命中 `{uid, name, target, matched:[範圍…], params:[{path, value}]}` 與 `unindexed`（來源複本壞掉、參數沒進索引的那幾份）；索引每次請求從真實來源重建，所以修改後舊值不再命中、解除納管後索引移除；未知範圍→422 列五個允許值、`q` 空→422（#32） |
 | **產生 schema 骨架（`POST /api/configs/{uid}/schema`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：僅開發者（403）、需身分（409）；骨架存進 config-repo 的 `.schemas/<uid>.json`、條目記下 `schema`、記一筆 `meta`，回 `{uid, schema}`；`GET /api/configs/{uid}` 另回 `schema`（路徑或 null）；已有 schema→409（不覆寫）、`raw`／頂層不是物件→422 說原因、uid 不在→404（#38） |
 | **第 2 層接在三個寫入點上（#39）**：儲存草稿（`POST /api/drafts`）、進版（`POST /api/promote`，依**此刻**的 schema 重驗）、將現況納入來源（`resolve` 的 `adopt`）——不符 schema→422，detail 另帶 `file`（驗的是哪一份：存草稿與進版是 repo 內的來源複本，納入現況是目標路徑），`problems` 每筆另帶 `path`（欄位路徑；第 1 層為 null）；`adopt_draft` 照載、schema 的問題列成警告；清單檔指到的 schema 讀不出來（不在、不是 JSON、不是合法 schema、指到 `.schemas/` 外）→結構化的 500 `{message, file}`，**不當成沒有 schema 放行** |
@@ -972,6 +973,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | **（#50 回饋與位置）儲存草稿後說一聲、又動了欄位就收掉；進版與儲存後折疊的巢狀參數仍折疊、眼前那一列離視窗頂端的距離不變（含上方多出結果橫幅時）；捨棄單一草稿後焦點留在那一列；納管成功有一句結果且樹上選到新的那一份** |
 | **（清單的來源值，人工驗證 U36 的回歸）改了元素的值不儲存就調序：來源值仍是那個元素原本的值，不是編輯值、也不是同位置另一個元素的值（物件陣列的內層值亦同）；移除一項後其餘各項的來源值不位移；新增的元素沒有來源值，搬動後也沒有；怎麼調序，來源值欄列出的都只有設定庫裡的那幾個值** |
 | **（清單裡的清單）物件陣列元素裡的清單可調序、新增、移除，進版後寫出的內容正確；上下的邊界看自己那一層；外層物件搬動時帶著調過序的內層清單；內層清單清空後可再新增（依元素型別給空值）** |
+| **（寫出修復不覆蓋）頁面以為還是未部署、實際上目標已經出現時按「寫出到目標」：真的服務拒絕（409），原因顯示在 `apply-error`，檔案沒被蓋掉** |
 | **（#306 未部署的寫出修復）未部署的 config 展開後說明目標在哪個路徑不存在、有「寫出到目標」；按下後目標以來源內容與記下的權限恢復、狀態一致、設定庫不多一筆紀錄；一致與偏離的沒有這個入口；唯讀時入口不出現；按下時目標已經出現就不寫出並說明；後端拒絕或送不出去時原因看得到；進行中不能重複送出** |
 | **（#34）排列預設依群組、沒有主機層；切到「依主機」→ 第一層 hostname（依名字排序，標題帶彙總色點）、第二層群組，每份 config 落在自己主機底下的群組節點；切回去主機層消失** |
 | 外部修改目標檔案後按「檢查差異」→ 該項顯示偏離，可進入差異檢視（差異內容正確：目標側顯示介面外改成的值，#31）：**（#30）偏離的欄位表上方出現橫幅（未經介面、無紀錄與作者）＋「檢視差異」，一致的沒有；差異檢視左來源右目標、每參數一列，`changed`／`same`／`added`／`removed` 與 W4 同一套；「返回欄位表」回 W3** |
@@ -1408,7 +1410,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `core/roles` | T17 | 已落地（`permits(角色, 動作)`：權限對照表的唯一定義，端點門檻 `api/lock.require_permission` 問它；角色與開發／部署模式的常數也在這裡，兩者正交——模式不是表的參數，#47） |
 | `core/drafts` | T18 | 已落地：草稿（`save_draft`／`adopt_draft`／`discard`，不可變 `Stage`，#18）；`promote` 全部驗證才回 `[Promotion]`、任一沒過丟 `PromoteInvalid`（#19）；儲存、納入、進版以 `Checks` 帶 schema 與規則跑第 2、3 層（#39／#41）；違反規則要理由才存得成（`OverrideRequired`）、理由跟著草稿、進版時寫進紀錄內文（#42） |
 | `io/writer` | T8 | 已落地 |
-| `io/atomic` | T8——原子替換的共用核心，行為由 `io/writer` 的 T8 規格擋著（#186） | 已落地 |
+| `io/atomic` | T8——原子替換的共用核心，行為由 `io/writer` 的 T8 規格擋著（#186） | 已落地；`only_if_missing`：以 hard link 原子地「只在不存在時放上去」，已有東西丟 `TargetExists`（寫出修復不覆蓋） |
 | `io/repo` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔可讀→T1（`load`）（#186） | 已落地（`place_source`／`write_config_list`／`load_list`——會改寫清單檔的編排共用的讀＋載入，失敗映成 `ConfigListUnparsable`，#257） |
 | `io/git` | T7 | 已落地（`head`／`reset_hard` 於 #19 加入，只給進版回滾用；`show` 於 #24 加入、checkout 式 `revert` 移除；`show_or_none` 於 #39 加入——那一版還沒有該檔時回 None） |
 | `io/preflight` | T15 | 已落地 |
@@ -1431,7 +1433,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/candidate` | T24（候選檔案數預覽，介面議定於 #206）：不以白名單為閘門、遞迴數一般檔（不讀內容）、每層 O_NOFOLLOW 不跟隨連結、深度／項目上限觸及回部分計數＋capped | 已落地（`count_candidates`） |
 | `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202）；移除以檔案原樣 prefix 定位、找不到丟 `PrefixNotFound`、commit 失敗回滾同樣以真實 fs＋git 斷言（#15） | 已落地（`read_allowed_roots`／`add_allowed_root`／`remove_allowed_root`） |
 | `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/configs/{uid}`、`DELETE /api/configs/{uid}`、`GET /api/configs/{uid}/history`、`POST /api/configs/{uid}/revert`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots`、`GET`／`POST`／`DELETE /api/drafts[/{uid}]`、`POST /api/promote` 與 CORS 中介層） |
-| `api/drift` | T9 | 已落地（`POST /api/configs/{uid}/resolve`、`POST /api/configs/{uid}/apply`——偏離處置與寫出修復，#29） |
+| `api/drift` | T9 | 已落地（`POST /api/configs/{uid}/resolve`、`POST /api/configs/{uid}/apply`——偏離處置與寫出修復，#29；寫出修復只補回不存在的目標，已存在→409） |
 | `api/drafts` | T9 | 已落地（`GET`／`POST`／`DELETE /api/drafts`、`DELETE /api/drafts/{uid}`、`POST /api/promote`——草稿與進版的端點，自 `api/routes` 拆出以免該模組超過千行；儲存與進版接上 schema、規則與略過的理由，#41／#42） |
 | `api/checks` | T9 | 已落地（`checks_for` 集中讀一份 config 此刻的 schema 與規則，儲存、進版、偏離處置共用；`overrides_in` 從紀錄內文取出略過的規則與理由，#41／#42） |
 | `api/shapes` | 無獨立測試介面——`api/routes` 與 `api/drift` 共用的回應形狀（草稿檢視、驗證問題），行為由 T9 的草稿與處置端點擋著（#29） | 已落地 |
