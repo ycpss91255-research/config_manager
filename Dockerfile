@@ -200,7 +200,14 @@ RUN apt-get update \
 
 # 測試工具只裝在這一層。runtime 不得含它們，而 runtime 是 FROM devel-base，
 # 所以 pytest 絕不能進 config/pip/requirements.txt——那份是 devel-base 裝的。
-RUN pip install --no-cache-dir pytest
+#
+# 版本不寫在這裡：從 requirements-dev.txt 讀 `pytest==…` 那一行，與工具映像裝的是同一版。
+# 只拿那一行、不裝整份——這一層要的只有 pytest，整份會把 linter 與瀏覽器也帶進來。
+# 那一行不見的話 grep 失敗、建置紅掉，不會安靜地退回「當下最新」。
+COPY config/pip/requirements-dev.txt /tmp/requirements-dev.txt
+RUN pytest_pin="$(grep -E '^pytest==' /tmp/requirements-dev.txt)" \
+    && pip install --no-cache-dir "${pytest_pin}" \
+    && rm -f /tmp/requirements-dev.txt
 
 # 這裡是這組規格唯一該執行的地方，所以這裡也是唯一擋得住它們「永遠在跳過」的地方。
 # 它們在別的環境會自己跳過（那裡沒有被測的映像可看），而一組每次都跳過的規格與

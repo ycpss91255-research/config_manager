@@ -6,19 +6,37 @@
 # Test tooling belongs here and in the `FROM runtime` test stages only (#97).
 -r requirements.txt
 
-pytest>=8
-pytest-cov>=5
-ruff>=0.5
-mypy>=1.10
-pylint>=3.2
+# 檢查工具一律釘在確切版本（`==`），不寫範圍（ADR-00000027）。
+#
+# `ruff>=0.5` 的意思是「建映像那一刻最新的那一版」：CI 每次重建工具映像，本機走 layer
+# cache，於是同一個 commit 在兩邊由不同版本的工具檢查。ruff 0.17.0 改了一個預設值，CI 就對
+# 14 處沒人動過的程式碼報錯，本機照樣全綠（#310、#311）。釘住之後，工具換版是一筆看得見的
+# commit，不是某一次無關的 PR 忽然變紅。由 test/bats/unit/dependencies.bats 擋。
+#
+# 升級檢查工具（想升的時候才升，不會自己發生）：
+#   1. 看哪些有新版：
+#        docker run --rm config_manager-test-tools:local pip list --outdated
+#   2. 改下面那一行的版本號。一次升一支，紅了才知道是誰。
+#   3. ./script/test.sh ——這份檔案一變，工具映像的那一層自己重建，裝的就是新版。
+#   4. 新版多報的東西在同一個 PR 修掉，commit 用 chore(deps)。
+# 這份檔案是唯一寫版本的地方：docker/Dockerfile.test-tools、Dockerfile 的 devel 階段都裝
+# 這一份，runtime-test 階段的 pytest 也是從這裡讀那一行，所以本機、CI 的 checks、CI 的 build
+# 用的是同一組版本。
+pytest==9.1.1
+pytest-cov==7.1.0
+ruff==0.17.0
+mypy==2.4.0
+pylint==4.1.3
 
 # web/index.html 的行內 JS：pytest 量不到它，瀏覽器自己會算（T11、#97）。
 # 1.49 起才有 chromium-headless-shell 這個 channel，而那是這裡要的那一份
 # ——完整的 chromium 帶著一整套桌面相依，量同一個數字卻讓映像多 1 GB。
 #
 # 這是 pip 套件；瀏覽器二進位由 docker/Dockerfile.test-tools 另外裝，因為它
-# 不是 pip 的東西，而且只有跑檢查的那份映像需要它。
-playwright>=1.49
+# 不是 pip 的東西，而且只有跑檢查的那份映像需要它。瀏覽器的版本跟著這個套件的版本走，
+# 所以釘住這一行，Chromium 也就釘住了。
+playwright==1.63.0
 
 # jsonschema 沒有附型別標註；mypy --strict 要這份 stub 才讀得懂它（#39）。
-types-jsonschema>=4.18
+# 它不是工具，但它換版時 mypy 的答案可能跟著換，所以同樣釘住。
+types-jsonschema==4.26.0.20261006

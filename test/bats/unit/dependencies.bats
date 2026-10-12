@@ -34,6 +34,13 @@ declared_tooling() {
   printf '%s\n' pytest pytest-cov ruff mypy pylint playwright
 }
 
+# 要釘在確切版本的那幾支：上面指名的工具，加上 mypy 讀 jsonschema 用的 stub——它不是
+# 工具，但它一換版，mypy --strict 的答案就可能跟著換，所以同樣不能漂。
+pinned_tooling() {
+  declared_tooling
+  printf '%s\n' types-jsonschema
+}
+
 @test "現場產物的相依清單裡沒有任何測試工具" {
   local package
   while read -r package; do
@@ -58,6 +65,37 @@ declared_tooling() {
       return 1
     }
   done < <(declared_tooling)
+}
+
+@test "指名的檢查工具都釘在確切版本" {
+  # `ruff>=0.5` 的意思是「建映像那一刻最新的那一版」。CI 每次重建工具映像，本機走
+  # layer cache，於是同一個 commit 在兩邊跑的是不同的工具——ruff 0.17.0 一改預設值，
+  # CI 對 14 處沒人動過的程式碼報錯，本機照樣全綠（#310、#311）。ADR-00000027 寫的是
+  # 「工具版本一律釘住」；在這則規格之前，那句話對 pip 裝的這幾支不成立。
+  local package
+  while read -r package; do
+    run grep -iqE "^[[:space:]]*${package}==[0-9][0-9A-Za-z.]*[[:space:]]*$" "${DEV_DEPS}"
+    [ "${status}" -eq 0 ] || {
+      printf '%s 在 requirements-dev.txt 裡沒有釘在確切版本（要的是 %s==<版本>）\n' \
+        "${package}" "${package}" >&2
+      printf '下一步：照該檔開頭的「升級檢查工具」寫上版本號\n' >&2
+      return 1
+    }
+  done < <(pinned_tooling)
+}
+
+@test "應用映像的測試階段裝的 pytest 與工具映像同一版" {
+  # `runtime-test` 自己裝一支 pytest 跑系統層規格。寫成 `pip install pytest` 的話，
+  # 那一支又是「建置當下最新」——工具映像釘了，CI 的 build job 卻還在漂。版本只寫在
+  # requirements-dev.txt 一個地方，Dockerfile 從那裡讀，不另外抄一份（不變式 9）。
+  run grep -nE 'pip install( --[a-z-]+)* +pytest([[:space:]]|$)' "${REPO_ROOT}/Dockerfile"
+  [ "${status}" -ne 0 ] || {
+    printf 'Dockerfile 直接寫了沒有版本的 pytest：%s\n' "${output}" >&2
+    printf '下一步：改成從 config/pip/requirements-dev.txt 讀那一行\n' >&2
+    return 1
+  }
+  run grep -cE "grep -E '\^pytest==' /tmp/requirements-dev.txt" "${REPO_ROOT}/Dockerfile"
+  [ "${output}" = "1" ]
 }
 
 @test "runtime 階段不安裝開發相依" {
