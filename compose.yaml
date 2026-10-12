@@ -64,6 +64,8 @@ services:
       # 沒設＝10 分鐘；開發模式不逾時，設了也不生效。
       CM_IDLE_TIMEOUT: ${CM_IDLE_TIMEOUT:-}
     # 是 config_manager.api.cli，不是 api.cli——見 Dockerfile 的 CMD（#90）。
+    # 只聽 127.0.0.1（#51 定案 3）：身分是自己填的、沒有密碼，聽在區網上等於區網上任何人都能改
+    # 這台機器的 config。
     command: ["python", "-m", "config_manager.api.cli", "serve", "--host", "127.0.0.1", "--port", "8080"]
 
   frontend:
@@ -78,7 +80,12 @@ services:
       CM_ROLE: frontend
     # 就只是一台靜態檔案伺服器。frontend 既碰不到檔案系統也碰不到 git；所有保證
     # 都在 API 後面（設計原則 N-3），所以這個容器連可以給它的掛載都沒有。
-    command: ["python", "-m", "http.server", "8081", "--directory", "/opt/config_manager/src/config_manager/web"]
+    #
+    # `--bind 127.0.0.1` 不能省（#51 定案 3）：http.server 沒給的話聽**所有**網卡，而這裡是
+    # host 網路——頁面會從區網上任何一台機器打得開，後端卻只聽本機，於是別台看到的是一個
+    # 開得起來、每個動作都失敗的頁面。前後端一起只給本機；要從別台操作走 SSH 通道
+    # （doc/DEPLOYMENT.md）。這個服務沒有密碼，所以**沒有**開放區網的開關。
+    command: ["python", "-m", "http.server", "8081", "--bind", "127.0.0.1", "--directory", "/opt/config_manager/src/config_manager/web"]
     depends_on:
       - backend
 

@@ -101,3 +101,42 @@ VARS=()
     = "[('backend', ['/opt/config_manager/src']), ('frontend', ['/opt/config_manager/src'])]" ]
   [ "$(ask 's["backend"]["environment"]["PYTHONPATH"]')" = "/opt/config_manager/src" ]
 }
+
+# ── 只允許本機存取：host 網路（定案 3）───────────────────────────────────────
+
+@test "預設是 host 網路，兩個服務都只聽 127.0.0.1" {
+  resolve compose.yaml
+
+  [ "$(ask '[(name, s[name]["network_mode"]) for name in sorted(s)]')" = "[('backend', 'host'), ('frontend', 'host')]" ]
+  [ "$(ask 's["backend"]["command"][s["backend"]["command"].index("--host") + 1]')" = "127.0.0.1" ]
+  [ "$(ask 's["frontend"]["command"][s["frontend"]["command"].index("--bind") + 1]')" = "127.0.0.1" ]
+}
+
+@test "host 網路下沒有任何埠號對應" {
+  # host 模式的埠號對應會被 docker 丟掉；寫了等於留一行看起來有保護、其實沒作用的設定。
+  resolve compose.yaml
+
+  [ "$(ask '[s[name].get("ports", []) for name in sorted(s)]')" = "[[], []]" ]
+}
+
+@test "疊上開發檔不會把服務打開到本機以外" {
+  resolve compose.yaml compose.dev.yaml
+
+  [ "$(ask '(s["backend"]["command"][s["backend"]["command"].index("--host") + 1], s["frontend"]["command"][s["frontend"]["command"].index("--bind") + 1])')" \
+    = "('127.0.0.1', '127.0.0.1')" ]
+}
+
+# ── 自動重啟（定案 4）────────────────────────────────────────────────────────
+
+@test "現場部署的兩個服務在當掉或機器重開後自己起來，手動停掉的不會" {
+  resolve compose.yaml
+
+  [ "$(ask '[s[name]["restart"] for name in sorted(s)]')" = "['unless-stopped', 'unless-stopped']" ]
+}
+
+@test "開發不自動重啟" {
+  # 開發時服務起不來是要讓人看見的；一直重試只會把第一則錯誤訊息洗掉。
+  resolve compose.yaml compose.dev.yaml
+
+  [ "$(ask '[s[name].get("restart", "no") for name in sorted(s)]')" = "['no', 'no']" ]
+}
