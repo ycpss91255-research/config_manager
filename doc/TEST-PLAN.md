@@ -37,6 +37,7 @@
 | `T19` 守門腳本的規則 | `#72` | 設計文件管的是**產品**的測試介面。repo 自身的守門腳本是後來才有的東西，它們的失敗形態（一支什麼都沒檢查卻回 0 的 lint）在寫設計文件時還不存在 |
 | `T20` 內容雜湊 | `#92` | 實作偏離偵測時才浮出來：偵測要讀檔算雜湊，而那件事沒有任何已確認的測試介面。`T2` 刻意不讀檔，雜湊由呼叫者傳入——`T20` 就是那個呼叫者 |
 | `T21` 差異掃描 | `#96` | 同上。它有自己的測試介面，是因為「把 `T20` 與 `T2` 接起來」本身會出錯 |
+| `T25` compose 的接線 | `#51` | 設計文件的測試介面表管的是程式的行為；服務**怎麼被起起來**（哪個映像、哪個模式、聽哪裡、會不會自己重啟）只寫在 compose 檔裡，而那在 `#90` 之前沒有人想到要量。`#51` 把預設值改成現場部署、加上疊加檔之後，這些就成了交付物的一部分 |
 
 **新介面在實作中被發現是正常的**，不是流程失靈——`T20` 與 `T21` 都是這樣來的，
 兩者都先開了 issue、討論過，才有實作。要防的是另一件事，見「撰寫規則」的
@@ -790,6 +791,60 @@ count_candidates(prefix, *, max_depth=_MAX_DEPTH, max_items=_MAX_ITEMS)
 
 ## 介面層
 
+### T25 — compose 的接線
+
+```
+docker compose [-f compose.yaml [-f <疊加檔>]…] config  ->  解出來的最終設定 | 失敗(原因)
+```
+
+來由：`#51`（部署封裝）。五項定案（2026-10-12）與這個介面的確認都記在那張 issue 上；`#90` 當時就指出
+`compose.yaml` 不在任何測試介面上，T9 那一節寫的「那半邊由 compose 自己的規格負責」在這一節之前沒有東西兌現。
+
+**為什麼既有介面觀察不到**：T9／T10 起的是服務本身（`create_app`、或映像裡直接起的那個程序），T15 起的是
+entrypoint——三者都不經過 compose。映像用哪個階段、哪個模式、聽哪個位址、埠號綁在哪張網卡、會不會自動重啟、
+疊加檔疊上去之後變成什麼，全部只寫在 compose 檔裡。
+
+被觀察的是 **compose 自己解出來的最終設定**，不是 YAML 的文字：變數的預設值、疊加檔的合併規則、
+`${VAR:?…}` 的失敗，都是 compose 這支工具算的，自己寫一個解析器去模仿它，測到的是那個模仿品。工具映像因此
+裝一支**釘住版本**的 compose 執行檔；`config` 只做解析，不需要 docker daemon，所以在工具映像裡跑得起來，
+本機與 CI 是同一組規格。
+
+三種組合：`compose.yaml`（現場部署，預設）、加 `compose.dev.yaml`（開發）、加 `compose.bridge.yaml`（bridge 網路）。
+
+| 驗證的行為（設定解析：`test/bats/integration/compose.bats`） |
+|---|
+| 預設（只有 `compose.yaml`）解得出來，剛好兩個服務：backend 與 frontend（不變式 1） |
+| 預設用的是正式映像（`runtime` 階段）與部署模式；`CM_STAGE` 指到的階段在 `Dockerfile` 裡真的存在 |
+| backend 掛著 config-repo（具名 volume，掛載點與 `CM_CONFIG_REPO` 是同一個路徑）與目標根目錄（掛載與 `CM_ALLOWED_ROOTS` 同源）；frontend 沒有任何掛載 |
+| 預設是 `host` 網路，兩個服務都只聽 `127.0.0.1`，沒有任何埠號對應 |
+| 預設兩個服務都是 `restart: unless-stopped` |
+| 疊上 `compose.dev.yaml`：開發映像（`devel` 階段）、開發模式、不自動重啟；原始碼由主機掛進去（`devel` 階段不烤原始碼） |
+| 疊上 `compose.bridge.yaml`：兩個服務都是 `bridge` 網路；埠號對應的主機端**只綁 `127.0.0.1`**；容器內聽 `0.0.0.0`（否則對應進來的連線到不了） |
+| 疊上 `compose.bridge.yaml` 而沒給 `CM_HOSTNAME` → 解析失敗，訊息指名 `CM_HOSTNAME`、說為什麼 bridge 下非給不可、附下一步；給了就解得出來且值原樣帶進容器 |
+| 沒有任何一種組合把服務綁到本機以外的位址（定案 3：不提供開放區網的開關） |
+
+| 驗證的行為（服務實測：`script/compose_smoke.sh`，CI 的 Linux runner） |
+|---|
+| `host` 與 `bridge` 各實際起一次：`127.0.0.1` 上後端答得出 `/api/mode`（部署模式）、前端供得出頁面 |
+| 從主機的**非 loopback 位址**連不到兩個服務——且在同一次執行裡先證明「同一個位址上一個故意綁 `0.0.0.0` 的對照服務連得到」，否則「連不到」可能只是網路本來就不通 |
+| 容器的 PID 1 是服務本身（entrypoint 以 `exec "$@"` 交棒）；`docker compose stop` 在寬限時間內結束，不是被強制終止 |
+| 容器的重啟策略是 `unless-stopped` |
+| 重啟保留範圍照驗證清單 U40：納管並進版一筆之後把容器**整個移除再建**（volume 留著），清單、已進版的值、歷史、白名單都在，目標狀態重新比對；未進版草稿與身分不在 |
+| `bridge` 下納管紀錄的 hostname 是 `CM_HOSTNAME` 給的值，不是容器 ID |
+| 建好的 `runtime` 映像裡 import 不到任何測試工具（`dependencies.bats` 只看文字，這裡看映像本身） |
+
+**兩個位置回答的是不同的問題，結果分開報，不互相代替。** 設定解析過了，說的是「compose 會照這樣起服務」；
+它說不出「這樣起的服務真的只有本機連得到」——那要有一個真的在聽的程序、與一個真的從別的位址連過來的請求。
+反過來，實測只在 CI 的 Linux runner 上有：`host` 網路在 macOS 的 Docker Desktop 上不是主機的網路，在那裡
+量到的「連不到」什麼都不證明。所以一份證據要說清楚它是哪一種；沒有跑到實測的那一次，實測那一欄是**待驗**，
+不是通過。
+
+實測用**隔離的** compose 專案名、自己的具名 volume 與暫存的目標根目錄，結束時（含失敗時）一併清掉；
+不碰任何既有的容器、volume 或埠號以外的東西。
+
+**這個介面觀察不到的**：`compose.dev.yaml` 疊上去之後服務真的起得來（只驗到解析；開發者每次 `just docker dev run`
+都在驗它）；`restart: unless-stopped` 在機器重開後真的把服務拉起來（那是 docker daemon 的行為，不是這個 repo 的）。
+
 ### T9 — HTTP 端點
 
 走真實 HTTP 對一個真的在跑的服務測。
@@ -820,7 +875,7 @@ socket 也沒有 docker CLI，起不了被測的容器）**至今仍然成立**�
 `runtime-test` 那一次不可少，不是為什麼要新造一個層級名稱。兩件事分開之後，兩邊都拿得到。
 
 **這一層測不到 compose 的接線**：volume 掛載點、`CM_CONFIG_REPO` 與掛載是否一致、
-host networking。那半邊由 compose 自己的規格負責（#90）。**兩邊都要有才算蓋住 T9**，
+host networking。那半邊由 compose 自己的規格負責（#90；介面是 T25，#51）。**兩邊都要有才算蓋住 T9**，
 缺一邊就有一整類問題沒有人擋。
 
 端點集合由設計文件 §3.5.3 的表決定，不在實作時發明。
@@ -1457,6 +1512,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `web/` | T11 | 已落地。執行通路於 #97 補上：`test/pytest/system/test_web.py`，Playwright 驅動 Chromium，行覆蓋率由 V8 自己算 |
 | `**/__init__.py` | 無——見「刻意的空格」 | 已落地 |
 | `script/entrypoint.sh` | T15 | 已落地 |
+| `script/compose_smoke.sh` | T25（服務實測那一半；只在 CI 的 Linux runner 上執行） | 未落地（#51：介面先於實作寫下） |
 | `script/lint_adr.sh` | T19 | 已落地 |
 | `script/lint_commit.sh` | T19 | 已落地 |
 | `script/lint_paths.sh` | T19 | 已落地 |
