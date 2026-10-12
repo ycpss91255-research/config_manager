@@ -22,7 +22,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 import uvicorn
@@ -37,6 +37,8 @@ from config_manager.api.errors import (
 from config_manager.api.session import Timeouts
 from config_manager.core.roles import DEPLOYMENT, MODES
 from config_manager.api.routes import DEFAULT_ORIGINS, create_app
+from config_manager.io.backup import bundle, restore
+from config_manager.io.errors import BackupError
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8080
@@ -100,12 +102,7 @@ def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
     CM_CONFIG_REPO）。這一層是邊界，讀環境變數是它的工作；再往內的每一層都只從
     參數收（ADR-00000011）——包含這個函式本身，所以 environ 是參數而不是隱含輸入。
     """
-    repo = environ.get("CM_CONFIG_REPO", "")
-    if not repo:
-        raise ConfigRepoMissing(
-            "CM_CONFIG_REPO 未設定，服務沒有 config-repo 可服務。"
-            "下一步：設定它指向掛載進來的 config-repo"
-        )
+    repo = _config_repo(environ)
 
     # argparse 的 type=int 只驗整數不驗範圍：0–65535 之外會在 uvicorn 綁 socket 時以
     # OverflowError（非 OSError）炸成裸 traceback。在計畫階段就具名擋下（#250）。
@@ -123,6 +120,17 @@ def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
         mode=_mode(environ),
         idle_timeout=_idle_timeout(environ),
     )
+
+
+def _config_repo(environ: Mapping[str, str]) -> str:
+    """這台機器上那份 config-repo 在哪：`CM_CONFIG_REPO`。serve、backup、restore 三個都問它。"""
+    repo = environ.get("CM_CONFIG_REPO", "")
+    if not repo:
+        raise ConfigRepoMissing(
+            "CM_CONFIG_REPO 未設定，不知道 config-repo 在哪。"
+            "下一步：設定它指向掛載進來的 config-repo"
+        )
+    return repo
 
 
 def _session_timeout(environ: Mapping[str, str]) -> float | None:
@@ -228,25 +236,34 @@ def _parser() -> argparse.ArgumentParser:
     inspecting.add_argument("--api", default=_DEFAULT_API, help=f"預設 {_DEFAULT_API}")
     inspecting.add_argument("--source", required=True, help="要偵測的來源檔案路徑")
     inspecting.add_argument("--format", required=True, help=f"候選 format（{_formats}）")
+
+    # 備份與還原（#52）與 serve 同一類：對本機那份 config-repo（CM_CONFIG_REPO）的操作，不是
+    # 端點的 client。服務開著也能備份；還原的目的地要是空的，而且要先把服務停掉——還原寫進去的
+    # 那份，跑著的服務不會重新讀。主機端的入口是 script/backup.sh 與 script/restore.sh。
+    backing_up = subcommands.add_parser("backup", help="把 config-repo 備份成一個 bundle 檔")
+    backing_up.add_argument("destination", help="備份檔要放進哪個目錄（不存在會建）")
+    restoring = subcommands.add_parser("restore", help="把備份還原到 CM_CONFIG_REPO（必須是空的）")
+    restoring.add_argument("bundle_file", help="要還原的備份檔（.bundle）")
     return parser
 
 
 def main(argv: list[str]) -> int:
     """進入點。回傳結束碼。"""
     args = _parser().parse_args(argv[1:])
-
-    if args.command == "serve":
-        return _serve(args.host, args.port)
-    if args.command == "import":
-        wanted = ImportRequest(
-            args.source, args.format, args.note, args.name, args.email, args.role
-        )
-        return _import(args.api, wanted)
-    if args.command == "browse":
-        return _browse(args.api, args.path)
-    if args.command == "inspect":
-        return _inspect(args.api, args.source, args.format)
-    return _list(args.api)
+    # 子指令 → 做法。一張表而不是一串 if：加一個子指令是加一列，不是再長一個分支。
+    commands: dict[str, Callable[[], int]] = {
+        "serve": lambda: _serve(args.host, args.port),
+        "import": lambda: _import(
+            args.api,
+            ImportRequest(args.source, args.format, args.note, args.name, args.email, args.role),
+        ),
+        "browse": lambda: _browse(args.api, args.path),
+        "inspect": lambda: _inspect(args.api, args.source, args.format),
+        "backup": lambda: _backup(args.destination),
+        "restore": lambda: _restore(args.bundle_file),
+        "list": lambda: _list(args.api),
+    }
+    return commands[args.command]()
 
 
 def _list(api: str) -> int:
@@ -492,6 +509,42 @@ def _serve(host: str, port: int) -> int:
         host=plan.host,
         port=plan.port,
         log_level="warning",
+    )
+    return 0
+
+
+def _backup(destination: str) -> int:
+    """備份到 `destination` 目錄。印出檔案路徑與裡面的 HEAD，那是之後對照用的識別。"""
+    try:
+        repo = _config_repo(os.environ)
+    except ConfigRepoMissing as error:
+        print(f"config_manager: {error}", file=sys.stderr)
+        return 2
+    try:
+        made = bundle(repo, destination)
+    except BackupError as error:
+        print(f"config_manager: {error}", file=sys.stderr)
+        return 1
+    print(f"config_manager: 備份完成：{made.path}（HEAD {made.head[:7]}，已驗證還原得出來）")
+    return 0
+
+
+def _restore(bundle_file: str) -> int:
+    """把 `bundle_file` 還原到 CM_CONFIG_REPO。那裡要是空的，服務要已經停了。"""
+    try:
+        repo = _config_repo(os.environ)
+    except ConfigRepoMissing as error:
+        print(f"config_manager: {error}", file=sys.stderr)
+        return 2
+    try:
+        done = restore(bundle_file, repo)
+    except BackupError as error:
+        print(f"config_manager: {error}", file=sys.stderr)
+        return 1
+    print(
+        f"config_manager: 還原完成：{repo}（HEAD {done.head[:7]}）。"
+        "下一步：啟動服務，到頁面按「檢查差異」重新比對目標狀態——缺的目標檔用「寫出到目標」補回，"
+        "偏離的到差異檢視處置，系統不會自動覆寫它們"
     )
     return 0
 

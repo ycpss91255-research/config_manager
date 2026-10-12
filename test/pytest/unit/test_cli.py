@@ -25,6 +25,8 @@ from config_manager.api.errors import (
     SessionTimeoutInvalid,
 )
 from config_manager.api.routes import DEFAULT_ORIGINS, create_app
+from config_manager.io.backup import Backup
+from config_manager.io.errors import BackupUnverifiable, RestoreTargetOccupied
 
 # 2 是「用法錯誤／接線不對」，1 是「跑了但沒成功」。serve 少了 CM_CONFIG_REPO
 # 屬於前者：不是服務起不來，是根本沒有東西可服務。
@@ -453,3 +455,84 @@ def test_the_idle_timeout_leaves_the_renew_timeout_alone():
 def test_serve_plan_refuses_an_idle_timeout_that_would_mean_never(raw):
     with pytest.raises(IdleTimeoutInvalid, match="CM_IDLE_TIMEOUT"):
         serve_plan("0.0.0.0", 9000, {"CM_CONFIG_REPO": "/srv/r", "CM_IDLE_TIMEOUT": raw})
+
+
+# ── backup／restore（#52）────────────────────────────────────────────────────
+#
+# 這兩個與 serve 同一類：不是端點的 client，是對本機那份 config-repo（CM_CONFIG_REPO）的操作。
+# 這裡測的是決定與接線——拿哪份 repo、往哪裡備、失敗怎麼說；備份本身的行為在 T7（io/backup）。
+
+
+def test_backup_bundles_the_config_repo_named_by_the_environment_into_the_given_folder(
+    monkeypatch, capsys
+):
+    made: dict[str, str] = {}
+
+    def fake_bundle(repo, destination):
+        made.update(repo=repo, destination=destination)
+        return Backup(path=f"{destination}/config-repo-x.bundle", head="0123456789abcdef")
+
+    monkeypatch.setattr("config_manager.api.cli.bundle", fake_bundle)
+    monkeypatch.setenv("CM_CONFIG_REPO", "/srv/config-repo")
+
+    status = main(["config_manager", "backup", "/backups"])
+
+    assert (status, made) == (0, {"repo": "/srv/config-repo", "destination": "/backups"})
+    assert "/backups/config-repo-x.bundle" in capsys.readouterr().out
+
+
+def test_backup_exits_with_the_misconfigured_code_and_names_the_variable_when_no_repo_is_set(
+    monkeypatch, capsys
+):
+    monkeypatch.delenv("CM_CONFIG_REPO", raising=False)
+
+    status = main(["config_manager", "backup", "/backups"])
+
+    assert (status, "CM_CONFIG_REPO" in capsys.readouterr().err) == (_MISCONFIGURED, True)
+
+
+def test_a_backup_that_cannot_be_verified_is_a_failure_with_the_reason_on_stderr(
+    monkeypatch, capsys
+):
+    def refusing(repo, destination):
+        raise BackupUnverifiable("備份檔還原不出來：fatal: index-pack died。下一步：換一份")
+
+    monkeypatch.setattr("config_manager.api.cli.bundle", refusing)
+    monkeypatch.setenv("CM_CONFIG_REPO", "/srv/config-repo")
+
+    status = main(["config_manager", "backup", "/backups"])
+
+    assert (status, "index-pack died" in capsys.readouterr().err) == (1, True)
+
+
+def test_restore_puts_the_backup_into_the_config_repo_named_by_the_environment(
+    monkeypatch, capsys
+):
+    done: dict[str, str] = {}
+
+    def fake_restore(bundle_file, destination):
+        done.update(bundle_file=bundle_file, destination=destination)
+        return Backup(path=bundle_file, head="0123456789abcdef")
+
+    monkeypatch.setattr("config_manager.api.cli.restore", fake_restore)
+    monkeypatch.setenv("CM_CONFIG_REPO", "/srv/config-repo")
+
+    status = main(["config_manager", "restore", "/restore/config-repo-x.bundle"])
+
+    assert (status, done) == (
+        0, {"bundle_file": "/restore/config-repo-x.bundle", "destination": "/srv/config-repo"},
+    )
+    assert "0123456" in capsys.readouterr().out
+
+
+def test_a_refused_restore_is_a_failure_with_the_reason_on_stderr(monkeypatch, capsys):
+    def occupied(bundle_file, destination):
+        raise RestoreTargetOccupied(f"還原的目的地 {destination} 不是空目錄，不覆蓋。下一步：移走")
+
+    monkeypatch.setattr("config_manager.api.cli.restore", occupied)
+    monkeypatch.setenv("CM_CONFIG_REPO", "/srv/config-repo")
+
+    status = main(["config_manager", "restore", "/restore/x.bundle"])
+
+    err = capsys.readouterr().err
+    assert (status, "/srv/config-repo" in err, "不是空目錄" in err) == (1, True, True)
