@@ -229,3 +229,19 @@ local_only='all(
 
   [ "$(ask "${local_only}")" = "True" ]
 }
+
+# ── 停得掉（#51 驗收條件：exec 交棒之後 SIGTERM 才送得到、容器才停得掉）──────
+
+@test "前端用 SIGINT 當停止訊號，因為它是 PID 1 而 http.server 不接 SIGTERM" {
+  # entrypoint 以 exec 交棒，服務就是 PID 1——而 PID 1 對「沒有自己裝處理函式」的訊號一律不理。
+  # 後端（uvicorn）自己接 SIGTERM，停得掉；`python -m http.server` 沒接，實測要等滿 10 秒寬限
+  # 才被強制終止（結束碼 137）。Python 預設會接的是 SIGINT，所以把停止訊號換成它：實測立即
+  # 結束、結束碼 0。真的停得掉那一半在 script/compose_smoke.sh 量。
+  local combination
+  VARS=(CM_HOSTNAME=amr01)
+  for combination in "compose.yaml" "compose.yaml compose.dev.yaml" "compose.yaml compose.bridge.yaml"; do
+    # shellcheck disable=SC2086  # 要的就是拆成多個檔名
+    resolve ${combination}
+    [ "$(ask 's["frontend"].get("stop_signal")')" = "SIGINT" ] || { printf '%s 的前端停止訊號不是 SIGINT\n' "${combination}" >&2; return 1; }
+  done
+}

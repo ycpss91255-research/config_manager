@@ -81,6 +81,11 @@ services:
     container_name: config_manager_frontend
     network_mode: host
     restart: unless-stopped
+    # 停止訊號用 SIGINT，不用預設的 SIGTERM。entrypoint 以 exec 交棒，http.server 就是 PID 1，
+    # 而 PID 1 不理沒有自己裝處理函式的訊號：它不接 SIGTERM，`docker compose stop` 會等滿 10 秒
+    # 再強制終止（實測結束碼 137）。Python 預設接 SIGINT，換成它就立刻乾淨結束（實測結束碼 0）。
+    # 後端不用改——uvicorn 自己接 SIGTERM。
+    stop_signal: SIGINT
     environment:
       CM_ROLE: frontend
     # 就只是一台靜態檔案伺服器。frontend 既碰不到檔案系統也碰不到 git；所有保證
