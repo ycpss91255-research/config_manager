@@ -1,6 +1,6 @@
 # 容器操作。每個 recipe 都轉給 script/ 底下的一支腳本——腳本是實作，這裡只是名字。
 
-# 建置映像（預設階段：devel）
+# 建置映像（預設照 compose 檔：現場是 runtime）
 build *ARGS:
     @{{justfile_directory()}}/script/build.sh {{ARGS}}
 
@@ -19,3 +19,7 @@ stop *ARGS:
 # 回收本專案的容器與懸空映像
 prune *ARGS:
     @{{justfile_directory()}}/script/prune.sh {{ARGS}}
+
+# 開發用：先疊上 compose.dev.yaml 再做後面的動作，例如 `just docker dev run`、`just docker dev build`
+dev VERB *ARGS:
+    @COMPOSE_FILE=compose.yaml:compose.dev.yaml {{justfile_directory()}}/script/{{VERB}}.sh {{ARGS}}

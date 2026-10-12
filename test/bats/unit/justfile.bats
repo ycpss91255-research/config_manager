@@ -57,3 +57,20 @@ teardown() {
   [[ "${output}" == *"docker"* ]]
   [[ "${output}" == *"test"* ]]
 }
+
+# 疊加檔的入口（#51）。recipe 本體仍是薄 wrapper（刻意的空格）；被觀察的是**接線**：
+# `just docker dev <動作>` 轉給的是與 `just docker <動作>` 同一支腳本，只多帶疊加檔，而且它
+# 指名的那幾份 compose 檔在乾淨簽出上真的存在——指到一個不存在的檔案，compose 要到執行時才說。
+overlay_wiring() {
+  local entry="$1" overlay="$2"
+  run just --justfile "${CHECKOUT}/justfile" --working-directory "${CHECKOUT}" --dry-run docker "${entry}" run
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"COMPOSE_FILE=compose.yaml:${overlay}"* ]]
+  [[ "${output}" == *"/script/run.sh"* ]]
+  [ -f "${CHECKOUT}/compose.yaml" ]
+  [ -f "${CHECKOUT}/${overlay}" ]
+}
+
+@test "just docker dev 把動作轉給同一支腳本，只多疊一份開發用的 compose 檔" {
+  overlay_wiring dev compose.dev.yaml
+}

@@ -8,14 +8,24 @@
 #
 # 現在就採用的，是那些之後改起來很貴的決定——階段名稱、產物放 /opt，以及底下的
 # `host` 網路模式。
+#
+# **這一份的預設值是給現場部署用的**（#51 定案 2）：正式映像（`runtime` 階段）、部署模式。
+# 不帶任何參數的 `docker compose up` 落在較嚴的那一邊（不變式 4）——預設若是開發用的，現場忘了
+# 改兩個變數，就會跑成一套沒有閒置逾時的開發模式。另外兩種用法各是一份**疊加檔**，疊在這一份
+# 上面、只寫與它不同的地方，所以服務定義仍然只有這一份（ADR-00000024、ADR-00000031）：
+#
+#   開發        docker compose -f compose.yaml -f compose.dev.yaml up       （或 `just docker dev run`）
+#   bridge 網路 docker compose -f compose.yaml -f compose.bridge.yaml up    （或 `just docker bridge run`）
+#
+# 怎麼部署、怎麼從別台機器連進來、起不來時怎麼看原因：doc/DEPLOYMENT.md。
 
 services:
   backend:
     build:
       context: .
       dockerfile: Dockerfile
-      target: ${CM_STAGE:-devel}
-    image: config_manager:${CM_TAG:-devel}
+      target: ${CM_STAGE:-runtime}
+    image: config_manager:${CM_TAG:-runtime}
     container_name: config_manager_backend
     # 用 host，不用 bridge。bridge 會靜默地讓整台機器的 ROS 2 discovery 失效，
     # 而這個服務就跑在它所管理參數的那些 ROS 節點旁邊——一個方便的預設值安靜地
@@ -46,10 +56,10 @@ services:
       # 所以要穩定。沒設就回 gethostname()——host 網路模式下那是穩定的主機名；bridge 下
       # gethostname() 是每次重建都變的容器 ID，那種部署務必在這裡（或 .env）明寫。
       CM_HOSTNAME: ${CM_HOSTNAME:-}
-      # 開發／部署模式（#47）：後端依這個變數判定、回報給前端，前端改不了。程式的預設是
-      # **部署**（沒設定時落向較嚴的那一種）；這份 compose 是開發用的接線，所以這裡明寫開發模式。
-      # 現場機器以 .env 設 CM_MODE=deployment，或乾脆不設——兩者都是部署模式。
-      CM_MODE: ${CM_MODE:-development}
+      # 開發／部署模式（#47）：後端依這個變數判定、回報給前端，前端改不了。這一份是現場用的，
+      # 所以預設是**部署**——與程式自己的預設同一邊（沒設定時落向較嚴的那一種）。開發模式由
+      # compose.dev.yaml 疊上去，不是在這裡改。
+      CM_MODE: ${CM_MODE:-deployment}
       # 部署模式的閒置逾時（秒，#48）：一個瀏覽器的人這麼久沒操作就自動退出並釋放編輯階段。
       # 沒設＝10 分鐘；開發模式不逾時，設了也不生效。
       CM_IDLE_TIMEOUT: ${CM_IDLE_TIMEOUT:-}
@@ -60,8 +70,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: ${CM_STAGE:-devel}
-    image: config_manager:${CM_TAG:-devel}
+      target: ${CM_STAGE:-runtime}
+    image: config_manager:${CM_TAG:-runtime}
     container_name: config_manager_frontend
     network_mode: host
     environment:
