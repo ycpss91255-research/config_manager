@@ -140,3 +140,92 @@ VARS=()
 
   [ "$(ask '[s[name].get("restart", "no") for name in sorted(s)]')" = "['no', 'no']" ]
 }
+
+# ── bridge 網路：疊上 compose.bridge.yaml（定案 1、3）────────────────────────
+
+@test "疊上 bridge 檔之後兩個服務都是 bridge 網路" {
+  VARS=(CM_HOSTNAME=amr01)
+  resolve compose.yaml compose.bridge.yaml
+
+  [ "$(ask '[s[name]["network_mode"] for name in sorted(s)]')" = "['bridge', 'bridge']" ]
+}
+
+@test "bridge 下埠號對應的主機端只綁 127.0.0.1" {
+  VARS=(CM_HOSTNAME=amr01)
+  resolve compose.yaml compose.bridge.yaml
+
+  [ "$(ask '[(name, [(p["host_ip"], p["published"], p["target"]) for p in s[name]["ports"]]) for name in sorted(s)]')" \
+    = "[('backend', [('127.0.0.1', '8080', 8080)]), ('frontend', [('127.0.0.1', '8081', 8081)])]" ]
+}
+
+@test "bridge 下服務在容器內聽 0.0.0.0，對應進來的連線才到得了" {
+  # 容器內聽 127.0.0.1 的話，docker 把主機的埠轉到容器的網卡上，那裡沒有人在聽。對外的限制
+  # 由上一則的主機端位址負責，不是這個。
+  VARS=(CM_HOSTNAME=amr01)
+  resolve compose.yaml compose.bridge.yaml
+
+  [ "$(ask '(s["backend"]["command"][s["backend"]["command"].index("--host") + 1], s["frontend"]["command"][s["frontend"]["command"].index("--bind") + 1])')" \
+    = "('0.0.0.0', '0.0.0.0')" ]
+}
+
+@test "bridge 而沒給 CM_HOSTNAME 時解析失敗，訊息指名這個變數並附下一步" {
+  resolve compose.yaml compose.bridge.yaml
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"CM_HOSTNAME"* ]]
+  [[ "${output}" == *"下一步："* ]]
+}
+
+@test "bridge 下 CM_HOSTNAME 給的是空字串也一樣擋下" {
+  VARS=(CM_HOSTNAME=)
+  resolve compose.yaml compose.bridge.yaml
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"CM_HOSTNAME"* ]]
+}
+
+@test "bridge 下給的 CM_HOSTNAME 原樣帶進後端" {
+  VARS=(CM_HOSTNAME=amr01)
+  resolve compose.yaml compose.bridge.yaml
+
+  [ "${status}" -eq 0 ]
+  [ "$(ask 's["backend"]["environment"]["CM_HOSTNAME"]')" = "amr01" ]
+}
+
+@test "預設（host）不要求 CM_HOSTNAME" {
+  # host 網路下 gethostname() 就是主機名、而且穩定，所以那裡不強制；強制只跟著 bridge 檔來。
+  resolve compose.yaml
+
+  [ "${status}" -eq 0 ]
+}
+
+# ── 不提供開放區網的開關（定案 3）────────────────────────────────────────────
+
+# 一個服務「只有本機連得到」的兩種成立方式：host 網路且自己只聽 127.0.0.1（沒有埠號對應），
+# 或 bridge 網路且每一條埠號對應的主機端都綁 127.0.0.1。其餘一律不算。
+local_only='all(
+  (v["network_mode"] == "host" and not v.get("ports")
+     and "127.0.0.1" in v["command"] and "0.0.0.0" not in v["command"])
+  or (v["network_mode"] == "bridge" and v.get("ports")
+     and all(p.get("host_ip") == "127.0.0.1" for p in v["ports"]))
+  for v in s.values())'
+
+@test "四種組合裡沒有任何一種把服務綁到本機以外的位址" {
+  VARS=(CM_HOSTNAME=amr01)
+  local combination
+  for combination in "compose.yaml" "compose.yaml compose.dev.yaml" \
+                     "compose.yaml compose.bridge.yaml" "compose.yaml compose.dev.yaml compose.bridge.yaml"; do
+    # shellcheck disable=SC2086  # 要的就是拆成多個檔名
+    resolve ${combination}
+    [ "${status}" -eq 0 ] || { printf '%s 解不出來：%s\n' "${combination}" "${output}" >&2; return 1; }
+    [ "$(ask "${local_only}")" = "True" ] || { printf '%s 有服務綁到本機以外\n' "${combination}" >&2; return 1; }
+  done
+}
+
+@test "環境變數改不動監聽位址" {
+  # 沒有開關的意思是：就算有人設了看起來像開關的變數，解出來的位址也不變。
+  VARS=(CM_HOST=0.0.0.0 CM_BIND=0.0.0.0 CM_LISTEN=0.0.0.0 HOST=0.0.0.0)
+  resolve compose.yaml
+
+  [ "$(ask "${local_only}")" = "True" ]
+}

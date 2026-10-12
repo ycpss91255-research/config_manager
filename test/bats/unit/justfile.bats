@@ -74,3 +74,7 @@ overlay_wiring() {
 @test "just docker dev 把動作轉給同一支腳本，只多疊一份開發用的 compose 檔" {
   overlay_wiring dev compose.dev.yaml
 }
+
+@test "just docker bridge 把動作轉給同一支腳本，只多疊一份 bridge 網路的 compose 檔" {
+  overlay_wiring bridge compose.bridge.yaml
+}
