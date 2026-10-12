@@ -966,6 +966,7 @@ async function load() {
     rows = data;
     loadError = null;
     render();
+    refreshScanSummary();
     loadDrafts();
   } catch (error) {
     // 大聲失敗（不變式 2）：說出是什麼壞了，不是顯示一份空清單假裝沒事——空清單與「讀不到
@@ -973,6 +974,7 @@ async function load() {
     if (generation !== loadGeneration) return;  // 過時的失敗不覆寫新結果
     loadError = failureText("讀取 config 清單", error);
     render();
+    refreshScanSummary();
   }
 }
 
@@ -989,23 +991,32 @@ function setScanStatus(state, text) {
   scanStatus.hidden = false;
 }
 
+// 摘要說的是「清單現在的樣子」，所以它跟著清單走：每次清單載入完（成功或失敗）都重寫一次。
+// 載入清單本來就是一次真的比對（後端每個請求都重掃），所以時間與份數是實在的。只在按「檢查
+// 差異」時寫一次的話，之後的動作（寫出修復、進版、處置偏離、解除納管…）把樹更新了、摘要卻
+// 停在上一次——畫面上同時寫著「一致」與「1 份未部署」（人工驗證 U30）。
+// 還沒按過「檢查差異」就不出現：開頁面的自動載入不需要這一行。
+function refreshScanSummary() {
+  if (scanStatus.hidden) return;
+  if (loadError !== null) {
+    setScanStatus("failed", "檢查失敗：讀不到清單，原因見下方。修正後再按一次「檢查差異」。");
+    return;
+  }
+  const counts = {};
+  for (const row of rows) {
+    const key = row.error ? "error" : row.state;
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  const found = SCAN_PARTS.filter(([key]) => counts[key]).map(([key, text]) => `${counts[key]} ${text}`);
+  const at = new Date().toLocaleTimeString("zh-TW", { hour12: false });
+  setScanStatus("done", `${at} 檢查完成，共 ${rows.length} 份：${found.length ? found.join("、") : "全部一致"}。`);
+}
+
 async function rescan() {
   rescanButton.disabled = true;
-  setScanStatus("running", "檢查中…");
+  setScanStatus("running", "檢查中…");  // 從這裡開始摘要是看得見的；結果由 load() 寫上去
   try {
     await load();
-    if (loadError !== null) {
-      setScanStatus("failed", "檢查失敗：讀不到清單，原因見下方。修正後再按一次「檢查差異」。");
-      return;
-    }
-    const counts = {};
-    for (const row of rows) {
-      const key = row.error ? "error" : row.state;
-      counts[key] = (counts[key] || 0) + 1;
-    }
-    const found = SCAN_PARTS.filter(([key]) => counts[key]).map(([key, text]) => `${counts[key]} ${text}`);
-    const at = new Date().toLocaleTimeString("zh-TW", { hour12: false });
-    setScanStatus("done", `${at} 檢查完成，共 ${rows.length} 份：${found.length ? found.join("、") : "全部一致"}。`);
   } finally {
     rescanButton.disabled = false;
   }
