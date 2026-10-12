@@ -21,6 +21,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG HADOLINT_VERSION=2.12.0
 ARG ACTIONLINT_VERSION=1.7.7
 ARG JUST_VERSION=1.42.4
+ARG COMPOSE_VERSION=2.39.4
 # 換鏡像的理由與 base 帶 APT_MIRROR_UBUNTU 相同：deb.debian.org 是一個 Fastly 的
 # anycast 位址，從開發這個 repo 的網路連不到；而一份只有在 GitHub runner 上建得起來
 # 的映像，當不了「所有人都在裡面跑檢查」的那份映像——那正是這個檔案唯一的工作。
@@ -64,6 +65,23 @@ RUN curl -fsSL -o /usr/local/bin/hadolint \
     && curl -fsSL "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
         | tar -xz -C /usr/local/bin just \
     && chmod +x /usr/local/bin/just
+
+# compose，獨立執行檔那一份（T25、#51）。這裡**沒有 docker daemon 也沒有 docker CLI**，而且不需要：
+# 規格只叫 `docker-compose … config`，那是純粹的解析——讀 compose 檔、套變數與疊加檔、印出最終
+# 設定，不碰任何容器。裝它是為了讓被觀察的是 compose 自己算出來的結果：變數預設值、疊加檔的合併、
+# `${VAR:?…}` 的失敗都是這支工具的行為，自己寫一個解析器去模仿，測到的是那個模仿品。
+#
+# 與上面三支同一個理由釘住版本。它有 x86_64 與 aarch64 兩份，照建置當下的機器拿對的那一份
+# ——這一支要真的執行很多次，不想讓它走模擬。
+RUN case "$(uname -m)" in \
+        x86_64) compose_arch="x86_64" ;; \
+        aarch64|arm64) compose_arch="aarch64" ;; \
+        *) echo "Dockerfile.test-tools: 不認得的機器架構 $(uname -m)，沒有對應的 compose 執行檔" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /usr/local/bin/docker-compose \
+        "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-${compose_arch}" \
+    && chmod +x /usr/local/bin/docker-compose \
+    && docker-compose version --short
 
 COPY config/pip/requirements-dev.txt /tmp/requirements-dev.txt
 COPY config/pip/requirements.txt /tmp/requirements.txt
