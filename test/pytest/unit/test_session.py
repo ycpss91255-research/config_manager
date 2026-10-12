@@ -88,7 +88,7 @@ def test_a_name_with_a_nul_byte_is_rejected():
 
 # ── 編輯階段（T13 後半，#33）────────────────────────────────────────────────────
 
-from datetime import datetime, timedelta, timezone  # noqa: E402
+from datetime import datetime, timedelta, UTC  # noqa: E402
 
 from config_manager.api.session import (  # noqa: E402
     DEFAULT_RENEW_TIMEOUT,
@@ -98,7 +98,7 @@ from config_manager.api.session import (  # noqa: E402
     SessionLock,
 )
 
-_T0 = datetime(2026, 9, 30, 8, 0, tzinfo=timezone.utc)
+_T0 = datetime(2026, 9, 30, 8, 0, tzinfo=UTC)
 _MING = Identity("陳小明", "ming@example.com", "developer")
 _LIN = Identity("林巡檢", "lin@example.com", "user")
 

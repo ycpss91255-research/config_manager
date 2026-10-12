@@ -18,6 +18,10 @@ faulthandler_timeout = 120
 [tool.ruff]
 src = ["src"]
 line-length = 100
+# 這個專案跑在 Python 3.11（映像的直譯器、CLAUDE.md）。明寫出來，而不是讓 ruff 自己猜：沒寫的時候
+# 它用自己的預設值，而那個預設值會隨 ruff 的版本變——0.17.0 一改，CI（每次重裝工具）就對 14 處
+# 沒人動過的程式碼報錯，本機（映像是舊的）卻全綠。寫死之後兩邊問的是同一個問題。
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "C90", "PL", "B", "BLE", "RET", "SIM", "UP"]
