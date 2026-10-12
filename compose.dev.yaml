@@ -8,13 +8,15 @@
 #
 #   COMPOSE_FILE=compose.yaml:compose.dev.yaml
 #
-# 與現場那一份差三件事：映像、模式、原始碼從哪裡來。
+# 與現場那一份差四件事：映像、模式、原始碼從哪裡來、會不會自己重啟。
 
 services:
   backend:
     build:
       target: ${CM_STAGE:-devel}
     image: config_manager:${CM_TAG:-devel}
+    # 開發不自動重啟（#51 定案 4）：服務起不來是要讓人看見的，一直重試只會把第一則錯誤洗掉。
+    restart: "no"
     volumes:
       # `devel` 階段**不烤原始碼**（Dockerfile：烤進去的副本在第一次修改時就過期了），所以從
       # 主機掛進來，掛在 runtime 映像烤它的同一個位置——啟動指令因此兩邊一字不差。唯讀：服務
@@ -30,6 +32,7 @@ services:
     build:
       target: ${CM_STAGE:-devel}
     image: config_manager:${CM_TAG:-devel}
+    restart: "no"
     volumes:
       # 靜態頁面就在原始碼裡（src/config_manager/web），同一個理由要掛。
       - ./src:/opt/config_manager/src:ro
