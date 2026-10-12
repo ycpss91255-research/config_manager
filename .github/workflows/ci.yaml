@@ -116,6 +116,19 @@ jobs:
       # 那一個，而它從存在的第一天起就是壞的。
       - run: docker build --target devel -t config_manager:devel .
 
+  compose-smoke:
+    # compose 的服務實測（T25 的第二個觀察位置，#51）：host 與 bridge 各**實際起一次**，量
+    # 「只有本機連得到」「容器整個重建後已進版的都在」「停得掉」。設定解析那一半在 checks 裡
+    # （test/bats/integration/compose.bats，工具映像內）；兩者回答不同的問題，結果分開。
+    #
+    # 跑在映像之外，與 build 同一個理由：它要 docker daemon，還要**真的** host 網路——工具映像
+    # 裡沒有前者，開發者的 macOS 上沒有後者。所以這一關只有這裡有，script/compose_smoke.sh 在
+    # 非 Linux 上會直接說它不跑。compose 用 runner 自帶的那一版；釘住的那一支只管設定解析。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./script/compose_smoke.sh
+
   ci-rollup:
     # 唯一的必要狀態檢查，比照 base。分支保護只指名這一個 job，所以在上面新增一個
     # job 永遠不必去改保護規則。
@@ -123,7 +136,7 @@ jobs:
     # `always()` 加上明確的結果判定：少了它，被跳過或被取消的相依會被讀成成功，
     # 於是閘門會在一次什麼都沒檢查的執行上打開。
     if: always()
-    needs: [commit-message, checkpoints, test-interfaces, checks, acceptance, build]
+    needs: [commit-message, checkpoints, test-interfaces, checks, acceptance, build, compose-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Check that every job passed

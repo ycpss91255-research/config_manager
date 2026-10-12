@@ -1512,7 +1512,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `web/` | T11 | 已落地。執行通路於 #97 補上：`test/pytest/system/test_web.py`，Playwright 驅動 Chromium，行覆蓋率由 V8 自己算 |
 | `**/__init__.py` | 無——見「刻意的空格」 | 已落地 |
 | `script/entrypoint.sh` | T15 | 已落地 |
-| `script/compose_smoke.sh` | T25（服務實測那一半；只在 CI 的 Linux runner 上執行） | 未落地（#51：介面先於實作寫下） |
+| `script/compose_smoke.sh` | T25（服務實測那一半；只在 CI 的 Linux runner 上執行，由 `compose-smoke` job 呼叫——它要 docker daemon 與真的 host 網路，工具映像裡兩者都沒有） | 已落地 |
 | `script/lint_adr.sh` | T19 | 已落地 |
 | `script/lint_commit.sh` | T19 | 已落地 |
 | `script/lint_paths.sh` | T19 | 已落地 |
