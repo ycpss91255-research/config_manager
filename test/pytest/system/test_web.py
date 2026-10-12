@@ -927,6 +927,19 @@ def test_saving_a_draft_says_it_was_saved_and_is_not_yet_promoted(open_page, rep
     assert page.inner_text(note).startswith("已存為草稿——還沒進版")
 
 
+def test_saving_a_draft_says_it_does_not_survive_a_service_restart(open_page, repo):
+    # 草稿掛在服務的程序上（#51、驗證清單 U40）：重啟後就沒了。存下去的那一刻就說，不要等人
+    # 隔天回來才發現——那時候已經沒有東西可以救。
+    page = _open_nested(open_page, repo)
+    page.fill(f"{_row('camera.fps')} input", "60")
+
+    _save(page, _PARAM_UID)
+
+    note = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save-note']"
+    page.wait_for_selector(note, state="visible")
+    assert "服務重啟後，沒進版的草稿不會留著" in page.inner_text(note)
+
+
 def test_the_saved_note_goes_away_once_the_field_is_edited_again(open_page, repo):
     # 那句話說的是上一次儲存；又動了欄位還留著，就變成在描述一個已經不成立的狀態。
     page = _open_nested(open_page, repo)
