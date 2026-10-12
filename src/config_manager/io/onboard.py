@@ -196,7 +196,7 @@ def onboard(repo: str, request: OnboardRequest, author: str) -> FileEntry:
     # 2-3. 身分：hostname 讀一次，name 取自目標路徑，uid 取自匯入時刻。source 欄位是
     #    來源檔在 repo 內的相對路徑，這裡只用 source_relpath 算出來、還不寫任何位元組。
     hostname = local_hostname()
-    uid = new_uid(datetime.datetime.now(datetime.timezone.utc))
+    uid = new_uid(datetime.datetime.now(datetime.UTC))
     name = derive_name(target)
     relative = source_relpath(hostname, target)
 

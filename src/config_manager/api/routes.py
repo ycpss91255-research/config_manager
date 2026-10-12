@@ -11,7 +11,7 @@ app 由 create_app(repo) 產生而非模組層的全域物件：config-repo 的�
 import os
 from collections.abc import Iterable
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from subprocess import CalledProcessError
 from typing import cast
 
@@ -526,7 +526,7 @@ def _add_allowed_root(
     伺服器蓋時間（抽成模組層函式，同 `_onboard_config`：端點的 closure 只負責接線）。"""
     identity = require_permission(identity, MAINTAIN_ROOTS)
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         add_allowed_root(repo, payload.prefix, identity.git_author, now)
     except (InvalidPrefix, AllowedRootUnreachable) as error:

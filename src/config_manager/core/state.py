@@ -6,7 +6,7 @@
 import enum
 
 
-class State(str, enum.Enum):
+class State(enum.StrEnum):
     """一份 config 的狀態（CONTEXT）。
 
     「未納管」由清單成員在呼叫 decide 之前判定；其餘三種由 decide 比較目標與來源判定。
