@@ -20,6 +20,14 @@ stop *ARGS:
 prune *ARGS:
     @{{justfile_directory()}}/script/prune.sh {{ARGS}}
 
+# 備份 config-repo 成一個檔案，放進主機上的資料夾（服務不必停；不含目標檔案）
+backup *ARGS:
+    @{{justfile_directory()}}/script/backup.sh {{ARGS}}
+
+# 把備份還原成 config-repo（服務要先停、設定庫要是空的）
+restore *ARGS:
+    @{{justfile_directory()}}/script/restore.sh {{ARGS}}
+
 # 開發用：先疊上 compose.dev.yaml 再做後面的動作，例如 `just docker dev run`、`just docker dev build`
 dev VERB *ARGS:
     @COMPOSE_FILE=compose.yaml:compose.dev.yaml {{justfile_directory()}}/script/{{VERB}}.sh {{ARGS}}

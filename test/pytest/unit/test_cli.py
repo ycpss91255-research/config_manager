@@ -460,7 +460,7 @@ def test_serve_plan_refuses_an_idle_timeout_that_would_mean_never(raw):
 # ── backup／restore（#52）────────────────────────────────────────────────────
 #
 # 這兩個與 serve 同一類：不是端點的 client，是對本機那份 config-repo（CM_CONFIG_REPO）的操作。
-# 這裡測的是決定與接線——拿哪份 repo、往哪裡備、失敗怎麼說；備份本身的行為在 T7（io/backup）。
+# 這裡測的是決定與接線——拿哪份 repo、往哪裡備、失敗怎麼說；備份本身的行為在 T26（io/backup）。
 
 
 def test_backup_bundles_the_config_repo_named_by_the_environment_into_the_given_folder(

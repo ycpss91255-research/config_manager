@@ -1,4 +1,4 @@
-"""T7 — 變更紀錄：config-repo 的備份與還原（#52）。測試介面：io/backup 的 bundle / restore。
+"""T26 — 備份與還原（#52）的設定庫層。測試介面：io/backup 的 bundle / restore。
 
 對真實的臨時 git repo 操作。備份是 `git bundle`，只含**已提交**的東西；還原是從 bundle clone 進一個
 **空**目錄。兩邊都以「真的還原得出來」為準，不以「檔案存在」為準：`git bundle verify` 對截斷的

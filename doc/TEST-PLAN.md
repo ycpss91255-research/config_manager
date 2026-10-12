@@ -1538,7 +1538,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/writer` | T8 | 已落地 |
 | `io/atomic` | T8——原子替換的共用核心，行為由 `io/writer` 的 T8 規格擋著（#186） | 已落地；`only_if_missing`：以 hard link 原子地「只在不存在時放上去」，已有東西丟 `TargetExists`（寫出修復不覆蓋） |
 | `io/repo` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔可讀→T1（`load`）（#186） | 已落地（`place_source`／`write_config_list`／`load_list`——會改寫清單檔的編排共用的讀＋載入，失敗映成 `ConfigListUnparsable`，#257） |
-| `io/backup` | T26 | 未落地（#52：介面先於實作寫下） |
+| `io/backup` | T26（設定庫層）；CLI 的 `backup`／`restore` 子指令把它接到 `CM_CONFIG_REPO`，接線在 T10 的單元層 | 已落地（#52）：先 `git clone --no-local --bare` 拍快照再打包（直接對活著的 repo 打包會撞上進版）；驗證＝真的 clone＋fsck＋有清單檔 |
 | `io/git` | T7 | 已落地（`head`／`reset_hard` 於 #19 加入，只給進版回滾用；`show` 於 #24 加入、checkout 式 `revert` 移除；`show_or_none` 於 #39 加入——那一版還沒有該檔時回 None） |
 | `io/preflight` | T15 | 已落地 |
 | `io/digest` | T20 | 已落地 |
@@ -1577,8 +1577,8 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `**/__init__.py` | 無——見「刻意的空格」 | 已落地 |
 | `script/entrypoint.sh` | T15 | 已落地 |
 | `script/compose_smoke.sh` | T25（服務實測那一半；只在 CI 的 Linux runner 上執行，由 `compose-smoke` job 呼叫——它要 docker daemon 與真的 host 網路，工具映像裡兩者都沒有） | 已落地 |
-| `script/backup.sh` | T26（主機端指令） | 未落地（#52：介面先於實作寫下） |
-| `script/restore.sh` | T26（主機端指令；「服務還在跑就拒絕」那道確認在這裡，CLI 在容器裡看不見 compose） | 未落地（#52：介面先於實作寫下） |
+| `script/backup.sh` | T26（主機端指令） | 已落地（#52） |
+| `script/restore.sh` | T26（主機端指令；「服務還在跑就拒絕」那道確認在這裡，CLI 在容器裡看不見 compose） | 已落地（#52） |
 | `script/backup_drill.sh` | T26（實際演練；只在 CI 的 Linux runner 上執行） | 未落地（#52：介面先於實作寫下） |
 | `script/lint_adr.sh` | T19 | 已落地 |
 | `script/lint_commit.sh` | T19 | 已落地 |
