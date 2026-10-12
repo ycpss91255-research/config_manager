@@ -2048,6 +2048,74 @@ def _lock(api, method="POST", path="/api/session/lock", payload=None):
         return json.loads(response.read().decode("utf-8"))
 
 
+# ── 服務重啟（#51；驗證清單 U40）────────────────────────────────────────────
+#
+# 已進版的東西住在 config-repo，重啟後從檔讀回來；草稿、身分、編輯階段掛在程序上，重啟就沒了。
+# 「重啟」＝同一份 config-repo 上重新起一個服務（conftest 的 `restarted`）。
+
+
+def test_a_restarted_service_still_has_the_promoted_value_and_its_history(
+    api, sources_root, restarted
+):
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "restart_promoted.yaml")
+    _promote_value(api, entry["uid"], "max_vel", 1.2)
+
+    after = restarted()
+
+    values = _get(after, f"/api/configs/{entry['uid']}")["values"]
+    kinds = [change["kind"] for change in _history(after, entry["uid"])]
+    assert (values, kinds) == ({"max_vel": 1.2}, ["cfg"])
+
+
+def test_a_restarted_service_lists_the_managed_configs_with_their_state_compared_again(
+    api, sources_root, restarted
+):
+    kept = _onboard(api, sources_root, "restart_listed.yaml")
+    drifted = _drifted(api, sources_root, "restart_drifted.yaml")
+
+    after = restarted()
+
+    states = {row["uid"]: row["state"] for row in _get(after, "/api/configs")}
+    assert (states[kept["uid"]], states[drifted["uid"]]) == ("in_sync", "drift")
+
+
+def test_a_restarted_service_still_has_the_roots_added_to_the_whitelist(api, restarted, tmp_path):
+    _set_session(api)  # developer
+    root = tmp_path / "restart_root"
+    root.mkdir()
+    _post(api, "/api/allowed-roots", {"prefix": str(root)})
+
+    after = restarted()
+
+    assert str(root) in _get(after, "/api/allowed-roots")["prefixes"]
+
+
+def test_a_restarted_service_has_no_drafts(api, sources_root, restarted):
+    # 草稿只存在編輯階段（T18），而階段掛在程序上：重啟後未進版的草稿不在了，來源仍是原值。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "restart_draft.yaml")
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"max_vel": 1.2}})
+    try:
+        after = restarted()
+
+        assert _get(after, "/api/drafts") == {"count": 0, "drafts": []}
+    finally:
+        _clear_drafts(api)
+
+
+def test_a_restarted_service_knows_no_identity_and_holds_no_editing_session(api, restarted):
+    # 同一個瀏覽器（同一張票）回來，重啟後的服務不認得它：要重新輸入身分，階段也沒有人持有。
+    _set_session(api)
+    held = _lock(api)
+    try:
+        after = restarted()
+
+        assert (_get(after, "/api/session"), _lock(after, "GET")["held"]) == (None, False)
+    finally:
+        _lock(api, "DELETE", payload={"token": held["token"]})
+
+
 def test_the_editing_session_can_be_acquired_once_and_names_the_holder_to_the_second(api):
     # 已被占用 → 409，含持有者姓名、email、開始時間；不提供強制接管。
     _set_session(api)

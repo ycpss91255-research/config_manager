@@ -8,20 +8,34 @@
 #
 # 現在就採用的，是那些之後改起來很貴的決定——階段名稱、產物放 /opt，以及底下的
 # `host` 網路模式。
+#
+# **這一份的預設值是給現場部署用的**（#51 定案 2）：正式映像（`runtime` 階段）、部署模式。
+# 不帶任何參數的 `docker compose up` 落在較嚴的那一邊（不變式 4）——預設若是開發用的，現場忘了
+# 改兩個變數，就會跑成一套沒有閒置逾時的開發模式。另外兩種用法各是一份**疊加檔**，疊在這一份
+# 上面、只寫與它不同的地方，所以服務定義仍然只有這一份（ADR-00000024、ADR-00000031）：
+#
+#   開發        docker compose -f compose.yaml -f compose.dev.yaml up       （或 `just docker dev run`）
+#   bridge 網路 docker compose -f compose.yaml -f compose.bridge.yaml up    （或 `just docker bridge run`）
+#
+# 怎麼部署、怎麼從別台機器連進來、起不來時怎麼看原因：doc/DEPLOYMENT.md。
 
 services:
   backend:
     build:
       context: .
       dockerfile: Dockerfile
-      target: ${CM_STAGE:-devel}
-    image: config_manager:${CM_TAG:-devel}
+      target: ${CM_STAGE:-runtime}
+    image: config_manager:${CM_TAG:-runtime}
     container_name: config_manager_backend
     # 用 host，不用 bridge。bridge 會靜默地讓整台機器的 ROS 2 discovery 失效，
     # 而這個服務就跑在它所管理參數的那些 ROS 節點旁邊——一個方便的預設值安靜地
     # 弄壞一套真實部署，正是不變式 4 為之存在的情況。真的需要隔離的部署，再明確
     # 地 opt into bridge。
     network_mode: host
+    # 當掉或機器重開後自己起來；手動停掉的（`docker compose stop`）不會被拉回來（#51 定案 4）。
+    # 啟動檢查沒過（例如白名單指到容器看不到的目錄）也會一直重試——那時候看原因、停止重試的
+    # 做法在 doc/DEPLOYMENT.md 的「起不來的時候」。開發不自動重啟，見 compose.dev.yaml。
+    restart: unless-stopped
     volumes:
       # 來源 repo：唯一真實來源（ADR-00000002）。用具名 volume 而不是 bind
       # mount，因為它的生命週期屬於這套系統，不屬於主機上的那份簽出。
@@ -46,29 +60,42 @@ services:
       # 所以要穩定。沒設就回 gethostname()——host 網路模式下那是穩定的主機名；bridge 下
       # gethostname() 是每次重建都變的容器 ID，那種部署務必在這裡（或 .env）明寫。
       CM_HOSTNAME: ${CM_HOSTNAME:-}
-      # 開發／部署模式（#47）：後端依這個變數判定、回報給前端，前端改不了。程式的預設是
-      # **部署**（沒設定時落向較嚴的那一種）；這份 compose 是開發用的接線，所以這裡明寫開發模式。
-      # 現場機器以 .env 設 CM_MODE=deployment，或乾脆不設——兩者都是部署模式。
-      CM_MODE: ${CM_MODE:-development}
+      # 開發／部署模式（#47）：後端依這個變數判定、回報給前端，前端改不了。這一份是現場用的，
+      # 所以預設是**部署**——與程式自己的預設同一邊（沒設定時落向較嚴的那一種）。開發模式由
+      # compose.dev.yaml 疊上去，不是在這裡改。
+      CM_MODE: ${CM_MODE:-deployment}
       # 部署模式的閒置逾時（秒，#48）：一個瀏覽器的人這麼久沒操作就自動退出並釋放編輯階段。
       # 沒設＝10 分鐘；開發模式不逾時，設了也不生效。
       CM_IDLE_TIMEOUT: ${CM_IDLE_TIMEOUT:-}
     # 是 config_manager.api.cli，不是 api.cli——見 Dockerfile 的 CMD（#90）。
+    # 只聽 127.0.0.1（#51 定案 3）：身分是自己填的、沒有密碼，聽在區網上等於區網上任何人都能改
+    # 這台機器的 config。
     command: ["python", "-m", "config_manager.api.cli", "serve", "--host", "127.0.0.1", "--port", "8080"]
 
   frontend:
     build:
       context: .
       dockerfile: Dockerfile
-      target: ${CM_STAGE:-devel}
-    image: config_manager:${CM_TAG:-devel}
+      target: ${CM_STAGE:-runtime}
+    image: config_manager:${CM_TAG:-runtime}
     container_name: config_manager_frontend
     network_mode: host
+    restart: unless-stopped
+    # 停止訊號用 SIGINT，不用預設的 SIGTERM。entrypoint 以 exec 交棒，http.server 就是 PID 1，
+    # 而 PID 1 不理沒有自己裝處理函式的訊號：它不接 SIGTERM，`docker compose stop` 會等滿 10 秒
+    # 再強制終止（實測結束碼 137）。Python 預設接 SIGINT，換成它就立刻乾淨結束（實測結束碼 0）。
+    # 後端不用改——uvicorn 自己接 SIGTERM。
+    stop_signal: SIGINT
     environment:
       CM_ROLE: frontend
     # 就只是一台靜態檔案伺服器。frontend 既碰不到檔案系統也碰不到 git；所有保證
     # 都在 API 後面（設計原則 N-3），所以這個容器連可以給它的掛載都沒有。
-    command: ["python", "-m", "http.server", "8081", "--directory", "/opt/config_manager/src/config_manager/web"]
+    #
+    # `--bind 127.0.0.1` 不能省（#51 定案 3）：http.server 沒給的話聽**所有**網卡，而這裡是
+    # host 網路——頁面會從區網上任何一台機器打得開，後端卻只聽本機，於是別台看到的是一個
+    # 開得起來、每個動作都失敗的頁面。前後端一起只給本機；要從別台操作走 SSH 通道
+    # （doc/DEPLOYMENT.md）。這個服務沒有密碼，所以**沒有**開放區網的開關。
+    command: ["python", "-m", "http.server", "8081", "--bind", "127.0.0.1", "--directory", "/opt/config_manager/src/config_manager/web"]
     depends_on:
       - backend
 

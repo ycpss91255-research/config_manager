@@ -1451,7 +1451,7 @@ function panelNode(detail) {
   if (firstHit) queueMicrotask(() => firstHit.scrollIntoView({ block: "center" }));
   panel.append(list, warningsSlot, saveError, element("div", { class: "panel-actions" }, [
     ...actions,
-    element("span", { class: "hint", text: "「儲存」只是存為草稿——不記錄、不寫到目標；工具列的「進版」才會。" }),
+    element("span", { class: "hint", text: "「儲存」只是存為草稿——不記錄、不寫到目標；工具列的「進版」才會。草稿只留到服務重啟為止。" }),
     saveNote,
     discardButton,
     saveButton,
@@ -1731,7 +1731,7 @@ async function saveDraft(detail, entries, ui, overrides = {}) {
     else if (ui.warnings) ui.warnings.replaceChildren();
     // 存成了要說一聲（#50）：畫面留在原處不動，只靠一個小圓點看不出剛才那一下有沒有生效。
     if (ui.note) {
-      ui.note.textContent = "已存為草稿——還沒進版；要記錄並寫到目標，按工具列的「進版」。";
+      ui.note.textContent = "已存為草稿——還沒進版；要記錄並寫到目標，按工具列的「進版」。服務重啟後，沒進版的草稿不會留著。";
       ui.note.hidden = false;
     }
   } catch (error) {

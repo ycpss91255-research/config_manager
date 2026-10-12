@@ -1,0 +1,35 @@
+# compose.bridge.yaml —— bridge 網路的疊加檔（#51 定案 1；不變式 4：預設 host，bridge 要明確選用）。
+#
+# 不能單獨用：它只寫**與 compose.yaml 不同的地方**，疊在那一份上面才是一套完整的服務。
+#
+#   CM_HOSTNAME=<這台機器的名稱> docker compose -f compose.yaml -f compose.bridge.yaml up -d
+#   （或 `just docker bridge run`；要同時疊開發檔，兩個 -f 都帶上）
+#
+# 什麼時候用：這台機器上的容器需要彼此隔離，而且**旁邊沒有靠 host 網路互相找到對方的東西**。
+# 預設用 host 是因為 bridge 會靜默地讓整台機器的 ROS 2 discovery 失效（compose.yaml 寫了理由）；
+# 選這一份的人是在說「我知道，而且這裡不受影響」。
+#
+# 與預設差三件事：網路模式、埠號怎麼出去、主機名稱從哪裡來。
+
+services:
+  backend:
+    network_mode: bridge
+    # 主機端只綁 127.0.0.1（#51 定案 3）。不寫位址的話 docker 綁 0.0.0.0，整個區網都連得到，而且
+    # docker 的埠號對應走在主機防火牆規則的前面——那會是一個看起來有防火牆擋著、其實沒有的洞。
+    # 要從別台機器操作，走 SSH 通道（doc/DEPLOYMENT.md）。
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      # bridge 下容器有自己的主機名，而且**每次重建都換一個**（就是容器 ID）。納管當下會把主機名
+      # 寫進紀錄、之後永不再讀（#178），所以這裡非給不可：沒給就在啟動前擋下，不讓第一筆納管
+      # 記下一個下次就不存在的名字。空字串也算沒給。
+      CM_HOSTNAME: ${CM_HOSTNAME:?bridge 網路下容器的主機名每次重建都會變，納管紀錄需要一個穩定的名稱。下一步：設定 CM_HOSTNAME 為這台機器的名稱（寫在 .env，或在指令前加 CM_HOSTNAME=名稱）再重跑}
+    # 容器內聽 0.0.0.0：docker 把主機的 127.0.0.1:8080 轉到容器的網卡上，聽容器自己的 127.0.0.1
+    # 的話那裡沒有人接。對外的限制由上面 ports 的主機端位址負責。
+    command: ["python", "-m", "config_manager.api.cli", "serve", "--host", "0.0.0.0", "--port", "8080"]
+
+  frontend:
+    network_mode: bridge
+    ports:
+      - "127.0.0.1:8081:8081"
+    command: ["python", "-m", "http.server", "8081", "--bind", "0.0.0.0", "--directory", "/opt/config_manager/src/config_manager/web"]

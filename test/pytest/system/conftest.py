@@ -244,3 +244,34 @@ def api_developing(repo, sources_root, api):
     finally:
         server.should_exit = True
         thread.join(timeout=_STARTUP_TIMEOUT)
+
+
+@pytest.fixture
+def restarted(repo, api):
+    """服務重啟之後的樣子：同一份 config-repo 上**重新起**的一個服務（#51、驗證清單 U40）。
+
+    回一個函式，呼叫時才起——規格先在 `api` 上把狀態做出來，再「重啟」，順序寫在規格裡看得見。
+    重啟對這個服務的意思是：程序換了一個，掛在舊程序上的東西（草稿、身分、編輯階段）沒了；
+    留在 config-repo 裡的東西（清單、來源、白名單、歷史）新程序從檔讀回來。原本那個 `api` 不停
+    ——整個 session 的其他規格還要用它，而新起的這個對它一無所知，那正是被觀察的性質。
+    """
+    del api  # 只為了排序：repo 與白名單由 `api` 那邊備妥
+    started = []
+
+    def start():
+        port = _free_port()
+        server = uvicorn.Server(
+            uvicorn.Config(create_app(repo), host="127.0.0.1", port=port, log_level="error")
+        )
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        started.append((server, thread))
+        base = f"http://127.0.0.1:{port}"
+        _wait_until_answering(base)
+        return base
+
+    yield start
+
+    for server, thread in started:
+        server.should_exit = True
+        thread.join(timeout=_STARTUP_TIMEOUT)

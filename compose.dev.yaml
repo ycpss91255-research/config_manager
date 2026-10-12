@@ -1,0 +1,38 @@
+# compose.dev.yaml —— 開發用的疊加檔（#51 定案 2）。
+#
+# 不能單獨用：它只寫**與 compose.yaml 不同的地方**，疊在那一份上面才是一套完整的服務。
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d      （或 `just docker dev run`）
+#
+# 想讓這台機器上每一道 `docker compose` 與 `just docker …` 都自動帶上它，在 `.env`（不進版控）寫：
+#
+#   COMPOSE_FILE=compose.yaml:compose.dev.yaml
+#
+# 與現場那一份差四件事：映像、模式、原始碼從哪裡來、會不會自己重啟。
+
+services:
+  backend:
+    build:
+      target: ${CM_STAGE:-devel}
+    image: config_manager:${CM_TAG:-devel}
+    # 開發不自動重啟（#51 定案 4）：服務起不來是要讓人看見的，一直重試只會把第一則錯誤洗掉。
+    restart: "no"
+    volumes:
+      # `devel` 階段**不烤原始碼**（Dockerfile：烤進去的副本在第一次修改時就過期了），所以從
+      # 主機掛進來，掛在 runtime 映像烤它的同一個位置——啟動指令因此兩邊一字不差。唯讀：服務
+      # 不該改得動自己的程式碼。
+      - ./src:/opt/config_manager/src:ro
+    environment:
+      # runtime 映像裡這個值是烤好的；devel 沒有，所以這裡給，直譯器才找得到 config_manager。
+      PYTHONPATH: /opt/config_manager/src
+      # 開發模式（#47）：不閒置逾時、身分輸入頁有「記住此裝置」。
+      CM_MODE: ${CM_MODE:-development}
+
+  frontend:
+    build:
+      target: ${CM_STAGE:-devel}
+    image: config_manager:${CM_TAG:-devel}
+    restart: "no"
+    volumes:
+      # 靜態頁面就在原始碼裡（src/config_manager/web），同一個理由要掛。
+      - ./src:/opt/config_manager/src:ro

@@ -18,11 +18,15 @@
 ## 開始
 
 ```bash
-just docker build      # 建置 devel 映像
-just docker run        # 啟動 backend + frontend
+just docker dev build  # 建置開發映像（疊上 compose.dev.yaml）
+just docker dev run    # 以開發模式啟動 backend + frontend
 just test              # lint + 全層級 + coverage
 just                   # 列出所有命令
 ```
+
+`just docker build`／`just docker run` 不帶 `dev` 起的是**現場部署**那一套（正式映像、部署模式、
+只有本機連得到、會自動重啟）；怎麼部署、怎麼從別台機器連進來、起不來時怎麼看原因，見
+[`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md)。
 
 命令模型是**零特例**的：每個動作都在一個 namespace 底下，沒有 top-level 命令；
 由廣到小，`just test` 是最大範圍，選項只用來收窄。`lint` 不是 `test` 的同級，
@@ -34,6 +38,7 @@ just                   # 列出所有命令
 |---|---|
 | `Dockerfile` | 多階段：`sys` → `devel-base` → `devel` → `runtime` → `runtime-test` |
 | `compose.yaml` | 兩個服務：backend（API + git + 寫出）、frontend（純靜態）。**唯一的服務定義來源**（ADR-00000024） |
+| `compose.dev.yaml`、`compose.bridge.yaml` | 疊在 `compose.yaml` 上的檔案，只寫不同的地方：開發用、bridge 網路用。不能單獨用（ADR-00000031） |
 | `.setup.conf` | 佔位，無值。導入模板後才成為權威，屆時刪除手寫的 `compose.yaml` |
 | `script/` | 任務進入點；`entrypoint.sh` 以 `exec "$@"` 交棒 |
 | `script/hooks/` | 模板擴充點，已由自建 wrapper 接線（ADR-00000023） |
