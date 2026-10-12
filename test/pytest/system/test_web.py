@@ -4333,6 +4333,99 @@ def test_checking_for_differences_says_when_it_ran_and_what_it_found(open_page, 
     assert "1 份偏離" in said and "1 份未部署" in said and "全部一致" not in said
 
 
+# ── 檢查結果的摘要跟著清單走（人工驗證 U30 的回報）─────────────────────────────
+# 摘要原本只在按「檢查差異」時寫一次。之後任何動作重新載入清單（寫出修復、進版、處置偏離、解除
+# 納管…），樹已經是新的狀態、摘要卻還停在上一次——畫面上同時寫著「一致」與「1 份未部署」。
+
+_SCAN = "[data-testid='scan-status']"
+
+
+def _scan_says(page, text: str) -> None:
+    page.wait_for_function(
+        "text => document.querySelector(\"[data-testid='scan-status']\")"
+        ".textContent.includes(text)",
+        arg=text,
+    )
+
+
+def test_the_summary_is_updated_after_a_missing_target_is_written_out(open_page, repo):
+    # 回報的步驟：檢查差異 →「1 份未部署」→ 寫出到目標成功 → 清單回到一致，摘要也要跟著。
+    _missing(repo)
+    page = _open_missing(open_page)
+    page.click("[data-testid='rescan']")
+    _scan_says(page, "1 份未部署")
+
+    page.click(_APPLY)
+    page.wait_for_selector("[data-testid='promote-done']:not([hidden])")
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'] [data-state='in_sync']")
+
+    said = page.inner_text(_SCAN)
+    assert "未部署" not in said
+    assert "共 1 份" in said and "全部一致" in said
+    assert page.get_attribute(_SCAN, "data-state") == "done"
+
+
+def test_the_summary_follows_any_action_that_reloads_the_list(open_page, repo):
+    # 不只寫出修復：解除納管那份未部署的之後，摘要的份數與結果都要是現在的。
+    targets = _listing_many(repo, {"p": "count: 3\n", "q": "count: 5\n"})
+    _commit_listing(repo)
+    targets["q"].unlink()
+    page = _enter_identity(open_page())
+    page.wait_for_selector(f"[data-testid='tree-item-{_SECOND_UID}']")
+    page.click("[data-testid='rescan']")
+    _scan_says(page, "共 2 份：1 份未部署")
+    page.dblclick(f"[data-testid='tree-item-{_SECOND_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_SECOND_UID}']", state="visible")
+
+    page.click(f"[data-testid='panel-{_SECOND_UID}'] [data-testid='panel-unmanage']")
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_selector(f"[data-testid='tree-item-{_SECOND_UID}']", state="detached")
+
+    _scan_says(page, "共 1 份：全部一致")
+
+
+def test_the_summary_also_picks_up_a_change_made_outside(open_page, repo):
+    # 摘要說的就是樹上現在的樣子：別的動作讓清單重新載入時發現目標被改了，摘要一起變。
+    targets = _listing_many(repo, {"p": "count: 3\n"})
+    page = _enter_identity(open_page())
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.click("[data-testid='rescan']")
+    _scan_says(page, "全部一致")
+    targets["p"].write_text("count: 9\n", encoding="utf-8")
+
+    page.evaluate("() => { load(); }")  # 任何會重新載入清單的動作都走這裡
+
+    _scan_says(page, "1 份偏離")
+    assert "全部一致" not in page.inner_text(_SCAN)
+
+
+def test_no_summary_appears_until_a_check_has_been_asked_for(open_page, repo):
+    # 沒按過「檢查差異」就不出現摘要（開頁面的自動載入、其他動作的重新載入都不該憑空多出一行）。
+    _missing(repo)
+    page = _open_missing(open_page)
+
+    page.click(_APPLY)
+    page.wait_for_selector("[data-testid='promote-done']:not([hidden])")
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'] [data-state='in_sync']")
+
+    assert page.is_hidden(_SCAN)
+
+
+def test_a_reload_that_fails_does_not_leave_the_old_summary_standing(open_page, repo):
+    # 摘要寫著「全部一致」，之後重新載入失敗（讀不到清單）：不能還留著那句已經無法確認的話。
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = _enter_identity(open_page())
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.click("[data-testid='rescan']")
+    _scan_says(page, "全部一致")
+    page.route("**/api/configs", lambda route: route.abort())
+
+    page.evaluate("() => { load(); }")
+
+    page.wait_for_selector(f"{_SCAN}[data-state='failed']")
+    assert "全部一致" not in page.inner_text(_SCAN)
+
+
 def test_a_failed_check_says_it_failed_instead_of_looking_finished(open_page, repo):
     _listing_many(repo, {"p": "count: 3\n"})
     page = _enter_identity(open_page())

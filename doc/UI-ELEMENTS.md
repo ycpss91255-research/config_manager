@@ -52,7 +52,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 搜尋範圍 | `data-testid="search-scope"` | 全部（預設）／config 名稱／目標路徑／參數名稱／參數值；選項值即 `GET /api/search` 的 `scope`（#37） |
 | 搜尋框 | `data-testid="search-input"` | 即時過濾（150ms 去抖後走 `GET /api/search`，命中的 config 留在樹上）；無結果→`no-matches`；搜尋失敗→`search-error`（不靜默顯示成沒有結果）。展開命中的 config 時，命中的參數列帶 `data-hit="true"` 並捲進視野（#37） |
 | 檢查差異 | 文字「檢查差異」（`data-testid="rescan"`） | 觸發全項目掃描；檢查期間停用 |
-| 檢查結果 | `data-testid="scan-status"` | 手動「檢查差異」的回饋，`data-state` 為 `running`（檢查中…）／`done`（時間、共幾份、全部一致或各有幾份偏離／未部署／判不出狀態）／`failed`（讀不到清單）。開頁面時的自動載入不顯示 |
+| 檢查結果 | `data-testid="scan-status"` | 手動「檢查差異」的回饋，`data-state` 為 `running`（檢查中…）／`done`（時間、共幾份、全部一致或各有幾份偏離／未部署／判不出狀態）／`failed`（讀不到清單）。開頁面時的自動載入不顯示。**摘要跟著清單走**：按過「檢查差異」之後，任何讓清單重新載入的動作（寫出修復、進版、捨棄、處置偏離、退版、解除納管、納管、改屬性）完成時，摘要一起改寫成現在的份數與結果、時間更新；重新載入失敗就變成 `failed`——不會留著一句與樹上狀態矛盾的舊摘要。還沒按過「檢查差異」時，這些動作不會讓摘要憑空出現 |
 | 白名單 | 文字「白名單」 | **僅開發者出現**（非停用） |
 | 納管 | 文字「納管」 | 開啟納管流程 |
 | 進版 | `data-testid="promote-all"` | 文字含待進版草稿數，如「進版 (2)」。無草稿時停用。`POST /api/promote`；成功→`promote-done` 橫幅、草稿清空、重掃；失敗→`promote-error` 橫幅原樣列結構化錯誤（哪一份／哪些行號與建議）並打開那份（#22） |
