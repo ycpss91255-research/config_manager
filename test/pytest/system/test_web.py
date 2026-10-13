@@ -4838,3 +4838,181 @@ def test_search_with_no_hits_shows_the_empty_state(open_page, repo):
 
     page.wait_for_selector("[data-testid='no-matches']")
     assert "沒有符合" in page.inner_text("[data-testid='no-matches']")
+
+
+# ── 說明文件入口（#54）───────────────────────────────────────────────────────
+#
+# 說明頁是同一個前端服務供應的一頁靜態網頁（`help.html`，與 index.html 同一個目錄、隨映像發布），
+# 不連外部網路。頁面右上角的「說明」開新分頁——不把人從改到一半的畫面帶走。
+
+# 說明頁的段落，依「我要做某件事」排（維護者 2026-10-13 定案 2）。
+_HELP_SECTIONS = [
+    "納管一份設定檔",
+    "修改參數並進版",
+    "退版",
+    "處置偏離",
+    "目標檔不見了：寫出到目標",
+    "角色與模式",
+    "常見問題",
+    "備份與還原",
+    "名詞對照",
+]
+
+
+def _help_page(open_page, site, seen: list | None = None):
+    """直接開說明頁（另一個分頁）。`seen` 給了就記下它發出的每一個請求的網址。"""
+    page = open_page().context.new_page()
+    if seen is not None:
+        page.on("request", lambda request: seen.append(request.url))
+    response = page.goto(f"{site}/help.html")
+    # 頁面要真的供應得出來。不在的時候拿到的是 404 那一頁——它沒有連結、也不發別的請求，
+    # 「不連外」那兩則會因此空過（第一輪 CI 就是這樣：實作還不存在，它們卻是綠的）。
+    assert response is not None and response.ok, "help.html 沒有供應出來"
+    return page
+
+
+def test_the_identity_page_already_offers_the_help_link(open_page):
+    # 還沒輸入身分的人也找得到說明——那正是最需要它的時候。
+    page = open_page()
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+
+    link = "[data-testid='identity-help-link']"
+    assert (page.is_visible(link), page.get_attribute(link, "href"), page.inner_text(link)) == (
+        True, "help.html", "說明",
+    )
+
+
+def test_the_help_link_in_the_header_opens_the_help_page_in_a_new_tab(open_page):
+    page = _enter_identity(open_page())
+
+    with page.expect_popup() as opened:
+        page.click("[data-testid='help-link']")
+    help_page = opened.value
+    help_page.wait_for_load_state()
+
+    assert help_page.url.endswith("/help.html")
+    assert "說明" in help_page.title()
+
+
+def test_opening_the_help_page_leaves_the_work_in_progress_where_it_was(open_page, repo):
+    # 開新分頁，不是在原地換頁：改到一半的欄位還在。
+    page = _open_nested(open_page, repo)
+    page.fill(f"{_row('camera.fps')} input", "60")
+
+    with page.expect_popup():
+        page.click("[data-testid='help-link']")
+
+    assert page.input_value(f"{_row('camera.fps')} input") == "60"
+
+
+def test_the_help_page_is_organised_by_what_the_reader_sets_out_to_do(open_page, site):
+    help_page = _help_page(open_page, site)
+
+    assert [h.inner_text() for h in help_page.query_selector_all("main h2")] == _HELP_SECTIONS
+
+
+def test_the_help_page_fetches_nothing_from_outside_this_service(open_page, site):
+    # 不依賴外部網路或 CDN（定案 1）：現場的機器不一定連得出去。
+    seen: list[str] = []
+    help_page = _help_page(open_page, site, seen)
+    help_page.wait_for_load_state("networkidle")
+
+    assert seen and all(url.startswith(site) for url in seen)
+
+
+def test_the_help_page_links_point_nowhere_outside_this_service(open_page, site):
+    help_page = _help_page(open_page, site)
+
+    targets = help_page.eval_on_selector_all(
+        "[href], [src]", "nodes => nodes.map(n => n.getAttribute('href') || n.getAttribute('src'))"
+    )
+    assert targets and [t for t in targets if "//" in t] == []
+
+
+def test_every_button_the_help_page_names_exists_on_the_page_it_describes(open_page, site):
+    # 說明頁把介面上的字（按鈕、狀態）標成 `.ui`。它們要真的出現在 index.html 裡——介面改了字而說明
+    # 沒跟上，讀的人會去找一顆不存在的按鈕。
+    help_page = _help_page(open_page, site)
+    source = (_WEB_DIR / "index.html").read_text(encoding="utf-8")
+
+    named = sorted({node.inner_text() for node in help_page.query_selector_all(".ui")})
+    assert named and [label for label in named if label not in source] == []
+
+
+def test_the_help_page_says_write_out_only_fills_in_a_missing_file_and_never_overwrites(
+    open_page, site
+):
+    help_page = _help_page(open_page, site)
+
+    text = help_page.inner_text("#write-out")
+    assert ("不會覆蓋" in text, "以來源覆蓋目標" in text) == (True, True)
+
+
+def test_the_help_page_answers_the_four_things_people_get_stuck_on(open_page, site):
+    # 唯讀與編輯鎖、身分要重新輸入、草稿還沒進版、重啟後草稿不保留（定案 2）。
+    help_page = _help_page(open_page, site)
+
+    questions = [q.inner_text() for q in help_page.query_selector_all("#faq h3")]
+    assert [
+        any(word in q for q in questions) for word in ("唯讀", "重新輸入身分", "還沒進版", "重啟")
+    ] == [True, True, True, True]
+
+
+def test_the_help_page_gives_the_backup_commands_and_says_it_is_not_a_whole_machine_backup(
+    open_page, site
+):
+    help_page = _help_page(open_page, site)
+
+    text = help_page.inner_text("#backup")
+    assert [
+        phrase in text for phrase in ("just docker backup", "just docker restore", "不是整機備份")
+    ] == [True, True, True]
+
+
+# ── 開發者專屬操作的記號（#54）───────────────────────────────────────────────
+#
+# 四類開發者專屬操作（屬性、型別指定、產生 schema、白名單）對一般使用者是**不在畫面上**——既有的
+# 規格各自釘住了。這裡釘的是另一半：開發者看得出哪些是只有自己才有的，而且記號帶著字，不只靠圖示。
+
+_DEV_MARK = "[data-testid='dev-mark']"
+_DEV_ONLY_ENTRIES = [
+    "[data-testid='open-whitelist']",
+    "[data-testid='panel-attributes']",
+    "[data-testid='panel-schema-draft']",
+    "[data-testid='param-type-head']",
+]
+
+
+@pytest.mark.parametrize("entry", _DEV_ONLY_ENTRIES)
+def test_a_developer_only_entry_is_marked_in_words_not_just_with_the_icon(open_page, repo, entry):
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = _open_panel(open_page(), developer=True)
+
+    assert page.inner_text(f"{entry} {_DEV_MARK}") == "🔧 開發者"
+
+
+def test_the_mark_explains_that_ordinary_users_do_not_see_the_entry(open_page, repo):
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = _open_panel(open_page(), developer=True)
+
+    assert "一般使用者看不到" in page.get_attribute(
+        f"[data-testid='panel-attributes'] {_DEV_MARK}", "title"
+    )
+
+
+def test_a_marked_entry_still_says_what_it_does(open_page, repo):
+    # 記號是加上去的，不是取代：按鈕自己的字還在。
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = _open_panel(open_page(), developer=True)
+
+    assert [
+        page.inner_text(entry).split("🔧")[0].strip()
+        for entry in _DEV_ONLY_ENTRIES
+    ] == ["白名單", "屬性", "產生 schema", "型別"]
+
+
+def test_an_ordinary_user_sees_no_developer_mark_anywhere(open_page, repo):
+    _listing_many(repo, {"p": "count: 3\n"})
+    page = _open_panel(open_page())
+
+    assert page.query_selector_all(_DEV_MARK) == []

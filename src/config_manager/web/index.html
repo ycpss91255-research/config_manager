@@ -319,6 +319,11 @@
   .idle-warning { display: flex; gap: 12px; align-items: center; border-color: var(--warn); }
   .idle-warning button { flex: none; }
   .who.mode { border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; }
+  /* 說明連結（#54）：開新分頁到同一個服務的 help.html。 */
+  .help-link { flex: none; white-space: nowrap; font-size: 13px; }
+  #identity .help-link { display: inline-block; margin: 12px 0 0; }
+  /* 開發者專屬操作的記號（#54）：帶著字，不只靠圖示。附在入口自己的字後面。 */
+  .dev-mark { margin-left: 6px; font-size: 11px; font-weight: 400; color: var(--muted); white-space: nowrap; }
   .scan-status { grid-column: 1 / -1; margin: 0; font-size: 13px; color: var(--muted); }
   .scan-status[data-state="done"] { color: var(--in-sync); }
   .scan-status[data-state="failed"] { color: var(--drift); }
@@ -480,7 +485,13 @@
   </label>
 
   <button type="submit" class="enter">進入</button>
+  <!-- 說明（#54）：還沒輸入身分的人也找得到。開新分頁，同一個前端服務的靜態頁，不連外部網路。 -->
+  <a class="help-link" data-testid="identity-help-link" href="help.html" target="_blank" rel="noopener">說明</a>
 </form>
+
+<!-- 開發者專屬操作的記號（#54）。由 script 的 devMark() 複製後附在入口上；樣子寫在這裡而不是
+     script 裡，見 devMark() 的說明。有字，不只圖示。 -->
+<template id="dev-mark-template"><span class="dev-mark" data-testid="dev-mark" title="開發者專屬操作：一般使用者看不到這個入口">🔧 開發者</span></template>
 
 <header hidden>
   <h1>config_manager</h1>
@@ -504,6 +515,8 @@
   <!-- 三段式的第三段（#22、§7.4.3）：進版是全域動作，按鈕顯示待進版草稿數；捨棄變更清草稿、不動來源與目標。 -->
   <button type="button" class="editing-only" data-testid="discard-all" disabled>捨棄變更</button>
   <button type="button" class="promote editing-only" data-testid="promote-all" disabled>進版 (0)</button>
+  <!-- 說明（#54）：開新分頁，不把人從改到一半的畫面帶走。 -->
+  <a class="help-link" data-testid="help-link" href="help.html" target="_blank" rel="noopener">說明</a>
 </header>
 
 <!-- W6 確認對話框：捨棄變更（全域／單一）等不可逆動作共用；含可見標題與後果說明。 -->
@@ -760,6 +773,24 @@ function element(tag, attributes, children) {
   }
   for (const child of children || []) node.appendChild(child);
   return node;
+}
+
+// 開發者專屬操作的記號（#54、CONTEXT.md「角色與環境」）。附在入口自己的字後面——記號帶著字，
+// 不只靠圖示：扳手圖示單獨出現時說不出它是什麼意思，螢幕閱讀器也只會念出「扳手」。
+// 一般使用者的畫面上沒有它：那些入口對一般使用者本來就不出現（ADR-00000020）。
+//
+// 記號的樣子寫在 HTML 的 <template> 裡，這裡只複製：那個圖示是基本平面外的字元，放進這段
+// script 會讓 V8 的位移與覆蓋率工具的字串索引對不齊（test/pytest/system/v8_coverage.py 會擋）。
+const devMarkTemplate = document.getElementById("dev-mark-template");
+function devMark() {
+  return devMarkTemplate.content.firstElementChild.cloneNode(true);
+}
+
+// 一個常駐在 DOM 裡、依角色顯示或隱藏的入口（標題列的「白名單」）：記號跟著角色加上或拿掉。
+function markDeveloperOnly(node, on) {
+  const existing = node.querySelector("[data-testid='dev-mark']");
+  if (on && !existing) node.appendChild(devMark());
+  if (!on && existing) existing.remove();
 }
 
 function rowNodeBase(row) {
@@ -1303,7 +1334,8 @@ function panelNode(detail) {
   const attributesButton = canEditAttributes ? element("button", {
     type: "button", class: "panel-attributes editing-only", "data-testid": "panel-attributes",
     title: "修改名稱、群組、主機、說明", text: "屬性",
-  }) : null;
+  }, []) : null;
+  if (attributesButton) attributesButton.appendChild(devMark());
   let hasUnsavedEdits = () => false;  // 有欄位表時換成真的（見下）
   const head = element("div", { class: "panel-head", "data-testid": "panel-head" }, [
     element("span", { class: "name", text: detail.name }),
@@ -1391,7 +1423,9 @@ function panelNode(detail) {
   const list = element("ul", { class: "param-table", "data-testid": "param-table" }, [
     element("li", { class: "param-row param-head" }, [
       element("span", { class: "param-name", text: "參數" }),
-      element("span", { class: "param-type", text: "型別" }),
+      // 型別欄：開發者可以逐列指定型別（#285），所以標題帶開發者記號；一般使用者看到的是純文字。
+      element("span", { class: "param-type", "data-testid": "param-type-head", text: "型別" },
+        specify ? [devMark()] : []),
       element("span", { class: "param-value-wrap", text: "值" }),
       element("span", { class: "param-source", text: "來源值" }),
       element("span", { class: "param-validation", text: "驗證" }),
@@ -1434,6 +1468,7 @@ function panelNode(detail) {
     const schemaButton = element("button", {
       type: "button", class: "editing-only", "data-testid": "panel-schema-draft", text: "產生 schema",
     });
+    schemaButton.appendChild(devMark());
     schemaButton.addEventListener("click", () => {
       draftSchema(detail, { button: schemaButton, error: saveError, head, close });
     });
@@ -3197,6 +3232,7 @@ function showList(identity) {
   // 白名單維護面板開發者專屬：按鈕對一般使用者不出現於 DOM（UI-ELEMENTS.md 角色表、
   // ADR-00000020），不是停用。一般使用者的檢視走 browse 的根清單與允許範圍。
   whitelistButton.hidden = identity.role !== "developer";
+  markDeveloperOnly(whitelistButton, identity.role === "developer");
   load();
   acquireSession();
   startIdleWatch();
@@ -3210,6 +3246,7 @@ function showReadonlyList(detail) {
   listView.hidden = false;
   currentRole.textContent = "唯讀";
   whitelistButton.hidden = true;
+  markDeveloperOnly(whitelistButton, false);
   setReadonly(detail.holder, detail.started_at, null);
   load();
 }
