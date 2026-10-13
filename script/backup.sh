@@ -39,15 +39,13 @@ main() {
   destination="$(cd -- "$1" && pwd -P)"
 
   cd "${REPO_ROOT}"
-  # 以**呼叫者**的身分跑，備份檔在主機上才是呼叫者的。那個身分不是設定庫的擁有者，git 預設會
-  # 拒絕讀別人的 repo（safe.directory），所以明講這一份可以讀；它在容器裡也沒有家目錄，HOME 另給。
+  # 以**呼叫者**的身分跑，備份檔在主機上才是呼叫者的。那個身分不是設定庫的擁有者；「別人的 repo
+  # 也讀得了」由 CLI 自己處理（io/backup），在這裡設 git 的環境變數沒有用——git 不把它們傳給讀來源
+  # 的那個子程序。那個身分在容器裡也沒有家目錄，所以 HOME 另給。
   # --entrypoint 換掉：這裡要的是一道指令，不是把服務的啟動檢查再跑一遍。
   docker compose run --rm --no-deps \
     --user "$(id -u):$(id -g)" \
     --env HOME=/tmp \
-    --env GIT_CONFIG_COUNT=1 \
-    --env GIT_CONFIG_KEY_0=safe.directory \
-    --env 'GIT_CONFIG_VALUE_0=*' \
     --volume "${destination}:/backup" \
     --entrypoint python \
     backend -m config_manager.api.cli backup /backup

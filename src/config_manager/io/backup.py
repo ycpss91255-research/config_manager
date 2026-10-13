@@ -29,6 +29,11 @@ _LIST_NAME = "config-list.toml"
 _PREFIX = "config-repo-"
 
 
+# 讀來源 repo 的 upload-pack：自己帶 safe.directory（理由見 `_create`）。引號是給 git 起它時用的
+# 那個 shell 看的，免得 `*` 被當成檔名樣式。
+_UPLOAD_PACK = "git -c 'safe.directory=*' upload-pack"
+
+
 class Backup(NamedTuple):
     """一份備份：檔案在哪、裡面的 HEAD 是哪一版。"""
 
@@ -79,11 +84,19 @@ def _create(repo: str, partial: pathlib.Path) -> None:
     那一刻的 refs 打包，一致）到暫存目錄，再從那份沒有人在寫的快照打包——同一個實測 40 次裡 0 次壞。
     `--no-local` 不能省：本機 clone 預設直接複製 objects 目錄再抄 refs，中間落地的 commit 會讓 ref
     指到一個沒複製到的物件。
+
+    讀來源的那個 upload-pack 子程序要**自己**帶 `safe.directory`。備份常常不是由設定庫的擁有者跑的
+    （主機上的 script/backup.sh 以呼叫者的身分跑，設定庫屬於服務的使用者），git 對別人擁有的 repo
+    預設拒絕；而它刻意**不把**呼叫端的 `-c` 與 `GIT_CONFIG_COUNT` 傳給那個子程序，所以在外面設什麼都
+    沒有用——演練時備份就是這樣失敗的。`--upload-pack` 換掉的只有這一次、讀這一份 repo 的那個指令，
+    放行的範圍因此就是「這次備份要讀的那一份」，不是整台機器。
     """
     with tempfile.TemporaryDirectory(prefix="config_manager-snapshot-") as scratch:
         snapshot = str(pathlib.Path(scratch, "snapshot.git"))
         try:
-            _git("clone", "-q", "--no-local", "--bare", repo, snapshot)
+            _git(
+                "clone", "-q", "--no-local", "--bare", "--upload-pack", _UPLOAD_PACK, repo, snapshot
+            )
             _git("-C", snapshot, "bundle", "create", str(partial), "--all")
         except subprocess.CalledProcessError as error:
             partial.unlink(missing_ok=True)
