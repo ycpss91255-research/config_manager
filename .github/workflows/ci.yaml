@@ -129,6 +129,19 @@ jobs:
       - uses: actions/checkout@v7
       - run: ./script/compose_smoke.sh
 
+  backup-drill:
+    # 備份與還原的實際演練（T26 的第三個觀察位置，#52）：真的容器、真的 volume、真的檔案權限底下，
+    # 服務開著邊進版邊備份、三種該拒絕的還原、設定庫整個沒了之後還原回來、目標狀態重新比對、
+    # 補回缺檔並核對內容與權限、偏離的不被覆寫。設定庫層與主機端指令那兩半在 checks 裡；三者回答
+    # 不同的問題，結果分開。
+    #
+    # 跑在映像之外，與 compose-smoke 同一個理由：它要 docker daemon 與真的 host 網路。它用隔離的
+    # compose 專案名、自己的 volume 與暫存的目標目錄，結束時清掉。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./script/backup_drill.sh
+
   ci-rollup:
     # 唯一的必要狀態檢查，比照 base。分支保護只指名這一個 job，所以在上面新增一個
     # job 永遠不必去改保護規則。
@@ -136,7 +149,7 @@ jobs:
     # `always()` 加上明確的結果判定：少了它，被跳過或被取消的相依會被讀成成功，
     # 於是閘門會在一次什麼都沒檢查的執行上打開。
     if: always()
-    needs: [commit-message, checkpoints, test-interfaces, checks, acceptance, build, compose-smoke]
+    needs: [commit-message, checkpoints, test-interfaces, checks, acceptance, build, compose-smoke, backup-drill]
     runs-on: ubuntu-latest
     steps:
       - name: Check that every job passed

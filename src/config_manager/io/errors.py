@@ -376,3 +376,23 @@ class AttributesLeftBehind(Exception):
     與 `OnboardLeftBehind` 同構：同時說出原本的失敗與清理的失敗、指名殘留了什麼，
     `__cause__` 指向原本的失敗。
     """
+
+
+class BackupError(Exception):
+    """備份與還原（#52）的基底。"""
+
+
+class BackupUnverifiable(BackupError):
+    """備份檔驗不過：讀不到、不是 git bundle、內容不完整，或還原出來的不是一份 config-repo。
+
+    「驗」的定義是**真的 clone 一次**：`git bundle verify` 對截斷的 bundle 會說 okay（它只看表頭），
+    所以不拿它當證據。備份當下驗不過就不算備份完成；還原前驗不過就不碰目的地。
+    """
+
+
+class RestoreTargetOccupied(BackupError):
+    """還原的目的地不是空的（或不是目錄）。不清空、不覆蓋：打錯指令不該蓋掉現有的設定庫。"""
+
+
+class RestoreFailed(BackupError):
+    """驗證過的備份往目的地還原時失敗。目的地已清回還原前的樣子，不會留下半個 repo 被當成好的。"""
