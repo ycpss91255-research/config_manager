@@ -4864,7 +4864,10 @@ def _help_page(open_page, site, seen: list | None = None):
     page = open_page().context.new_page()
     if seen is not None:
         page.on("request", lambda request: seen.append(request.url))
-    page.goto(f"{site}/help.html")
+    response = page.goto(f"{site}/help.html")
+    # 頁面要真的供應得出來。不在的時候拿到的是 404 那一頁——它沒有連結、也不發別的請求，
+    # 「不連外」那兩則會因此空過（第一輪 CI 就是這樣：實作還不存在，它們卻是綠的）。
+    assert response is not None and response.ok, "help.html 沒有供應出來"
     return page
 
 
@@ -4923,7 +4926,7 @@ def test_the_help_page_links_point_nowhere_outside_this_service(open_page, site)
     targets = help_page.eval_on_selector_all(
         "[href], [src]", "nodes => nodes.map(n => n.getAttribute('href') || n.getAttribute('src'))"
     )
-    assert [t for t in targets if "//" in t] == []
+    assert targets and [t for t in targets if "//" in t] == []
 
 
 def test_every_button_the_help_page_names_exists_on_the_page_it_describes(open_page, site):
