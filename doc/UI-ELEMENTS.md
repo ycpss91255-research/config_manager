@@ -60,6 +60,8 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 進版結果橫幅 | `data-testid="promote-done"` ／ `"promote-error"` | 位於工作區上方、橫跨兩欄；下一次進版／捨棄前清掉 |
 | 退出 | 文字「退出」 | 有未進版草稿時二次確認 |
 | 目前模式 | `data-testid="current-mode"` | 恆常可見於標題列：「開發模式」／「部署模式」，由後端 `GET /api/mode` 回報、前端只顯示不可改；問不到時顯示「模式未知」且 `body` 不帶 `data-mode`。有模式時 `body[data-mode="development|deployment"]`，依模式開關的行為（閒置逾時、記住此裝置）讀它（#47） |
+| 說明連結 | 文字「說明」（標題列 `data-testid="help-link"`；身分輸入頁 `data-testid="identity-help-link"`） | 兩處都有：還沒輸入身分的人也找得到。**開新分頁**（`target="_blank"`），不把人從改到一半的畫面帶走；連到同一個前端服務的 `help.html`，不連外部網路（#54） |
+| 開發者記號 | `data-testid="dev-mark"`，文字「🔧 開發者」 | 附在四類開發者專屬操作的入口上：白名單按鈕、屬性按鈕、產生 schema 按鈕、型別欄的標題（`data-testid="param-type-head"`）。**記號帶著字，不只靠圖示**；`title` 說明一般使用者看不到這個操作。一般使用者的畫面上沒有任何一個（那些入口本來就不在 DOM）（#54） |
 | 目前角色 | `data-testid="current-role"` | 恆常可見於標題列：`姓名・角色`；唯讀時顯示「唯讀」，**取回編輯階段後改回身分**（重新整理會先釋放再取回） |
 
 ### 左側樹
