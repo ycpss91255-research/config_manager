@@ -1579,7 +1579,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/compose_smoke.sh` | T25（服務實測那一半；只在 CI 的 Linux runner 上執行，由 `compose-smoke` job 呼叫——它要 docker daemon 與真的 host 網路，工具映像裡兩者都沒有） | 已落地 |
 | `script/backup.sh` | T26（主機端指令） | 已落地（#52） |
 | `script/restore.sh` | T26（主機端指令；「服務還在跑就拒絕」那道確認在這裡，CLI 在容器裡看不見 compose） | 已落地（#52） |
-| `script/backup_drill.sh` | T26（實際演練；只在 CI 的 Linux runner 上執行） | 未落地（#52：介面先於實作寫下） |
+| `script/backup_drill.sh` | T26（實際演練；只在 CI 的 Linux runner 上執行，由 `backup-drill` job 呼叫——它要 docker daemon 與真的 host 網路） | 已落地（#52） |
 | `script/lint_adr.sh` | T19 | 已落地 |
 | `script/lint_commit.sh` | T19 | 已落地 |
 | `script/lint_paths.sh` | T19 | 已落地 |
