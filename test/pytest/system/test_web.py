@@ -332,6 +332,9 @@ def test_the_identity_form_is_what_you_see_before_you_have_said_who_you_are(open
     # 變更紀錄要追溯得到人。
     page = open_page()
 
+    # 等它出現，不是開頁後立刻看：頁面要先問完模式與身分（兩個請求）才決定顯示身分輸入頁，而
+    # `goto` 在那之前就回來了。立刻斷言量到的是「請求跑得夠不夠快」，在 CI 上偶爾不夠快。
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
     assert page.is_visible("[data-testid='identity-form']")
 
 
@@ -489,6 +492,8 @@ def test_the_identity_page_is_still_there_when_the_backend_never_answers(open_pa
     # 打不出去也一樣——不是空白，也不是一個轉不完的圈。
     page = open_page(unreachable="**/api/session")
 
+    # 同上：等它出現。這一則要說的是「最後看得到身分輸入頁」，不是「載入的那一瞬間就看得到」。
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
     assert page.is_visible("[data-testid='identity-form']")
 
 
