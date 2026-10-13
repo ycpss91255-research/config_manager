@@ -15,7 +15,7 @@
 - `src/config_manager/core/` — 純邏輯，**不做 I/O**：需要檔案內容？當參數傳進來。核心層的每個測試都在無檔案系統、無 git、無網路的情況下執行。
 - `src/config_manager/io/` — 檔案系統與 git 的 adapter。所有東西都在單一頂層套件底下，因為頂層的 `io/` 會遮蔽 stdlib 的同名模組，甚至讓直譯器無法啟動（ADR-00000026）。
 - `src/config_manager/api/` — HTTP 端點與 CLI（CLI 是 HTTP client，ADR-00000009）。
-- `src/config_manager/web/` — 單一 HTML 入口。
+- `src/config_manager/web/` — 單一 HTML 入口（`index.html`）；`help.html` 是靜態說明頁，介面上的字改了要一起改（#54）。
 
 ## 工作流程
 

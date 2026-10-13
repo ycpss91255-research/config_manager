@@ -47,7 +47,7 @@ just                   # 列出所有命令
 | `src/config_manager/core/` | 純邏輯，不碰檔案系統與 git——因此可在無檔案系統下完整測試 |
 | `src/config_manager/io/` | 一切對外互動：parsers、git wrapper、原子寫出 |
 | `src/config_manager/api/` | HTTP 端點、身分與編輯階段、CLI（CLI 是 API client） |
-| `src/config_manager/web/` | 單一 HTML 頁面與靜態資源 |
+| `src/config_manager/web/` | 單一 HTML 頁面（`index.html`）與靜態說明頁（`help.html`，介面右上角「說明」開的那一頁；不載入任何外部資源） |
 | `test/` | 三軸：靜態分析 `lint/`、層級 `pytest/`、型別 `bats/`、`reserved/` |
 | `doc/` | `adr/`、`changelog/`、`test/`、`TEST-PLAN.md`、`UI-ELEMENTS.md`、`PRD.md` |
 | `tools/` + `figures/` | 圖表產生腳本與輸出 |

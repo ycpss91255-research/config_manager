@@ -1575,7 +1575,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 已落地：身分（`author`）；階段 `SessionLock` 的 acquire／renew／resume（重新整理後接續、換識別碼）／release／sweep，時鐘注入（#33） |
 | `api/lock` | T9 | 已落地（`POST`／`GET /api/session` 與編輯階段的取得／續期／釋放／狀態端點——設身分要看階段有沒有被別人持有，接線放一起；逾時回收清草稿並回報，#33；權限門檻 `require_permission` 也在這裡，白名單維護、候選數預覽、產生 schema、型別指定與屬性編輯共用，誰能做什麼問 `core/roles.permits`，#47） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |
-| `web/` | T11 | 已落地。執行通路於 #97 補上：`test/pytest/system/test_web.py`，Playwright 驅動 Chromium，行覆蓋率由 V8 自己算 |
+| `web/` | T11 | 已落地。執行通路於 #97 補上：`test/pytest/system/test_web.py`，Playwright 驅動 Chromium，行覆蓋率由 V8 自己算。`help.html`（#54）是沒有腳本的靜態說明頁，同樣由 T11 觀察（段落、不連外、點名的介面用字存在於 `index.html`） |
 | `**/__init__.py` | 無——見「刻意的空格」 | 已落地 |
 | `script/entrypoint.sh` | T15 | 已落地 |
 | `script/compose_smoke.sh` | T25（服務實測那一半；只在 CI 的 Linux runner 上執行，由 `compose-smoke` job 呼叫——它要 docker daemon 與真的 host 網路，工具映像裡兩者都沒有） | 已落地 |

@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>config_manager 說明</title>
+<!--
+  說明頁（#54）。與 index.html 放在同一個目錄、由同一個前端服務供應、隨映像一起發布。
+
+  **這一頁不載入任何外部資源**——沒有外部的樣式、字型、腳本或圖片，也沒有指向外部的連結。現場的
+  機器不一定連得出去，而說明是在出狀況的時候才會被打開的東西。也沒有腳本：它只是文字。
+
+  介面上的字（按鈕、狀態、欄位名）一律包在 class="ui" 裡。test/pytest/system/test_web.py 會把
+  它們逐一對回 index.html——介面改了字而這裡沒跟上，那一則規格會紅。改 index.html 的按鈕文字時，
+  這裡要一起改。
+-->
+<style>
+  :root { --ink: #1f2328; --muted: #57606a; --line: #d0d7de; --soft: #f6f8fa; --accent: #0969da; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; color: var(--ink); background: #fff;
+    font: 15px/1.7 -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+  }
+  header { padding: 20px 24px 12px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0 0 4px; font-size: 22px; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+  .layout { display: flex; gap: 32px; max-width: 1080px; margin: 0 auto; padding: 0 24px 64px; }
+  nav { flex: none; width: 220px; padding-top: 24px; }
+  nav ol { position: sticky; top: 16px; margin: 0; padding: 0 0 0 20px; font-size: 14px; }
+  nav li { margin: 4px 0; }
+  main { flex: 1; min-width: 0; }
+  h2 { margin: 40px 0 8px; padding-top: 8px; font-size: 19px; border-top: 1px solid var(--line); }
+  main section:first-child h2 { border-top: 0; margin-top: 24px; }
+  h3 { margin: 24px 0 6px; font-size: 15px; }
+  a { color: var(--accent); }
+  ol, ul { padding-left: 22px; }
+  li { margin: 4px 0; }
+  .ui {
+    padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--soft);
+    font-size: 13px; white-space: nowrap;
+  }
+  code { padding: 1px 5px; border-radius: 4px; background: var(--soft); font-size: 13px; }
+  pre { margin: 8px 0; padding: 10px 12px; border-radius: 6px; background: var(--soft); overflow-x: auto; }
+  pre code { padding: 0; background: none; }
+  .note { margin: 12px 0; padding: 10px 14px; border-left: 3px solid var(--accent); background: var(--soft); }
+  .warn { border-left-color: #bf8700; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 14px; }
+  th, td { padding: 6px 10px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { background: var(--soft); font-weight: 600; white-space: nowrap; }
+  @media (max-width: 760px) { .layout { display: block; } nav { width: auto; } nav ol { position: static; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>config_manager 說明</h1>
+  <p>照「我現在要做什麼」找對應的那一段。這一頁開在新分頁，原本的畫面還在。</p>
+</header>
+
+<div class="layout">
+
+<nav aria-label="目錄">
+  <ol>
+    <li><a href="#onboard">納管一份設定檔</a></li>
+    <li><a href="#edit">修改參數並進版</a></li>
+    <li><a href="#revert">退版</a></li>
+    <li><a href="#drift">處置偏離</a></li>
+    <li><a href="#write-out">目標檔不見了：寫出到目標</a></li>
+    <li><a href="#roles">角色與模式</a></li>
+    <li><a href="#faq">常見問題</a></li>
+    <li><a href="#backup">備份與還原</a></li>
+    <li><a href="#glossary">名詞對照</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<section id="onboard">
+<h2>納管一份設定檔</h2>
+<p>把一份已經在這台機器上的設定檔交給系統管理。納管<strong>不會改動檔案內容</strong>，只是從這一刻起開始追蹤它。</p>
+<ol>
+  <li>按標題列的 <span class="ui">納管</span>。</li>
+  <li>從列出的目錄一路點進去，找到那個檔案。只有白名單裡的目錄看得到。</li>
+  <li>選好檔案後按 <span class="ui">檢視並納管</span>。</li>
+  <li>確認畫面會列出偵測到的格式與內容摘要。有幾種讀法的值（例如 <code>yes</code>、<code>08</code>）會請你逐一勾選確認。</li>
+  <li>按 <span class="ui">確認寫入</span>。這份設定檔會出現在左側清單，狀態是 <span class="ui">一致</span>。</li>
+</ol>
+<p class="note">要納管的目錄不在白名單裡時，一般使用者請開發者把它加進去；開發者可以在被拒絕的畫面上直接加，或按標題列的 <span class="ui">白名單</span>。</p>
+</section>
+
+<section id="edit">
+<h2>修改參數並進版</h2>
+<p>改值分兩步：先<strong>儲存成草稿</strong>，再<strong>進版</strong>。進版之前，機器上的檔案不會變。</p>
+<ol>
+  <li>在左側清單雙擊那份設定檔（或選取後按 Enter），右側會出現參數欄位表。</li>
+  <li>改你要改的值。<span class="ui">來源值</span> 那一欄是目前已進版的值，方便對照。格式不對的欄位會當場標出來並說明怎麼修。</li>
+  <li>按 <span class="ui">儲存</span>。這時改動是草稿：沒有紀錄，也還沒寫到機器上。</li>
+  <li>要改的都存好之後，按標題列的 <span class="ui">進版</span>（按鈕上的數字是待進版的草稿份數）。</li>
+  <li>確認之後，所有草稿一次驗證、留下變更紀錄、寫到各自的目標位置。</li>
+</ol>
+<p>不想要這些草稿了，按 <span class="ui">捨棄變更</span>。它只丟掉草稿，已進版的內容與機器上的檔案都不動。</p>
+<p class="note">進版是全域動作：一次把<strong>所有</strong>設定檔的草稿一起進版，不是只進目前看的那一份。</p>
+</section>
+
+<section id="revert">
+<h2>退版</h2>
+<p>把一份設定檔回復到先前的某個版本。退版是「再記一筆新的變更」，不會把歷史抹掉。</p>
+<ol>
+  <li>展開那份設定檔，按 <span class="ui">歷史</span>。</li>
+  <li>找到要回去的那一筆。每一筆都有作者與時間。</li>
+  <li>按那一筆的 <span class="ui">退回此版本</span>，確認。</li>
+</ol>
+<p>退版之後內容會寫回目標位置，歷史裡多一筆「退回舊版本」的紀錄。</p>
+<p class="note warn">這份設定檔還有沒進版的草稿時不能退版。先進版，或先捨棄草稿。</p>
+</section>
+
+<section id="drift">
+<h2>處置偏離</h2>
+<p><span class="ui">偏離</span> 的意思是：機器上的檔案和系統記得的不一樣，有人沒透過這個介面直接改了檔案。系統<strong>不會自己處置</strong>，要由人決定。</p>
+<ol>
+  <li>按 <span class="ui">檢查差異</span>，清單會標出哪幾份偏離。</li>
+  <li>展開偏離的那一份，按 <span class="ui">檢視差異</span>，看兩邊差在哪裡。</li>
+  <li>三選一：
+    <ul>
+      <li><span class="ui">以來源覆蓋目標</span>：現場的修改不要了，用系統記得的內容蓋回去。會先請你確認，並留下紀錄。</li>
+      <li><span class="ui">將目標現況納入來源</span>：現場的修改是對的，把它收進系統。內容要通過驗證才收得進來。</li>
+      <li><span class="ui">先納入、待修正</span>：現場的內容有不合規定的值，但想先收進來再慢慢修。它會變成一份草稿，修好之後再進版。</li>
+    </ul>
+  </li>
+</ol>
+</section>
+
+<section id="write-out">
+<h2>目標檔不見了：寫出到目標</h2>
+<p><span class="ui">未部署</span> 的意思是：系統裡有這份設定檔的內容，但機器上那個位置沒有檔案（被刪掉或搬走了）。</p>
+<ol>
+  <li>按 <span class="ui">檢查差異</span>，找到狀態是 <span class="ui">未部署</span> 的那一份。</li>
+  <li>展開它，畫面會說明缺的是哪個位置的檔案。</li>
+  <li>按 <span class="ui">寫出到目標</span>。系統把記得的內容寫回去，擁有者與權限也照紀錄設好，狀態回到 <span class="ui">一致</span>。</li>
+</ol>
+<p class="note warn"><strong>這條路只補不存在的檔案，不會覆蓋既有的內容。</strong>那個位置已經有檔案的話，它會拒絕、檔案原封不動。要用系統記得的內容蓋過一個還在的檔案，走「處置偏離」的 <span class="ui">以來源覆蓋目標</span>——那條路會先確認，並留下是誰、何時蓋掉的紀錄。</p>
+<p>寫出到目標不會改動系統記得的內容，所以它不會留下變更紀錄。</p>
+</section>
+
+<section id="roles">
+<h2>角色與模式</h2>
+<p>角色決定<strong>你能做什麼</strong>，模式決定<strong>這套服務怎麼運作</strong>。兩者互不影響。</p>
+
+<h3>角色：輸入身分時自己選</h3>
+<table>
+  <tr><th>角色</th><th>能做的事</th></tr>
+  <tr><td><span class="ui">一般使用者</span></td><td>納管、修改參數、進版、退版、處置偏離、解除納管。</td></tr>
+  <tr><td><span class="ui">開發者</span></td><td>以上全部，另外可以：改設定檔的屬性（名稱、群組、主機、說明）、指定參數的型別、產生 schema、維護白名單。</td></tr>
+</table>
+<p>畫面上標著「🔧 開發者」的入口，是只有開發者才有的操作。<strong>一般使用者的畫面上不會出現這些入口</strong>——看不到某個按鈕不是壞掉，也不是權限被關掉，是那個操作屬於另一個角色。需要的話，退出後重新選角色。</p>
+<p>這裡沒有密碼，角色是自己選的。它的用途是讓不常用的操作不要擋在日常畫面上，不是用來管制誰能做什麼。</p>
+
+<h3>模式：由服務決定，畫面右上角看得到</h3>
+<table>
+  <tr><th>模式</th><th>差別</th></tr>
+  <tr><td><span class="ui">部署模式</span></td><td>一段時間沒有操作會自動退出（逾時前會提示，按 <span class="ui">繼續使用</span> 可以延長）。沒有「記住此裝置」。現場用的是這一種。</td></tr>
+  <tr><td><span class="ui">開發模式</span></td><td>不會因為閒置被退出；身分輸入頁可以勾 <span class="ui">記住此裝置</span>，下次不必再填姓名與 Email。</td></tr>
+</table>
+</section>
+
+<section id="faq">
+<h2>常見問題</h2>
+
+<h3>為什麼我的畫面是唯讀，不能改？</h3>
+<p>同一時間只有一個人能編輯。別人正在編輯的時候，你的畫面上方會出現橫幅，寫著是誰、從什麼時候開始，而所有會寫入的按鈕都不出現。等對方進版、捨棄或關掉頁面之後，重新整理就能取得編輯權。對方的頁面當掉沒有正常關閉的話，過一陣子系統會自動收回。沒有「強制接管」。</p>
+
+<h3>為什麼又要我重新輸入身分？</h3>
+<p>身分記在你這個瀏覽器上，而且這不是登入——沒有帳號可以「保持登入」。下面幾種情況都要重新輸入：關掉瀏覽器再開、換一個瀏覽器或另一台電腦、部署模式下閒置太久被自動退出、服務重新啟動過。開發模式下可以勾 <span class="ui">記住此裝置</span> 省掉姓名與 Email，角色仍然每次要選。</p>
+
+<h3>我按了儲存，為什麼機器上的檔案沒變？（草稿還沒進版）</h3>
+<p><span class="ui">儲存</span> 只是把改動存成草稿。草稿不留紀錄，也不寫到機器上。要讓改動生效，按標題列的 <span class="ui">進版</span>。按鈕上的數字不是 0，就代表還有草稿沒進版。</p>
+
+<h3>服務重啟之後，我的草稿去哪了？</h3>
+<p>沒有了。草稿只留在服務的記憶體裡，服務一重啟就消失，救不回來。已經進版的內容、歷史、清單與白名單都還在。改到一半要離開很久、或知道服務要重啟之前，先進版。</p>
+</section>
+
+<section id="backup">
+<h2>備份與還原</h2>
+<p>這一段是給<strong>管理這台機器的人</strong>看的：指令要在機器上執行，不在這個頁面上。完整步驟在隨程式附的部署文件（<code>doc/DEPLOYMENT.md</code> 的「備份與還原」）。</p>
+
+<p class="note warn"><strong>這不是整機備份。</strong>備份的只有系統記得的東西：納管清單、每一份設定檔已進版的內容、白名單、全部的變更歷史。<strong>機器上實際的設定檔不在備份裡</strong>，還沒進版的草稿也不在。</p>
+
+<h3>備份</h3>
+<p>服務不必停，隨時可以做：</p>
+<pre><code>just docker backup /path/to/backups</code></pre>
+<p>做出來的是一個檔案。指令說完成的時候，那個檔案已經被實際還原過一次確認可用。把它放到另一台機器或另一顆磁碟上。</p>
+
+<h3>還原</h3>
+<p>還原之前有兩個條件，少一個指令就拒絕、什麼都不動：</p>
+<ol>
+  <li><strong>服務已經停了。</strong></li>
+  <li><strong>系統的資料是空的。</strong>還原不會覆蓋、也不會替你清掉現有的資料。</li>
+</ol>
+<pre><code>just docker restore /path/to/backups/config-repo-….bundle</code></pre>
+
+<h3>還原之後</h3>
+<p>還原回來的是系統記得的內容，機器上的檔案沒有被動過。啟動服務後按 <span class="ui">檢查差異</span>，系統會重新比對：</p>
+<ul>
+  <li><span class="ui">一致</span>：不用做什麼。</li>
+  <li><span class="ui">未部署</span>：檔案不見了，照「目標檔不見了」那一段用 <span class="ui">寫出到目標</span> 補回來。</li>
+  <li><span class="ui">偏離</span>：檔案在備份之後被改過。系統不會自動覆蓋，照「處置偏離」那一段決定。</li>
+</ul>
+</section>
+
+<section id="glossary">
+<h2>名詞對照</h2>
+<table>
+  <tr><th>名詞</th><th>意思</th></tr>
+  <tr><td>納管</td><td>把一份已經在機器上的設定檔交給系統管理。過程不改檔案內容。</td></tr>
+  <tr><td>解除納管</td><td>停止管理。機器上的檔案留著，系統不再追蹤它。</td></tr>
+  <tr><td>來源</td><td>系統記得的那一份內容。系統認定它是正確的版本。</td></tr>
+  <tr><td>目標位置</td><td>設定檔在機器上實際被程式讀取的路徑。</td></tr>
+  <tr><td>草稿</td><td>已經在介面上改了、但還沒進版的內容。不在來源裡，也不在機器上。</td></tr>
+  <tr><td>進版</td><td>把全部草稿一次驗證、留下紀錄、寫到機器上。</td></tr>
+  <tr><td>退版</td><td>回復到先前的版本。以一筆新的變更完成，不改寫歷史。</td></tr>
+  <tr><td>寫出</td><td>把來源的內容寫到目標位置，並設好擁有者與權限。</td></tr>
+  <tr><td>納入</td><td>把機器上檔案的現況收回來源。</td></tr>
+  <tr><td>白名單</td><td>系統可以碰機器上哪些目錄的清單。不在裡面的目錄看不到、也納管不了。</td></tr>
+  <tr><td><span class="ui">一致</span></td><td>機器上的檔案與來源相同。</td></tr>
+  <tr><td><span class="ui">偏離</span></td><td>機器上的檔案與來源不同，代表有人繞過介面直接改了。唯一的異常狀態。</td></tr>
+  <tr><td><span class="ui">未部署</span></td><td>機器上那個位置沒有檔案。</td></tr>
+</table>
+<p>這不是登入：輸入的姓名與 Email 只用來讓每一筆變更追溯得到人，沒有密碼，也不會驗證。</p>
+</section>
+
+</main>
+</div>
+
+</body>
+</html>
