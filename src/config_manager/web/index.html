@@ -489,6 +489,10 @@
   <a class="help-link" data-testid="identity-help-link" href="help.html" target="_blank" rel="noopener">說明</a>
 </form>
 
+<!-- 開發者專屬操作的記號（#54）。由 script 的 devMark() 複製後附在入口上；樣子寫在這裡而不是
+     script 裡，見 devMark() 的說明。有字，不只圖示。 -->
+<template id="dev-mark-template"><span class="dev-mark" data-testid="dev-mark" title="開發者專屬操作：一般使用者看不到這個入口">🔧 開發者</span></template>
+
 <header hidden>
   <h1>config_manager</h1>
   <!-- 搜尋範圍（#37、§7.4.2）：預設「全部」＝四種範圍的聯集；指定範圍是為了降噪。 -->
@@ -772,14 +776,14 @@ function element(tag, attributes, children) {
 }
 
 // 開發者專屬操作的記號（#54、CONTEXT.md「角色與環境」）。附在入口自己的字後面——記號帶著字，
-// 不只靠圖示：「🔧」單獨出現時說不出它是什麼意思，螢幕閱讀器也只會念出一個扳手。
+// 不只靠圖示：扳手圖示單獨出現時說不出它是什麼意思，螢幕閱讀器也只會念出「扳手」。
 // 一般使用者的畫面上沒有它：那些入口對一般使用者本來就不出現（ADR-00000020）。
+//
+// 記號的樣子寫在 HTML 的 <template> 裡，這裡只複製：那個圖示是基本平面外的字元，放進這段
+// script 會讓 V8 的位移與覆蓋率工具的字串索引對不齊（test/pytest/system/v8_coverage.py 會擋）。
+const devMarkTemplate = document.getElementById("dev-mark-template");
 function devMark() {
-  return element("span", {
-    class: "dev-mark", "data-testid": "dev-mark",
-    title: "開發者專屬操作：一般使用者看不到這個入口",
-    text: "🔧 開發者",
-  });
+  return devMarkTemplate.content.firstElementChild.cloneNode(true);
 }
 
 // 一個常駐在 DOM 裡、依角色顯示或隱藏的入口（標題列的「白名單」）：記號跟著角色加上或拿掉。
