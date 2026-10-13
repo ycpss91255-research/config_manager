@@ -116,6 +116,27 @@ def test_a_backup_taken_while_changes_are_being_recorded_is_still_a_complete_ver
     assert all(restore(m.path, str(tmp_path / f"r{i}")).head == m.head for i, m in enumerate(made))
 
 
+def test_a_repo_owned_by_someone_else_can_still_be_backed_up(tmp_path, monkeypatch):
+    # 主機上的 script/backup.sh 以**呼叫者**的身分跑（備份檔才是呼叫者的），而設定庫屬於服務的
+    # 使用者。git 預設拒絕讀別人擁有的 repo（safe.directory），而且**不把** `-c`／GIT_CONFIG_COUNT
+    # 傳給它為了讀來源而起的 upload-pack 子程序——所以在外面設環境變數沒有用，實際演練時備份就是
+    # 這樣失敗的（「Could not read from remote repository」）。這裡只對「讀來源」那一次 clone 讓
+    # git 把擁有者當成別人（GIT_TEST_ASSUME_DIFFERENT_OWNER，git 自己的測試用開關），其餘照常。
+    repo = _repo(tmp_path)
+    real_run = subprocess.run
+
+    def source_is_someone_elses(command, *args, **kwargs):
+        if "clone" in command and str(repo) in command:
+            kwargs["env"] = {**os.environ, "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"}
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", source_is_someone_elses)
+
+    made = bundle(str(repo), str(tmp_path / "backups"))
+
+    assert (pathlib.Path(made.path).is_file(), made.head) == (True, head(str(repo)))
+
+
 def test_a_backup_that_cannot_be_restored_is_not_reported_as_made(tmp_path, monkeypatch):
     # 「備份完成」的定義是 clone 得出來。讓 clone 失敗，備份就不算做成，而且不留下一個會被
     # 當成好備份的檔案。
