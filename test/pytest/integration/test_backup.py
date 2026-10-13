@@ -138,17 +138,18 @@ def test_a_repo_owned_by_someone_else_can_still_be_backed_up(tmp_path, monkeypat
 
 
 def test_a_backup_that_cannot_be_restored_is_not_reported_as_made(tmp_path, monkeypatch):
-    # 「備份完成」的定義是 clone 得出來。讓 clone 失敗，備份就不算做成，而且不留下一個會被
-    # 當成好備份的檔案。
+    # 「備份完成」的定義是做出來的檔案 clone 得出來（#52 定案 1：不能只確認檔案存在）。只讓**驗證**
+    # 那一次 clone——來源是剛做出來的那個檔案——失敗；打包前拍快照的那一次 clone 照常。兩個都叫
+    # clone，不分開的話這一則會因為快照失敗而綠，量不到驗證有沒有做。
     repo = _repo(tmp_path)
     real_run = subprocess.run
 
-    def failing_clone(command, *args, **kwargs):
-        if "clone" in command:
+    def verification_fails(command, *args, **kwargs):
+        if "clone" in command and any(str(part).endswith(".partial") for part in command):
             raise subprocess.CalledProcessError(128, command, stderr="fatal: index-pack died")
         return real_run(command, *args, **kwargs)
 
-    monkeypatch.setattr(subprocess, "run", failing_clone)
+    monkeypatch.setattr(subprocess, "run", verification_fails)
 
     with pytest.raises(BackupUnverifiable) as caught:
         bundle(str(repo), str(tmp_path / "backups"))
