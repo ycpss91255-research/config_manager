@@ -825,8 +825,12 @@ def test_an_unchanged_empty_inline_files_array_is_written_back_verbatim():
 
 
 def test_adding_an_entry_to_an_empty_inline_files_array_writes_it_as_a_table():
-    # 同一個鍵不能既是 inline 陣列又是 [[files]]：留著 `files = []` 再附加，寫出來的就不是
-    # 合法 TOML。斷言寫回的清單檔載入得回那一筆。
+    # 同一個鍵不能既是 inline 陣列又是 [[files]]：`files = []` 那一行拿掉，新條目照一般的附加
+    # 寫在最後，其餘逐位元組不動。只斷言「載入得回那一筆」擋不住另一種壞法：把 [[files]] 就地
+    # 換進 `files = []` 的位置，tomlkit 會把它排到 [defaults.permissions] 前面，defaults 上方的
+    # 註解就變成新條目的註解——仍是合法 TOML，但原樣沒了。
+    expected = _EMPTY_INLINE_FILES_TEXT.replace("files = []\n", "") + _APPENDED_ENTRY_BLOCK
+
     config_list = load(_EMPTY_INLINE_FILES_TEXT)
     config_list.files.append(
         FileEntry(
@@ -840,9 +844,7 @@ def test_adding_an_entry_to_an_empty_inline_files_array_writes_it_as_a_table():
         )
     )
 
-    result = dump(config_list, _EMPTY_INLINE_FILES_TEXT)
-
-    assert [entry.uid for entry in load(result).files] == ["mfz3maa1"]
+    assert dump(config_list, _EMPTY_INLINE_FILES_TEXT) == expected
 
 
 # 附加在既有之後的新條目。欄位順序依 PDF §4.3；新條目沒有原樣可保留，
