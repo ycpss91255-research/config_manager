@@ -171,8 +171,8 @@ def test_setting_a_yaml_value_keeps_comments_quotes_and_order():
 
     set_value(parsed, "speed", 2.0)
 
-    # 註解文字、引號樣式、鍵順序、其餘各行逐位元組保留。唯一的正規化：被改那一行的行內
-    # 註解前空白由 ruamel 重排成一個（重建值時不保留原本的欄位對齊）——記在 T6 第二列。
+    # 註解文字、引號樣式、鍵順序、其餘各行逐位元組保留。唯一的正規化：被改那一行的新值寫到了
+    # 原本註解的欄位，註解前就退成一個空白（寫得下時留在原欄位）——記在 T6 的說明段落。
     assert dump(parsed) == "# top\nspeed: 2.0 # fast\nname: 'x'\n"
 
 
@@ -273,3 +273,121 @@ def test_replacing_an_integer_list_leaves_integers_alone():
     set_value(parsed, "ids", [2, 1, 3])
 
     assert dump(parsed) == "ids: [2, 1, 3]\n"
+
+
+# ── F9：改了別的值，沒改的部分照原寫法寫回（人工驗收 U21、U36，T6 末三列）──────────────
+# 用的是驗收時真的進版過的檔（cm-verify/accept.sh 準備的內容，逐字照抄；雜湊與驗收環境的原檔相同）。
+# 期望值＝原檔只換掉被改的那幾行，被改的行取自驗收時目標檔實際寫出的樣子；送進 set_value 的路徑與值
+# 照介面實際送的（數字經 JSON 送來，1.0 到這裡是 1；清單送最外層的整個清單）。一律逐行比對。
+
+_ACCEPT_ROBOT_YAML = (  # sha256 854ae57f…：準備時的 robot.yaml
+    "# 驗收用：機器人參數（U07、U19–U26、U29、U31、U33、U34、U36）\n"
+    "robot:\n"
+    "  name: accept-bot      # 字串\n"
+    "  enabled: true         # 布林\n"
+    "  max_vel: 0.55         # 小數（公尺／秒）\n"
+    "  min_vel: 0.1\n"
+    "  retries: 3            # 整數\n"
+    "  mode: normal          # 選項：normal／safe／fast（schema 設好之後才有下拉）\n"
+    "ports: [8101, 8102]\n"
+    "stages:\n"
+    "  - name: alpha\n"
+    "    ports: [8201, 8202]\n"
+    "  - name: beta\n"
+    "    ports: [8301]\n"
+    "notes: null             # 型別未知：未結構化編輯（U36）\n"
+)
+
+# sha256 c83e7038…：U36 動手前的 robot.yaml（U21 已把 notes 寫成空白、U29 把 max_vel 改成 1.5）。
+_ROBOT_YAML_BEFORE_U36 = (
+    _ACCEPT_ROBOT_YAML.replace("  max_vel: 0.55         #", "  max_vel: 1.5          #")
+    .replace("  retries: 3            #", "  retries: 5            #")
+    .replace("notes: null             #", "notes:                  #")
+)
+
+_ACCEPT_SENSOR_JSON = (  # sha256 5ac89d1b…：準備時的 sensor.json
+    "{\n"
+    '  "sensor": "lidar",\n'
+    '  "enabled": true,\n'
+    '  "rate_hz": 10,\n'
+    '  "range_m": 12.5,\n'
+    '  "max_vel": 0.55,\n'
+    '  "filters": ["median", "voxel"]\n'
+    "}\n"
+)
+
+
+def _lines(text):
+    return text.splitlines(keepends=True)
+
+
+def test_a_yaml_null_round_trips_as_written():
+    # 沒改任何值也一樣：`notes: null` 不能變成 `notes:`（F9 的根源在寫回空值，不在改值）。
+    assert _lines(dump(parse(_ACCEPT_ROBOT_YAML, "yaml"))) == _lines(_ACCEPT_ROBOT_YAML)
+
+
+def test_an_empty_yaml_null_round_trips_as_written():
+    # 寫成空白的空值仍是空白——「一律寫成 null」不算修好，那是反方向改寫沒改的行。
+    text = "spare:\nb: 1\n"
+
+    assert _lines(dump(parse(text, "yaml"))) == _lines(text)
+
+
+def test_changing_other_yaml_values_keeps_an_untouched_null_as_written():
+    # U21：只改 max_vel 與 retries，沒改的 `notes: null` 照原寫法寫回。
+    parsed = parse(_ACCEPT_ROBOT_YAML, "yaml")
+
+    set_value(parsed, "robot.max_vel", 1)
+    set_value(parsed, "robot.retries", 5)
+
+    expected = _ACCEPT_ROBOT_YAML.replace(
+        "  max_vel: 0.55         #", "  max_vel: 1.0          #"
+    ).replace("  retries: 3            #", "  retries: 5            #")
+    assert _lines(dump(parsed)) == _lines(expected)
+
+
+def test_replacing_a_list_keeps_its_untouched_parts_line_by_line():
+    # U36：介面改了 alpha 的 ports，送出的是頂層 ports 與最外層的整個 stages。被改的 alpha
+    # ports 寫成一行或分行這次不規定（使用者記為觀察）；它前後沒改的每一行都要逐字不動，
+    # 包括 beta 的 `ports: [8301]` 與空白的 `notes:`。
+    parsed = parse(_ROBOT_YAML_BEFORE_U36, "yaml")
+
+    set_value(parsed, "ports", [8103, 8102])
+    set_value(
+        parsed,
+        "stages",
+        [{"name": "alpha", "ports": [8203, 8202]}, {"name": "beta", "ports": [8301]}],
+    )
+
+    before = _lines(_ROBOT_YAML_BEFORE_U36.replace("ports: [8101, 8102]", "ports: [8103, 8102]"))
+    alpha_ports = before.index("    ports: [8201, 8202]\n")
+    head, tail = before[:alpha_ports], before[alpha_ports + 1 :]
+    out = _lines(dump(parsed))
+    assert (out[: len(head)], out[len(out) - len(tail) :]) == (head, tail)
+
+
+def test_changing_a_json_value_keeps_untouched_lines_as_written():
+    # sensor.json 只改 rate_hz：一行的 filters 陣列仍是原本那一行，其餘各行逐位元組不動。
+    parsed = parse(_ACCEPT_SENSOR_JSON, "json")
+
+    set_value(parsed, "rate_hz", 30)
+
+    expected = _ACCEPT_SENSOR_JSON.replace('"rate_hz": 10', '"rate_hz": 30')
+    assert _lines(dump(parsed)) == _lines(expected)
+
+
+def test_changing_two_json_values_keeps_a_multi_line_array_as_written():
+    # 分行的陣列照原本的換行、縮排、排列（json.dumps 會一項一行，收成一行也不對）；
+    # 介面存草稿時對每條路徑依序 set_value，連改兩個值也只有那兩行不同。
+    text = (
+        '{\n  "rate_hz": 10,\n  "filters": [\n    "median", "voxel"\n  ],\n  "range_m": 12.5\n}\n'
+    )
+    parsed = parse(text, "json")
+
+    set_value(parsed, "rate_hz", 30)
+    set_value(parsed, "range_m", 15.5)
+
+    expected = text.replace('"rate_hz": 10', '"rate_hz": 30').replace(
+        '"range_m": 12.5', '"range_m": 15.5'
+    )
+    assert _lines(dump(parsed)) == _lines(expected)
