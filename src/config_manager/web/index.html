@@ -2693,7 +2693,8 @@ async function resolveDrift(detail, option, view, errorEl, button) {
       clearPromoteBanners();
       if (option.action === "adopt_draft") {
         setDrafts(payload.drafts.map((draft) => draft.uid));
-        openPanel(detail.uid, adoptDraftNotice(payload.warnings));
+        // 來源與目標都沒動，狀態本來就仍是偏離，不必重掃；等欄位表換上，finally 才放開處置按鈕
+        await openPanel(detail.uid, adoptDraftNotice(payload.warnings));
         return;
       }
       promoteDoneEl.textContent = option.action === "overwrite"
@@ -2834,7 +2835,7 @@ async function promoteAll() {
     // 目標變了：重掃完才重畫打開的那幾份（現在來源＝剛進版的內容）。偏離的 config 進版後回到一致，
     // 不等重掃，欄位表會照舊清單寫「偏離」（F12，同 resolveDrift）。
     await load();
-    for (const uid of openUids()) await openPanel(uid);
+    await Promise.all(openUids().map((uid) => openPanel(uid)));
   } catch (error) {
     renderSaveError(promoteErrorEl, failureText("進版", error));
     setDrafts(draftUids);
