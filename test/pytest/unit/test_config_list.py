@@ -6,7 +6,7 @@
 import pytest
 
 from config_manager.core.config_list import dump, load
-from config_manager.core.models import Permissions
+from config_manager.core.models import FileEntry, Permissions
 from config_manager.core.errors import (
     ConfigListMalformed,
     DumpMismatch,
@@ -757,6 +757,92 @@ schema   = ".schemas/nav2.json"
     del config_list.files[0]
 
     assert dump(config_list, _EDIT_TEXT) == expected
+
+
+# 只剩一筆條目的清單檔。那一筆的區塊含它上方的空行與前導註解：刪掉它之後，清單檔停在
+# defaults 的最後一行，與首次啟動的種子同形（entrypoint 的種子不寫 files）。
+_LAST_ENTRY_BLOCK = """\
+
+# 導航參數，勿手改
+[[files]]
+uid      = "mfz3k9q1"
+name     = 'navigation-params'   # 單引號
+hostname = "amr01"
+source   = "files/amr01/nav2_params.yaml"
+target   = "/opt/robot/config/nav2_params.yaml"
+format   = "yaml"
+groups   = ["navigation"]
+"""
+
+_LAST_ENTRY_TEXT = """\
+list_version = 1
+
+# 未個別指定時套用的預設權限
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+""" + _LAST_ENTRY_BLOCK
+
+
+def test_removing_the_last_entry_leaves_no_files_key_and_the_rest_verbatim():
+    # 刪到不剩時，寫法不能隨 tomlkit 的版本而變：0.15.2 起它把清空的表格串列寫成
+    # `files = []` 並搬到檔頭，而那是 load 先前不收的形狀——解除管理最後一筆之後，下一次
+    # 載入與開機 preflight 都擋下。期望值：把那一筆的區塊整段切掉，其餘逐位元組不動。
+    expected = _LAST_ENTRY_TEXT.replace(_LAST_ENTRY_BLOCK, "")
+
+    config_list = load(_LAST_ENTRY_TEXT)
+    del config_list.files[0]
+
+    assert dump(config_list, _LAST_ENTRY_TEXT) == expected
+
+
+# tomlkit 0.15.2 在解除管理最後一筆之後實際寫出的清單檔：`files = []` 被搬到檔頭。合法
+# TOML、意思明確（沒有條目）；已經寫成這樣的清單檔要讀得回來、寫得回去，否則開不了機。
+_EMPTY_INLINE_FILES_TEXT = """\
+files = []
+list_version = 1
+
+# 未個別指定時套用的預設權限
+[defaults.permissions]
+owner = "root"
+group = "root"
+mode = "0644"
+"""
+
+
+def test_an_empty_inline_files_array_loads_as_no_entries():
+    # 空的 inline 陣列不是「寫錯形狀」：沒有條目時根本沒有 [[files]] 可寫。非空的 inline
+    # 陣列仍以 ConfigListMalformed 擋下（見 test_files_as_an_inline_array_is_rejected_…）。
+    assert load(_EMPTY_INLINE_FILES_TEXT).files == []
+
+
+def test_an_unchanged_empty_inline_files_array_is_written_back_verbatim():
+    # 清單檔本身也要原樣保留：沒改動就逐位元組相同，不因為形狀少見就順手改寫。
+    config_list = load(_EMPTY_INLINE_FILES_TEXT)
+
+    assert dump(config_list, _EMPTY_INLINE_FILES_TEXT) == _EMPTY_INLINE_FILES_TEXT
+
+
+def test_adding_an_entry_to_an_empty_inline_files_array_writes_it_as_a_table():
+    # 同一個鍵不能既是 inline 陣列又是 [[files]]：留著 `files = []` 再附加，寫出來的就不是
+    # 合法 TOML。斷言寫回的清單檔載入得回那一筆。
+    config_list = load(_EMPTY_INLINE_FILES_TEXT)
+    config_list.files.append(
+        FileEntry(
+            uid="mfz3maa1",
+            name="imu-driver",
+            hostname="amr01",
+            source="files/amr01/imu.yaml",
+            target="/opt/robot/config/imu.yaml",
+            format="yaml",
+            groups=["sensor"],
+        )
+    )
+
+    result = dump(config_list, _EMPTY_INLINE_FILES_TEXT)
+
+    assert [entry.uid for entry in load(result).files] == ["mfz3maa1"]
 
 
 # 附加在既有之後的新條目。欄位順序依 PDF §4.3；新條目沒有原樣可保留，
