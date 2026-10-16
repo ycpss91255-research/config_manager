@@ -2693,15 +2693,19 @@ async function resolveDrift(detail, option, view, errorEl, button) {
       clearPromoteBanners();
       if (option.action === "adopt_draft") {
         setDrafts(payload.drafts.map((draft) => draft.uid));
-        openPanel(detail.uid, adoptDraftNotice(payload.warnings));
+        // 來源與目標都沒動，狀態本來就仍是偏離，不必重掃；等欄位表換上，finally 才放開處置按鈕
+        await openPanel(detail.uid, adoptDraftNotice(payload.warnings));
         return;
       }
-      load();  // 覆蓋／納入後狀態回到一致，樹重掃
       promoteDoneEl.textContent = option.action === "overwrite"
         ? `已以來源覆蓋「${detail.name}」的目標，並記一筆變更紀錄。`
         : `已將「${detail.name}」的目標現況納入來源（採納現場調整），並寫出。`;
       promoteDoneEl.hidden = false;
-      openPanel(detail.uid);
+      // 覆蓋／納入後狀態回到一致：樹先換成現況，重畫的區塊才認得新的狀態。欄位表的狀態與偏離橫幅讀的
+      // 是清單——不等重掃就重開，內容先回來時欄位表會照舊清單寫「偏離」（人工驗收 U27、U28，F12）。
+      // 也等重開完才讓 finally 放開處置按鈕。
+      await load();
+      await openPanel(detail.uid);
     } catch (error) {
       renderSaveError(errorEl, failureText("處置偏離", error));
     } finally {
@@ -2828,8 +2832,10 @@ async function promoteAll() {
     setDrafts([]);  // 進版後草稿清空（T18）
     promoteDoneEl.textContent = `已進版 ${payload.promoted.length} 份，各記一筆變更紀錄並寫出至目標。`;
     promoteDoneEl.hidden = false;
-    load();  // 目標變了，重掃狀態
-    for (const uid of openUids()) openPanel(uid);  // 打開的那幾份現在來源＝剛進版的內容
+    // 目標變了：重掃完才重畫打開的那幾份（現在來源＝剛進版的內容）。偏離的 config 進版後回到一致，
+    // 不等重掃，欄位表會照舊清單寫「偏離」（F12，同 resolveDrift）。
+    await load();
+    await Promise.all(openUids().map((uid) => openPanel(uid)));
   } catch (error) {
     renderSaveError(promoteErrorEl, failureText("進版", error));
     setDrafts(draftUids);
