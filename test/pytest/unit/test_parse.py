@@ -224,7 +224,7 @@ def test_setting_a_toml_value_keeps_comments_and_sections():
 
 
 def test_setting_a_json_value_keeps_the_original_indent_and_key_order():
-    # json 沒有註解與引號樣式可失；偵測原檔縮排後重新序列化，保 key 順序（#17 的 D2）。
+    # json 只換掉被改的那個值的原文，縮排、key 順序跟著原文不動（#17 的 D2、F9）。
     text = '{\n    "speed": 1,\n    "name": "x"\n}\n'
     parsed = parse(text, "json")
 
@@ -391,3 +391,196 @@ def test_changing_two_json_values_keeps_a_multi_line_array_as_written():
         '"range_m": 12.5', '"range_m": 15.5'
     )
     assert _lines(dump(parsed)) == _lines(expected)
+
+
+# ── F9 的邊界：介面送回整個清單時常見的幾種改法，沒改的部分都逐行不動 ──────────────
+# 介面的清單操作（web/index.html）：改值、刪一項、上下移、新增時複製最後一項。每一種送來的都是
+# 最外層的整個清單。新增的那一項怎麼寫這次不規定，只比對它以外的行。
+
+_STAGES_YAML = (
+    "stages:\n"
+    "  - name: alpha  # 主線\n"
+    "    ports: [8201, 8202]\n"
+    "    gain: 1.00\n"
+    "  - name: beta   # 備援\n"
+    "    ports: [8301]\n"
+    "    gain: 2.50\n"
+)
+
+
+def test_removing_one_element_and_changing_another_keeps_the_survivors_own_writing():
+    # 刪掉 alpha、同時把 beta 的 gain 改成 3（介面送整數）：beta 帶著自己的註解與一行的 ports，
+    # 被改的 gain 寫出帶小數點。
+    parsed = parse(_STAGES_YAML, "yaml")
+
+    set_value(parsed, "stages", [{"name": "beta", "ports": [8301], "gain": 3}])
+
+    expected = "stages:\n  - name: beta   # 備援\n    ports: [8301]\n    gain: 3.0\n"
+    assert _lines(dump(parsed)) == _lines(expected)
+
+
+def test_swapping_two_elements_moves_each_with_its_own_comment_and_writing():
+    # 上下移：兩項都沒改（介面把 1.00 送成 1、2.50 送成 2.5），各自帶著註解、一行的 ports、
+    # `2.50` 與 `1.00` 的寫法換位置。
+    parsed = parse(_STAGES_YAML, "yaml")
+
+    set_value(
+        parsed,
+        "stages",
+        [
+            {"name": "beta", "ports": [8301], "gain": 2.5},
+            {"name": "alpha", "ports": [8201, 8202], "gain": 1},
+        ],
+    )
+
+    expected = (
+        "stages:\n"
+        "  - name: beta   # 備援\n"
+        "    ports: [8301]\n"
+        "    gain: 2.50\n"
+        "  - name: alpha  # 主線\n"
+        "    ports: [8201, 8202]\n"
+        "    gain: 1.00\n"
+    )
+    assert _lines(dump(parsed)) == _lines(expected)
+
+
+def test_appending_a_copy_of_the_last_element_keeps_every_existing_line():
+    # 新增＝複製最後一項附在後面：原有的每一行逐字不動，新的那一項接在後面（怎麼寫不規定）。
+    parsed = parse(_STAGES_YAML, "yaml")
+
+    beta = {"name": "beta", "ports": [8301], "gain": 2.5}
+    set_value(parsed, "stages", [{"name": "alpha", "ports": [8201, 8202], "gain": 1}, beta, beta])
+
+    original = _lines(_STAGES_YAML)
+    assert _lines(dump(parsed))[: len(original)] == original
+
+
+def test_sending_a_list_back_unchanged_keeps_a_nested_mixed_number_list_as_written():
+    # 沒改的 `[1, 0.5]` 不能因為「有一項是 double 就全轉」的清單規則變成 `[1.0, 0.5]`。
+    text = "items:\n  - w: [1, 0.5]\n    tag: a\n"
+    parsed = parse(text, "yaml")
+
+    set_value(parsed, "items", [{"w": [1, 0.5], "tag": "a"}])
+
+    assert _lines(dump(parsed)) == _lines(text)
+
+
+def test_a_null_inside_a_list_element_survives_removing_a_sibling():
+    parsed = parse(
+        "stages:\n  - name: alpha\n    extra: null\n  - name: beta\n    extra: null\n", "yaml"
+    )
+
+    set_value(parsed, "stages", [{"name": "beta", "extra": None}])
+
+    assert _lines(dump(parsed)) == _lines("stages:\n  - name: beta\n    extra: null\n")
+
+
+def test_a_changed_string_in_a_list_keeps_its_quotes():
+    # 引號不能掉：`'auto'` 寫成裸字 auto 無妨，但 `'on'`／`'off'` 這類裸字用 YAML 1.1 讀的 ROS
+    # 會當成布林——被改的字串沿用原本那一項的引號。
+    parsed = parse("modes: ['on', 'off']\n", "yaml")
+
+    set_value(parsed, "modes", ["on", "auto"])
+
+    assert dump(parsed) == "modes: ['on', 'auto']\n"
+
+
+def test_null_list_items_and_a_key_named_null_round_trip_as_written():
+    text = "l:\n  - null  # 空\n  - 1\nspare:\nnull: 1\n"
+
+    assert _lines(dump(parse(text, "yaml"))) == _lines(text)
+
+
+def test_a_null_next_to_a_merge_key_round_trips_as_written():
+    text = "base: &b\n  k: 1\nder:\n  <<: *b\n  m: null\n"
+
+    assert _lines(dump(parse(text, "yaml"))) == _lines(text)
+
+
+def test_setting_a_null_to_none_again_keeps_it_written_as_null():
+    parsed = parse("a: null\nb: 1\n", "yaml")
+
+    set_value(parsed, "a", None)
+    set_value(parsed, "b", 2)
+
+    assert dump(parsed) == "a: null\nb: 2\n"
+
+
+_STAGES_JSON = (
+    "{\n"
+    '  "stages": [\n'
+    '    {"name": "alpha", "ports": [8201, 8202]},\n'
+    "    {\n"
+    '      "name": "beta",\n'
+    '      "gain": 1.0\n'
+    "    }\n"
+    "  ]\n"
+    "}\n"
+)
+
+
+def test_removing_the_first_json_element_keeps_the_others_byte_identical():
+    parsed = parse(_STAGES_JSON, "json")
+
+    set_value(parsed, "stages", [{"name": "beta", "gain": 1}])
+
+    expected = _STAGES_JSON.replace('    {"name": "alpha", "ports": [8201, 8202]},\n', "")
+    assert _lines(dump(parsed)) == _lines(expected)
+
+
+def test_appending_to_a_json_list_keeps_everything_before_it_as_written():
+    # 新增的項接在最後一項之後：之前的原文一字不差（最後一項後面多一個逗號是 json 語法要的）。
+    parsed = parse(_STAGES_JSON, "json")
+
+    alpha = {"name": "alpha", "ports": [8201, 8202]}
+    set_value(parsed, "stages", [alpha, {"name": "beta", "gain": 1}, {"name": "beta", "gain": 1}])
+
+    kept = _STAGES_JSON[: _STAGES_JSON.index("    }\n") + len("    }")]
+    assert dump(parsed).startswith(kept + ",")
+
+
+def test_growing_a_crlf_json_list_keeps_crlf_line_endings():
+    text = '{\r\n  "l": [\r\n    1,\r\n    2\r\n  ]\r\n}\r\n'
+    parsed = parse(text, "json")
+
+    set_value(parsed, "l", [1, 2, 3])
+
+    assert dump(parsed) == '{\r\n  "l": [\r\n    1,\r\n    2,\r\n    3\r\n  ]\r\n}\r\n'
+
+
+def test_rewriting_a_tab_indented_json_list_keeps_tabs():
+    text = '{\n\t"l": [\n\t\t{\n\t\t\t"a": 1\n\t\t}\n\t]\n}\n'
+    parsed = parse(text, "json")
+
+    set_value(parsed, "l", [{"a": 1}, {"a": 2}])
+
+    expected = '{\n\t"l": [\n\t\t{\n\t\t\t"a": 1\n\t\t},\n\t\t{\n\t\t\t"a": 2\n\t\t}\n\t]\n}\n'
+    assert dump(parsed) == expected
+
+
+def test_editing_a_duplicated_json_key_changes_the_occurrence_values_reads():
+    # json.loads 取後者；改到的也是後者，values() 讀到的才是改過的值。
+    parsed = parse('{"a": 1, "b": 2, "a": 3}', "json")
+
+    set_value(parsed, "a", 9)
+
+    assert dump(parsed) == '{"a": 1, "b": 2, "a": 9}'
+
+
+def test_a_json_path_below_a_scalar_raises_a_named_error_naming_the_path():
+    parsed = parse('{"a": 1}', "json")
+
+    with pytest.raises(UnknownPath) as exc:
+        set_value(parsed, "a.b", 2)
+
+    assert "a.b" in str(exc.value)
+
+
+def test_reordering_a_list_of_scalars_moves_each_end_of_line_comment_with_its_item():
+    # 純量清單的行尾註解記在清單身上、以位置為索引：調序後要跟著那一項走，不能留在原位置。
+    parsed = parse("recovery:\n  - spin  # 先轉\n  - wait  # 再等\n", "yaml")
+
+    set_value(parsed, "recovery", ["wait", "spin"])
+
+    assert _lines(dump(parsed)) == _lines("recovery:\n  - wait  # 再等\n  - spin  # 先轉\n")
