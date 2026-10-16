@@ -174,7 +174,8 @@ def _yaml_nulls(text: str, document: object) -> frozenset[tuple[int, object]]:
 
     load 出來的值只剩 None，分不出原本寫 `null` 還是空白；組成（compose）階段的節點還留著原文，
     而 load 出來的容器記得每一項在原文的起始行列（ruamel 公開的 `lc`，set_value 改值不會動它）。
-    兩邊用位置對起來就知道是哪幾個。被整個換掉的新容器沒有原文位置，照 ruamel 原樣寫。只在 dump
+    兩邊用位置對起來就知道是哪幾個。整清單替換時沿用的舊元素、搬了屬性的容器帶著原本的位置（見
+    `_yaml_item`），照樣認得；全新的元素沒有原文位置，照 ruamel 原樣寫。只在 dump
     時做：讀值的路徑（型別推斷、驗證）不必多付一次組成。只認裸字小寫 `null`：`~`、`Null` 等寫法
     不在 F9 範圍，照舊寫成空白。
     """
@@ -310,7 +311,7 @@ def _parse_ini(text: str) -> str:
     configobj 是設定讀寫器、不是保位元組的編輯器：它 dump 時會補尾換行、去引號、把 CRLF
     壓成 LF、吃掉尾隨空白（#217）——值語意有保、位元組不同，違反「未改動時逐位元組相同」。
     所以只拿它當語法檢查器，document 存原文；未改動時 dump 回原文即逐位元組相同。改動一個值
-    後的往返（configobj 序列化）留待 v0.3.0 參數編輯落地——那時才會有人去動 ini 的值（同 json）。
+    走 `_ini_with` 原地替換那一行（#17 的 D2）。
     """
     _ini_document(text)  # 只為驗語法；失敗丟具名 SyntaxParse
     return text
@@ -464,19 +465,21 @@ def _yaml_item(value: object, old: object) -> object:
     round-trip 物件、搬舊節點的屬性（一行或分行、註解），裡面再逐項往下比。內容與順序照新值。
     `_keep_double` 每一層都套，巢狀的 double 改成整數樣子也帶小數點。
     """
-    if _yaml_same(value, old):
+    if _same(value, old):
         return old
     value = _keep_double(value, old)
     # 清成空的不借寫法：空清單寫不成分行，帶著舊註解會寫出不合法的 yaml，照引擎預設寫 `[]`／`{}`。
     if value and isinstance(value, dict) and isinstance(old, CommentedMap):
+        # 鍵照原本的順序：介面經 JS 物件送回，`"10"` 這類數字樣子的鍵會被排到前面，不能跟著它排。
+        keys = [key for key in old if key in value] + [key for key in value if key not in old]
         kept_map = CommentedMap(
-            (key, _yaml_item(item, old[key]) if key in old else item) for key, item in value.items()
+            (key, _yaml_item(value[key], old[key]) if key in old else value[key]) for key in keys
         )
         # 對照表的註解以鍵為索引，搬過去就各歸各位；刪掉的鍵留下的註解不會被寫出。
         old.copy_attributes(kept_map)
         return kept_map
     if value and isinstance(value, list) and isinstance(old, CommentedSeq):
-        twins = _yaml_twins(value, old)
+        twins = _twins(value, old)
         kept_seq = CommentedSeq(
             item if twin is None else _yaml_item(item, old[twin])
             for item, twin in zip(value, twins, strict=True)
@@ -496,24 +499,24 @@ def _yaml_item(value: object, old: object) -> object:
     return value
 
 
-def _yaml_twins(value: list[object], old: CommentedSeq) -> list[int | None]:
-    """新清單每一項向舊清單的哪一項借寫法（舊索引；None＝新項，照引擎預設寫）。
+def _twins(value: list[object], old: Sequence[object]) -> list[int | None]:
+    """新清單每一項向舊清單的哪一項借寫法（舊索引；None＝新項，照預設寫）。yaml 與 json 共用。
 
     配過的舊項不再配，依序：同一位置、值沒變的（最常見：改的是別處）；值沒變、換了位置的（調序、
     前面增刪過），它們照樣帶著自己的註解與寫法——按值分桶找、不逐對比，逐對是 n²，幾千項的數值
     陣列存一次就要好幾秒；最後才是改過的項。
     """
     twins: list[int | None] = [
-        position if position < len(old) and _yaml_same(item, old[position]) else None
+        position if position < len(old) and _same(item, old[position]) else None
         for position, item in enumerate(value)
     ]
     free = set(range(len(old))).difference(twins)
     buckets: dict[object, list[int]] = {}
     for index in sorted(free):
-        buckets.setdefault(_yaml_bucket(old[index]), []).append(index)
+        buckets.setdefault(_bucket(old[index]), []).append(index)
     for position, item in enumerate(value):
-        bucket = buckets.get(_yaml_bucket(item), []) if twins[position] is None else []
-        twin = next((index for index in bucket if _yaml_same(item, old[index])), None)
+        bucket = buckets.get(_bucket(item), []) if twins[position] is None else []
+        twin = next((index for index in bucket if _same(item, old[index])), None)
         if twin is not None:
             bucket.remove(twin)
             free.remove(twin)
@@ -522,7 +525,7 @@ def _yaml_twins(value: list[object], old: CommentedSeq) -> list[int | None]:
     # 新項（一個欄位都沒對上）會先搶走同一位置那個舊項，真正被改的那一項反而沒得借，寫成新項。
     claims = sorted(
         (
-            (_yaml_alike(item, old[index]), index == position, index, position)
+            (_alike(item, old[index]), index == position, index, position)
             for position, item in enumerate(value)
             if twins[position] is None
             # 對照表才比欄位，其他種類只能照位置配（也免得幾千項的數值陣列逐對比）
@@ -537,37 +540,37 @@ def _yaml_twins(value: list[object], old: CommentedSeq) -> list[int | None]:
     return twins
 
 
-def _yaml_alike(value: object, old: object) -> int:
+def _alike(value: object, old: object) -> int:
     """兩個對照表有幾個欄位的值沒變；有一邊不是對照表就是 0。"""
     if not isinstance(value, dict) or not isinstance(old, dict):
         return 0
-    return sum(key in old and _yaml_same(item, old[key]) for key, item in value.items())
+    return sum(key in old and _same(item, old[key]) for key, item in value.items())
 
 
-def _yaml_bucket(value: object) -> object:
-    """分桶的鍵：值相同的一定同桶（1、1.0、True 同桶無妨，桶內再由 `_yaml_same` 細比）。"""
+def _bucket(value: object) -> object:
+    """分桶的鍵：值相同的一定同桶（1、1.0、True 同桶無妨，桶內再由 `_same` 細比）。"""
     if isinstance(value, dict):
-        return frozenset((key, _yaml_bucket(item)) for key, item in value.items())
+        return frozenset((key, _bucket(item)) for key, item in value.items())
     if isinstance(value, list):
-        return tuple(_yaml_bucket(item) for item in value)
+        return tuple(_bucket(item) for item in value)
     return value if isinstance(value, Hashable) else repr(value)
 
 
-def _yaml_same(value: object, old: object) -> bool:
+def _same(value: object, old: object) -> bool:
     """值與種類都沒變。Python 裡 `True == 1`、`1 == 1.0`，寫回去卻是不同的字，種類也要相同；
     唯一的例外：舊值是 double、新值送來整數樣子，算同一個值（JSON 分不出 5 與 5.0，同
     `_keep_double`）。只逐項比、不套它整個清單的規則——沒改的 `[1, 0.5]` 不算改成 `[1.0, 0.5]`。"""
     if isinstance(value, dict) and isinstance(old, dict):
         return value.keys() == old.keys() and all(
-            _yaml_same(item, old[key]) for key, item in value.items()
+            _same(item, old[key]) for key, item in value.items()
         )
     if isinstance(value, list) and isinstance(old, list):
-        return len(value) == len(old) and all(map(_yaml_same, value, old))
+        return len(value) == len(old) and all(map(_same, value, old))
     value = _keep_double(value, old)
-    return _yaml_kind(value) is _yaml_kind(old) and bool(value == old)
+    return _kind(value) is _kind(old) and bool(value == old)
 
 
-def _yaml_kind(value: object) -> type:
+def _kind(value: object) -> type:
     # bool 是 int 的子類別，要先比；ruamel 的 ScalarFloat、ScalarInt、引號字串各歸 float、int、str。
     return next((kind for kind in (bool, int, float, str) if isinstance(value, kind)), type(value))
 
@@ -587,7 +590,6 @@ def _toml_item(value: object, old: object) -> object:
 # 正規化——違反「未改動的行逐位元組不動」。所以沿路徑在原文裡找出那個值的起訖，只換那一段。
 # 值在哪裡結束交給標準庫的 raw_decode（解完一個值就回報停在哪），字串跳脫、數字寫法不自己解。
 _JSON = json.JSONDecoder()
-_JSON_SEPARATED = 2  # 清單要有兩項，才量得出原本項與項之間的分隔（_json_resize 照它接新項）
 
 
 def _json_with(text: str, segments: list[str | int], value: object, path: str) -> str:
@@ -624,25 +626,21 @@ def _json_splice(text: str, start: int, end: int, value: object) -> str:
     """`text[start:end]` 那個值換成 `value` 後的原文——沒變的部分逐字留著。
 
     介面改清單裡任何一處都送出最外層的整個清單（#46），所以不能「有送就重寫」：值沒變→原文
-    照抄（`1.50`、`1e3`、unicode 跳脫這類寫法也不動）；清單長度相同、物件的鍵與順序相同→逐個
-    成員往下比；清單增刪了元素→頭尾沒變的照原文、只重組中間（`_json_resize`）；其餘（換了鍵、
-    換了型別）才把這一個值整個重寫。double 的規則每一層都套（`_keep_double`），清單裡沒改的
-    double 不因介面把 1.0 送成 1 而降成 int。清單的那條（有一項是 double 就把整數全轉）只給沒有
-    舊項可對的新元素：配對到的元素各自由舊值決定，混著整數的清單裡沒動的整數才不被寫成 `1.0`。
+    照抄（`1.50`、`1e3`、unicode 跳脫這類寫法也不動）；物件的鍵沒變→照原文的鍵順序逐個成員往下
+    比（介面經 JS 物件送回，數字樣子的鍵會被排到前面，不能當成改了）；清單→按值配對新舊元素
+    （`_json_relist`）；其餘（換了鍵、換了型別）才把這一個值整個重寫。double 的規則每一層都套
+    （`_keep_double`），沒改的 double 不因介面把 1.0 送成 1 而降成 int。
     """
     old = json.loads(text[start:end])
     if not isinstance(value, list):
         value = _keep_double(value, old)
-    if json.dumps(value) == json.dumps(old):  # 型別也要相同：1、1.0、true 寫出來各不相同
+    if _same(value, old):  # 種類也要相同：1、1.0、true 寫出來各不相同
         return text[start:end]
-    members = _json_members(text, start)
-    if isinstance(value, dict) and isinstance(old, dict) and list(value) == list(old):
-        return _json_patch(text, start, end, [(members[key], new) for key, new in value.items()])
-    if isinstance(value, list) and isinstance(old, list):
-        if len(value) == len(old):
-            return _json_patch(text, start, end, list(zip(members.values(), value, strict=True)))
-        if len(old) >= _JSON_SEPARATED and value:  # 清空就照下面寫成 []
-            return _json_resize(text, start, end, value)
+    if isinstance(value, dict) and isinstance(old, dict) and value.keys() == old.keys():
+        members = _json_members(text, start)
+        return _json_patch(text, start, end, [(members[key], value[key]) for key in old])
+    if isinstance(value, list) and isinstance(old, list) and value and old:
+        return _json_relist(text, start, end, value, old)
     return _json_dumps(_keep_double(value, old), text, _json_margin(text, start, end))
 
 
@@ -659,46 +657,30 @@ def _json_patch(
     return "".join(pieces) + text[cursor:end]
 
 
-def _json_resize(text: str, start: int, end: int, value: list[Any]) -> str:
-    """清單增刪了元素（#46）：頭尾沒變的那幾項連同其間的逗號、換行照原文，只重組中間那段。
+def _json_relist(text: str, start: int, end: int, value: list[Any], old: list[Any]) -> str:
+    """清單：新舊元素按值配對（與 yaml 同一套 `_twins`），配到的從它自己的原文往下換——調序、
+    刪一項又改另一項時，沒改的那一項連 `2.50`、跳脫都留著。沒配到的新元素照第一項的樣子寫（一行
+    或分行），double 依整個清單的規則（有一項是 double 就把整數轉成小數）。
 
-    中間的新舊元素依位置配對、往下比——改了一項又新增一項時，改的那項也只換它改的地方。多出來
-    的新元素照第一項的樣子寫（一行或分行）；接縫用原清單前兩項之間的那段分隔（逗號加空白或換行
-    縮排），新增的項才與舊項排在同一欄。
+    元素之間的分隔照位置沿用原文（第 i 個縫用原本的第 i 個，不夠就用最後一個）；原本只有一項時，
+    從 `[` 到第一項之間的空白看出是一行還是分行。
     """
     spans = list(_json_members(text, start).values())
-    head, tail = _json_unchanged_ends(text, spans, value)
-    fresh = cast(list[Any], _keep_double(value, json.loads(text[start:end])))
-    paired = spans[head : len(spans) - tail]
-    middle = [
-        _json_splice(text, *paired[index], value[head + index])
-        if index < len(paired)
-        else _json_dumps(fresh[head + index], text, _json_margin(text, *spans[0]))
-        for index in range(len(value) - head - tail)
+    fresh = cast(list[Any], _keep_double(value, old))
+    pieces = [
+        _json_dumps(fresh[index], text, _json_margin(text, *spans[0]))
+        if twin is None
+        else _json_splice(text, *spans[twin], value[index])
+        for index, twin in enumerate(_twins(value, old))
     ]
-    kept_head = [text[spans[0][0] : spans[head - 1][1]]] if head else []
-    kept_tail = [text[spans[-tail][0] : spans[-1][1]]] if tail else []
-    separator = text[spans[0][1] : spans[1][0]]
-    inner = separator.join(kept_head + middle + kept_tail)
-    return text[start : spans[0][0]] + inner + text[spans[-1][1] : end]
-
-
-def _json_unchanged_ends(
-    text: str, spans: list[tuple[int, int]], value: list[Any]
-) -> tuple[int, int]:
-    """新清單的頭、尾各有幾項，換上去後與原清單頭、尾的原文一字不差（兩段不重疊）。"""
-
-    def unchanged(span: tuple[int, int], new: object) -> bool:
-        return _json_splice(text, *span, new) == text[span[0] : span[1]]
-
-    shorter = min(len(spans), len(value))
-    head = 0
-    while head < shorter and unchanged(spans[head], value[head]):
-        head += 1
-    tail = 0
-    while head + tail < shorter and unchanged(spans[-1 - tail], value[-1 - tail]):
-        tail += 1
-    return head, tail
+    gaps = [text[left[1] : right[0]] for left, right in zip(spans, spans[1:], strict=False)]
+    if not gaps:
+        lead = text[start + 1 : spans[0][0]]
+        gaps = ["," + lead if "\n" in lead else ", "]
+    joined = pieces[0] + "".join(
+        gaps[min(index, len(gaps) - 1)] + piece for index, piece in enumerate(pieces[1:])
+    )
+    return text[start : spans[0][0]] + joined + text[spans[-1][1] : end]
 
 
 def _json_margin(text: str, start: int, end: int) -> str | None:

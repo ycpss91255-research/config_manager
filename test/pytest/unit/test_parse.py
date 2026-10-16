@@ -584,3 +584,134 @@ def test_reordering_a_list_of_scalars_moves_each_end_of_line_comment_with_its_it
     set_value(parsed, "recovery", ["wait", "spin"])
 
     assert _lines(dump(parsed)) == _lines("recovery:\n  - wait  # 再等\n  - spin  # 先轉\n")
+
+
+# ── 審查補上的情境：json 清單按值配對、只有一項的清單新增、介面重排了鍵、只改了種類 ──────────
+
+
+def test_changing_a_value_inside_a_json_list_changes_only_that_line():
+    # 介面改 json 清單裡的一個值，送回的是長度相同的整個清單：只有那一行不同，int 送來的寫成 2.0。
+    parsed = parse(_STAGES_JSON, "json")
+
+    alpha = {"name": "alpha", "ports": [8201, 8202]}
+    set_value(parsed, "stages", [alpha, {"name": "beta", "gain": 2}])
+
+    expected = _STAGES_JSON.replace('"gain": 1.0', '"gain": 2.0')
+    assert _lines(dump(parsed)) == _lines(expected)
+
+
+def test_swapping_json_elements_moves_each_as_written():
+    parsed = parse(_STAGES_JSON, "json")
+
+    alpha = {"name": "alpha", "ports": [8201, 8202]}
+    set_value(parsed, "stages", [{"name": "beta", "gain": 1}, alpha])
+
+    expected = (
+        "{\n"
+        '  "stages": [\n'
+        "    {\n"
+        '      "name": "beta",\n'
+        '      "gain": 1.0\n'
+        "    },\n"
+        '    {"name": "alpha", "ports": [8201, 8202]}\n'
+        "  ]\n"
+        "}\n"
+    )
+    assert _lines(dump(parsed)) == _lines(expected)
+
+
+def test_removing_one_json_element_and_changing_another_keeps_the_survivors_untouched_lines():
+    # 刪掉 alpha、把 beta 改名：beta 沒改的 `"gain": 2.50` 照原寫法，只有改名那一行不同。
+    text = (
+        "{\n"
+        '  "stages": [\n'
+        '    {"name": "alpha", "gain": 1.0},\n'
+        "    {\n"
+        '      "name": "beta",\n'
+        '      "gain": 2.50\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+    )
+    parsed = parse(text, "json")
+
+    set_value(parsed, "stages", [{"name": "beta2", "gain": 2.5}])
+
+    expected = (
+        '{\n  "stages": [\n    {\n      "name": "beta2",\n      "gain": 2.50\n    }\n  ]\n}\n'
+    )
+    assert _lines(dump(parsed)) == _lines(expected)
+
+
+def test_appending_to_a_one_element_json_list_keeps_the_existing_element_as_written():
+    # 只有一項時按新增（複製最後一項）：原本那一項仍是一行，一行的 ports 也不被拆開。
+    text = '{\n  "stages": [\n    {"name": "alpha", "ports": [8201, 8202]}\n  ]\n}\n'
+    parsed = parse(text, "json")
+
+    alpha = {"name": "alpha", "ports": [8201, 8202]}
+    set_value(parsed, "stages", [alpha, alpha])
+
+    assert dump(parsed).startswith(
+        '{\n  "stages": [\n    {"name": "alpha", "ports": [8201, 8202]},'
+    )
+
+
+def test_json_object_keys_sent_back_in_another_order_count_as_unchanged():
+    # JS 物件把數字樣子的鍵排到前面：鍵與值都沒變就是沒改，原文一字不動。
+    text = '{"o": {"name": "a", "10": 1.0, "2": 2}, "x": 1}'
+    parsed = parse(text, "json")
+
+    set_value(parsed, "o", {"2": 2, "10": 1, "name": "a"})
+
+    assert dump(parsed) == text
+
+
+def test_a_new_element_in_a_json_double_list_is_written_with_a_decimal_point():
+    parsed = parse('{"gains": [0.5, 1.5]}', "json")
+
+    set_value(parsed, "gains", [0.5, 1.5, 2])
+
+    assert dump(parsed) == '{"gains": [0.5, 1.5, 2.0]}'
+
+
+def test_appending_to_a_crlf_json_list_of_objects_writes_no_bare_newline():
+    text = '{\r\n  "l": [\r\n    {\r\n      "a": 1\r\n    }\r\n  ]\r\n}\r\n'
+    parsed = parse(text, "json")
+
+    set_value(parsed, "l", [{"a": 1}, {"a": 2}])
+
+    assert "\n" not in dump(parsed).replace("\r\n", "")
+
+
+def test_a_changed_yaml_element_keeps_its_key_order_when_keys_come_back_reordered():
+    parsed = parse(_STAGES_YAML, "yaml")
+
+    set_value(
+        parsed,
+        "stages",
+        [
+            {"gain": 3, "ports": [8201, 8202], "name": "alpha"},
+            {"name": "beta", "ports": [8301], "gain": 2.5},
+        ],
+    )
+
+    expected = _STAGES_YAML.replace("    gain: 1.00\n", "    gain: 3.0\n")
+    assert _lines(dump(parsed)) == _lines(expected)
+
+
+def test_changing_only_the_type_of_a_list_item_is_written():
+    # Python 裡 True == 1，寫出來卻是不同的字：只改了種類也算改了。
+    parsed = parse("l: [1, 2]\n", "yaml")
+
+    set_value(parsed, "l", [True, 2])
+
+    assert dump(parsed) == "l: [true, 2]\n"
+
+
+def test_a_reordered_json_object_with_one_changed_value_changes_only_that_value():
+    # 鍵被 JS 重排、又改了其中一個值：照原文的鍵順序只換那個值，沒改的 `1.0` 照原寫法。
+    parsed = parse('{"o": {"name": "a", "10": 1.0, "2": 2}, "x": 1}', "json")
+
+    set_value(parsed, "o", {"2": 3, "10": 1, "name": "a"})
+
+    assert dump(parsed) == '{"o": {"name": "a", "10": 1.0, "2": 3}, "x": 1}'
