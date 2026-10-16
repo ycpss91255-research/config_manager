@@ -4085,6 +4085,115 @@ def test_adopt_draft_loads_the_target_as_a_draft_and_warns(open_page, repo):
     assert (repo / "files" / "a.yaml").read_text(encoding="utf-8") == "count: 3\n"
 
 
+# ── 處置與進版後回到的欄位表跟著回到一致（人工驗收 U27、U28 的回歸，F12）────────────
+# 成功之後頁面同時要清單（樹）與這一份的內容（回到的欄位表）。欄位表標頭的狀態與偏離橫幅讀的是
+# 清單；清單比內容晚回來時，欄位表照舊的清單畫成「偏離」，之後樹重畫也帶不到它。驗收環境份數多、
+# 清單重掃慢，每次都中；這裡把「清單最後才回來」固定下來，不靠機器快慢。
+
+
+def _track_requests(page) -> None:
+    """之後頁面每發一次 fetch 都記下網址（__asked）；清單以外還沒回來、或內容還沒讀完的件數記在
+    __pending。只記，請求照常送出（apiFetch 每次呼叫時才取全域的 fetch）。"""
+    page.evaluate(
+        """() => {
+          window.__asked = [];
+          window.__pending = 0;
+          const settle = (promise) => {
+            window.__pending += 1;
+            return promise.finally(() => { window.__pending -= 1; });
+          };
+          const fetch_ = window.fetch;
+          window.fetch = (url, init) => {
+            window.__asked.push(String(url));
+            const answer = fetch_(url, init);
+            return String(url).endsWith("/api/configs") ? answer : settle(answer);
+          };
+          const json = Response.prototype.json;
+          Response.prototype.json = function () { return settle(json.call(this)); };
+        }"""
+    )
+
+
+def _list_answers_last(page, held, release) -> None:
+    """清單（`GET /api/configs`，已由 `_hold` 扣住）等頁面別的請求都回來、讀完才放。
+
+    頁面同時要了清單與這一份的內容 → 內容先回來、欄位表先畫上去，清單最後到。頁面若等清單回來才去
+    要內容，那時路上沒有別的，清單立刻放行——不會互等。不靠時間：JS 一段跑完才輪到下一段，件數
+    歸零時，讀完內容接著做的事（畫欄位表）也已經做完了。最後等清單那一發真的到了 `_hold` 手上再放。
+    """
+    page.wait_for_function(
+        "() => window.__asked.some((url) => url.endsWith('/api/configs')) && window.__pending === 0"
+    )
+    for _ in range(500):
+        if held:
+            break
+        page.wait_for_timeout(10)
+    release()
+
+
+_PANEL_DRIFT_BANNER = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='drift-banner']"
+
+
+def _wait_for_the_panel_to_say_in_sync(page) -> None:
+    """樹先回到一致，再等回到的欄位表標頭也寫「一致」。進版前欄位表就開著，只讀一次會讀到重畫前的
+    舊區塊，所以要等；畫成舊狀態的話它永遠不會變，等到逾時就是紅燈。"""
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'] [data-state='in_sync']")
+    page.wait_for_selector(
+        f"[data-testid='panel-status-{_PARAM_UID}']:has-text('一致')", timeout=15_000
+    )
+
+
+def test_overwrite_returns_the_open_panel_to_in_sync_even_when_the_list_answers_last(
+    open_page, repo
+):
+    # U27：樹與結果橫幅寫一致，回到的欄位表卻仍寫「偏離」、留著偏離橫幅與「檢視差異」。
+    _drift_in_root(repo, "count: 3\n", "count: 9\n")
+    page = _open_diff(open_page())
+    _track_requests(page)
+    held, release = _hold(page, "**/api/configs", method="GET")
+
+    page.click("[data-testid='resolve-overwrite']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+    _list_answers_last(page, held, release)
+
+    _wait_for_the_panel_to_say_in_sync(page)
+    assert page.query_selector(_PANEL_DRIFT_BANNER) is None  # 「檢視差異」在橫幅裡，一起沒了
+
+
+def test_adopt_returns_the_open_panel_to_in_sync_even_when_the_list_answers_last(open_page, repo):
+    # U28：同上，處置換成「將目標現況納入來源」（不另確認）。
+    _drift_in_root(repo, "count: 3\n", "count: 9\n")
+    page = _open_diff(open_page())
+    _track_requests(page)
+    held, release = _hold(page, "**/api/configs", method="GET")
+
+    page.click("[data-testid='resolve-adopt']")
+    _list_answers_last(page, held, release)
+
+    _wait_for_the_panel_to_say_in_sync(page)
+    assert page.query_selector(_PANEL_DRIFT_BANNER) is None  # 「檢視差異」在橫幅裡，一起沒了
+
+
+def test_promoting_a_drifted_config_returns_its_open_panel_to_in_sync_when_the_list_answers_last(
+    open_page, repo
+):
+    # 進版會把目標寫成來源（U29 的路：偏離 → 改正 → 進版），回到的欄位表也要跟著寫一致。
+    _drift_in_root(repo, "count: 3\n", "count: 9\n")
+    page = _open_panel(open_page())
+    page.fill(f"{_row('count')} input", "5")
+    page.click(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save']")
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    _track_requests(page)
+    held, release = _hold(page, "**/api/configs", method="GET")
+
+    page.click("[data-testid='promote-all']")
+    _list_answers_last(page, held, release)
+
+    _wait_for_the_panel_to_say_in_sync(page)
+    assert page.query_selector(_PANEL_DRIFT_BANNER) is None  # 「檢視差異」在橫幅裡，一起沒了
+
+
 def test_editing_a_target_behind_the_interface_shows_the_right_diff(open_page, repo):
     # AC4：以 vim 直接改目標檔 → 「檢查差異」後判定為偏離，且差異內容正確。
     targets = _listing_many(repo, {"a": "count: 3\n"})
