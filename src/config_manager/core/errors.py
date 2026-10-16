@@ -78,7 +78,7 @@ class UnknownField(ConfigListError):
 
 class ConfigListMalformed(ConfigListError):
     """清單檔的 `files` 不是 `[[files]]` 表格串列，或 permissions 不是表格：是純量、
-    inline 陣列，或其他型別。
+    非空的 inline 陣列，或其他型別。空的 `files = []` 是「沒有條目」，不在此列。
 
     `files = 5`、`files = [{{uid="x"}}]`、`permissions = "0644"` 都是**合法 TOML**，但不是
     清單檔要的形狀。先前 `_check_unknown_fields` 會在 pydantic 驗型別之前就迭代它、對它取
@@ -124,7 +124,8 @@ class RootsUnknownField(AllowedRootsError):
 
 
 class RootsMalformed(AllowedRootsError):
-    """白名單設定檔的 `roots` 不是 `[[roots]]` 表格串列：是純量、inline 陣列，或其他型別。
+    """白名單設定檔的 `roots` 不是 `[[roots]]` 表格串列：是純量、非空的 inline 陣列，或其他
+    型別。空的 `roots = []` 是「沒有根」，不在此列。
 
     `roots = 5`、`roots = "x"`、`roots = [{{prefix="/a"}}]` 都是**合法 TOML**，但不是本檔要的
     形狀。先前 `_check_unknown_fields` 會在 pydantic 驗型別之前就迭代它、丟出 raw
