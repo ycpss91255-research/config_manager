@@ -1502,6 +1502,8 @@ def test_promote_shows_it_is_running_and_cannot_be_sent_twice(open_page, repo):
     release()
 
     page.wait_for_selector("[data-testid='promote-done']:not([hidden])")
+    # 結果先寫出來；按鈕等重掃、打開的區塊重畫完才還原（F12），等它放開再看
+    page.wait_for_selector(f"{button}:not([aria-busy='true'])")
     assert page.inner_text(button) == "進版 (0)"
     assert not _busy(page, button)
 
@@ -4128,6 +4130,8 @@ def _list_answers_last(page, held, release) -> None:
         if held:
             break
         page.wait_for_timeout(10)
+    # 扣不到就放行的話，「清單最後才回來」悄悄不成立，舊寫法也可能剛好綠——寧可紅。
+    assert held, "清單（GET /api/configs）5 秒內沒有被 _hold 扣住，驗不到「清單最後才回來」"
     release()
 
 
