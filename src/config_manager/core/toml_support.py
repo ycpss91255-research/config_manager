@@ -8,7 +8,7 @@
 
 import re
 from collections.abc import Iterable
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
 import tomlkit
 from tomlkit import items
@@ -67,7 +67,8 @@ def reject_unknown(
 def take_trailing_items(body: list[_BodyItem], stop: int) -> list[_BodyItem]:
     """取走 body[:stop] 尾端那段沒有鍵的項目（空白與註解），回傳被取走的項目。
 
-    只動尾端，容器內「鍵→位置」對照不受影響——被取走的項目本來就沒有鍵。
+    被取走的項目本來就沒有鍵，但同一個 body 裡排在 `stop` 之後的鍵會跟著前移，而容器的
+    「鍵→位置」對照不會跟著改——取走之後別再以鍵查、刪這個容器（見 drop_if_emptied）。
     """
     start = stop
     while start > 0 and body[start - 1][0] is None:
@@ -122,3 +123,47 @@ def adopt_leading_trivia(doc: "tomlkit.TOMLDocument", aot: "items.AoT", key: str
     for previous, current in zip(tables, tables[1:], strict=False):
         previous_body: list[_BodyItem] = previous.value.body
         prepend_indent(current, take_trailing_trivia(previous_body, len(previous_body)))
+
+
+# ── 沒有條目時的寫法（config-list.toml 與 allowed-roots.toml 共用）─────────────────────────
+# 沒有條目時兩份設定檔都**不寫**那個鍵（entrypoint 的種子就是這樣）。tomlkit 0.15.1 把刪空的
+# 表格串列直接略過，0.15.2 起改寫成 `key = []` 並搬到所屬表格的最上方（python-poetry/tomlkit#567）
+# ——寫法隨版本而變，load 又只收 [[…]]，刪到不剩之後就讀不回來。所以刪空時自己把鍵拿掉；
+# 0.15.2 已經寫出過的 `key = []` 則視同沒有條目，讀得回來、寫得回去。
+
+
+def is_empty_inline_array(item: object) -> bool:
+    """`key = []`：空的 inline 陣列，意思是沒有條目。非空的 inline 陣列不算。"""
+    return isinstance(item, items.Array) and not item
+
+
+def table_array(doc: "tomlkit.TOMLDocument", key: str, has_entries: bool) -> "items.AoT | None":
+    """回傳 doc 裡名為 `key` 的表格串列，dump 在它上面增刪；沒有東西可寫時回 None。
+
+    原文沒有這個鍵、或是 `key = []`，都視同沒有條目：模型也沒有條目（`has_entries` 為假）
+    時回 None，呼叫端原樣寫回；模型有條目時換成一個新的表格串列交回——同一個鍵不能既是
+    inline 陣列又是表格串列。其他形狀原樣交回，由呼叫端的定位步驟處置。
+    """
+    current = doc.get(key)
+    if current is not None and not is_empty_inline_array(current):
+        return cast("items.AoT", current)
+    if not has_entries:
+        return None
+    if current is not None:
+        del doc[key]
+    fresh = tomlkit.aot()
+    doc[key] = fresh
+    return fresh
+
+
+def drop_if_emptied(doc: "tomlkit.TOMLDocument", aot: "items.AoT") -> None:
+    """表格串列刪到不剩時，整個鍵不寫（與種子同形，不寫成 `key = []`）。
+
+    以物件本身從 doc 的 body 拿掉，不用 `del doc[key]`：adopt_leading_trivia 剛直接刪過 doc
+    body 裡的前導空白與註解，排在後面的鍵實際位置已經前移，而 tomlkit 的「鍵→位置」對照
+    沒有跟著改——以鍵刪會刪錯位置或越界。寫出只看 body，所以從 body 拿掉就是不寫。
+    """
+    if aot.body:
+        return
+    body: list[_BodyItem] = doc.body
+    body[:] = [(item_key, item) for item_key, item in body if item is not aot]

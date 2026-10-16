@@ -241,6 +241,60 @@ added_by = "Bob"
 """
 
 
+# entrypoint 從 CM_ALLOWED_ROOTS 種出、只有一個根的白名單設定檔。那個根的區塊含它上方的
+# 空行：移除它之後，設定檔與 CM_ALLOWED_ROOTS 為空時的種子同形（只有 roots_version）。
+_LAST_ROOT_BLOCK = """\
+
+[[roots]]
+prefix = "/srv/configs"
+added_by = "部署設定 (CM_ALLOWED_ROOTS)"
+added_at = "2026-10-16T04:46:40Z"
+"""
+
+_LAST_ROOT_TEXT = "roots_version = 1\n" + _LAST_ROOT_BLOCK
+
+
+def test_removing_the_last_root_leaves_no_roots_key_and_the_rest_verbatim():
+    # 刪到不剩時，寫法不能隨 tomlkit 的版本而變：0.15.2 起它把清空的表格串列寫成
+    # `roots = []` 並搬到檔頭，而那是 load 先前不收的形狀——移除最後一個根之後，白名單就讀
+    # 不出來。期望值：把那個根的區塊整段切掉，其餘逐位元組不動。
+    expected = _LAST_ROOT_TEXT.replace(_LAST_ROOT_BLOCK, "")
+
+    allowed = load(_LAST_ROOT_TEXT)
+    allowed.roots = []
+
+    assert dump(allowed, _LAST_ROOT_TEXT) == expected
+
+
+# tomlkit 0.15.2 在移除最後一個根之後實際寫出的白名單設定檔：`roots = []` 被搬到檔頭。合法
+# TOML、意思明確（沒有根）；已經寫成這樣的設定檔要讀得回來、寫得回去。
+_EMPTY_INLINE_ROOTS_TEXT = "roots = []\nroots_version = 1\n"
+
+
+def test_an_empty_inline_roots_array_loads_as_no_roots():
+    # 空的 inline 陣列不是「寫錯形狀」：沒有根時根本沒有 [[roots]] 可寫。非空的 inline 陣列
+    # 仍以 RootsMalformed 擋下（見 test_roots_as_an_inline_array_is_rejected_…）。
+    assert load(_EMPTY_INLINE_ROOTS_TEXT).roots == []
+
+
+def test_an_unchanged_empty_inline_roots_array_is_written_back_verbatim():
+    # 設定檔本身也要原樣保留：沒改動就逐位元組相同，不因為形狀少見就順手改寫。
+    allowed = load(_EMPTY_INLINE_ROOTS_TEXT)
+
+    assert dump(allowed, _EMPTY_INLINE_ROOTS_TEXT) == _EMPTY_INLINE_ROOTS_TEXT
+
+
+def test_adding_a_root_to_an_empty_inline_roots_array_writes_it_as_a_table():
+    # 同一個鍵不能既是 inline 陣列又是 [[roots]]：留著 `roots = []` 再附加，寫出來的就不是
+    # 合法 TOML。斷言寫回的設定檔載入得回那個根。
+    allowed = load(_EMPTY_INLINE_ROOTS_TEXT)
+    allowed.roots.append(AllowedRoot(prefix="/opt/robot/config", added_by="Alice"))
+
+    result = dump(allowed, _EMPTY_INLINE_ROOTS_TEXT)
+
+    assert [root.prefix for root in load(result).roots] == ["/opt/robot/config"]
+
+
 def test_dump_rejects_original_whose_roots_share_a_prefix():
     # 原樣資訊本身不是合法設定檔（兩筆共用 prefix），dump 以 prefix 定位就對不回去。
     bad_original = """\

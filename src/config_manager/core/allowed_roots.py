@@ -19,7 +19,14 @@ from config_manager.core.errors import (
     RootsUnknownField,
 )
 from config_manager.core.models import AllowedRoot, AllowedRoots
-from config_manager.core.toml_support import Source, adopt_leading_trivia, reject_unknown
+from config_manager.core.toml_support import (
+    Source,
+    adopt_leading_trivia,
+    drop_if_emptied,
+    is_empty_inline_array,
+    reject_unknown,
+    table_array,
+)
 
 # 白名單設定檔的允許鍵集。結構驗證（必填、型別）交給 pydantic；這裡只擋未知欄位、
 # 指名行號（防止由設定檔注入內部欄位，比照 config_list）。
@@ -40,11 +47,12 @@ def load(text: str) -> AllowedRoots:
 def _check_roots_shape(doc: "tomlkit.TOMLDocument") -> None:
     """`roots` 若存在，必須是 `[[roots]]` 表格串列（AoT）。
 
-    在迭代 `roots`（`_check_unknown_fields`）與轉模型之前先擋下純量、inline 陣列等形狀：
-    那些會讓迭代丟出 raw TypeError／AttributeError、逃過具名錯誤契約，dump 也只吃 AoT。
+    在迭代 `roots`（`_check_unknown_fields`）與轉模型之前先擋下純量、非空的 inline 陣列等
+    形狀：那些會讓迭代丟出 raw TypeError／AttributeError、逃過具名錯誤契約，dump 也只吃 AoT。
+    空的 `roots = []` 是「沒有根」，照收（tomlkit 0.15.2 寫出過它）。
     """
     roots = doc.get("roots")
-    if roots is not None and not isinstance(roots, items.AoT):
+    if roots is not None and not isinstance(roots, items.AoT) and not is_empty_inline_array(roots):
         raise RootsMalformed(
             "白名單設定檔 allowed-roots.toml 的 roots 要以 [[roots]] 表格串列書寫。"
             "下一步：把每個根寫成一段 [[roots]]，不要用 inline 陣列或其他型別"
@@ -56,7 +64,8 @@ def dump(allowed: AllowedRoots, original: str) -> str:
 
     原樣資訊為原始檔文字；以 tomlkit 重新解析後在其上套用變更，未觸動的部分逐位元組
     保留。兩種變更皆支援：新增（附加於既有之後，#202）、移除（刪掉原文有、模型沒有的
-    `[[roots]]`，#15）。白名單根不就地改動——維護只增減整筆（§7.9）。
+    `[[roots]]`，#15）。白名單根不就地改動——維護只增減整筆（§7.9）。刪到不剩時 `roots`
+    鍵整個不寫，與種子同形（寫法不隨 tomlkit 版本而變，見 toml_support「沒有條目時的寫法」）。
 
     **寫出之前先自我驗證**，與 `load` 同一組完整性檢查（比照 config_list #181）：檢查不
     通過時丟具名例外，且不產生輸出。原樣資訊以 `prefix` 定位既有根（白名單根沒有 uid，
@@ -65,10 +74,9 @@ def dump(allowed: AllowedRoots, original: str) -> str:
     _check_integrity(allowed)
 
     doc = tomlkit.parse(original)
-    roots = doc.get("roots")
+    roots = table_array(doc, "roots", bool(allowed.roots))
     if roots is None:
-        roots = tomlkit.aot()
-        doc["roots"] = roots
+        return original  # 原文與模型都沒有根：沒有東西要寫
 
     existing = _index_by_prefix(roots)
     for root in allowed.roots:
@@ -92,6 +100,7 @@ def dump(allowed: AllowedRoots, original: str) -> str:
         adopt_leading_trivia(doc, roots, "roots")
         for index in reversed(removed):
             del roots[index]
+        drop_if_emptied(doc, roots)
 
     return tomlkit.dumps(doc)
 

@@ -24,7 +24,10 @@ from config_manager.core.models import ConfigList, FileEntry, Permissions
 from config_manager.core.toml_support import (
     Source,
     adopt_leading_trivia,
+    drop_if_emptied,
+    is_empty_inline_array,
     reject_unknown,
+    table_array,
     take_trailing_items,
 )
 
@@ -63,7 +66,8 @@ def dump(config_list: ConfigList, original: str) -> str:
 
     原樣資訊為原始清單檔文字；以 tomlkit 重新解析後在其上套用變更，
     未觸動的部分逐位元組保留。三種變更皆支援：新增（附加於既有之後）、
-    改動（就地更新該條目，只寫真的變了的鍵）、移除。
+    改動（就地更新該條目，只寫真的變了的鍵）、移除。刪到不剩時 `files` 鍵整個不寫，
+    與首次啟動的種子同形（寫法不隨 tomlkit 版本而變，見 toml_support「沒有條目時的寫法」）。
 
     **寫出之前先自我驗證**，與 `load` 同一組檢查（#181）。先前這一步只掛在 `load`
     上，於是無效的條目寫得進清單檔，而錯誤要到下一次啟動才爆——那時擋的是容器啟動，
@@ -75,10 +79,9 @@ def dump(config_list: ConfigList, original: str) -> str:
     _check_integrity(config_list)
 
     doc = tomlkit.parse(original)
-    files = doc.get("files")
+    files = table_array(doc, "files", bool(config_list.files))
     if files is None:
-        files = tomlkit.aot()
-        doc["files"] = files
+        return original  # 原文與模型都沒有條目：沒有東西要寫
 
     doc_by_uid = _index_by_uid(files)
     for entry in config_list.files:
@@ -101,6 +104,7 @@ def dump(config_list: ConfigList, original: str) -> str:
         adopt_leading_trivia(doc, files, "files")
         for index in reversed(removed):
             del files[index]
+        drop_if_emptied(doc, files)
 
     return tomlkit.dumps(doc)
 
@@ -109,12 +113,13 @@ def _check_shape(doc: "tomlkit.TOMLDocument") -> None:
     """`files` 若存在必須是 `[[files]]` 表格串列（AoT）；permissions 若存在必須是表格。
 
     在迭代 `files`／對 permissions 取 `.keys()`（`_check_unknown_fields`）與轉模型之前先擋下
-    純量、inline 陣列等形狀：那些會讓迭代丟 raw TypeError、對 permissions 取 `.keys()` 丟 raw
-    AttributeError，逃過「結構驗證交給 pydantic、讀取層認得 load 的失敗詞彙」的契約；inline
-    陣列的 files 更是 load 接受、dump 才崩（只吃 AoT）。比照 allowed_roots 的 `_check_roots_shape`。
+    純量、非空的 inline 陣列等形狀：那些會讓迭代丟 raw TypeError、對 permissions 取 `.keys()`
+    丟 raw AttributeError，逃過「結構驗證交給 pydantic、讀取層認得 load 的失敗詞彙」的契約；
+    inline 陣列的 files 更是 load 接受、dump 才崩（只吃 AoT）。比照 allowed_roots 的
+    `_check_roots_shape`。空的 `files = []` 是「沒有條目」，照收（tomlkit 0.15.2 寫出過它）。
     """
     files = doc.get("files")
-    if files is not None and not isinstance(files, items.AoT):
+    if files is not None and not isinstance(files, items.AoT) and not is_empty_inline_array(files):
         raise ConfigListMalformed(
             "清單檔 config-list.toml 的 files 要以 [[files]] 表格串列書寫。"
             "下一步：把每個條目寫成一段 [[files]]，不要用 inline 陣列或其他型別"
