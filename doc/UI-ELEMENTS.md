@@ -73,7 +73,8 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 群組節點 | `data-testid="tree-group-<群組名>"` | 可折疊；標題內 `group-status-dot`（帶 `data-state`）彙總子節點最嚴重的狀態：判不出 > 偏離 > 未部署 > 一致（§7.4.1，#31） |
 | config 節點 | `data-testid="tree-item-<uid>"`（帶 `data-uid`） | 單擊選取（`aria-selected="true"`）、**雙擊展開參數**到右側工作區堆疊（#35） |
 | 鍵盤操作 | 樹節點（`tabindex`） | 樹只佔**一個 Tab 停駐點**（選取的那個；沒有選取就是第一個），節點之間用方向鍵：`↑`／`↓` 照畫面順序移動選取與焦點（跨群組；到頭尾停住），`Home`／`End` 到第一／最後一個，`Enter` 把選取的那一份展開到工作區，`Esc` 收合它的區塊。選取與焦點在樹重畫（重掃、搜尋）後留著（#50、§7.10） |
-| 狀態色點 | 節點內 `data-testid="status-dot"` | **左側**。一致／偏離／未部署 |
+| 狀態色點 | 節點內 `data-testid="status-dot"` | **左側**。一致／偏離／未部署；判不出狀態時 `data-state="error"`（加外框的紅點，#214） |
+| 判不出狀態 | 節點內 `data-testid="row-error"`（文字「錯誤」）與 `data-testid="row-error-reason"` | 目標（或來源）讀不到（權限、不是一般檔案…）時。「錯誤」與名稱同一行；原因與下一步**原樣**寫在那一列底下另起的一行，不只在滑鼠提示（F5、人工驗收 U18）；不是第五種狀態 |
 | 草稿標記 | 節點內 `data-testid="draft-dot"` | **右側**。有未進版草稿時出現。與狀態色點分開 |
 | 未分群節點 | `data-testid="tree-group-ungrouped"` | 無 `groups` 的項目集中於此 |
 
@@ -83,7 +84,8 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 |---|---|---|
 | 工作區 | `data-testid="workspace"` | 右側容器；尚未點選時顯示 `workspace-empty` 提示 |
 | 展開區塊 | `data-testid="panel-<uid>"` | **可同時存在多個**（#36），新開的在最上面；工作區每份 config 一個槽（`data-uid`／`data-view`＝panel／history／diff），歷史與差異檢視只換自己那一槽。標頭（`panel-head`）單擊折疊／展開（`data-collapsed`），`panel-close` 關閉。讀不到內容時顯示 `panel-error-<uid>`（原樣錯誤，不留空表） |
-| 狀態標籤 | `data-testid="panel-status-<uid>"` | 文字為一致／偏離／未部署 |
+| 狀態標籤 | `data-testid="panel-status-<uid>"` | 文字為一致／偏離／未部署；判不出狀態時為「錯誤」 |
+| 判不出狀態橫幅 | `data-testid="error-banner"` | **只在判不出狀態時出現**。寫「判不出狀態」與清單給的原因、下一步（與那一列逐字相同，F5）。非 raw 的條目來源讀不到時，區塊整個換成 `panel-error-<uid>`（讀不到內容），不會有這條橫幅 |
 | 未部署橫幅 | `data-testid="missing-banner"` | **只在未部署時出現**（一致、偏離、判不出狀態都沒有）。說明目標檔案不存在、是哪個路徑，以及「寫出到目標」會把來源內容與記下的權限寫回去、設定庫不變所以不會多一筆變更紀錄。唯讀時說明仍在、入口不出現（#306） |
 | 寫出到目標 | 文字「寫出到目標」（`data-testid="panel-apply"`） | 在未部署橫幅內（`.editing-only`）。按下先重新比對：仍是未部署才 `POST /api/configs/{uid}/apply`，成功→`promote-done`（寫到哪個路徑、沒有變更紀錄）、樹與區塊回到一致、橫幅消失。這段時間目標已經出現（偏離／一致）、判不出狀態或已不在清單→**不寫出**，樹與區塊換成現況並以 `apply-error` 說明原因與下一步。進行中文字「寫出中…」、`aria-busy`，不會送出第二次。不經確認對話框（只補回不存在的檔案，不覆蓋任何東西）（#306）。**不覆蓋由後端保證**：目標已存在時 `apply` 一律 409、檔案不動，頁面的重新比對只是讓人少碰一次壁；要蓋過既有的檔案走差異檢視的「以來源覆蓋目標」（先確認、留紀錄） |
 | 寫出錯誤 | `data-testid="apply-error"` | 後端拒絕（原因原樣顯示）、送不出去（指名「寫出到目標」與下一步），或狀態已不是未部署（見上）（#306） |

@@ -386,8 +386,8 @@ def test_each_state_is_spelled_the_way_context_spells_it(open_page, listing):
 
 
 def test_a_pathological_target_shows_an_error_row_not_a_fake_state(open_page, repo):
-    # #214 Q3(ii)：目標是 FIFO（判不出狀態）那一列標「錯誤」並把原因放進 title，不畫一個
-    # 偽裝的狀態點——把「比不了」講成某個狀態就是靜默失敗（不變式 2）。
+    # #214 Q3(ii)：目標是 FIFO（判不出狀態）那一列標「錯誤」、原因也放進 title，不畫一個
+    # 偽裝的狀態點——把「比不了」講成某個狀態就是靜默失敗（不變式 2）。原因另外直接寫在畫面上（F5）。
     (repo / "files").mkdir(exist_ok=True)
     (repo / "deployed").mkdir(exist_ok=True)
     (repo / "files" / "bad.yaml").write_text("bad: 1\n", encoding="utf-8")

@@ -168,7 +168,7 @@
   .diff-row[data-change="changed"] .diff-to, .diff-row[data-change="added"] .diff-to { color: var(--drift); font-weight: 600; }
   .diff-row[data-change="removed"] .diff-from { color: var(--drift); text-decoration: line-through; }
   /* W5 差異檢視（#30）：偏離橫幅＋來源／目標並排；顏色語言同 W4。 */
-  .drift-banner, .missing-banner { margin: 12px 14px 0; }
+  .drift-banner, .missing-banner, .error-banner { margin: 12px 14px 0; }
   .missing-banner { border-color: var(--missing); }
   .missing-banner .actions { margin-top: 8px; display: flex; gap: 8px; }
   .missing-banner .notice { margin-top: 8px; }
@@ -241,6 +241,11 @@
   /* 判不出狀態（#214）：用偏離的紅並加外框，與四種狀態的實心點區隔。 */
   .dot-error   { background: var(--drift); box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px var(--drift); }
   [data-state="error"] .state { color: var(--drift); }
+  /* 判不出狀態的原因與下一步（F5）：在那一列底下另起一行、原樣顯示、不截斷；排在草稿標記之後。
+     路徑那一格可縮（basis 0）——否則換行時以整條路徑的寬度量，長路徑會把「錯誤」擠到別行。 */
+  li[data-state="error"] { flex-wrap: wrap; }
+  li[data-state="error"] .target { flex: 1 1 0; min-width: 0; }
+  .row-reason { flex-basis: 100%; order: 1; color: var(--drift); font-size: 13px; overflow-wrap: anywhere; }
   .name { font-weight: 500; }
   .target {
     color: var(--muted);
@@ -795,8 +800,9 @@ function markDeveloperOnly(node, on) {
 
 function rowNodeBase(row) {
   if (row.error) {
-    // 判不出狀態的那一列（目標是 FIFO／裝置／不可 traverse，#214）：標「錯誤」並把原因放進
-    // title，不畫一個偽裝的狀態點——把「比不了」講成某個狀態就是靜默失敗（不變式 2）。
+    // 判不出狀態的那一列（目標是 FIFO／裝置／不可 traverse／讀不到，#214）：標「錯誤」，不畫一個
+    // 偽裝的狀態點——把「比不了」講成某個狀態就是靜默失敗（不變式 2）。原因與下一步原樣寫在下一行
+    // （F5、人工驗收 U18）：只放在 title 裡，看畫面的人不知道為什麼、該怎麼辦；title 也留著。
     return element("li", {
       "data-testid": `tree-item-${row.uid}`, "data-uid": row.uid, "data-state": "error",
     }, [
@@ -814,6 +820,7 @@ function rowNodeBase(row) {
         text: "錯誤",
         title: row.error,
       }),
+      element("span", { class: "row-reason", "data-testid": "row-error-reason", text: row.error }),
     ]);
   }
   // 狀態色點在左，與草稿標記（右側，隨 T18 加入）分開——UI-ELEMENTS W2 的左側樹。
@@ -1376,6 +1383,7 @@ function panelNode(detail) {
   }
   if (row && row.state === "drift") panel.appendChild(driftBanner(detail, true));
   if (row && !row.error && row.state === "missing") panel.appendChild(missingBanner(detail));
+  if (row && row.error) panel.appendChild(errorBanner(row.error));
   if (detail.schema_error) {
     // schema 讀不出來（#40）：值照樣看得到，但明說這份在修好之前存不了——不讓人改了半天才被擋。
     panel.appendChild(element("div", { class: "notice error", "data-testid": "panel-schema-error" }, [
@@ -2496,6 +2504,15 @@ function driftBanner(detail, withEntry) {
     banner.appendChild(element("div", { class: "actions" }, [open]));
   }
   return banner;
+}
+
+// 判不出狀態（F5、人工驗收 U18）：區塊裡也寫出原因與下一步。用的是清單給的那一句（帶下一步）；
+// 單筆內容另有一句讀目標的錯誤（`target_error`），只有 errno、沒有下一步，給差異檢視用。
+function errorBanner(reason) {
+  return element("div", { class: "notice error error-banner", "data-testid": "error-banner" }, [
+    element("strong", { text: "判不出狀態：這一份現在無法和來源比對。" }),
+    element("pre", { text: reason }),
+  ]);
 }
 
 // ── 未部署的寫出修復（#306；後端 #29、設計 §5.4）───────────────────────────────
