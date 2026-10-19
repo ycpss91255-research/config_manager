@@ -301,6 +301,29 @@ def test_a_symlinked_whitelist_root_still_covers_what_is_inside_it(tmp_path):
     assert read_source(str(source), [str(linked_root)]).content == b"a: 1\n"
 
 
+def test_a_path_hiding_an_outside_link_behind_a_symlink_loop_is_refused(tmp_path):
+    # F18（安全）：Python 3.11 的 realpath 遇到連結迴圈就不再解析後面那幾段，`loop/..` 讓字串
+    # 看起來回到白名單內，`link_out` 卻沒被解析——白名單判定看的是字串，開檔時核心卻順著
+    # `link_out` 走到外面。要拒絕，不可以把外面的內容讀進來。
+    inside, outside = _inside_and_outside(tmp_path)
+    (outside / "sub").mkdir()
+    (outside / "sub" / "secret.yaml").write_bytes(b"secret: 1\n")
+    (inside / "loop").symlink_to(inside / "loop")
+    (inside / "link_out").symlink_to(outside)
+
+    with pytest.raises(SourcePathUnstable):
+        read_source(f"{inside}/loop/../link_out/sub/secret.yaml", [str(inside)])
+
+
+def test_a_symlink_loop_at_the_end_is_still_refused_as_unstable(tmp_path):
+    # 守門：迴圈本身（沒有藏住別的連結）照舊以「路徑不穩定」拒絕。
+    inside, _ = _inside_and_outside(tmp_path)
+    (inside / "loop").symlink_to(inside / "loop")
+
+    with pytest.raises(SourcePathUnstable):
+        read_source(str(inside / "loop"), [str(inside)])
+
+
 def test_path_changing_during_resolution_is_a_named_exception(tmp_path, monkeypatch):
     # 非 strict 的 realpath 只保證不因「路徑不存在」而丟，不保證完全不丟：CPython
     # 3.11 的 _joinrealpath 在 lstat 說「這是連結」之後才裸呼叫 readlink，兩者之間

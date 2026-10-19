@@ -924,6 +924,32 @@ def test_inspect_a_source_outside_the_whitelist_is_refused(api, tmp_path):
     assert "白名單之外" in _detail(exc.value)["message"]
 
 
+def _hidden_behind_a_loop(sources_root, tmp_path) -> str:
+    """白名單內一個連結迴圈＋一個指向白名單外目錄的連結；回一條藏住後者的路徑（F18）。"""
+    base = pathlib.Path(sources_root) / "source_unstable"
+    base.mkdir(exist_ok=True)
+    (tmp_path / "outdir" / "sub").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "outdir" / "sub" / "secret.yaml").write_bytes(b"leaked_secret_key: 1\n")
+    for name, to in (("loop", base / "loop"), ("link_out", tmp_path / "outdir")):
+        link = base / name
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(to)
+    return f"{base}/loop/../link_out/sub/secret.yaml"
+
+
+def test_inspect_does_not_read_a_file_hidden_behind_a_symlink_loop(api, sources_root, tmp_path):
+    # F18（安全）：偵測不需身分。藏在迴圈後面的白名單外檔案，不可以被讀進來、欄位也不可以回出來。
+    path = _hidden_behind_a_loop(sources_root, tmp_path)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/inspect", {"source_path": path, "format": "yaml"})
+
+    assert (exc.value.code, "leaked_secret_key" in exc.value.read().decode("utf-8")) == (
+        _UNPROCESSABLE, False,
+    )
+
+
 def test_inspect_a_non_utf8_source_is_refused(api, sources_root):
     # 二進位／非 UTF-8 的檔案不是文字，無法以文字格式解析 → 結構化 422（不是 500）。
     source = _write_source(sources_root, "binary.yaml", b"\xff\xfe\x00 not utf-8\n")
