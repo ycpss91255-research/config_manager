@@ -2663,6 +2663,21 @@ def test_the_detail_carries_the_schema_hints_for_each_field(api, sources_root, r
     assert detail["schema_error"] is None
 
 
+def test_the_detail_carries_the_string_length_hints_of_a_field(api, sources_root, repo):
+    # F6（人工驗收 U34）：字串的長度限制也帶給介面——清空不能空白的欄位才能在輸入當下就標示。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地改 config-repo 裡的 schema 檔")
+    entry = _with_schema(api, sources_root, "hints_length.yaml", b"name: amr01\n")
+    schema_file = pathlib.Path(repo) / entry["schema"]
+    schema = json.loads(schema_file.read_text(encoding="utf-8"))
+    schema["properties"]["name"].update({"minLength": 1, "maxLength": 20})
+    schema_file.write_text(json.dumps(schema), encoding="utf-8")
+
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+
+    assert detail["constraints"] == {"name": {"minLength": 1, "maxLength": 20}}
+
+
 def test_a_broken_schema_still_shows_the_values_and_says_what_is_wrong(api, sources_root, repo):
     # schema 壞了不讓整份內容跟著讀不到——值要看得到才能退版或解除納管；錯誤以文字帶回。
     if os.environ.get("CM_SYSTEM_BASE_URL"):

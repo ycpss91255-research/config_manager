@@ -2948,8 +2948,11 @@ def test_a_value_the_schema_rejects_is_refused_with_the_reason_in_the_panel(open
 # 所以這裡也驗「介面沒擋到、後端擋下」時原因標在那一列。
 
 
-def _listing_with_schema(repo, content: str, properties: dict) -> None:
-    """一筆條目（uid＝_PARAM_UID）加上一份手寫的 schema：`properties` 是各欄位的規則。"""
+def _listing_with_schema(
+    repo, content: str, properties: dict, required: list | None = None
+) -> None:
+    """一筆條目（uid＝_PARAM_UID）加上一份手寫的 schema：`properties` 是各欄位的規則，
+    `required` 是根節點必須有的鍵（不給就不寫）。"""
     _listing_many(repo, {"p": content})
     listing = repo / "config-list.toml"
     listing.write_text(
@@ -2960,9 +2963,10 @@ def _listing_with_schema(repo, content: str, properties: dict) -> None:
         encoding="utf-8",
     )
     (repo / ".schemas").mkdir(exist_ok=True)
-    (repo / ".schemas" / f"{_PARAM_UID}.json").write_text(
-        json.dumps({"type": "object", "properties": properties}), encoding="utf-8"
-    )
+    schema: dict = {"type": "object", "properties": properties}
+    if required:
+        schema["required"] = required
+    (repo / ".schemas" / f"{_PARAM_UID}.json").write_text(json.dumps(schema), encoding="utf-8")
 
 
 def _row(path: str) -> str:
@@ -3053,6 +3057,106 @@ def test_a_current_value_outside_the_enum_is_shown_and_flagged_not_silently_repl
 
     page.select_option(_param_value("mode"), label="auto")
     assert page.get_attribute(_row("mode"), "data-valid") == "true"
+
+
+# 字串長度（F6，人工驗收 U34）：schema 定了 minLength／maxLength 的字串，清空或太長在輸入當下
+# 就標示、儲存停用——和範圍、列舉一樣，不必等按儲存才由後端擋下。
+# 長度以字元計，與後端（Python 的 len）相同。
+
+_NAME_AND_COUNT = "name: amr01\ncount: 3\n"
+_NAME_CANNOT_BE_BLANK = {"name": {"type": "string", "minLength": 1}}
+
+
+_PANEL_SAVE = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save']"
+
+
+def test_clearing_a_string_that_cannot_be_blank_is_flagged_as_you_type(open_page, repo):
+    _listing_with_schema(repo, _NAME_AND_COUNT, _NAME_CANNOT_BE_BLANK)
+    page = _open_panel(open_page())
+
+    page.fill(_param_value("name"), "")
+
+    assert page.get_attribute(_row("name"), "data-valid") == "false"
+
+
+def test_clearing_a_string_that_cannot_be_blank_says_so_on_its_row(open_page, repo):
+    _listing_with_schema(repo, _NAME_AND_COUNT, _NAME_CANNOT_BE_BLANK)
+    page = _open_panel(open_page())
+
+    page.fill(_param_value("name"), "")
+
+    assert "不可空白" in _validation(page, "name")
+
+
+def test_clearing_a_string_that_cannot_be_blank_disables_save(open_page, repo):
+    _listing_with_schema(repo, _NAME_AND_COUNT, _NAME_CANNOT_BE_BLANK)
+    page = _open_panel(open_page())
+
+    page.fill(_param_value("name"), "")
+
+    assert page.is_disabled(_PANEL_SAVE)
+
+
+def test_filling_a_cleared_string_again_clears_the_flag(open_page, repo):
+    _listing_with_schema(repo, _NAME_AND_COUNT, _NAME_CANNOT_BE_BLANK)
+    page = _open_panel(open_page())
+    page.fill(_param_value("name"), "")
+    page.wait_for_selector(f"{_row('name')}[data-valid='false']")
+
+    page.fill(_param_value("name"), "amr02")
+
+    flagged = (page.get_attribute(_row("name"), "data-valid"), _validation(page, "name"))
+    assert flagged == ("true", "")
+
+
+def test_a_string_shorter_than_its_minimum_length_names_the_minimum(open_page, repo):
+    _listing_with_schema(repo, "code: abcd\n", {"code": {"type": "string", "minLength": 3}})
+    page = _open_panel(open_page())
+
+    page.fill(_param_value("code"), "ab")
+
+    assert "至少要 3 個字" in _validation(page, "code")
+
+
+def test_a_string_longer_than_its_maximum_length_names_the_maximum(open_page, repo):
+    _listing_with_schema(repo, "name: amr01\n", {"name": {"type": "string", "maxLength": 5}})
+    page = _open_panel(open_page())
+
+    page.fill(_param_value("name"), "amr0123")
+
+    assert "最多 5 個字" in _validation(page, "name")
+
+
+def test_an_emoji_counts_as_one_character_like_the_backend(open_page, repo):
+    # 後端以 Python 的 len 算字元，一個 emoji 是 1。用 JavaScript 的 .length 會算成 2（UTF-16），
+    # 那麼這裡就會被當成夠長而放行——介面與後端的說法不一致。
+    _listing_with_schema(repo, "code: abc\n", {"code": {"type": "string", "minLength": 2}})
+    page = _open_panel(open_page())
+
+    page.fill(_param_value("code"), "😀")
+
+    assert page.get_attribute(_row("code"), "data-valid") == "false"
+
+
+def test_two_emoji_fit_a_maximum_of_two_characters(open_page, repo):
+    # 同上的另一面：兩個 emoji 是 2 個字，不超過 2——以 UTF-16 算會是 4、被誤判成太長。
+    _listing_with_schema(repo, "code: ab\n", {"code": {"type": "string", "maxLength": 2}})
+    page = _open_panel(open_page())
+
+    page.fill(_param_value("code"), "😀😀")
+
+    assert page.get_attribute(_row("code"), "data-valid") == "true"
+
+
+def test_a_required_string_without_a_minimum_length_can_still_be_saved_blank(open_page, repo):
+    # required 只要求鍵在，空字串後端照收；介面不可以比後端嚴（N-3）——清空之後照樣存得成草稿。
+    _listing_with_schema(repo, _NAME_AND_COUNT, {"name": {"type": "string"}}, required=["name"])
+    page = _open_panel(open_page())
+
+    page.fill(_param_value("name"), "")
+    _save(page)
+
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
 
 
 def test_the_schema_description_is_shown_beside_the_field(open_page, repo):
