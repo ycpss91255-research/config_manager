@@ -405,7 +405,9 @@ def test_a_pathological_target_shows_an_error_row_not_a_fake_state(open_page, re
 
 
 # F5（人工驗收 U18）：判不出狀態的原因與下一步要直接寫在畫面上——那一列、展開的區塊都看得到，
-# 不只在滑鼠提示裡。`inner_text` 只拿畫面上看得到的字，不含 title，所以量得出「不是只在提示裡」。
+# 不只在滑鼠提示裡。`inner_text` 只拿畫面上會畫出來的字、不含 title，所以量得出「不是只在提示裡」
+# （量不出被裁切的字；版面另有一則）。後端的那一句以 `row-error` 的 title 為準（#214 起就放在
+# 那裡），畫面上要逐字出現同一句——不是頁面自己另寫的原因或下一步。
 
 _ROOT_READS_THROUGH = pytest.mark.skipif(
     os.getuid() == 0,
@@ -422,11 +424,12 @@ def test_an_unreadable_target_shows_the_reason_and_next_step_on_its_row(open_pag
     try:
         page = _enter_identity(open_page())
         page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'][data-state='error']")
+        reason = page.get_attribute("[data-testid='row-error']", "title")
         shown = page.inner_text(f"[data-testid='tree-item-{_PARAM_UID}']")
     finally:
         target.chmod(0o644)
 
-    assert ("Permission denied" in shown, "下一步" in shown) == (True, True)
+    assert ("Permission denied" in reason, reason in shown) == (True, True)
 
 
 @_ROOT_READS_THROUGH
@@ -437,11 +440,12 @@ def test_an_unreadable_target_panel_says_why_it_cannot_be_compared(open_page, re
     target.chmod(0o000)
     try:
         page = _open_panel(open_page())
+        reason = page.get_attribute("[data-testid='row-error']", "title")
         shown = page.inner_text(f"[data-testid='panel-{_PARAM_UID}']")
     finally:
         target.chmod(0o644)
 
-    assert ("Permission denied" in shown, "下一步" in shown) == (True, True)
+    assert ("Permission denied" in reason, reason in shown) == (True, True)
 
 
 def test_a_target_that_is_not_a_regular_file_shows_why_on_its_row(open_page, repo):
@@ -457,9 +461,35 @@ def test_a_target_that_is_not_a_regular_file_shows_why_on_its_row(open_page, rep
     page = _enter_identity(open_page())
 
     page.wait_for_selector("[data-testid='tree-item-mfz3k9q1'][data-state='error']")
+    reason = page.get_attribute("[data-testid='row-error']", "title")
     shown = page.inner_text("[data-testid='tree-item-mfz3k9q1']")
 
-    assert ("具名管道" in shown, "下一步" in shown) == (True, True)
+    assert ("不是一般檔案" in reason, reason in shown) == (True, True)
+
+
+def test_an_error_row_keeps_the_error_word_on_the_same_line_as_its_name(open_page, repo):
+    # 原因另起一行，但「錯誤」要留在名稱那一行——路徑很長時不可以把整列拆散（測試的暫存路徑夠長）。
+    (repo / "files").mkdir(exist_ok=True)
+    (repo / "deployed").mkdir(exist_ok=True)
+    (repo / "files" / "bad.yaml").write_text("bad: 1\n", encoding="utf-8")
+    fifo = repo / "deployed" / "bad.pipe"
+    fifo.unlink(missing_ok=True)
+    os.mkfifo(fifo)
+    entry = _ENTRY.format(uid="mfz3k9q1", name="bad", target=str(fifo), groups="")
+    (repo / "config-list.toml").write_text(_LIST_HEADER + entry, encoding="utf-8")
+    page = _enter_identity(open_page())
+    page.wait_for_selector("[data-testid='tree-item-mfz3k9q1'][data-state='error']")
+
+    same_line = page.eval_on_selector(
+        "[data-testid='tree-item-mfz3k9q1']",
+        """li => {
+          const name = li.querySelector('.name').getBoundingClientRect();
+          const word = li.querySelector("[data-testid='row-error']").getBoundingClientRect();
+          return word.top < name.bottom && word.bottom > name.top;
+        }""",
+    )
+
+    assert same_line
 
 
 def test_an_entry_in_no_group_lands_under_the_ungrouped_heading(open_page, listing):
@@ -5249,10 +5279,15 @@ def test_every_button_the_help_page_names_exists_on_the_page_it_describes(open_p
 
 
 def test_the_help_page_explains_what_an_error_row_means(open_page, site):
-    # F5：清單上的「錯誤」是什麼、該怎麼辦，名詞對照要說得出來（介面的字改了，說明要跟上，#54）。
+    # F5：名詞對照要有「錯誤」這一列，說它是判不出狀態、不是另一種狀態（與 CONTEXT.md 一致；
+    # 介面的字改了，說明要跟上，#54）。只是在別列順帶提到「錯誤」不算。
     help_page = _help_page(open_page, site)
+    rows = help_page.eval_on_selector_all(
+        "#glossary tr", "rows => rows.map(r => [...r.cells].map(c => c.innerText))"
+    )
+    why = next((cells[-1] for cells in rows if cells[:1] == ["錯誤"]), "")
 
-    assert "錯誤" in help_page.inner_text("#glossary")
+    assert ("判不出" in why, "不是另一種狀態" in why) == (True, True)
 
 
 def test_the_help_page_says_write_out_only_fills_in_a_missing_file_and_never_overwrites(
