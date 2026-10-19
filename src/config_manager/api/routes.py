@@ -70,6 +70,7 @@ from config_manager.io.errors import (
     AllowedRootUnreachable,
     BrowseError,
     BrowseNotADirectory,
+    BrowseNotFound,
     BrowseOutsideRoots,
     BrowseUnreadable,
     CandidateError,
@@ -628,6 +629,7 @@ def _allowed_roots_view(repo: str) -> dict[str, object]:
 
 _BROWSE_KINDS: tuple[tuple[type[BrowseError], str], ...] = (
     (BrowseOutsideRoots, "outside_roots"),
+    (BrowseNotFound, "not_found"),
     (BrowseNotADirectory, "not_a_directory"),
     (BrowseUnreadable, "unreadable"),
 )
@@ -678,7 +680,7 @@ def _browse_filesystem(roots: tuple[str, ...], path: str) -> dict[str, object]:
     try:
         listing = browse(path, roots)
     except BrowseError as error:
-        # 白名單外、不是目錄、讀不出來：輸入的路徑值不合法。detail 帶 kind 讓前端分辨
+        # 白名單外、不存在、不是目錄、讀不出來：輸入的路徑值不合法。detail 帶 kind 讓前端分辨
         # 原因（只有 outside_roots 給加白名單入口），message 是原樣可行動訊息（含下一步）；
         # resolved／suggested 讓「加入白名單」預填解析後的目錄，而非使用者打的原字串（#13）。
         detail: dict[str, object] = {"kind": _browse_kind(error), "message": str(error)}
@@ -869,10 +871,12 @@ def _as_entry(entry: FileEntry) -> dict[str, object]:
 
 
 def _as_listing(listing: Listing) -> dict[str, object]:
-    """一次瀏覽在畫面上需要的欄位：解析後的目錄，與底下每一項的名字／種類／路徑。"""
+    """一次瀏覽在畫面上需要的欄位：解析後的目錄，與底下每一項的名字／種類／路徑；指向檔案時
+    `selected` 是那個檔（解析後的真正路徑），瀏覽目錄時是 null（F1）。"""
     return {
         "path": listing.path,
         "entries": [_as_browse_entry(entry) for entry in listing.entries],
+        "selected": listing.selected,
     }
 
 

@@ -31,7 +31,7 @@ from config_manager.io.errors import (
     NotARegularFile,
     PathUnreachable,
 )
-from config_manager.io.paths import blocking_parent, read_capped
+from config_manager.io.paths import blocking_parent, describe_mode, read_capped
 
 # 一次讀進記憶體的分塊大小。內容串流進 hashlib、不留存，所以記憶體是 O(1)。
 _CHUNK = 65536
@@ -60,7 +60,7 @@ def digest(path: str, max_bytes: int = _MAX_BYTES) -> str | None:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
             raise NotARegularFile(
-                f"目標不是一般檔案（{_kind(info.st_mode)}）：{path}。"
+                f"目標不是一般檔案（{describe_mode(info.st_mode)}）：{path}。"
                 f"下一步：確認該路徑指向一份 config 檔案，不是裝置、目錄或具名管道"
             )
         if info.st_size > max_bytes:
@@ -130,16 +130,3 @@ def _classify_open_failure(path: str, error: OSError) -> Exception | None:
         f"目標開不起來（{error.strerror}）：{path}。"
         f"下一步：確認它是一份一般檔案（不是裝置、socket 或具名管道）"
     )
-
-
-def _kind(mode: int) -> str:
-    """把 `st_mode` 說成人看得懂的檔案種類，給錯誤訊息用。"""
-    if stat.S_ISDIR(mode):
-        return "目錄"
-    if stat.S_ISFIFO(mode):
-        return "具名管道 FIFO"
-    if stat.S_ISBLK(mode) or stat.S_ISCHR(mode):
-        return "裝置"
-    if stat.S_ISSOCK(mode):
-        return "socket"
-    return "非一般檔案"

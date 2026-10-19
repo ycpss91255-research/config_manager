@@ -228,9 +228,13 @@ def _parser() -> argparse.ArgumentParser:
     importing.add_argument("--email", required=True, help="納管紀錄的作者 email")
     importing.add_argument("--role", default="user", help="角色：user（預設）或 developer")
 
-    browsing = subcommands.add_parser("browse", help="列出白名單內某目錄的內容")
+    browsing = subcommands.add_parser(
+        "browse", help="列出白名單內某目錄的內容（指向檔案時列它所在的目錄並寫出已選的那一個）"
+    )
     browsing.add_argument("--api", default=_DEFAULT_API, help=f"預設 {_DEFAULT_API}")
-    browsing.add_argument("--path", required=True, help="要列出的目錄（受白名單限制）")
+    browsing.add_argument(
+        "--path", required=True, help="要列出的目錄，或白名單內的一般檔案（受白名單限制）"
+    )
 
     inspecting = subcommands.add_parser("inspect", help="偵測候選檔案：格式、歧義、摘要")
     inspecting.add_argument("--api", default=_DEFAULT_API, help=f"預設 {_DEFAULT_API}")
@@ -396,7 +400,10 @@ def _browse(api: str, path: str) -> int:
             # 目錄尾端加 /，一眼分得出可再進去的與可挑的。
             suffix = "/" if entry["kind"] == "dir" else ""
             print(f"  {entry['name']}{suffix}")
-    except (KeyError, TypeError) as error:
+        # 指向檔案時與畫面一樣寫出已選的那一個（F1）；瀏覽目錄時沒有。
+        if listing.get("selected"):
+            print(f"已選：{listing['selected']}")
+    except (KeyError, TypeError, AttributeError) as error:
         return _unexpected_response(api, error)
     return 0
 

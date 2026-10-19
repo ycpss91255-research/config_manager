@@ -1557,7 +1557,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/preflight` | T15 | 已落地 |
 | `io/digest` | T20 | 已落地 |
 | `io/scan` | T21 | 已落地 |
-| `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言；`OnboardLeftBehind`（納管回滾失敗）在 `io/onboard` 的整合規格被斷言（#173）；`PromoteLeftBehind`（進版回滾失敗）由 T9 的回滾規格擁有（#19）；`BrowseError` 族（瀏覽白名單外／不是目錄）在 T9 的 `GET /api/browse` 被斷言（#185） | 已落地 |
+| `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言；`OnboardLeftBehind`（納管回滾失敗）在 `io/onboard` 的整合規格被斷言（#173）；`PromoteLeftBehind`（進版回滾失敗）由 T9 的回滾規格擁有（#19）；`BrowseError` 族（瀏覽白名單外／不存在／不是目錄／讀不出來）在 T9 的 `GET /api/browse` 被斷言（#185；不存在是 F1 起） | 已落地 |
 | `io/parsers` | T6 | 已落地（#17）：`edit_source` 讀來源複本→`set_value`→`dump`→原子寫回；原樣保證由 `core/parse` 的單元規格釘住。`read_source` 讀來源複本原文供 API 存草稿當底（#19），效果透過 T9 的 `POST /api/drafts` 觀察；`as_text`／`as_bytes`：`raw` 的內容無損穿過文字（surrogateescape），寫出與退版逐位元組不變（人工驗證 U07） |
 | `io/promote` | 效果透過 T9 觀察：`POST /api/promote` 的寫出＋記錄＋第 k 份失敗整批回滾（目標還原、紀錄撤銷）——編排層，同 `io/onboard` 的處理；回滾也失敗時丟 `PromoteLeftBehind`（#19）；`companions`＝同一筆紀錄裡一起寫回 repo 的其他檔案（退版時的 schema 與清單檔），與來源複本同進同退，以真實 git 的整合規格觀察（#39） | 已落地（`apply`） |
 | `io/source` | T22（匯入時刻對外界的讀取，介面議定於 #177） | 已落地：路徑判定（realpath 後比對白名單、一般檔案檢查）與一次性讀取（#174）、讀取失敗的三種分類（不存在／讀不到／上層目錄無 traverse，#182）。`local_hostname` 的部署穩定性見 #178 |
@@ -1570,7 +1570,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/lintrc` | 效果透過 T15（preflight：有檔就要讀得出來、沒有是預設值）與 T9（儲存時套到的規則）觀察——薄 adapter，同 `io/rules` 的處理；讀不出來丟 `LintrcUnparsable`（`PreflightError` 的一種，#43） | 已落地（`read_lintrc`） |
 | `io/manual_type` | 效果透過既有介面觀察：schema 的內容→`io/schema.read_schema` 與 T12 的 `manual_types`、清單檔條目→T1（`load`）、`meta` 紀錄→T7（`history`）——編排層，同 `io/schema` 的處理；只收存在的單一參數、與現值不相容擋下（`TypeIncompatible`）、清到不剩時 schema 檔與條目指向一起拿掉、失敗回滾（#285） | 已落地（`specify_type`） |
 | `io/drift` | 效果透過 T9 觀察：`overwrite`（寫出＋空 `cfg` 紀錄，紀錄沒成把目標還原）、`adopt`（走 `io/promote.apply`，kind `adopt`）——編排層，同 `io/onboard`／`io/promote` 的處理（#29） | 已落地（`overwrite`／`adopt`） |
-| `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath 與列目錄——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185） | 已落地（`browse`） |
+| `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath、列目錄，與指向檔案時改列上層目錄並選它（上層重跑一次判定，F1）——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185）。兩次開檔之間被抽換的競速分支 T9 走不到，與 `io/source` 的同類限制相同 | 已落地（`browse`） |
 | `io/candidate` | T24（候選檔案數預覽，介面議定於 #206）：不以白名單為閘門、遞迴數一般檔（不讀內容）、每層 O_NOFOLLOW 不跟隨連結、深度／項目上限觸及回部分計數＋capped | 已落地（`count_candidates`） |
 | `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202）；移除以檔案原樣 prefix 定位、找不到丟 `PrefixNotFound`、commit 失敗回滾同樣以真實 fs＋git 斷言（#15） | 已落地（`read_allowed_roots`／`add_allowed_root`／`remove_allowed_root`） |
 | `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/configs/{uid}`、`DELETE /api/configs/{uid}`、`GET /api/configs/{uid}/history`、`POST /api/configs/{uid}/revert`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots`、`GET`／`POST`／`DELETE /api/drafts[/{uid}]`、`POST /api/promote` 與 CORS 中介層） |
