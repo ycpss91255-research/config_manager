@@ -71,15 +71,16 @@ def check_schema(text: str, fmt: str, schema: Mapping[str, object]) -> list[Prob
     return list(dict.fromkeys(problems))
 
 
-# 介面用得上的 schema 關鍵字：範圍、步進、列舉選項、說明（#40）。
+# 介面用得上的 schema 關鍵字：範圍、步進、列舉選項、說明（#40），字串長度（F6）。
+# `required` 不在這裡：它只要求鍵在，空字串照樣過；當成「不能空白」介面就比後端嚴了。
 _HINT_KEYS = (
     "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "enum",
-    "description",
+    "minLength", "maxLength", "description",
 )
 
 
 def field_hints(schema: Mapping[str, object]) -> dict[str, dict[str, object]]:
-    """schema 裡每個欄位給介面的提示（範圍、步進、列舉選項、說明），沒有提示的欄位不列。
+    """schema 裡每個欄位給介面的提示（範圍、步進、列舉選項、字串長度、說明），沒有提示的欄位不列。
 
     鍵是欄位路徑，與 `infer_types` 同一套文法（`.` 相接、`[]` 標清單元素、key 內的字面點跳脫成
     `\\.`），欄位表才對得到那一列。這只是**提示**：讓介面在輸入當下就說得出問題；保證在

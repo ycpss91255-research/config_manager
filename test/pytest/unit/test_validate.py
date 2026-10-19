@@ -428,8 +428,8 @@ def test_every_schema_problem_carries_a_path_a_line_and_a_suggestion():
 
 
 # ── schema 給介面的提示（#40）────────────────────────────────────────────────
-# 欄位表依 schema 套範圍、步進、列舉選項與說明。保證仍在後端（第 2 層）；這份提示只讓介面在
-# 輸入當下就說得出問題。鍵與 `infer_types` 同一套路徑文法，介面才對得到那一列。
+# 欄位表依 schema 套範圍、步進、列舉選項、字串長度（F6）與說明。保證仍在後端（第 2 層）；
+# 這份提示只讓介面在輸入當下就說得出問題。鍵與 `infer_types` 同一套路徑文法，介面才對得到那一列。
 
 
 def test_hints_carry_range_step_choices_and_description_per_field():

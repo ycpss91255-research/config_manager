@@ -1537,7 +1537,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `core/validate` | T3 | 已落地：第 1 層（語法、正規形式白名單、縮排／尾隨空白、重複 key 列全部行號，#16；套 `.lintrc.toml` 的設定，#43）；`check` 收到 schema 時併入第 2 層的問題（#39）、收到規則時併入第 3 層的警告（#41） |
 | `core/lintrc` | T3 | 已落地（`parse_lintrc`／`rules_for`／`DEFAULT`／`default_text`：第 1 層規則的設定檔，分節、豁免與理由、每個鍵的檢查，#43） |
 | `core/rules` | T3 | 已落地（第 3 層：`parse_rules` 讀規則檔並指出寫錯的地方、`check_rules` 回警告、`values_at` 依路徑取值；簡單比較與跨 config 對照，#41） |
-| `core/schema_check` | T3 | 已落地（第 2 層：`check_schema` 把 jsonschema 的錯誤轉成帶欄位路徑／行號／建議的問題；整數不收浮點；`ensure_valid_schema` 擋壞掉的 schema，#39；`field_hints` 取出給介面的範圍／步進／列舉選項／說明，#40） |
+| `core/schema_check` | T3 | 已落地（第 2 層：`check_schema` 把 jsonschema 的錯誤轉成帶欄位路徑／行號／建議的問題；整數不收浮點；`ensure_valid_schema` 擋壞掉的 schema，#39；`field_hints` 取出給介面的範圍／步進／列舉選項／說明，#40；字串長度，F6） |
 | `core/locate` | T3 | 已落地（欄位路徑→原文行號：yaml／json 走 ruamel 的位置資訊，toml／ini 逐行掃；效果由 T3 第 2 層的行號斷言觀察，#39） |
 | `core/problem` | T3 | 已落地（`Problem` 的形狀與嚴重度常數——三層驗證共用，從 `core/validate` 抽出以免第 2 層反向 import 成環；無行為，由 T3 的規格觀察，#39；`rule` 是第 3 層警告的規則代號，#41） |
 | `core/whitelist` | T4（正規化比對）＋ T8（符號連結逃逸） | 已落地：T4 的 `decide` 正規化比對（#11）；符號連結逃逸在**寫出**時點以 realpath 判定，落在 `io/writer`（#5，已 CLOSED）。**納管的讀取路徑上沒有這一層**——見 #174 |
