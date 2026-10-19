@@ -448,7 +448,8 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
     另回 `target_values`（target 磁碟現況解析後的值樹，#30）：差異檢視據此把來源與現況以參數為
     單位並排；target 不存在→null；讀不到／不是 UTF-8／解析不了→null 並在 `target_error` 說原因
     （現況壞掉是要呈現的事實、不是 500）。
-    另回 `constraints`（欄位路徑→schema 的範圍／步進／列舉選項／說明，#40）：欄位表據此設輸入框；
+    另回 `constraints`（欄位路徑→schema 的範圍／步進／列舉選項／字串長度／說明，#40、F6）：
+    欄位表據此設輸入框；
     `manual_types`（欄位路徑→人工指定的型別，#285）：`types` 裡那幾個欄位已蓋成指定的型別；
     schema 讀不出來→兩者空、`schema_error` 說原因（值照樣回，介面明說存不了）。
     """

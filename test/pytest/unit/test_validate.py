@@ -428,8 +428,8 @@ def test_every_schema_problem_carries_a_path_a_line_and_a_suggestion():
 
 
 # ── schema 給介面的提示（#40）────────────────────────────────────────────────
-# 欄位表依 schema 套範圍、步進、列舉選項與說明。保證仍在後端（第 2 層）；這份提示只讓介面在
-# 輸入當下就說得出問題。鍵與 `infer_types` 同一套路徑文法，介面才對得到那一列。
+# 欄位表依 schema 套範圍、步進、列舉選項、字串長度（F6）與說明。保證仍在後端（第 2 層）；
+# 這份提示只讓介面在輸入當下就說得出問題。鍵與 `infer_types` 同一套路徑文法，介面才對得到那一列。
 
 
 def test_hints_carry_range_step_choices_and_description_per_field():
@@ -482,3 +482,32 @@ def test_a_key_containing_a_dot_is_escaped_in_the_hint_path():
     schema = {"type": "object", "properties": {"a.b": {"maximum": 1}}}
 
     assert field_hints(schema) == {"a\\.b": {"maximum": 1}}
+
+
+def test_hints_carry_the_string_length_limits():
+    # F6（人工驗收 U34）：字串的長度限制也交給介面——清空一個不能空白的欄位，才能在輸入當下就標示。
+    schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "minLength": 1, "maxLength": 20, "description": "名稱"},
+        },
+    }
+
+    assert field_hints(schema) == {"name": {"minLength": 1, "maxLength": 20, "description": "名稱"}}
+
+
+def test_required_is_not_turned_into_a_field_hint():
+    # required 只管「這個鍵在不在」，空字串照樣過。它若變成提示，介面就會擋下後端收的值（N-3）。
+    # 放在巢狀物件上：根節點本來就不出提示，放在那裡量不到這件事。
+    schema = {
+        "type": "object",
+        "properties": {
+            "robot": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {"name": {"type": "string"}},
+            },
+        },
+    }
+
+    assert field_hints(schema) == {}

@@ -95,7 +95,7 @@ def _draft(repo: str, identity: Identity | None, uid: str) -> dict[str, object]:
 def schema_view(repo: str, entry: FileEntry) -> dict[str, object]:
     """單筆內容裡與 schema 有關的三個欄位：`constraints`、`manual_types`、`schema_error`。
 
-    `constraints` 是欄位路徑 → 範圍／步進／列舉選項／說明，欄位表據此設輸入框（#40）；
+    `constraints` 是欄位路徑 → 範圍／步進／列舉選項／字串長度／說明，欄位表據此設輸入框（#40、F6）；
     `manual_types` 是欄位路徑 → 人工指定的型別，欄位表據此標示「已指定」、單筆內容據此把推斷的
     型別蓋成指定的（#285）。schema 讀不出來時**不讓整份內容跟著讀不到**——值還是要看得到（才能
     退版、解除納管），所以兩者回空、錯誤以文字帶回，介面明說這份在 schema 修好前存不了（存的

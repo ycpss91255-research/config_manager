@@ -136,7 +136,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 值欄 | 列內 `data-testid="param-value"` | 控制項依型別。**有 schema 時（#40）**：數字輸入框帶 `min`／`max`／`step`；有 `enum` 的欄位是下拉選單（選項來自 schema；目前的值不在選項裡時多一個標明「不在允許的值裡」的選項，`data-outside`） |
 | 欄位說明 | 列內 `data-testid="param-description"` | schema 有 `description` 時出現在參數名旁（ⓘ），`title` 是說明全文（#40） |
 | 來源值 | 列內 `data-testid="param-source-value"` | 與目前值不同時標色 |
-| 驗證狀態 | 列內 `data-testid="param-validation"` | 錯誤時含原因文字（列的 `data-valid="false"`、整列標紅）。輸入當下由前端算（整數、範圍、倍數、不在列舉裡）；**後端擋下的問題若指名欄位，也標在那一列並附修正建議**，那一列再改動即清掉（#40） |
+| 驗證狀態 | 列內 `data-testid="param-validation"` | 錯誤時含原因文字（列的 `data-valid="false"`、整列標紅）。輸入當下由前端算（整數、範圍、倍數、不在列舉裡、字串長度——以字元計，與後端相同，F6）；**後端擋下的問題若指名欄位，也標在那一列並附修正建議**，那一列再改動即清掉（#40） |
 | 警告列 | 列的 `data-warning="true"` | 違反第 3 層規則的那一列（琥珀色，與紅色的 `data-valid="false"` 分得開；硬擋優先）。值一改即清除，由下一次儲存重標（#44） |
 | 儲存 | 文字「儲存」 | 存為草稿。**驗證未過時為停用** |
 

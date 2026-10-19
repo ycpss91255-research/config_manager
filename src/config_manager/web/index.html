@@ -1834,7 +1834,7 @@ function collectRows(detail, out, scope) {
   const type = detail.types[typePath] || "unknown";
   const container = type === "dict" || type === "list";
   const baseline = draft === undefined ? value : draft;
-  // schema 對這個欄位的提示（範圍／步進／列舉選項／說明，#40）；沒有 schema 或沒有提示就是 null。
+  // schema 對這個欄位的提示（範圍／步進／列舉選項／說明，#40；字串長度，F6）；沒有 schema 或沒有提示就是 null。
   const hint = (!container && (detail.constraints || {})[typePath]) || null;
   // 這個欄位的型別是不是人工指定的（#285）；清單元素不能個別指定。
   const manual = !owner && Boolean((detail.manual_types || {})[typePath]);
@@ -2207,11 +2207,24 @@ function rangeProblem(number, hint) {
   return "";
 }
 
+// 字串相對 schema 的長度（F6）。以字元（code point）計，與後端 jsonschema 用的 Python len 相同——
+// `.length` 數的是 UTF-16 單位，一個 emoji 會算成 2，介面就和後端說法不一致。
+function lengthProblem(text, hint) {
+  if (!hint) return "";
+  const length = [...text].length;
+  if (hint.minLength !== undefined && length < hint.minLength) {
+    return hint.minLength === 1 ? "不可空白：至少要填 1 個字" : `太短：至少要 ${hint.minLength} 個字`;
+  }
+  if (hint.maxLength !== undefined && length > hint.maxLength) return `太長：最多 ${hint.maxLength} 個字`;
+  return "";
+}
+
 function localProblem(control, row) {
   if (control.choices) {
     const outside = control.selectedOptions[0] && control.selectedOptions[0].dataset.outside;
     return outside ? "目前的值不在允許的值裡，請改選一個" : "";
   }
+  if (row.type === "string") return lengthProblem(control.value, row.hint);
   if (row.type !== "int" && row.type !== "float") return "";
   if (control.validity.badInput) return row.type === "int" ? "必須是整數，不接受小數或文字" : "必須是數字";
   if (control.value === "") return "不可為空";
