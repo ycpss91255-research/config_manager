@@ -3148,9 +3148,43 @@ def test_two_emoji_fit_a_maximum_of_two_characters(open_page, repo):
     assert page.get_attribute(_row("code"), "data-valid") == "true"
 
 
+def test_a_string_exactly_at_its_minimum_length_is_accepted(open_page, repo):
+    # 剛好等於下限是合法的（後端是 len < minLength 才擋）——比較不可寫成「小於等於」。
+    _listing_with_schema(repo, "code: abcd\n", {"code": {"type": "string", "minLength": 3}})
+    page = _open_panel(open_page())
+
+    page.fill(_param_value("code"), "abc")
+
+    assert page.get_attribute(_row("code"), "data-valid") == "true"
+
+
+def test_spaces_count_as_characters_like_the_backend(open_page, repo):
+    # 後端不去頭尾空白就數長度，三個空格是 3 個字、不算空白——介面不可以先 trim 再數。
+    _listing_with_schema(repo, _NAME_AND_COUNT, _NAME_CANNOT_BE_BLANK)
+    page = _open_panel(open_page())
+
+    page.fill(_param_value("name"), "   ")
+
+    assert page.get_attribute(_row("name"), "data-valid") == "true"
+
+
+def test_an_emoji_with_a_skin_tone_counts_as_two_characters_like_the_backend(open_page, repo):
+    # 👍🏽 看起來是一個字，但它是兩個 code point，後端的 len 算 2——夠 minLength 2。
+    # 以「看起來幾個字」（字素）去數會算成 1、誤判太短。
+    _listing_with_schema(repo, "code: abc\n", {"code": {"type": "string", "minLength": 2}})
+    page = _open_panel(open_page())
+
+    page.fill(_param_value("code"), "\U0001F44D\U0001F3FD")
+
+    assert page.get_attribute(_row("code"), "data-valid") == "true"
+
+
 def test_a_required_string_without_a_minimum_length_can_still_be_saved_blank(open_page, repo):
     # required 只要求鍵在，空字串後端照收；介面不可以比後端嚴（N-3）——清空之後照樣存得成草稿。
-    _listing_with_schema(repo, _NAME_AND_COUNT, {"name": {"type": "string"}}, required=["name"])
+    # 欄位另有 maxLength：有提示，長度檢查才真的跑到空字串上（沒有提示時檢查一開頭就返回，量不到）。
+    _listing_with_schema(
+        repo, _NAME_AND_COUNT, {"name": {"type": "string", "maxLength": 20}}, required=["name"]
+    )
     page = _open_panel(open_page())
 
     page.fill(_param_value("name"), "")
