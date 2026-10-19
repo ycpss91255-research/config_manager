@@ -386,8 +386,8 @@ def test_each_state_is_spelled_the_way_context_spells_it(open_page, listing):
 
 
 def test_a_pathological_target_shows_an_error_row_not_a_fake_state(open_page, repo):
-    # #214 Q3(ii)：目標是 FIFO（判不出狀態）那一列標「錯誤」並把原因放進 title，不畫一個
-    # 偽裝的狀態點——把「比不了」講成某個狀態就是靜默失敗（不變式 2）。
+    # #214 Q3(ii)：目標是 FIFO（判不出狀態）那一列標「錯誤」、原因也放進 title，不畫一個
+    # 偽裝的狀態點——把「比不了」講成某個狀態就是靜默失敗（不變式 2）。原因另外直接寫在畫面上（F5）。
     (repo / "files").mkdir(exist_ok=True)
     (repo / "deployed").mkdir(exist_ok=True)
     (repo / "files" / "bad.yaml").write_text("bad: 1\n", encoding="utf-8")
@@ -402,6 +402,94 @@ def test_a_pathological_target_shows_an_error_row_not_a_fake_state(open_page, re
     assert page.get_attribute("[data-testid='status-dot']", "data-state") == "error"
     assert page.inner_text("[data-testid='row-error']") == "錯誤"
     assert str(fifo) in page.get_attribute("[data-testid='row-error']", "title")
+
+
+# F5（人工驗收 U18）：判不出狀態的原因與下一步要直接寫在畫面上——那一列、展開的區塊都看得到，
+# 不只在滑鼠提示裡。`inner_text` 只拿畫面上會畫出來的字、不含 title，所以量得出「不是只在提示裡」
+# （量不出被裁切的字；版面另有一則）。後端的那一句以 `row-error` 的 title 為準（#214 起就放在
+# 那裡），畫面上要逐字出現同一句——不是頁面自己另寫的原因或下一步。
+
+_ROOT_READS_THROUGH = pytest.mark.skipif(
+    os.getuid() == 0,
+    reason="root 讀得穿 chmod 000；CI 的 checks 以非 root 跑 test_web.py"
+    "（映像系統測試以 root 跑、不含這個檔）",
+)
+
+
+@_ROOT_READS_THROUGH
+def test_an_unreadable_target_shows_the_reason_and_next_step_on_its_row(open_page, repo):
+    _listing_with(repo, "count: 3\n")
+    target = repo / "deployed" / "p.yaml"
+    target.chmod(0o000)
+    try:
+        page = _enter_identity(open_page())
+        page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'][data-state='error']")
+        reason = page.get_attribute("[data-testid='row-error']", "title")
+        shown = page.inner_text(f"[data-testid='tree-item-{_PARAM_UID}']")
+    finally:
+        target.chmod(0o644)
+
+    assert ("Permission denied" in reason, reason in shown) == (True, True)
+
+
+@_ROOT_READS_THROUGH
+def test_an_unreadable_target_panel_says_why_it_cannot_be_compared(open_page, repo):
+    # 區塊裡要是列表給的那一句（帶下一步）；單筆內容另有一句讀目標的錯誤，只有 errno、沒有下一步。
+    _listing_with(repo, "count: 3\n")
+    target = repo / "deployed" / "p.yaml"
+    target.chmod(0o000)
+    try:
+        page = _open_panel(open_page())
+        reason = page.get_attribute("[data-testid='row-error']", "title")
+        shown = page.inner_text(f"[data-testid='panel-{_PARAM_UID}']")
+    finally:
+        target.chmod(0o644)
+
+    assert ("Permission denied" in reason, reason in shown) == (True, True)
+
+
+def test_a_target_that_is_not_a_regular_file_shows_why_on_its_row(open_page, repo):
+    # 另一種判不出：目標是具名管道。這一則 root 也跑得到。
+    (repo / "files").mkdir(exist_ok=True)
+    (repo / "deployed").mkdir(exist_ok=True)
+    (repo / "files" / "bad.yaml").write_text("bad: 1\n", encoding="utf-8")
+    fifo = repo / "deployed" / "bad.pipe"
+    fifo.unlink(missing_ok=True)
+    os.mkfifo(fifo)
+    entry = _ENTRY.format(uid="mfz3k9q1", name="bad", target=str(fifo), groups="")
+    (repo / "config-list.toml").write_text(_LIST_HEADER + entry, encoding="utf-8")
+    page = _enter_identity(open_page())
+
+    page.wait_for_selector("[data-testid='tree-item-mfz3k9q1'][data-state='error']")
+    reason = page.get_attribute("[data-testid='row-error']", "title")
+    shown = page.inner_text("[data-testid='tree-item-mfz3k9q1']")
+
+    assert ("不是一般檔案" in reason, reason in shown) == (True, True)
+
+
+def test_an_error_row_keeps_the_error_word_on_the_same_line_as_its_name(open_page, repo):
+    # 原因另起一行，但「錯誤」要留在名稱那一行——路徑很長時不可以把整列拆散（測試的暫存路徑夠長）。
+    (repo / "files").mkdir(exist_ok=True)
+    (repo / "deployed").mkdir(exist_ok=True)
+    (repo / "files" / "bad.yaml").write_text("bad: 1\n", encoding="utf-8")
+    fifo = repo / "deployed" / "bad.pipe"
+    fifo.unlink(missing_ok=True)
+    os.mkfifo(fifo)
+    entry = _ENTRY.format(uid="mfz3k9q1", name="bad", target=str(fifo), groups="")
+    (repo / "config-list.toml").write_text(_LIST_HEADER + entry, encoding="utf-8")
+    page = _enter_identity(open_page())
+    page.wait_for_selector("[data-testid='tree-item-mfz3k9q1'][data-state='error']")
+
+    same_line = page.eval_on_selector(
+        "[data-testid='tree-item-mfz3k9q1']",
+        """li => {
+          const name = li.querySelector('.name').getBoundingClientRect();
+          const word = li.querySelector("[data-testid='row-error']").getBoundingClientRect();
+          return word.top < name.bottom && word.bottom > name.top;
+        }""",
+    )
+
+    assert same_line
 
 
 def test_an_entry_in_no_group_lands_under_the_ungrouped_heading(open_page, listing):
@@ -5188,6 +5276,18 @@ def test_every_button_the_help_page_names_exists_on_the_page_it_describes(open_p
 
     named = sorted({node.inner_text() for node in help_page.query_selector_all(".ui")})
     assert named and [label for label in named if label not in source] == []
+
+
+def test_the_help_page_explains_what_an_error_row_means(open_page, site):
+    # F5：名詞對照要有「錯誤」這一列，說它是判不出狀態、不是另一種狀態（與 CONTEXT.md 一致；
+    # 介面的字改了，說明要跟上，#54）。只是在別列順帶提到「錯誤」不算。
+    help_page = _help_page(open_page, site)
+    rows = help_page.eval_on_selector_all(
+        "#glossary tr", "rows => rows.map(r => [...r.cells].map(c => c.innerText))"
+    )
+    why = next((cells[-1] for cells in rows if cells[:1] == ["錯誤"]), "")
+
+    assert ("判不出" in why, "不是另一種狀態" in why) == (True, True)
 
 
 def test_the_help_page_says_write_out_only_fills_in_a_missing_file_and_never_overwrites(
