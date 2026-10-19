@@ -1875,21 +1875,36 @@ def test_a_developer_adds_the_rejected_path_then_browsing_it_succeeds(
     assert _browse_entries(page) == [["cfg.yaml", "file"]]
 
 
-def test_a_non_directory_rejection_offers_no_add_entry_even_to_a_developer(
-    open_page, browse_root
-):
-    # 白名單內、但指向檔案（不是目錄）→ not_a_directory；加白名單無濟於事，
-    # 即使開發者也沒有入口。
-    (browse_root / "afile.yaml").write_text("a: 1\n", encoding="utf-8")
+def test_a_not_found_rejection_offers_no_add_entry_even_to_a_developer(open_page, browse_root):
+    # 白名單內、但不存在 → not_found；加白名單無濟於事，即使開發者也沒有入口。原本這一則用的是
+    # 「指向檔案」，F1（人工驗收 U05）起那會跳到它的目錄並選好它，不再是拒絕。
     page = _open_browser_as_developer(open_page())
 
-    page.fill("[data-testid='browse-path-input']", str(browse_root / "afile.yaml"))
+    page.fill("[data-testid='browse-path-input']", str(browse_root / "nope.yaml"))
     page.get_by_role("button", name="前往").click()
     page.wait_for_selector("[data-testid='browse-rejected']")
 
     rejected = page.locator("[data-testid='browse-rejected']")
-    assert rejected.get_attribute("data-kind") == "not_a_directory"
+    assert rejected.get_attribute("data-kind") == "not_found"
     assert page.get_by_role("button", name="加入白名單").count() == 0
+
+
+def test_a_not_a_directory_rejection_offers_no_add_entry_even_to_a_developer(
+    open_page, browse_root
+):
+    # 白名單內、但不是可選的一般檔案（具名管道）→ not_a_directory；同樣沒有加入白名單的入口。
+    os.mkfifo(browse_root / "pipe")
+    page = _open_browser_as_developer(open_page())
+
+    page.fill("[data-testid='browse-path-input']", str(browse_root / "pipe"))
+    page.get_by_role("button", name="前往").click()
+    page.wait_for_selector("[data-testid='browse-rejected']")
+
+    shown = (
+        page.locator("[data-testid='browse-rejected']").get_attribute("data-kind"),
+        page.get_by_role("button", name="加入白名單").count(),
+    )
+    assert shown == ("not_a_directory", 0)
 
 
 # 貼檔案的完整路徑（F1，人工驗收 U05）：跳到它所在的目錄、選好它，和逐層點進去再點它一樣；
@@ -1932,12 +1947,27 @@ def test_pasting_a_file_path_shows_the_files_of_its_directory(open_page, browse_
     assert _browse_entries(page) == [["deep.yaml", "file"], ["other.yaml", "file"]]
 
 
-def test_a_missing_path_is_refused_as_not_found(open_page, browse_root):
+def test_a_missing_path_says_to_check_it_and_not_to_onboard_it(open_page, browse_root):
+    # 人工驗收 U10 的觀察：畫面上原樣顯示後端那一句——說檢查路徑，不建議納管。
     page = _open_browser(open_page())
 
     _go_to(page, browse_root / "nope.yaml")
 
-    assert page.get_attribute("[data-testid='browse-rejected']", "data-kind") == "not_found"
+    shown = page.inner_text("[data-testid='browse-rejected']")
+    assert ("檢查" in shown, "納管" in shown) == (True, False)
+
+
+def test_pasting_a_link_to_a_file_selects_the_real_file(open_page, browse_root):
+    # 「已選」顯示的是後端解析後的真正路徑（納管記下的也是它），不是貼進來的那條連結。
+    (browse_root / "params").mkdir()
+    real = browse_root / "params" / "deep.yaml"
+    real.write_text("d: 1\n", encoding="utf-8")
+    (browse_root / "alias.yaml").symlink_to(real)
+    page = _open_browser(open_page())
+
+    _go_to(page, browse_root / "alias.yaml")
+
+    assert page.inner_text("[data-testid='browse-selection']") == f"已選：{os.path.realpath(real)}"
 
 
 def test_the_add_entry_prefills_the_parent_directory_for_a_rejected_file(

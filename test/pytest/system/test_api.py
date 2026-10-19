@@ -489,19 +489,20 @@ def test_browse_a_symlink_that_escapes_the_whitelist_is_refused(api, sources_roo
     assert "白名單之外" in detail["message"]
 
 
-def test_browse_a_file_rather_than_a_directory_is_refused(api, sources_root):
+def test_browse_a_file_directly_in_a_whitelist_root_lists_the_root_and_selects_it(
+    api, sources_root
+):
+    # 原本這一則斷言「指向檔案→not_a_directory」；F1（人工驗收 U05）起改成列它所在的目錄並選它。
+    # 這裡是檔案就在白名單根底下的那一種：上層目錄就是根本身，仍在白名單內。
     a_file = pathlib.Path(sources_root) / "not_a_dir.yaml"
     a_file.write_bytes(b"x\n")
     query = urllib.parse.urlencode({"path": str(a_file)})
 
-    with pytest.raises(urllib.error.HTTPError) as exc:
-        _get(api, f"/api/browse?{query}")
+    listing = _get(api, f"/api/browse?{query}")
 
-    assert exc.value.code == _UNPROCESSABLE
-    # 原因是「不是目錄」，kind 與「白名單外」分得開——前端據此不顯示加白名單入口。
-    detail = _detail(exc.value)
-    assert detail["kind"] == "not_a_directory"
-    assert "不是可列的目錄" in detail["message"]
+    assert (listing["path"], listing["selected"]) == (
+        os.path.realpath(sources_root), os.path.realpath(a_file),
+    )
 
 
 # ── 瀏覽指向檔案（F1，人工驗收 U05、U10）────────────────────────────────────
@@ -595,12 +596,15 @@ def test_a_file_outside_the_whitelist_and_a_missing_one_there_are_refused_alike(
     # 白名單外不透露檔案在不在：有檔與沒檔，回的種類、建議加入的目錄都一樣，也都不選。
     (tmp_path / "exists.yaml").write_bytes(b"a: 1\n")
 
+    names = ("exists.yaml", "missing.yaml")
     seen = [
-        _browse_refused(api, tmp_path / name) for name in ("exists.yaml", "missing.yaml")
+        {key: str(value).replace(name, "<名字>") for key, value in _browse_refused(
+            api, tmp_path / name
+        ).items()}
+        for name in names
     ]
 
-    expected = ("outside_roots", os.path.realpath(tmp_path), False)
-    assert [(d["kind"], d["suggested"], "selected" in d) for d in seen] == [expected, expected]
+    assert (seen[0], seen[0]["kind"]) == (seen[1], "outside_roots")
 
 
 def test_a_whitelisted_symlink_to_a_file_outside_is_refused(api, sources_root, tmp_path):
@@ -642,6 +646,88 @@ def test_a_whitelist_root_that_is_a_file_does_not_list_its_parent(api, repo, tmp
     assert detail["kind"] == "not_a_directory"
 
 
+def test_a_symlink_to_a_whitelist_root_that_is_a_file_does_not_list_its_parent(
+    api, repo, sources_root, tmp_path
+):
+    # 同上，但經過連結：上層目錄要以**解析後的真正路徑**的上層判定——不是貼進來那條路徑的上層。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地改 config-repo 裡的白名單設定檔")
+    lone = tmp_path / "lone_root_linked.yaml"
+    lone.write_bytes(b"l: 1\n")
+    link = pathlib.Path(sources_root) / "to_lone_root.yaml"
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(lone)
+    roots_path = pathlib.Path(repo) / "allowed-roots.toml"
+    original = roots_path.read_text(encoding="utf-8")
+    roots_path.write_text(
+        original + f'\n[[roots]]\nprefix = "{lone}"\nadded_by = "test"\n'
+        'added_at = "2026-01-01T00:00:00Z"\n',
+        encoding="utf-8",
+    )
+    try:
+        detail = _browse_refused(api, link)
+    finally:
+        roots_path.write_text(original, encoding="utf-8")
+
+    assert detail["kind"] == "not_a_directory"
+
+
+def _behind_a_loop(sources_root, tmp_path) -> pathlib.Path:
+    """白名單內放一個連結迴圈，旁邊一個指向白名單外目錄的連結；外面那個目錄有 sub/secret.yaml。"""
+    base = pathlib.Path(sources_root) / "browse_unstable"
+    base.mkdir(exist_ok=True)
+    (tmp_path / "outdir" / "sub").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "outdir" / "sub" / "secret.yaml").write_bytes(b"s: 1\n")
+    for name, to in (("loop", base / "loop"), ("link_out", tmp_path / "outdir")):
+        link = base / name
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(to)
+    return base
+
+
+def test_a_directory_hidden_behind_a_symlink_loop_and_an_outside_link_is_not_listed(
+    api, sources_root, tmp_path
+):
+    # Python 3.11 的 realpath 遇到迴圈就不再解析後面那幾段：`loop/..` 讓字串看起來回到白名單內，
+    # `link_out` 卻沒被解析——白名單判定看的是字串，核心開的卻是外面的目錄。不可以列出來。
+    base = _behind_a_loop(sources_root, tmp_path)
+
+    detail = _browse_refused(api, f"{base}/loop/../link_out/sub")
+
+    assert "secret.yaml" not in json.dumps(detail, ensure_ascii=False)
+
+
+def test_a_file_hidden_behind_a_symlink_loop_and_an_outside_link_is_not_selected(
+    api, sources_root, tmp_path
+):
+    # 同上，指向外面的檔案：不可以因為「跳到檔案所在的目錄」而列出外面的目錄、選到外面的檔。
+    base = _behind_a_loop(sources_root, tmp_path)
+
+    detail = _browse_refused(api, f"{base}/loop/../link_out/sub/secret.yaml")
+
+    assert "selected" not in detail
+
+
+@pytest.mark.skipif(
+    os.getuid() == 0,
+    reason="root 讀得穿權限；這條在非 root 的 test-tools 映像跑得到",
+)
+def test_a_directory_on_the_way_that_cannot_be_entered_is_named(api, sources_root):
+    # 路上某一層進不去（有 r 沒有 x）：指名擋住的那一層，不把整條路徑說成「目錄讀不出來」。
+    closed = pathlib.Path(sources_root) / "browse_no_traverse"
+    closed.mkdir(exist_ok=True)
+    (closed / "inside.yaml").write_bytes(b"i: 1\n")
+    closed.chmod(0o600)
+    try:
+        detail = _browse_refused(api, closed / "inside.yaml")
+    finally:
+        closed.chmod(0o755)
+
+    assert f"擋住的是 {os.path.realpath(closed)}（" in detail["message"]
+
+
 def test_a_named_pipe_is_refused_saying_only_regular_files_can_be_picked(api, sources_root):
     # 只有一般檔案能靠貼路徑選取；具名管道照樣拒絕，並說明為什麼。
     fifo = pathlib.Path(sources_root) / "browse_pipe"
@@ -664,7 +750,7 @@ def test_a_symlink_loop_is_refused_not_selected(api, sources_root):
 
     detail = _browse_refused(api, loop)
 
-    assert detail["kind"] in ("not_a_directory", "not_found")
+    assert detail["kind"] == "not_a_directory"
 
 
 @pytest.mark.skipif(
@@ -684,7 +770,7 @@ def test_a_file_in_a_directory_that_can_be_entered_but_not_listed_names_that_dir
     finally:
         blind.chmod(0o755)
 
-    assert (detail["kind"], os.path.realpath(blind) in detail["message"]) == ("unreadable", True)
+    assert (detail["kind"], detail.get("resolved")) == ("unreadable", os.path.realpath(blind))
 
 
 def test_cli_browse_goes_through_the_same_endpoint_as_the_page(api, sources_root):
