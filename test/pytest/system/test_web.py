@@ -1892,6 +1892,54 @@ def test_a_non_directory_rejection_offers_no_add_entry_even_to_a_developer(
     assert page.get_by_role("button", name="加入白名單").count() == 0
 
 
+# 貼檔案的完整路徑（F1，人工驗收 U05）：跳到它所在的目錄、選好它，和逐層點進去再點它一樣；
+# 不自動納管。不存在的路徑說找不到（U10）。
+
+
+def _go_to(page, path) -> None:
+    """在路徑欄貼上 `path` 按「前往」，等結果出來（清單或拒絕，哪一種都行——由規格自己判斷）。"""
+    page.fill("[data-testid='browse-path-input']", str(path))
+    page.get_by_role("button", name="前往").click()
+    page.wait_for_selector(
+        "[data-testid='browse-selection']:visible, [data-testid='browse-rejected']:visible"
+    )
+
+
+def test_pasting_a_file_path_selects_that_file_and_offers_to_onboard_it(open_page, browse_root):
+    (browse_root / "params").mkdir()
+    picked = browse_root / "params" / "deep.yaml"
+    picked.write_text("d: 1\n", encoding="utf-8")
+    page = _open_browser(open_page())
+
+    _go_to(page, picked)
+
+    shown = (
+        page.inner_text("[data-testid='browse-selection']")
+        if page.is_visible("[data-testid='browse-selection']") else "",
+        page.get_by_role("button", name="檢視並納管").is_visible(),
+    )
+    assert shown == (f"已選：{os.path.realpath(picked)}", True)
+
+
+def test_pasting_a_file_path_shows_the_files_of_its_directory(open_page, browse_root):
+    (browse_root / "params").mkdir()
+    (browse_root / "params" / "deep.yaml").write_text("d: 1\n", encoding="utf-8")
+    (browse_root / "params" / "other.yaml").write_text("o: 1\n", encoding="utf-8")
+    page = _open_browser(open_page())
+
+    _go_to(page, browse_root / "params" / "deep.yaml")
+
+    assert _browse_entries(page) == [["deep.yaml", "file"], ["other.yaml", "file"]]
+
+
+def test_a_missing_path_is_refused_as_not_found(open_page, browse_root):
+    page = _open_browser(open_page())
+
+    _go_to(page, browse_root / "nope.yaml")
+
+    assert page.get_attribute("[data-testid='browse-rejected']", "data-kind") == "not_found"
+
+
 def test_the_add_entry_prefills_the_parent_directory_for_a_rejected_file(
     open_page, browse_root, tmp_path
 ):

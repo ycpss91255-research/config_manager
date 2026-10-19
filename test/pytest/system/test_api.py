@@ -504,6 +504,189 @@ def test_browse_a_file_rather_than_a_directory_is_refused(api, sources_root):
     assert "不是可列的目錄" in detail["message"]
 
 
+# ── 瀏覽指向檔案（F1，人工驗收 U05、U10）────────────────────────────────────
+# 貼一個檔案的完整路徑就找到它：回它所在目錄的清單，並標出那一個。白名單的檢查照舊在解析後的
+# 真正路徑上做，上層目錄也要在白名單內；白名單外不透露檔案在不在。
+
+
+def _browse_refused(api, path) -> dict:
+    """瀏覽 `path` 預期被拒，回 detail。"""
+    query = urllib.parse.urlencode({"path": str(path)})
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(api, f"/api/browse?{query}")
+    assert exc.value.code == _UNPROCESSABLE
+    return _detail(exc.value)
+
+
+def test_browsing_a_file_within_the_whitelist_lists_its_directory_and_selects_it(
+    api, sources_root
+):
+    base = pathlib.Path(sources_root) / "browse_file"
+    base.mkdir(exist_ok=True)
+    (base / "picked.yaml").write_bytes(b"a: 1\n")
+    (base / "other.yaml").write_bytes(b"b: 2\n")
+    query = urllib.parse.urlencode({"path": str(base / "picked.yaml")})
+
+    listing = _get(api, f"/api/browse?{query}")
+
+    assert (listing["path"], listing.get("selected")) == (
+        os.path.realpath(base), os.path.realpath(base / "picked.yaml"),
+    )
+
+
+def test_browsing_a_directory_selects_nothing(api, sources_root):
+    # 只有指向檔案時才標「已選」；一般的目錄瀏覽仍是 null，不是缺這個欄位。
+    base = pathlib.Path(sources_root) / "browse_dir_selects_nothing"
+    base.mkdir(exist_ok=True)
+    query = urllib.parse.urlencode({"path": str(base)})
+
+    listing = _get(api, f"/api/browse?{query}")
+
+    assert ("selected" in listing, listing.get("selected")) == (True, None)
+
+
+def test_browsing_a_path_that_does_not_exist_is_not_found(api, sources_root):
+    detail = _browse_refused(api, pathlib.Path(sources_root) / "no_such_file.yaml")
+
+    assert detail["kind"] == "not_found"
+
+
+def test_a_missing_path_says_to_check_it_rather_than_to_onboard_it(api, sources_root):
+    # 人工驗收 U10 的觀察：不存在的路徑要說檢查路徑或確認檔案存在，不該建議直接納管。
+    missing = pathlib.Path(sources_root) / "no_such_file.yaml"
+
+    message = _browse_refused(api, missing)["message"]
+
+    assert (str(missing) in message, "檢查" in message, "納管" in message) == (True, True, False)
+
+
+def test_browsing_through_a_file_as_if_it_were_a_directory_is_not_found(api, sources_root):
+    # 路徑中間一段是檔案（plain.yaml/inner）——開檔得到的也是「不是目錄」，但那不是「它是檔案」，
+    # 不能拿 plain.yaml 去選。
+    plain = pathlib.Path(sources_root) / "plain_middle.yaml"
+    plain.write_bytes(b"x: 1\n")
+
+    detail = _browse_refused(api, plain / "inner")
+
+    assert detail["kind"] == "not_found"
+
+
+def test_a_symlink_to_a_file_elsewhere_in_the_whitelist_selects_the_real_file(api, sources_root):
+    # 連結解析後的真正路徑才是要選的那一個——納管記下的也是它。
+    real = pathlib.Path(sources_root) / "browse_real"
+    links = pathlib.Path(sources_root) / "browse_links"
+    real.mkdir(exist_ok=True)
+    links.mkdir(exist_ok=True)
+    (real / "target.yaml").write_bytes(b"t: 1\n")
+    alias = links / "alias.yaml"
+    if alias.is_symlink() or alias.exists():
+        alias.unlink()
+    alias.symlink_to(real / "target.yaml")
+    query = urllib.parse.urlencode({"path": str(alias)})
+
+    listing = _get(api, f"/api/browse?{query}")
+
+    assert (listing["path"], listing.get("selected")) == (
+        os.path.realpath(real), os.path.realpath(real / "target.yaml"),
+    )
+
+
+def test_a_file_outside_the_whitelist_and_a_missing_one_there_are_refused_alike(api, tmp_path):
+    # 白名單外不透露檔案在不在：有檔與沒檔，回的種類、建議加入的目錄都一樣，也都不選。
+    (tmp_path / "exists.yaml").write_bytes(b"a: 1\n")
+
+    seen = [
+        _browse_refused(api, tmp_path / name) for name in ("exists.yaml", "missing.yaml")
+    ]
+
+    expected = ("outside_roots", os.path.realpath(tmp_path), False)
+    assert [(d["kind"], d["suggested"], "selected" in d) for d in seen] == [expected, expected]
+
+
+def test_a_whitelisted_symlink_to_a_file_outside_is_refused(api, sources_root, tmp_path):
+    # 連結本身在白名單內，解析後的檔在外面——照白名單外拒絕，不選它。
+    secret = tmp_path / "secret.yaml"
+    secret.write_bytes(b"s: 1\n")
+    escape = pathlib.Path(sources_root) / "escape_file"
+    escape.mkdir(exist_ok=True)
+    link = escape / "leak.yaml"
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(secret)
+
+    detail = _browse_refused(api, link)
+
+    assert detail["kind"] == "outside_roots"
+
+
+def test_a_whitelist_root_that_is_a_file_does_not_list_its_parent(api, repo, tmp_path):
+    # 白名單的根本身是一個檔案（API 加不進去，但設定檔可以被手改）：它的上層目錄不在白名單內，
+    # 不能因為「跳到檔案所在的目錄」就把它列出來。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地改 config-repo 裡的白名單設定檔")
+    lone = tmp_path / "lone_root.yaml"
+    lone.write_bytes(b"l: 1\n")
+    (tmp_path / "neighbour.yaml").write_bytes(b"n: 1\n")
+    roots_path = pathlib.Path(repo) / "allowed-roots.toml"
+    original = roots_path.read_text(encoding="utf-8")
+    roots_path.write_text(
+        original + f'\n[[roots]]\nprefix = "{lone}"\nadded_by = "test"\n'
+        'added_at = "2026-01-01T00:00:00Z"\n',
+        encoding="utf-8",
+    )
+    try:
+        detail = _browse_refused(api, lone)
+    finally:
+        roots_path.write_text(original, encoding="utf-8")
+
+    assert detail["kind"] == "not_a_directory"
+
+
+def test_a_named_pipe_is_refused_saying_only_regular_files_can_be_picked(api, sources_root):
+    # 只有一般檔案能靠貼路徑選取；具名管道照樣拒絕，並說明為什麼。
+    fifo = pathlib.Path(sources_root) / "browse_pipe"
+    if fifo.exists() or fifo.is_symlink():
+        fifo.unlink()
+    os.mkfifo(fifo)
+
+    detail = _browse_refused(api, fifo)
+
+    assert (detail["kind"], "一般檔案" in detail["message"]) == ("not_a_directory", True)
+
+
+def test_a_symlink_loop_is_refused_not_selected(api, sources_root):
+    # 連結迴圈解析不到任何檔案。Linux 上以 O_NOFOLLOW|O_DIRECTORY 開它得到的是 ENOTDIR，
+    # 「不是目錄就去上層找」的寫法會誤選這個連結——它不是一般檔案，不能選。
+    loop = pathlib.Path(sources_root) / "browse_loop"
+    if loop.is_symlink() or loop.exists():
+        loop.unlink()
+    loop.symlink_to(loop)
+
+    detail = _browse_refused(api, loop)
+
+    assert detail["kind"] in ("not_a_directory", "not_found")
+
+
+@pytest.mark.skipif(
+    os.getuid() == 0,
+    reason="root 讀得穿權限；這條在非 root 的 test-tools 映像跑得到",
+)
+def test_a_file_in_a_directory_that_can_be_entered_but_not_listed_names_that_directory(
+    api, sources_root
+):
+    # 上層目錄只有 x（進得去、列不出來）：不硬選，回「讀不出來」並指名是哪個目錄。
+    blind = pathlib.Path(sources_root) / "browse_blind"
+    blind.mkdir(exist_ok=True)
+    (blind / "hidden.yaml").write_bytes(b"h: 1\n")
+    blind.chmod(0o111)
+    try:
+        detail = _browse_refused(api, blind / "hidden.yaml")
+    finally:
+        blind.chmod(0o755)
+
+    assert (detail["kind"], os.path.realpath(blind) in detail["message"]) == ("unreadable", True)
+
+
 def test_cli_browse_goes_through_the_same_endpoint_as_the_page(api, sources_root):
     base = pathlib.Path(sources_root) / "cli_browse"
     base.mkdir(exist_ok=True)
@@ -513,6 +696,17 @@ def test_cli_browse_goes_through_the_same_endpoint_as_the_page(api, sources_root
 
     assert result.returncode == 0
     assert "picked.yaml" in result.stdout
+
+
+def test_cli_browse_of_a_file_lists_its_directory_and_says_which_one_is_picked(api, sources_root):
+    # F1：與畫面同一支端點——指向檔案時印出所在目錄的清單，並寫出已選的那一個。
+    base = pathlib.Path(sources_root) / "cli_browse_file"
+    base.mkdir(exist_ok=True)
+    (base / "picked.yaml").write_bytes(b"a: 1\n")
+
+    result = _cli("browse", "--api", api, "--path", str(base / "picked.yaml"))
+
+    assert f"已選：{os.path.realpath(base / 'picked.yaml')}" in result.stdout
 
 
 # ── POST /api/inspect 偵測（#195）──────────────────────────────────────────
