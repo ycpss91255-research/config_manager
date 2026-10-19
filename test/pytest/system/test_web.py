@@ -404,6 +404,64 @@ def test_a_pathological_target_shows_an_error_row_not_a_fake_state(open_page, re
     assert str(fifo) in page.get_attribute("[data-testid='row-error']", "title")
 
 
+# F5（人工驗收 U18）：判不出狀態的原因與下一步要直接寫在畫面上——那一列、展開的區塊都看得到，
+# 不只在滑鼠提示裡。`inner_text` 只拿畫面上看得到的字，不含 title，所以量得出「不是只在提示裡」。
+
+_ROOT_READS_THROUGH = pytest.mark.skipif(
+    os.getuid() == 0,
+    reason="root 讀得穿 chmod 000；CI 的 checks 以非 root 跑 test_web.py"
+    "（映像系統測試以 root 跑、不含這個檔）",
+)
+
+
+@_ROOT_READS_THROUGH
+def test_an_unreadable_target_shows_the_reason_and_next_step_on_its_row(open_page, repo):
+    _listing_with(repo, "count: 3\n")
+    target = repo / "deployed" / "p.yaml"
+    target.chmod(0o000)
+    try:
+        page = _enter_identity(open_page())
+        page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'][data-state='error']")
+        shown = page.inner_text(f"[data-testid='tree-item-{_PARAM_UID}']")
+    finally:
+        target.chmod(0o644)
+
+    assert ("Permission denied" in shown, "下一步" in shown) == (True, True)
+
+
+@_ROOT_READS_THROUGH
+def test_an_unreadable_target_panel_says_why_it_cannot_be_compared(open_page, repo):
+    # 區塊裡要是列表給的那一句（帶下一步）；單筆內容另有一句讀目標的錯誤，只有 errno、沒有下一步。
+    _listing_with(repo, "count: 3\n")
+    target = repo / "deployed" / "p.yaml"
+    target.chmod(0o000)
+    try:
+        page = _open_panel(open_page())
+        shown = page.inner_text(f"[data-testid='panel-{_PARAM_UID}']")
+    finally:
+        target.chmod(0o644)
+
+    assert ("Permission denied" in shown, "下一步" in shown) == (True, True)
+
+
+def test_a_target_that_is_not_a_regular_file_shows_why_on_its_row(open_page, repo):
+    # 另一種判不出：目標是具名管道。這一則 root 也跑得到。
+    (repo / "files").mkdir(exist_ok=True)
+    (repo / "deployed").mkdir(exist_ok=True)
+    (repo / "files" / "bad.yaml").write_text("bad: 1\n", encoding="utf-8")
+    fifo = repo / "deployed" / "bad.pipe"
+    fifo.unlink(missing_ok=True)
+    os.mkfifo(fifo)
+    entry = _ENTRY.format(uid="mfz3k9q1", name="bad", target=str(fifo), groups="")
+    (repo / "config-list.toml").write_text(_LIST_HEADER + entry, encoding="utf-8")
+    page = _enter_identity(open_page())
+
+    page.wait_for_selector("[data-testid='tree-item-mfz3k9q1'][data-state='error']")
+    shown = page.inner_text("[data-testid='tree-item-mfz3k9q1']")
+
+    assert ("具名管道" in shown, "下一步" in shown) == (True, True)
+
+
 def test_an_entry_in_no_group_lands_under_the_ungrouped_heading(open_page, listing):
     listing("a", "b")
     page = _enter_identity(open_page())
@@ -5188,6 +5246,13 @@ def test_every_button_the_help_page_names_exists_on_the_page_it_describes(open_p
 
     named = sorted({node.inner_text() for node in help_page.query_selector_all(".ui")})
     assert named and [label for label in named if label not in source] == []
+
+
+def test_the_help_page_explains_what_an_error_row_means(open_page, site):
+    # F5：清單上的「錯誤」是什麼、該怎麼辦，名詞對照要說得出來（介面的字改了，說明要跟上，#54）。
+    help_page = _help_page(open_page, site)
+
+    assert "錯誤" in help_page.inner_text("#glossary")
 
 
 def test_the_help_page_says_write_out_only_fills_in_a_missing_file_and_never_overwrites(
