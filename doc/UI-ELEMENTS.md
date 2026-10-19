@@ -251,19 +251,19 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 提示 | `data-testid="browse-hint"` | 承載可見提示與非同步載入錯誤（「挑一個允許瀏覽的根開始…」「白名單目前是空的。」「讀不到白名單：…」）；空時隱藏 |
 | 起點根清單 | `data-testid="browse-roots"` | 剛開啟時列出白名單根（`GET /api/allowed-roots`）供挑選起點 |
 | 根項目 | `data-testid="browse-root-<前綴>"` | 單擊從該根開始瀏覽 |
-| 手動路徑輸入 | `data-testid="browse-path-input"` | 開發者可貼／打一個絕對路徑當瀏覽目標——**這是走到白名單外、觸發加入白名單的途徑** |
-| 前往 | 文字「前往」 | 以輸入欄的路徑瀏覽 |
+| 手動路徑輸入 | `data-testid="browse-path-input"` | 可貼／打一個絕對路徑（目錄或檔案）當瀏覽目標；開發者也以此走到白名單外、觸發加入白名單 |
+| 前往 | 文字「前往」 | 以輸入欄的路徑瀏覽：目錄→列它；白名單內的一般檔案→列它所在的目錄並選好它（「已選」＋「檢視並納管」，不自動納管，F1） |
 | 麵包屑 | `data-testid="breadcrumb"` | 目前路徑（用回應的 `path`，即 realpath）；各段可點回上層，**上溯夾在白名單根為界** |
 | 麵包屑段 | 段內文字為該層名稱 | 單擊跳到該層 |
 | 目錄清單 | `data-testid="browse-list"` | 目前目錄的內容，依名字排序（後端已排） |
 | 項目 | `data-testid="browse-entry-<名字>"` | 帶 `data-kind="dir"`／`"file"`；`dir` 單擊往下鑽（用該項回應的 `path`），`file` 單擊選取 |
-| 已選檔案 | `data-testid="browse-selection"` | 選取一個 `file` 後顯示其路徑（供 #14 納管；#13 只到選取） |
-| 拒絕通知 | `data-testid="browse-rejected"` | 瀏覽被拒時出現，含 `data-kind`（`outside_roots`／`not_a_directory`／`unreadable`）與**原樣**的 `message`（含「下一步」，不改寫） |
+| 已選檔案 | `data-testid="browse-selection"` | 點選一個 `file`、或以「前往」貼它的路徑之後顯示其路徑（供 #14 納管；#13 只到選取） |
+| 拒絕通知 | `data-testid="browse-rejected"` | 瀏覽被拒時出現，含 `data-kind`（`outside_roots`／`not_found`／`not_a_directory`／`unreadable`）與**原樣**的 `message`（含「下一步」，不改寫） |
 | 加入白名單 | 文字「加入白名單」 | **僅開發者、且僅 `outside_roots`**；在一般使用者模式或其他拒絕原因下**不存在於 DOM**（ADR-00000020） |
 | 白名單前綴輸入 | `data-testid="whitelist-prefix-input"` | 「加入白名單」預填被拒目標的目錄 realpath（被拒目標是檔案則取父目錄），可編輯；按「加入白名單」先經 W6 確認框（寫明即將開放的目錄與底下有幾個可納管檔，同白名單維護頁），確認才 `POST /api/allowed-roots`，成功後重跑被拒的瀏覽 |
 | 允許範圍 | `data-testid="allowed-range"` | **一般使用者**在 `outside_roots` 拒絕下看到的唯讀白名單清單（理解為何被擋）；文案沿用端點 403 說法「請開發者代為加入」，不自造 |
 
-**測試須斷言**：一般使用者模式下「加入白名單」入口**找不到**（不是 disabled）；`not_a_directory`／
+**測試須斷言**：一般使用者模式下「加入白名單」入口**找不到**（不是 disabled）；`not_found`／`not_a_directory`／
 `unreadable` 拒絕下即使開發者也**沒有**「加入白名單」入口（加白名單無濟於事，見 TEST-PLAN T11）。
 
 **下鑽與麵包屑用回應的 `path`（realpath），不用使用者點的原字串**——兩者可能不同（symlink／相對）。

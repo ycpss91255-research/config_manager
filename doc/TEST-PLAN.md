@@ -1009,7 +1009,8 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | 驗證失敗 → 結構化錯誤（檔案、行號、欄位、建議），**不是純字串** |
 | **納管（`POST /api/configs`）：成功回新條目（target 是原始位置、source 是 repo 內複本）；來源在白名單外→422、與既有條目 target／uid／source 衝突→409**；**目標已經納管**→409，訊息說這次沒有再納管、指名既有的那一份（`AlreadyManaged`），不叫人去改目標位置（人工驗證 U10） |
 | **納管產生的變更紀錄，其作者＝當前 session 身分**（身分真的到達 git、隨之而變，不只顯示在畫面；就地讀 config-repo 的 git log 驗，#114／#6 第四條 AC） |
-| **檔案瀏覽（`GET /api/browse?path=`）：列白名單內目錄的內容（名字＋種類 dir／file）；路徑在白名單外、或不是目錄→422，detail 為結構化 `{kind, message}`，kind∈outside_roots／not_a_directory／unreadable 讓前端依原因分流（#13）** |
+| **檔案瀏覽（`GET /api/browse?path=`）：列白名單內目錄的內容（名字＋種類 dir／file）；路徑在白名單外、不存在、或既不是目錄也不是可選的一般檔案（見下一列）→422，detail 為結構化 `{kind, message}`，kind∈outside_roots／not_found／not_a_directory／unreadable 讓前端依原因分流（#13）** |
+| **（瀏覽指向檔案，人工驗收 U05、U10 的回歸，F1）指向白名單內的一般檔案→回它所在目錄的清單，另以 `selected` 標出那一個（真正的路徑：連結解析後的那個檔）；解析後的真正路徑在白名單外→照白名單外拒絕（`outside_roots`）；**解析後的真正路徑是白名單的根本身、而它是檔案（上層目錄不在白名單內）→`not_a_directory`，說根不是目錄、不列上層**；白名單外的一般檔案與不存在的路徑，回應一樣（白名單外的連結與目錄本來就會從解析後的路徑與建議前綴看得出來，F1 不改）。**路徑解析不出唯一的真正位置（例：連結迴圈之後接 `..` 再經過指向白名單外的連結——Python 3.11 的 realpath 遇到迴圈就不再解析後面那幾段）→拒絕，不列也不選**：白名單判定看的必須是核心實際會走到的路徑。路徑不存在（含中間一段是檔案）→`not_found`，訊息指名路徑、請檢查路徑或確認檔案存在，**不建議納管**；不是一般檔案（具名管道、裝置、連結迴圈）→`not_a_directory` 說明只有一般檔案能選；上層目錄進得去但列不出來→`unreadable`，`resolved` 是那個目錄；路上某一層進不去（缺 x）→`unreadable` 指名擋住的那一層。瀏覽目錄時 `selected` 是 null** |
 | **讀白名單（`GET /api/allowed-roots`）：回 `{prefixes:[…]}`（解析後的根前綴清單）；唯讀、無角色門檻——browse 起點與檢視允許範圍用（#13）；加法式擴充 `roots:[{prefix（原樣，移除識別碼）, resolved（realpath，顯示）, added_by, added_at}]` 供檢視面板列誰／何時（#15）** |
 | **偵測（`POST /api/inspect`）：收候選 `{source_path, format}`，回 format／欄位數／歧義（行號／值／讀法，yaml 才非空）／型別／原始權限／**納管當下會用的 hostname**（供確認畫面在納管前核對機器身分，#14）；語法錯誤→結構化 422（含 file、line），歧義不拒絕而是列出；白名單外／不是檔案／讀不到／format 非允許值→422；`CM_HOSTNAME` 不安全→帶訊息的 500（inspect 與 onboard 皆然，不再漏接成裸 500）** |
 | **`raw` 不解碼也不解析**：偵測回 `field_count` 0、沒有歧義與型別；內容是二進位（不是 UTF-8）也納管得了，來源複本逐位元組相同。選了要解析的格式而內容不是文字→422、下一步指去 raw。二進位的 `raw` 經以來源覆蓋、納入現況、寫出修復、退版，位元組都不走樣。**INI 以 `;` 開頭的整行註解是合法的**：偵測與納管都過、原文保留（人工驗證 U06／U07） |
@@ -1048,6 +1049,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | 每個指令映射到正確的端點與參數 |
 | 端點回錯誤時，CLI 以非零碼結束並印出可讀訊息 |
 | 服務未啟動時，訊息明確指出服務未啟動（而非連線錯誤堆疊） |
+| **（F1）`browse --path <白名單內的檔案>` 與畫面一樣：印出它所在目錄的清單，並寫出「已選：<路徑>」** |
 
 **規格與 T9 同放 `test/pytest/system/test_api.py`**，理由相同：CLI 要對著一個真的在跑的
 服務測。同一份規格檔裡，CLI 那幾則排在 HTTP 那幾則之後，用的是前面寫進 config-repo 的
@@ -1071,7 +1073,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | **手動輸入白名單內的絕對路徑 → 瀏覽它** |
 | **手動輸入白名單外路徑 → 顯示 `outside_roots` 拒絕（原樣訊息含下一步）；開發者看到「加入白名單」入口、一般使用者看到唯讀允許範圍（找不到加入入口）** |
 | **開發者「加入白名單」（預填被拒目標的目錄 realpath）→ 送出後同一畫面重跑瀏覽、現在列得出來（新增即刻生效）** |
-| **輸入指向檔案（非目錄）的路徑 → 顯示 `not_a_directory` 拒絕；即使開發者也沒有「加入白名單」入口（加白名單無濟於事）** |
+| **（F1，人工驗收 U05）輸入指向白名單內一般檔案的路徑 → 跳到它所在的目錄、顯示「已選：<路徑>」與「檢視並納管」（不自動納管）；輸入不存在的路徑 → 顯示 `not_found` 拒絕（說檢查路徑、不建議納管）；這兩種拒絕（not_found／not_a_directory）即使開發者也沒有「加入白名單」入口（加白名單無濟於事）** |
 | **點一個 `file` 項目 → 顯示已選檔案的路徑（供 #14 納管）** |
 | **（W8 納管確認，#14）選檔後「檢視並納管」→ 確認畫面顯示偵測結果（格式／逐值型別／歧義／權限／hostname）** |
 | **從介面納管至少三種格式（yaml／json／toml／ini）的真實 config，各自納管後出現在 W2 左側樹（AC1）** |
@@ -1555,7 +1557,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/preflight` | T15 | 已落地 |
 | `io/digest` | T20 | 已落地 |
 | `io/scan` | T21 | 已落地 |
-| `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言；`OnboardLeftBehind`（納管回滾失敗）在 `io/onboard` 的整合規格被斷言（#173）；`PromoteLeftBehind`（進版回滾失敗）由 T9 的回滾規格擁有（#19）；`BrowseError` 族（瀏覽白名單外／不是目錄）在 T9 的 `GET /api/browse` 被斷言（#185） | 已落地 |
+| `io/errors` | T7／T8／T15／T20／T21——各具名例外在其所屬的測試介面被斷言；`OnboardLeftBehind`（納管回滾失敗）在 `io/onboard` 的整合規格被斷言（#173）；`PromoteLeftBehind`（進版回滾失敗）由 T9 的回滾規格擁有（#19）；`BrowseError` 族（瀏覽白名單外／不存在／不是目錄／讀不出來）在 T9 的 `GET /api/browse` 被斷言（#185；不存在是 F1 起） | 已落地 |
 | `io/parsers` | T6 | 已落地（#17）：`edit_source` 讀來源複本→`set_value`→`dump`→原子寫回；原樣保證由 `core/parse` 的單元規格釘住。`read_source` 讀來源複本原文供 API 存草稿當底（#19），效果透過 T9 的 `POST /api/drafts` 觀察；`as_text`／`as_bytes`：`raw` 的內容無損穿過文字（surrogateescape），寫出與退版逐位元組不變（人工驗證 U07） |
 | `io/promote` | 效果透過 T9 觀察：`POST /api/promote` 的寫出＋記錄＋第 k 份失敗整批回滾（目標還原、紀錄撤銷）——編排層，同 `io/onboard` 的處理；回滾也失敗時丟 `PromoteLeftBehind`（#19）；`companions`＝同一筆紀錄裡一起寫回 repo 的其他檔案（退版時的 schema 與清單檔），與來源複本同進同退，以真實 git 的整合規格觀察（#39） | 已落地（`apply`） |
 | `io/source` | T22（匯入時刻對外界的讀取，介面議定於 #177） | 已落地：路徑判定（realpath 後比對白名單、一般檔案檢查）與一次性讀取（#174）、讀取失敗的三種分類（不存在／讀不到／上層目錄無 traverse，#182）。`local_hostname` 的部署穩定性見 #178 |
@@ -1568,7 +1570,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/lintrc` | 效果透過 T15（preflight：有檔就要讀得出來、沒有是預設值）與 T9（儲存時套到的規則）觀察——薄 adapter，同 `io/rules` 的處理；讀不出來丟 `LintrcUnparsable`（`PreflightError` 的一種，#43） | 已落地（`read_lintrc`） |
 | `io/manual_type` | 效果透過既有介面觀察：schema 的內容→`io/schema.read_schema` 與 T12 的 `manual_types`、清單檔條目→T1（`load`）、`meta` 紀錄→T7（`history`）——編排層，同 `io/schema` 的處理；只收存在的單一參數、與現值不相容擋下（`TypeIncompatible`）、清到不剩時 schema 檔與條目指向一起拿掉、失敗回滾（#285） | 已落地（`specify_type`） |
 | `io/drift` | 效果透過 T9 觀察：`overwrite`（寫出＋空 `cfg` 紀錄，紀錄沒成把目標還原）、`adopt`（走 `io/promote.apply`，kind `adopt`）——編排層，同 `io/onboard`／`io/promote` 的處理（#29） | 已落地（`overwrite`／`adopt`） |
-| `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath 與列目錄——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185） | 已落地（`browse`） |
+| `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath、列目錄，與指向檔案時改列上層目錄並選它（上層重跑一次判定，F1）——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185）。兩次開檔之間被抽換的競速分支 T9 走不到，與 `io/source` 的同類限制相同 | 已落地（`browse`） |
 | `io/candidate` | T24（候選檔案數預覽，介面議定於 #206）：不以白名單為閘門、遞迴數一般檔（不讀內容）、每層 O_NOFOLLOW 不跟隨連結、深度／項目上限觸及回部分計數＋capped | 已落地（`count_candidates`） |
 | `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202）；移除以檔案原樣 prefix 定位、找不到丟 `PrefixNotFound`、commit 失敗回滾同樣以真實 fs＋git 斷言（#15） | 已落地（`read_allowed_roots`／`add_allowed_root`／`remove_allowed_root`） |
 | `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/configs/{uid}`、`DELETE /api/configs/{uid}`、`GET /api/configs/{uid}/history`、`POST /api/configs/{uid}/revert`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots`、`GET`／`POST`／`DELETE /api/drafts[/{uid}]`、`POST /api/promote` 與 CORS 中介層） |

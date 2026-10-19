@@ -3406,6 +3406,9 @@ async function browseTo(path) {
     browseHintEl.textContent = "";
     renderBreadcrumb(payload.path);
     renderBrowseEntries(payload.entries);
+    // 貼的是白名單內一般檔案的路徑（F1、人工驗收 U05）：後端列它所在的目錄並標出它——選好它，
+    // 與逐層點進去再點它一樣，不自動納管。在同一個世代檢查過的成功分支裡，過時的回應選不到檔（#252）。
+    if (payload.selected) selectBrowseFile(payload.selected);
   } catch (error) {
     if (generation !== browseGeneration) return;
     browseHintEl.textContent = failureText("瀏覽目錄", error);
