@@ -21,6 +21,12 @@ ADR-00000012、T22）。
 與開檔之間被換掉。要完全關掉需要 `openat2` 的 `RESOLVE_NO_SYMLINKS`，那不在本介面的
 承諾範圍內（T22 已寫下這一條）。失敗方向是**拒絕**：寧可這次匯入不成立，也不讀一份
 來歷不明的內容。
+
+**來源路徑要解析得出唯一的真正位置**（F18，安全）：Python 3.11 的 realpath（非 strict）遇到連結
+迴圈就不再解析後面那幾段、再依字面收掉 `..`，於是 `<白名單>/loop/../link_out/x`（`link_out` 指向
+白名單外）會被「解析」成白名單內的字串，開檔時核心卻順著 `link_out` 走出去——讀到外面的內容，
+出處紀錄還寫成白名單內的假路徑。來源路徑改用 `io/paths.stable_realpath`：解析結果不是不動點就以
+`SourcePathUnstable` 拒絕，不拿它去判定、也不開檔（瀏覽那一側同樣的修正在 #322）。
 """
 
 from __future__ import annotations
@@ -47,7 +53,7 @@ from config_manager.io.errors import (
     SourceTooLarge,
     SourceUnreachable,
 )
-from config_manager.io.paths import blocking_parent, read_capped
+from config_manager.io.paths import blocking_parent, read_capped, stable_realpath
 
 
 _CHUNK = 65536
@@ -84,7 +90,8 @@ def read_source(
 
     - `SourceOutsideRoots` —— 解析後落在白名單之外，**一個位元組都沒讀**
     - `SourceNotRegularFile` —— 目錄、裝置、socket、斷掉的連結
-    - `SourcePathUnstable` —— 解析或開檔期間路徑被改動（競速），這次匯入不成立
+    - `SourcePathUnstable` —— 解析或開檔期間路徑被改動（競速），或路上有連結迴圈、解析不出唯一的
+      真正位置（F18），這次匯入不成立
     - `SourceAbsent` —— 來源不存在（與「讀不到」分開）
     - `SourceUnreachable` —— 上層某層目錄沒有 traverse（`+x`）權限，去不到
     - `SourceTooLarge` —— 比 `max_bytes` 大，不整個讀進記憶體（#200）
@@ -95,7 +102,7 @@ def read_source(
     """
     # 先固定下來：allowed_roots 可能是一次性的可迭代物，而判定與訊息都要用到它。
     roots = tuple(allowed_roots)
-    resolved = _resolve(path)
+    resolved = _resolve_source(path)
 
     # 白名單的「根」自己也要解析。`io/writer._within_roots` 對它的 roots 就是這樣做的
     # ——同一個問題的兩道檢查不該給出不同答案。core 不能做 I/O，所以解析在這一層，
@@ -181,6 +188,25 @@ def service_identity() -> tuple[str, frozenset[str], bool]:
     euid = os.geteuid()
     gids = {os.getegid(), *os.getgroups()}
     return _owner_name(euid), frozenset(_group_name(gid) for gid in gids), euid == 0
+
+
+def _resolve_source(path: str) -> str:
+    """來源路徑的 realpath，而且要解析得出唯一的真正位置（F18）——白名單判定與開檔看的必須是同一個
+    位置。根的解析照舊用 `_resolve`：根由白名單設定檔決定，不是請求帶進來的。"""
+    try:
+        stable = stable_realpath(path)
+    except OSError as error:
+        raise SourcePathUnstable(
+            f"解析路徑時它正在被改動：{path}（{error.strerror}）。"
+            f"下一步：確認沒有其他程序正在改寫這條路徑上的符號連結，然後重試"
+        ) from error
+    if stable is None:
+        # 不帶解析結果：那個字串不可信，也不該透露路上那幾段連結指向哪裡。
+        raise SourcePathUnstable(
+            f"來源路徑解析不出唯一的真正位置（路上有連結迴圈）：{path}。"
+            f"下一步：改用不經過連結的完整路徑"
+        )
+    return stable
 
 
 def _resolve(path: str) -> str:
