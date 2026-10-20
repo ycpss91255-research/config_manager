@@ -3878,13 +3878,30 @@ _API_BROWSER = urllib.request.build_opener(
 )
 
 
-def _api_json(api, method, path, payload=None):
+def _api_request(api, method, path, payload=None, token=None):
     data = None if payload is None else json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        f"{api}{path}", data=data, headers={"content-type": "application/json"}, method=method
-    )
+    headers = {"content-type": "application/json"}
+    if token:
+        headers["X-CM-Editing-Token"] = token
+    request = urllib.request.Request(f"{api}{path}", data=data, headers=headers, method=method)
     with _API_BROWSER.open(request, timeout=_STARTUP_TIMEOUT) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _api_json(api, method, path, payload=None):
+    """以另一個瀏覽器（`_API_BROWSER`）直接打 API 準備資料。寫入只接受持有編輯權的分頁（F23）：
+    寫入時自己「取得 → 帶標頭送 → 釋放」，所以要在頁面取得編輯權**之前**做；取不到就照樣送、
+    讓後端說原因。"""
+    if method == "GET" or path.startswith(("/api/session", "/api/inspect")):
+        return _api_request(api, method, path, payload)
+    try:
+        held = _api_request(api, "POST", "/api/session/lock")
+    except urllib.error.HTTPError:
+        return _api_request(api, method, path, payload)
+    try:
+        return _api_request(api, method, path, payload, held["token"])
+    finally:
+        _api_request(api, "DELETE", "/api/session/lock", {"token": held["token"]})
 
 
 def _history_via_api(api, browse_root, contents: list) -> dict:
@@ -4998,7 +5015,15 @@ def test_a_release_that_arrives_after_the_reload_does_not_take_the_session_away(
     page.wait_for_function(
         "old => sessionStorage.getItem('cm.session.token') !== old", arg=old_token
     )
-    late = _api_json(api, "POST", "/api/session/lock/release", {"token": old_token})
+    # 由這個分頁自己的瀏覽器送（同一張票）：釋放只對取得階段的那個瀏覽器有效（F23），從別的瀏覽器
+    # 送的話擋下的原因是票不對，量不到「晚到的釋放帶的是舊識別碼」。
+    late = page.evaluate(
+        """token => apiFetch(`${API_BASE}/api/session/lock/release`, {
+          method: "POST", headers: { "content-type": "text/plain;charset=UTF-8" },
+          body: JSON.stringify({ token }),
+        }).then((response) => response.json())""",
+        old_token,
+    )
 
     assert late == {"released": False}
     assert _api_json(api, "GET", "/api/session/lock")["held"] is True

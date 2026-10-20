@@ -71,26 +71,59 @@ def _get(api, path):
         return json.loads(response.read().decode("utf-8"))
 
 
-def _post(api, path, payload):
-    request = urllib.request.Request(
-        f"{api}{path}",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"content-type": "application/json"},
-        method="POST",
-    )
-    with _browser.open(request, timeout=_TIMEOUT) as response:
-        return json.loads(response.read().decode("utf-8"))
+# 寫入只接受持有編輯權的那個分頁（F23）：輔助函式寫入時自己「取得 → 帶標頭送出 → 釋放」。不寫入的
+# POST（身分、編輯階段本身、偵測）不帶。取不到編輯權（沒身分、別人正持有）就照樣送、不帶識別碼——
+# 讓後端自己說為什麼擋（尚未設定身分、沒有編輯權）。
+_EDITING_HEADER = "X-CM-Editing-Token"
+_NOT_A_WRITE = ("/api/session", "/api/inspect")
+_ACQUIRE = object()  # 預設：寫入時自己取得；測試要自帶（或刻意不帶）識別碼時傳字串或 None
 
 
-def _delete(api, path, payload):
-    request = urllib.request.Request(
-        f"{api}{path}",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"content-type": "application/json"},
-        method="DELETE",
-    )
-    with _browser.open(request, timeout=_TIMEOUT) as response:
-        return json.loads(response.read().decode("utf-8"))
+def _writes(method, path):
+    return method != "GET" and not path.startswith(_NOT_A_WRITE)
+
+
+def _open_json(opener, url, method, payload, *, token=None):
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {"content-type": "application/json"}
+    if token:
+        headers[_EDITING_HEADER] = token
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with opener.open(request, timeout=_TIMEOUT) as response:
+        body = response.read().decode("utf-8")
+        return (json.loads(body) if body else None), response.headers
+
+
+@contextlib.contextmanager
+def _holding(opener, api):
+    """這個瀏覽器取得編輯權、交出識別碼，做完就釋放；取不到交出 None（不吞掉寫入本身的錯）。"""
+    try:
+        held, _ = _open_json(opener, f"{api}/api/session/lock", "POST", None)
+    except urllib.error.HTTPError:
+        held = None
+    try:
+        yield held and held["token"]
+    finally:
+        if held:
+            _open_json(opener, f"{api}/api/session/lock", "DELETE", {"token": held["token"]})
+
+
+def _send(api, method, path, payload=None, *, token=_ACQUIRE):
+    """這個瀏覽器（`_browser`）送一個請求、回解析後的 body；HTTP 錯誤照樣丟 HTTPError。寫入預設自己
+    取得編輯權；測試要自帶識別碼（或刻意不帶：None）時傳 `token`。"""
+    url = f"{api}{path}"
+    if token is _ACQUIRE and _writes(method, path):
+        with _holding(_browser, api) as held:
+            return _open_json(_browser, url, method, payload, token=held)[0]
+    return _open_json(_browser, url, method, payload, token=None if token is _ACQUIRE else token)[0]
+
+
+def _post(api, path, payload, token=_ACQUIRE):
+    return _send(api, "POST", path, payload, token=token)
+
+
+def _delete(api, path, payload, token=_ACQUIRE):
+    return _send(api, "DELETE", path, payload, token=token)
 
 
 def _detail(error):
@@ -1531,7 +1564,10 @@ def test_onboard_after_the_uid_horizon_is_a_500_with_a_message(api, sources_root
 
 
 def _clear_drafts(api):
-    # 階段掛在 app 上、跨規格存活；每則自己清，不靠「前一則有清」（#153）。
+    # 階段掛在 app 上、跨規格存活；每則自己清，不靠「前一則有清」（#153）。捨棄也要編輯權（F23），
+    # 取得要有身分：這個瀏覽器還沒說自己是誰才設——不改掉前一則刻意設的角色。
+    if _get(api, "/api/session") is None:
+        _set_session(api)
     _delete(api, "/api/drafts", {})
 
 
@@ -2108,9 +2144,7 @@ def test_unmanaging_removes_the_config_from_the_list_and_keeps_the_target_file(a
     _clear_drafts(api)
     entry = _onboard(api, sources_root, "unmanage.yaml", b"count: 1\n")
 
-    request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
-    with _browser.open(request, timeout=_TIMEOUT) as response:
-        removed = json.loads(response.read().decode("utf-8"))
+    removed = _send(api, "DELETE", f"/api/configs/{entry['uid']}")
 
     assert removed["uid"] == entry["uid"]
     assert entry["uid"] not in [row["uid"] for row in _get(api, "/api/configs")]
@@ -2124,9 +2158,7 @@ def test_unmanaging_records_an_unmanage_change_by_the_session_identity(api, sour
     _clear_drafts(api)
     entry = _onboard(api, sources_root, "unmanage_rec.yaml", b"count: 1\n")
 
-    request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
-    with _browser.open(request, timeout=_TIMEOUT):
-        pass
+    _send(api, "DELETE", f"/api/configs/{entry['uid']}")
 
     latest = subprocess.run(
         ["git", "-C", repo, "log", "-1", "--format=%s|%an <%ae>"],
@@ -2141,9 +2173,8 @@ def test_unmanaging_with_a_pending_draft_is_a_conflict(api, sources_root):
     entry = _onboard(api, sources_root, "unmanage_draft.yaml", b"count: 1\n")
     _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
 
-    request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
     with pytest.raises(urllib.error.HTTPError) as exc:
-        _browser.open(request, timeout=_TIMEOUT)
+        _send(api, "DELETE", f"/api/configs/{entry['uid']}")
 
     assert exc.value.code == _CONFLICT
     _clear_drafts(api)
@@ -2151,10 +2182,8 @@ def test_unmanaging_with_a_pending_draft_is_a_conflict(api, sources_root):
 
 def test_unmanaging_an_unknown_uid_is_not_found(api):
     _set_session(api)
-    request = urllib.request.Request(f"{api}/api/configs/zzzzzzz9", method="DELETE")
-
     with pytest.raises(urllib.error.HTTPError) as exc:
-        _browser.open(request, timeout=_TIMEOUT)
+        _send(api, "DELETE", "/api/configs/zzzzzzz9")
 
     assert exc.value.code == _NOT_FOUND
 
@@ -2404,9 +2433,7 @@ def test_search_reflects_promoted_changes_and_unmanaged_configs(api, sources_roo
     assert _search(api, "111", "參數值")["hits"] == []
     assert [h["uid"] for h in _search(api, "222", "參數值")["hits"]] == [entry["uid"]]
 
-    request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
-    with _browser.open(request, timeout=_TIMEOUT):
-        pass
+    _send(api, "DELETE", f"/api/configs/{entry['uid']}")
     assert _search(api, "222", "參數值")["hits"] == []
 
 
@@ -2423,12 +2450,11 @@ def test_search_with_an_unknown_scope_is_unprocessable_not_empty(api):
 
 
 def _request_as(opener, api, path, payload=None, method="POST"):
-    data = None if payload is None else json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        f"{api}{path}", data=data, headers={"content-type": "application/json"}, method=method
-    )
-    with opener.open(request, timeout=_TIMEOUT) as response:
-        return json.loads(response.read().decode("utf-8")), response.headers
+    """以 `opener` 這個瀏覽器送；寫入時它自己取得編輯權（F23：識別碼只對取得它的瀏覽器有效）。"""
+    if _writes(method, path):
+        with _holding(opener, api) as held:
+            return _open_json(opener, f"{api}{path}", method, payload, token=held)
+    return _open_json(opener, f"{api}{path}", method, payload)
 
 
 def test_an_identity_belongs_to_the_browser_that_entered_it(api):
@@ -2777,8 +2803,8 @@ def test_ten_idle_minutes_end_the_identity_and_release_the_session(api, sources_
         pytest.skip(_IN_PLACE_ONLY)
     entry = _onboard(api, sources_root, "idle_drafts.yaml", b"count: 1\n")
     _clear_drafts(api)
-    with _later(api) as (_session, ahead):
-        _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
+    with _later(api) as (session, ahead):
+        _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"])
         ahead(10)
 
         assert _get(api, "/api/session") is None  # 自動退出：這個瀏覽器不再有身分
@@ -3505,23 +3531,13 @@ def test_adding_a_root_that_is_already_whitelisted_says_nothing_was_added(api, s
 
 def test_the_removal_confirmation_is_worded_for_a_person_not_for_the_api(api, sources_root):
     _set_session(api)
-    request = urllib.request.Request(
-        f"{api}/api/allowed-roots",
-        data=json.dumps({"prefix": "/nonexistent/never-added", "confirmed": False}).encode(),
-        headers={"content-type": "application/json"}, method="DELETE",
-    )
     with pytest.raises(urllib.error.HTTPError) as missing:
-        _browser.open(request, timeout=_TIMEOUT)
+        _delete(api, "/api/allowed-roots", {"prefix": "/nonexistent/never-added"})
     assert missing.value.code == _NOT_FOUND
 
     stored = _get(api, "/api/allowed-roots")["roots"][0]["prefix"]
-    request = urllib.request.Request(
-        f"{api}/api/allowed-roots",
-        data=json.dumps({"prefix": stored, "confirmed": False}).encode(),
-        headers={"content-type": "application/json"}, method="DELETE",
-    )
     with pytest.raises(urllib.error.HTTPError) as exc:
-        _browser.open(request, timeout=_TIMEOUT)
+        _delete(api, "/api/allowed-roots", {"prefix": stored, "confirmed": False})
 
     detail = json.loads(exc.value.read())["detail"]
     assert detail["kind"] == "confirm_required"
