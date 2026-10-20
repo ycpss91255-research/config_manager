@@ -178,7 +178,8 @@ class SourceNotRegularFile(SourceError):
 
 
 class SourcePathUnstable(SourceError):
-    """解析或開啟期間來源路徑被改動，這一次匯入不成立。
+    """解析或開啟期間來源路徑被改動，或路上有連結迴圈、解析不出唯一的真正位置（F18），
+    這一次匯入不成立。
 
     非 strict 的 `os.path.realpath` **不保證不丟例外**——它只保證不因「路徑不存在」
     而丟。CPython 3.11 的 `_joinrealpath` 在 `os.lstat` 說「這是連結」之後才裸呼叫
