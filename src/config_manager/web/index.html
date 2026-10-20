@@ -662,6 +662,16 @@ function apiFetch(url, init = {}) {
   return fetch(url, { credentials: "include", ...init });
 }
 
+// 會寫入的請求（F23）：後端只接受持有編輯權的那個分頁——帶上這個分頁的編輯階段識別碼。還沒取得
+// （或已轉唯讀）就不帶，讓後端說原因；不送字串 "null"。
+const EDITING_HEADER = "X-CM-Editing-Token";
+
+function editFetch(url, init = {}) {
+  const headers = new Headers(init.headers || {});
+  if (sessionToken) headers.set(EDITING_HEADER, sessionToken);
+  return apiFetch(url, { ...init, headers });
+}
+
 const UNGROUPED = "ungrouped";
 const tree = document.querySelector("[data-testid='config-tree']");
 const search = document.querySelector("[data-testid='search-input']");
@@ -1553,7 +1563,7 @@ async function saveAttributes(detail, ui) {
   };
   ui.save.disabled = true;
   try {
-    const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/attributes`, {
+    const response = await editFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/attributes`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -1587,7 +1597,7 @@ async function specifyType(detail, row, typeName, ui) {
     return;
   }
   try {
-    const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/types`, {
+    const response = await editFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/types`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ path: row.path, type: typeName }),
@@ -1632,7 +1642,7 @@ async function draftSchema(detail, ui) {
     ui.error.hidden = true;
     ui.button.disabled = true;
     try {
-      const response = await apiFetch(
+      const response = await editFetch(
         `${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/schema`, { method: "POST" },
       );
       const payload = await response.json();
@@ -1745,7 +1755,7 @@ async function saveDraft(detail, entries, ui, overrides = {}) {
   ui.error.hidden = true;
   ui.save.disabled = true;
   try {
-    const response = await apiFetch(`${API_BASE}/api/drafts`, {
+    const response = await editFetch(`${API_BASE}/api/drafts`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ uid: detail.uid, edits, overrides }),
@@ -2527,7 +2537,7 @@ async function revertTo(view, detail, version, changes, button) {
   await whileBusy(button, "退版中…", async () => {
     const diff = view.querySelector("[data-testid='history-diff']");
     try {
-      const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/revert`, {
+      const response = await editFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/revert`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ version: version.sha }),
@@ -2638,7 +2648,7 @@ async function applyMissing(detail, errorEl) {
       }, [element("strong", { text: changed })]));
       return;
     }
-    const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/apply`, {
+    const response = await editFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/apply`, {
       method: "POST",
     });
     const payload = await response.json();
@@ -2788,7 +2798,7 @@ async function resolveDrift(detail, option, view, errorEl, button) {
     errorEl.hidden = true;
     for (const button of view.querySelectorAll(".resolve-actions button")) button.disabled = true;
     try {
-      const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/resolve`, {
+      const response = await editFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/resolve`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: option.action }),
@@ -2929,7 +2939,7 @@ async function promoteAll() {
   clearPromoteBanners();
   promoteButton.disabled = true;
   try {
-    const response = await apiFetch(`${API_BASE}/api/promote`, { method: "POST" });
+    const response = await editFetch(`${API_BASE}/api/promote`, { method: "POST" });
     const payload = await response.json();
     if (!response.ok) {
       renderSaveError(promoteErrorEl, payload.detail);  // 同一種結構化形：message＋逐條行號／原因／建議
@@ -2964,7 +2974,7 @@ async function discardDrafts(uid, name, button = discardAllButton) {
     clearPromoteBanners();
     try {
       const path = uid ? `/api/drafts/${encodeURIComponent(uid)}` : "/api/drafts";
-      const response = await apiFetch(`${API_BASE}${path}`, { method: "DELETE" });
+      const response = await editFetch(`${API_BASE}${path}`, { method: "DELETE" });
       const payload = await response.json();
       if (!response.ok) {
         renderSaveError(promoteErrorEl, payload.detail);
@@ -2998,7 +3008,7 @@ async function unmanageConfig(detail, button) {
   await whileBusy(button, "解除中…", async () => {
     clearPromoteBanners();
     try {
-      const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`, {
+      const response = await editFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`, {
         method: "DELETE",
       });
       const payload = await response.json();
@@ -3634,7 +3644,7 @@ async function addToWhitelist(prefix, button) {
   if (!await confirmAddRoot(prefix, showAddError)) return;
   await whileBusy(button, "加入中…", async () => {
     try {
-      const response = await apiFetch(`${API_BASE}/api/allowed-roots`, {
+      const response = await editFetch(`${API_BASE}/api/allowed-roots`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ prefix }),
@@ -3783,7 +3793,7 @@ async function addRoot(button) {
   if (!await confirmAddRoot(prefix, showError)) return;
   await whileBusy(button, "加入中…", async () => {
     try {
-      const response = await apiFetch(`${API_BASE}/api/allowed-roots`, {
+      const response = await editFetch(`${API_BASE}/api/allowed-roots`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ prefix }),
@@ -3811,7 +3821,7 @@ async function beginRemoveRoot(prefix, button) {
   // 後端在未確認時一律回 409 confirm_required（含受影響清單，可能為空）。
   whitelistErrorEl.hidden = true;
   try {
-    const response = await apiFetch(`${API_BASE}/api/allowed-roots`, {
+    const response = await editFetch(`${API_BASE}/api/allowed-roots`, {
       method: "DELETE",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ prefix, confirmed: false }),
@@ -3847,7 +3857,7 @@ function confirmRemoval(prefix, detail) {
 async function confirmRemoveRoot(prefix, button) {
   await whileBusy(button, "移除中…", async () => {
     try {
-      const response = await apiFetch(`${API_BASE}/api/allowed-roots`, {
+      const response = await editFetch(`${API_BASE}/api/allowed-roots`, {
         method: "DELETE",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ prefix, confirmed: true }),
@@ -4057,7 +4067,7 @@ async function submitOnboard() {
     .join("；");
   onboardErrorEl.hidden = true;
   try {
-    const response = await apiFetch(`${API_BASE}/api/configs`, {
+    const response = await editFetch(`${API_BASE}/api/configs`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({

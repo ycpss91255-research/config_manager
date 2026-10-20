@@ -35,6 +35,10 @@ from config_manager.core.drafts import Stage, discard
 
 Clock = Callable[[], datetime]
 
+# 會寫入的請求帶這個分頁的編輯階段識別碼的標頭（F23）。放標頭不放網址：不進伺服器紀錄與瀏覽紀錄；
+# 不放 body：沒有 body 的寫入（解除納管、進版、捨棄…）不必為它新增一個。
+EDITING_HEADER = "x-cm-editing-token"
+
 
 def utc_now() -> datetime:
     return datetime.now(UTC)

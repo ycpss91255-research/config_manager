@@ -30,6 +30,7 @@ from config_manager.api.schema import register_schema, schema_view
 from config_manager.api.shapes import as_problem
 from config_manager.api.search import register_search
 from config_manager.api.lock import (
+    EDITING_HEADER,
     LockBox,
     register_session,
     require_permission,
@@ -185,7 +186,8 @@ def create_app(
         CORSMiddleware,
         allow_origins=list(allowed_origins),
         allow_methods=["GET", "POST", "PUT", "DELETE"],
-        allow_headers=["content-type"],
+        # 寫入帶編輯階段識別碼的標頭（F23）：跨來源的 fetch 帶自訂標頭要先經預檢，後端得明說放行。
+        allow_headers=["content-type", EDITING_HEADER],
         # 身分綁在瀏覽器票（cookie）上（#288）：跨來源的 fetch 要帶 cookie，後端得明說放行。
         allow_credentials=True,
     )
