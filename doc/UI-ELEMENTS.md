@@ -168,7 +168,13 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 ## W4 歷史
 
 從 W2 面板的「歷史」進入，右側工作區切成歷史檢視（#25 的決策：不另開整頁）。資料：`GET /api/configs/{uid}/history`
-（列表）與 `GET /api/configs/{uid}/history/{sha}`（選定那一版的值樹，#26）；「目前版本」＝來源複本現況。
+（列表）與 `GET /api/configs/{uid}/history/{sha}`（選定那一版的值樹，#26；另帶這一筆寫入之前 `previous`、目前來源
+`current`、緊鄰的前一筆紀錄 `preceding`，F10）；「目前版本」＝來源複本現況。
+
+**點一筆看的是「那一次改了什麼」**（這一筆寫入之前 → 之後；人工驗收 U25 的回歸，F10）。「退回會改什麼」（目前 →
+退回後）另外寫成一行字、確認框逐項列。**本 repo 對設計文件的修改**（PDF 待 owner 補列）：§5.3 與圖 13 的說明寫的是
+「選定版本與當前版本的差異」——那是退版前的確認，保留在「退回會改什麼」；點一筆本身改成那一次的改動（使用者 10/20
+定案，推翻 #25 的「右側選定版本與當前版本的差異」）。比較兩版時兩邊的型別都從各自的內容推斷，不套人工指定。
 
 | 元素 | 選取器 | 行為 |
 |---|---|---|
@@ -178,9 +184,12 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 變更列 | `data-testid="history-entry-<sha>"` | 顯示**行為描述**（內部類型→介面顯示對照表 §7.6.1），不顯示內部代號；退回舊版本附「退回到版本 <sha7>」；點選→`aria-selected="true"` 並載入差異 |
 | 作者／時間 | 列內 `data-testid="history-author"`／`"history-time"` | 姓名（email 在 title）；`<time datetime=ISO>` 顯示本地時間 |
 | 略過的規則 | 列內 `data-testid="history-overrides"` | 這一筆略過了哪些規則與理由（`略過規則 <規則>：<理由>`），來自 `GET …/history` 的 `overrides`；沒有就不出現（#45） |
-| 差異區 | `data-testid="history-diff"` | 以參數為單位：`history-diff-summary`（N 個參數不同）＋每參數一列 |
-| 差異列 | `data-testid="diff-row-<參數路徑>"` | 帶 `data-change`（`same`／`changed`／`added`／`removed`）；列內 `diff-from`（那一版）→`diff-to`（目前）。顏色語言與 W3／W5 一致（改動＝偏離紅） |
-| 退回此版本 | 文字「退回此版本」（`data-testid="history-revert"`） | 選定一版、看過差異後才出現在差異區下方；與目前相同（0 個參數不同）時停用。點擊→W6 確認對話框（標題「退回此版本？」、後果：幾個參數會改變、產生新紀錄並寫出、歷史不改寫；**退版會動到 schema 時另寫明**——回到那一版當時的 schema，或那一版還沒有 schema 所以拿掉，#39）→ `POST /api/configs/{uid}/revert`；成功→重開歷史並顯示 `history-notice`（已退回到版本 X）、左側樹重掃；被擋（有草稿 409 等）→ `history-revert-error` 原樣顯示原因與下一步（#27） |
+| 差異區 | `data-testid="history-diff"` | 以參數為單位列「這一筆改了什麼」：`history-diff-summary`（這一筆改了 N 個參數）＋每參數一列（沒變的也列、標相同，與 W5 一致）；帶 `data-sha`＝顯示的是哪一筆 |
+| 差異列 | `data-testid="diff-row-<參數路徑>"` | 帶 `data-change`（`same`／`changed`／`added`／`removed`）；列內 `diff-from`（這一筆之前）→`diff-to`（這一筆之後）。型別也比，用的是後端給的每個值各自的型別（`leaf_types`，清單元素不合併）：數字變字串、整數變小數（含清單裡的一格）算改了，值後面標型別；清單裡別的元素改了型別，沒動的那格仍是相同。顏色語言與 W3／W5 一致（改動＝偏離紅）。**已知限制**：清單照「第幾個」逐格比，在中間插入或調序時後面每一格都會顯示改了 |
+| 說明 | `data-testid="history-diff-note"` | 沒有「這一筆改了 N 個」可說時取代摘要：納入管理那筆＝沒有更早的版本可比；參數值沒變的紀錄（調整設定＝改的是屬性或 schema；以來源覆蓋目標＝設定庫沒變、目標被改回來源、被蓋掉的現場值沒有紀錄）；前一版讀不到＝原樣顯示原因與下一步（不說成第一筆） |
+| 前一筆被篩掉 | `data-testid="history-hidden-preceding"` | 緊鄰的前一筆紀錄不在目前的篩選裡（例如退回舊版本）：說前一筆是什麼、這裡的「改之前」是那一筆之後的內容、切到「全部」看得到。切換篩選時差異區回到初始說明（列表重畫後沒有選取的那一筆），不留著照舊篩選寫的提示 |
+| 退回會改什麼 | `data-testid="history-revert-effect"` | 一行看得到的字（**唯讀也有**，不只放在滑鼠停留的提示）：退回這一版會改變幾個參數，或「這一版的參數就是目前的內容，沒有東西可退」 |
+| 退回此版本 | 文字「退回此版本」（`data-testid="history-revert"`） | 選定一版後出現在差異區下方（只在編輯中）；旁邊寫明退回＝內容回到這一筆完成後的樣子（不是撤銷這一筆）；沒有東西可退時停用。點擊→W6 確認對話框（標題「退回此版本？」、後果：產生新紀錄並寫出、歷史不改寫；`confirm-items` 逐項列「<參數>：目前 X → 退回後 Y」，沒有的一邊寫「（無）」；**退版會動到 schema 時另寫明**——回到那一版當時的 schema，或那一版還沒有 schema 所以拿掉，#39）→ `POST /api/configs/{uid}/revert`；成功→重開歷史並顯示 `history-notice`（已退回到版本 X）、左側樹重掃；被擋（有草稿 409 等）→ `history-revert-error` 原樣顯示原因與下一步（#27） |
 | 通知 | `data-testid="history-notice"` | 退版成功等訊息；空時隱藏 |
 
 **測試須斷言**：列表中**不出現** `cfg`、`revert`、`import` 等字串。
@@ -199,7 +208,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 檢視差異 | `data-testid="panel-diff"` | 欄位表橫幅內；開差異檢視 |
 | 差異檢視 | `data-testid="diff-<uid>"` | 容器；`diff-summary` 說幾個參數不同；目標現況壞掉時顯示 `diff-target-error` |
 | 來源側 / 目標側 | `data-testid="diff-source"` / `"diff-target"` | 欄首：左 repo（唯一真實來源）、右 target（磁碟現況）——並排而非合併，使用者要判斷哪一邊是對的 |
-| 差異列 | `data-testid="diff-row-<參數路徑>"` | 每參數一列，帶 `data-change`（`same`／`changed`／`added`〔目標多出〕／`removed`〔目標缺少〕）；列內 `diff-source-value`／`diff-target-value`。與 W4 同一套比對與顏色語言 |
+| 差異列 | `data-testid="diff-row-<參數路徑>"` | 每參數一列，帶 `data-change`（`same`／`changed`／`added`〔目標多出〕／`removed`〔目標缺少〕）；列內 `diff-source-value`／`diff-target-value`。與 W4 同一套列與顏色語言；**比對方式不同**：W4 兩邊都用後端從內容推斷、每個值各自的型別，也比型別（F10）；W5 左邊套人工指定的型別、右邊由頁面從值推斷，只比顯示出來的字。已知限制：人工指定成 double 的參數，W5 可能顯示 `720.0｜720` 這種假差異 |
 | 處置區 | `.resolve-actions`（差異檢視底部） | 三個出口並排，每個按鈕下方一行**後果說明**（A3：按下之前就說清楚）；失敗原樣顯示於 `resolve-error` |
 | 以來源覆蓋 | 文字「以來源覆蓋目標」（`resolve-overwrite`） | W6 二次確認 → `resolve {action: overwrite}`；成功→`promote-done` 橫幅、重掃、回欄位表 |
 | 納入來源 | 文字「將目標現況納入來源」（`resolve-adopt`） | 走完整驗證，不另確認；**含非法值則被拒**（`resolve-error` 列行號／原因／建議並指去先納入待修正）；成功→`promote-done`、重掃、回欄位表 |

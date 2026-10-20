@@ -103,7 +103,7 @@ for i, (kind, col, msg, meta, sel) in enumerate(commits):
 d.p.append('<rect x="394" y="108" width="442" height="300" rx="3" fill="#ffffff" '
            'stroke="#c3cbd2" stroke-width="1.2"/>')
 d.p.append('<rect x="394" y="108" width="442" height="26" fill="#eceff1"/>')
-d.txt(408, 126, "與目前版本的差異", fs=10.5, col=DARK, bold=True)
+d.txt(408, 126, "這一筆改了什麼", fs=10.5, col=DARK, bold=True)
 diff = [
     ("  controller_server:", "#5d6d7e", None),
     ("    ros__parameters:", "#5d6d7e", None),

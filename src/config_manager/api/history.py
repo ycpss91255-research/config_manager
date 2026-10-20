@@ -23,6 +23,7 @@ from config_manager.core.parse import parse, values
 from config_manager.io.allowed_roots import root_prefixes
 from config_manager.io.errors import PromoteLeftBehind, WriterError
 from config_manager.io.git import KINDS, Change, history, show
+from config_manager.io.parsers import read_source as read_source_copy
 from config_manager.io.preflight import read_config_list
 from config_manager.io.promote import apply as apply_promotions
 from config_manager.io.schema import schema_revert
@@ -95,14 +96,29 @@ def _config_history(repo: str, uid: str, prefix: str | None) -> list[dict[str, o
     ]
 
 
+# 某一版的內容讀不到（git 失敗、不是 UTF-8）或解析不了。
+_UNREADABLE = (CalledProcessError, UnicodeDecodeError, SyntaxParse, RecursionError)
+
+
 def _version_detail(repo: str, uid: str, sha: str) -> dict[str, object]:
     """`sha` 那一版的 `{sha, types, values, schema_effect}`，前三者形狀同單筆內容端點（#26）。
 
+    點一筆要看的是「那一次改了什麼」（人工驗收 U25 的回歸，F10）：另帶 `previous`（這一筆寫入
+    之前同一個檔的內容——git 上一個版本，中間夾著退版、調整設定也一樣，不跳過任何類型；納入管理
+    那筆沒有→null；讀不到或解析不了→null，原因放 `previous_error`，不說成第一筆）、`current`
+    （目前的來源複本，退版預覽據此比）與 `preceding`（這份 config 緊鄰的前一筆紀錄，第一筆→null）。
+    三邊的 `types` 都從各自的內容推斷、不套人工指定：比較兩版時兩邊同一套規則，人工指定成
+    double 不會變成 `720 → 720.0` 的假差異，內容裡的型別真的變了照樣看得出來。三邊另帶
+    `leaf_types`：每個值**各自**的型別、以頁面上的實際路徑為鍵（`w[0]`）——`types` 的清單元素
+    整條共用一個合併後的型別（`w[]`），拿來逐格比會把沒動的那格算成改了，也會漏掉 `1 → 1.0`。
+
     sha 限這份 config 歷史裡的（前綴可）——別份的 sha 也 show 得出內容，但那不是這份的版本→422。
-    `raw` 不解析：types 空、values 為 null（同單筆內容端點）。
+    `raw` 不解析：types 空、values 為 null（同單筆內容端點），也不帶前後內容。
     """
     entry = require_entry(read_config_list(repo), uid)
-    change = _find_version(repo, entry, sha)
+    changes = history(repo, uid)
+    change = _find_version(changes, entry, sha)
+    later = changes[changes.index(change) + 1:]
     detail: dict[str, object] = {
         "sha": change.sha,
         "types": {},
@@ -110,25 +126,89 @@ def _version_detail(repo: str, uid: str, sha: str) -> dict[str, object]:
         # 退回這一版時 schema 會怎麼變（#39）：restore＝回到當時的 schema、remove＝當時還沒有
         # schema 所以拿掉、null＝不變。介面在確認框先說，不讓它悄悄發生。
         "schema_effect": schema_revert(repo, uid, change.sha)[0],
+        "leaf_types": {},
+        "previous": None,
+        "previous_error": None,
+        "current": None,
+        "preceding": {"sha": later[0].sha, "kind": later[0].kind} if later else None,
     }
     if entry.format == "raw":
         return detail
     try:
-        data = values(parse(show(repo, change.sha, entry.source), entry.format))
-    except (CalledProcessError, UnicodeDecodeError, SyntaxParse, RecursionError) as error:
+        data = _parsed(show(repo, change.sha, entry.source), entry)
+    except _UNREADABLE as error:
         raise HTTPException(
             status_code=500,
-            detail=f"「{entry.source}」在版本 {change.sha[:7]} 的內容讀不到或解析不了：{error}。"
-            "下一步：檢查 config-repo 的這筆紀錄是否完整",
+            detail=f"「{entry.source}」在版本 {change.sha[:7]} 的內容讀不到或解析不了："
+            f"{_reason(error)}。下一步：檢查 config-repo 的這筆紀錄是否完整",
         ) from error
-    detail["types"] = infer_types(data)
-    detail["values"] = data
+    detail.update(_typed(data))
+    if change.kind != "import":
+        detail["previous"], detail["previous_error"] = _before(repo, entry, change)
+    try:
+        now = _parsed(read_source_copy(repo, entry.source), entry)
+    except (OSError, *_UNREADABLE) as error:
+        raise source_unreadable(entry, error) from error
+    detail["current"] = _typed(now)
     return detail
 
 
-def _find_version(repo: str, entry: FileEntry, sha: str) -> Change:
+def _parsed(text: str, entry: FileEntry) -> object:
+    return values(parse(text, entry.format))
+
+
+def _typed(data: object) -> dict[str, object]:
+    """一版內容給頁面比較用的三樣：推斷的型別（欄位表的寫法）、值、每個值各自的型別。"""
+    return {"types": infer_types(data), "values": data, "leaf_types": _leaf_types(data)}
+
+
+def _leaf_types(data: object) -> dict[str, str]:
+    r"""每個值各自的型別，鍵是頁面列的實際路徑：key 裡的 `.` 跳脫成 `\.`、清單元素是 `[索引]`。
+
+    型別名稱沿用 `infer_types`（一次只問一個值），所以和欄位表的說法一致；不同的只是清單元素
+    不合併——`[1, 2.5]` 的第 0 格是 int、第 1 格是 float（F10）。
+    """
+    out: dict[str, str] = {}
+
+    def walk(value: object, path: str) -> None:
+        if path:
+            out[path] = infer_types({"v": value})["v"]
+        if isinstance(value, dict):
+            for key, item in value.items():
+                escaped = str(key).replace(".", "\\.")
+                walk(item, f"{path}.{escaped}" if path else escaped)
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                walk(item, f"{path}[{index}]")
+
+    walk(data, "")
+    return out
+
+
+def _reason(error: Exception) -> str:
+    """讀不到的原因：git 失敗時用 git 自己說的（不把整條指令與結束碼丟給人看）。"""
+    if isinstance(error, CalledProcessError):
+        said = (error.stderr or "").strip() if isinstance(error.stderr, str) else ""
+        return said or f"git 結束碼 {error.returncode}，沒有輸出"
+    return str(error)
+
+
+def _before(repo: str, entry: FileEntry, change: Change) -> tuple[object, str | None]:
+    """`change` 寫入之前同一個檔的 `{types, values}`；讀不到就回 (None, 原因與下一步)。"""
+    try:
+        data = _parsed(show(repo, f"{change.sha}^", entry.source), entry)
+    except _UNREADABLE as error:
+        return None, (
+            f"「{entry.source}」在版本 {change.sha[:7]} 之前的內容讀不到或解析不了："
+            f"{_reason(error)}。"
+            "下一步：檢查 config-repo 在這一筆之前的紀錄是否完整（可能有人繞過工具改過來源複本）"
+        )
+    return _typed(data), None
+
+
+def _find_version(changes: list[Change], entry: FileEntry, sha: str) -> Change:
     wanted = sha.lower()
-    change = next((c for c in history(repo, entry.uid) if c.sha.startswith(wanted)), None)
+    change = next((c for c in changes if c.sha.startswith(wanted)), None)
     if change is None:
         raise HTTPException(
             status_code=422,
@@ -169,7 +249,7 @@ def _revert_config(
             detail=f"「{entry.name}@{entry.hostname}」有未進版的草稿，退版會讓草稿對不上來源。"
             "下一步：先進版或捨棄這份草稿，再退版",
         )
-    target_change = _find_version(repo, entry, payload.version)
+    target_change = _find_version(history(repo, uid), entry, payload.version)
     plan = Promotion(
         uid=uid,
         source=entry.source,
