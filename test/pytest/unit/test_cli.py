@@ -14,6 +14,7 @@ import datetime
 import io
 import json
 import urllib.error
+import urllib.parse
 
 import pytest
 
@@ -251,23 +252,99 @@ def test_list_relays_a_server_error_instead_of_saying_the_backend_is_down(monkey
     assert "確認 backend 已啟動" not in err
 
 
-def test_import_posts_the_source_to_the_configs_endpoint(answers, capsys):
-    # 把關的是位址與方法：自己另做一套的實作不會 POST 到 --api 指的 /api/configs。身分先設
-    # （#288：CLI 不是瀏覽器，作者在命令列明寫），納管接著走同一支端點。
-    called = answers({"ref": "nav2@amr01-abc", "target": "/etc/nav2.yaml"})
+_TOKEN = "tok-1234567890"
+_ENTRY = {"ref": "nav2@amr01-abc", "target": "/etc/nav2.yaml"}
+_HELD = {
+    "kind": "held",
+    "message": "目前由 王小美（mei@example.com）自 2026-10-20T09:00:00+00:00 起編輯中",
+    "holder": {"name": "王小美", "email": "mei@example.com"},
+    "started_at": "2026-10-20T09:00:00+00:00",
+}
 
-    code = main(
+
+@pytest.fixture
+def editing_answers(monkeypatch):
+    """import 的四步（F23）：設身分、取得編輯權、納管、釋放——依方法與路徑各回一份，記下每個請求。
+    `replies` 可換掉某一步的回覆（值是例外就丟出它）。"""
+    called: list = []
+    replies = {
+        ("POST", "/api/session"): {"name": "陳小明"},
+        ("POST", "/api/session/lock"): {"token": _TOKEN, "cleared_drafts": 0},
+        ("POST", "/api/configs"): _ENTRY,
+        ("DELETE", "/api/session/lock"): {"released": True},
+    }
+
+    def _open(_self, request, timeout=None):
+        called.append(request)
+        reply = replies[(request.get_method(), urllib.parse.urlsplit(request.full_url).path)]
+        if isinstance(reply, Exception):
+            raise reply
+        return _Response(reply)
+
+    monkeypatch.setattr("urllib.request.OpenerDirector.open", _open)
+    return called, replies
+
+
+def _import_nav2():
+    return main(
         ["config_manager", "import", "--api", "http://amr01:8080",
          "--source", "/etc/nav2.yaml", "--format", "yaml", *_AUTHOR]
     )
 
+
+def test_import_posts_the_source_to_the_configs_endpoint(editing_answers, capsys):
+    # 把關的是位址與方法：自己另做一套的實作不會 POST 到 --api 指的 /api/configs。身分先設
+    # （#288：CLI 不是瀏覽器，作者在命令列明寫）；寫入只接受持有編輯權的那一方（F23）——和頁面
+    # 同一套：取得、帶識別碼納管、做完釋放。
+    called, _ = editing_answers
+
+    code = _import_nav2()
+
     assert code == 0
-    assert [request.full_url for request in called] == [
-        "http://amr01:8080/api/session", "http://amr01:8080/api/configs",
+    assert [(request.get_method(), request.full_url) for request in called] == [
+        ("POST", "http://amr01:8080/api/session"),
+        ("POST", "http://amr01:8080/api/session/lock"),
+        ("POST", "http://amr01:8080/api/configs"),
+        ("DELETE", "http://amr01:8080/api/session/lock"),
     ]
-    assert called[1].method == "POST"
     assert json.loads(called[0].data)["name"] == "陳小明"
+    assert called[2].get_header("X-cm-editing-token") == _TOKEN
+    assert json.loads(called[3].data) == {"token": _TOKEN}
     assert "已納管" in capsys.readouterr().out
+
+
+def test_import_while_someone_edits_names_them_and_does_not_onboard(editing_answers, capsys):
+    # 一次只有一個編輯階段：有人（包括同一個人在頁面上）正在編輯時，CLI 不繞過它寫進去。
+    called, replies = editing_answers
+    replies[("POST", "/api/session/lock")] = _http_error(409, _HELD)
+
+    code = _import_nav2()
+
+    err = capsys.readouterr().err
+    assert (code, "王小美" in err, "下一步：" in err) == (1, True, True)
+    assert "http://amr01:8080/api/configs" not in [request.full_url for request in called]
+
+
+def test_import_releases_the_editing_session_even_when_onboarding_fails(editing_answers):
+    called, replies = editing_answers
+    replies[("POST", "/api/configs")] = _http_error(422, "來源在白名單外")
+
+    code = _import_nav2()
+
+    assert (code, called[-1].get_method(), called[-1].full_url) == (
+        1, "DELETE", "http://amr01:8080/api/session/lock",
+    )
+
+
+def test_import_says_how_many_drafts_the_last_session_left_behind(editing_answers, capsys):
+    # 取得時上一個階段逾時清了草稿：CLI 一取得就把這個數字領走了（下一個人不會再被告知），
+    # 所以由它說出來，不靜默丟掉。
+    _, replies = editing_answers
+    replies[("POST", "/api/session/lock")] = {"token": _TOKEN, "cleared_drafts": 2}
+
+    _import_nav2()
+
+    assert "2 份" in capsys.readouterr().out
 
 
 def test_import_without_an_author_is_a_usage_error(capsys):

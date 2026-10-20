@@ -5032,6 +5032,86 @@ def test_a_release_that_arrives_after_the_reload_does_not_take_the_session_away(
     assert page.get_attribute("body", "data-readonly") == "false"
 
 
+# ── 寫入只接受持有編輯權的那個分頁（F23）───────────────────────────────────────
+
+
+def test_a_tab_that_lost_its_editing_session_is_refused_on_save_and_turns_read_only(
+    open_page, repo, api
+):
+    # 持有分頁不知情時失去編輯權（被釋放後另一個瀏覽器接手）→ 再按儲存：後端擋下，這個分頁轉唯讀、
+    # 唯讀橫幅原樣寫出原因；草稿沒存下。
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+    # 釋放但不讓頁面知道：記憶體裡的識別碼留著，像是被別處釋放了。
+    page.evaluate("""() => apiFetch(`${API_BASE}/api/session/lock`, {
+      method: "DELETE", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: sessionToken }),
+    })""")
+    other = _enter_identity(open_page())
+    other.wait_for_selector("[data-testid='promote-all']", state="visible")
+
+    page.fill(_param_value("count"), "4")
+    _save(page)
+    page.wait_for_selector(f"{_draft_dot(_PARAM_UID)}, [data-testid='readonly-banner']:visible")
+
+    banner = page.inner_text("[data-testid='readonly-banner']")
+    drafts = _api_json(api, "GET", "/api/drafts")["count"]
+    assert ("編輯權已失效" in banner, page.get_attribute("body", "data-readonly"), drafts) == (
+        True, "true", 0,
+    )
+
+
+def test_returning_to_the_list_while_holding_keeps_the_editing_token(open_page, repo):
+    # 回到清單不重新接續：接續會換識別碼，還帶著舊識別碼、正在路上的寫入就會被擋。
+    _listing_with(repo, "count: 3\n")
+    page = _enter_identity(open_page())
+    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+    page.wait_for_function("() => Boolean(sessionToken)")
+    before = page.evaluate("sessionToken")
+    resumes = []
+
+    def note_resume(request):
+        if request.url.endswith("/api/session/lock/renew") and '"resume":true' in (
+            request.post_data or ""
+        ):
+            resumes.append(request.url)
+
+    page.on("request", note_resume)
+    page.get_by_role("button", name="納管").click()
+    page.wait_for_selector("[data-testid='browse']", state="visible")
+
+    with page.expect_response(
+        lambda response: response.url.endswith("/api/configs") and response.request.method == "GET"
+    ):
+        page.get_by_role("button", name="返回").click()
+
+    assert (resumes, page.evaluate("sessionToken")) == ([], before)
+
+
+def test_a_late_refusal_for_an_older_token_does_not_turn_the_tab_read_only(open_page, repo):
+    # 護欄：送出時用的識別碼已經不是這個分頁現在的那一個（例如回應晚到），它被擋不代表這個分頁
+    # 失去編輯權——不轉唯讀、不清掉現在的識別碼。
+    _listing_with(repo, "count: 3\n")
+    page = _enter_identity(open_page())
+    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+    page.route("**/api/drafts", lambda route: route.fulfill(
+        status=410, content_type="application/json",
+        body=json.dumps({"detail": {"kind": "editing_lost", "message": "這個分頁的編輯權已失效"}}),
+    ))
+
+    readonly = page.evaluate("""async () => {
+      const current = sessionToken;
+      sessionToken = "an-older-token-0000";
+      const pending = editFetch(`${API_BASE}/api/drafts`, { method: "DELETE" });
+      sessionToken = current;
+      await pending;
+      return document.body.dataset.readonly;
+    }""")
+
+    assert readonly == "false"
+
+
 # ── 人工驗證：檢查差異的回饋、窄視窗排版 ─────────────────────────────────────
 
 _NARROW = 390  # 手機直立的寬度；工具列在這個寬度下不該拆字、不該讓頁面左右捲
