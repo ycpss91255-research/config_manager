@@ -161,6 +161,7 @@
   .history-meta { font-size: 12px; color: var(--muted); display: flex; gap: 8px; }
   .history-diff .notice { margin: 0; }
   .diff-summary { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
+  .revert-effect { font-size: 13px; margin: 12px 14px 0; }
   .diff-row { align-items: baseline; font-size: 13px; }
   .diff-row .diff-name { flex: 1.2; font-family: ui-monospace, "SF Mono", Menlo, monospace; overflow-wrap: anywhere; }
   .diff-row .diff-from, .diff-row .diff-to { flex: 1; overflow-wrap: anywhere; }
@@ -2272,12 +2273,15 @@ function toggleCollapse(list, container) {
 // ── W4 歷史（#25／#26）───────────────────────────────────────────────────────
 // 使用者看到的是行為，不是代號（§7.6.1）：內部類型只在這張表裡對應成中文，列表上不出現
 // cfg／revert／import 這些字。左列表／右差異（圖 13）；差異以參數為單位（§7.6.2）：哪個參數從什麼
-// 變成什麼，與 W3 的欄位表語言、顏色一致（改動＝偏離紅）。「當前版本」＝來源複本現況。
+// 變成什麼，與 W3 的欄位表語言、顏色一致（改動＝偏離紅）。點一筆看的是「那一次改了什麼」（這一筆
+// 寫入之前 → 之後，人工驗收 U25 的回歸，F10）；「退回會改什麼」（目前 → 退回後）另外寫成一行字、
+// 確認框逐項列——「目前版本」＝來源複本現況。
 const KIND_TEXT = {
   import: "納入管理", cfg: "修改參數", revert: "退回舊版本",
   adopt: "採納現場調整", meta: "調整設定", unmanage: "解除管理",
 };
 const ALL_KINDS = Object.keys(KIND_TEXT).join(",");
+const PICK_A_CHANGE = "選一筆變更，這裡顯示那一次改了什麼（以參數為單位）。";
 let historyGeneration = 0;
 
 function formatTime(iso) {
@@ -2313,7 +2317,7 @@ function openHistory(detail, notice) {
     element("div", { class: "history-body" }, [
       element("ul", { class: "history-list", "data-testid": "history-list" }),
       element("div", { class: "history-diff", "data-testid": "history-diff" }, [
-        element("p", { class: "notice", text: "選一筆變更，這裡顯示它與目前版本的差異（以參數為單位）。" }),
+        element("p", { class: "notice", text: PICK_A_CHANGE }),
       ]),
     ]),
   ]);
@@ -2323,6 +2327,10 @@ function openHistory(detail, notice) {
     for (const option of filter.querySelectorAll("button[data-filter]")) {
       option.setAttribute("aria-pressed", String(option === button));
     }
+    // 列表重畫後沒有選取的那一筆：差異區回到初始說明，不留著照舊篩選寫的「前一筆被篩掉」。
+    const diff = view.querySelector("[data-testid='history-diff']");
+    delete diff.dataset.sha;
+    diff.replaceChildren(element("p", { class: "notice", text: PICK_A_CHANGE }));
     loadHistory(view, detail, button.dataset.filter, ++historyGeneration);
   });
   view.querySelector("[data-testid='history-notice']").hidden = !notice;
@@ -2391,6 +2399,7 @@ async function selectChange(view, detail, change, node) {
     entry.setAttribute("aria-selected", String(entry === node));
   }
   const diff = view.querySelector("[data-testid='history-diff']");
+  delete diff.dataset.sha;
   diff.replaceChildren(element("p", { class: "notice", text: "載入中…" }));
   try {
     const url = `${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/history/${change.sha}`;
@@ -2398,7 +2407,7 @@ async function selectChange(view, detail, change, node) {
     if (!response.ok) throw new Refused(await loadErrorText(response));
     const version = await response.json();
     if (generation !== historyGeneration) return;
-    renderDiff(diff, version, detail, view);
+    renderDiff(diff, version, detail, view, change);
   } catch (error) {
     if (generation !== historyGeneration) return;
     diff.replaceChildren(element("div", { class: "notice error", "data-testid": "history-diff-error" }, [
@@ -2408,30 +2417,87 @@ async function selectChange(view, detail, change, node) {
   }
 }
 
-// 那一版 vs 目前版本，以參數為單位（§7.6.2）：same／changed／added（那版沒有、現在有）／removed。
-function renderDiff(target, version, detail, view) {
-  // 那一版（左）vs 目前版本（右），與 W5 共用同一套比對與列（paramDiff／diffRow）。
-  const compared = paramDiff(version, detail);
-  const rows = compared.map((row) => diffRow(row, "diff-from", "diff-to", "→"));
-  const differing = compared.filter((row) => row.change !== "same").length;
-  // 退回此版本（#27、§5.3 圖 7）：看過差異才退；不可逆（會產生一筆新紀錄並寫出目標）→ W6 確認對話框。
+// 那一次改了什麼，以參數為單位（§7.6.2）：這一筆寫入之前（左）→ 之後（右），same／changed／
+// added（之前沒有）／removed（之後沒有）。前後兩邊的型別都由後端從各自的內容推斷（F10）：人工指定
+// 不算改了，內容裡的型別真的變了（整數變小數、數字變字串）照樣算。
+function renderDiff(target, version, detail, view, change) {
+  target.dataset.sha = version.sha;
+  const parts = [];
+  if (version.previous) {
+    const compared = paramDiff(version.previous, version, true);
+    const changed = compared.filter((row) => row.change !== "same").length;
+    if (changed) {
+      parts.push(element("p", {
+        class: "diff-summary", "data-testid": "history-diff-summary",
+        text: `這一筆改了 ${changed} 個參數（左邊是改之前，右邊是這一筆之後）`,
+      }));
+    } else {
+      parts.push(element("p", { class: "notice", "data-testid": "history-diff-note", text: unchangedText(change) }));
+    }
+    const hidden = hiddenPreceding(view, version.preceding);
+    if (hidden) parts.push(hidden);
+    parts.push(element("ul", {}, compared.map((row) => diffRow(row, "diff-from", "diff-to", "→"))));
+  } else if (version.previous_error) {
+    parts.push(element("div", { class: "notice error", "data-testid": "history-diff-note" }, [
+      element("strong", { text: "算不出這一筆改了什麼：前一版讀不到。" }),
+      element("pre", { text: version.previous_error }),
+    ]));
+  } else {
+    parts.push(element("p", {
+      class: "notice", "data-testid": "history-diff-note",
+      text: "這是第一筆（納入管理），沒有更早的版本可比。",
+    }));
+  }
+  parts.push(revertSection(view, detail, version));
+  target.replaceChildren(...parts);
+}
+
+// 以來源覆蓋目標只記一筆空的「修改參數」（io/drift.py 的 OVERWRITE_SUMMARY）：設定庫沒變、目標被改回來源。
+const OVERWRITE_SUMMARY = "以來源覆蓋目標（捨棄現場修改）";
+
+// 參數值沒變的那一筆在做什麼：不留白，不讓人以為壞掉或什麼都沒做。
+function unchangedText(change) {
+  if (change.kind === "meta") return "參數值沒變：這一筆改的是屬性或 schema（含型別指定）。";
+  if (change.summary === OVERWRITE_SUMMARY) {
+    return "參數值沒變：設定庫的內容沒變，這一筆是把機器上的目標檔改回來源內容；被蓋掉的現場值沒有紀錄。";
+  }
+  return "參數值沒變。";
+}
+
+// 緊鄰的前一筆紀錄不在目前的篩選裡（例如前一筆是退回舊版本）：可見的紀錄前後值會接不起來，說清楚。
+function hiddenPreceding(view, preceding) {
+  if (!preceding || view.querySelector(`[data-testid='history-entry-${preceding.sha}']`)) return null;
+  return element("p", {
+    class: "notice", "data-testid": "history-hidden-preceding",
+    text: `上一筆紀錄是「${KIND_TEXT[preceding.kind] || "變更"}」（${preceding.sha.slice(0, 7)}），`
+      + "目前的篩選沒有列出；這裡的「改之前」是那一筆之後的內容。切到「全部」可以看到它。",
+  });
+}
+
+// 退回會改什麼（#27、§5.3 圖 7、§7.1 原則 2）：目前 → 退回後。一行看得到的字（唯讀也看得到，
+// 不只放在滑鼠停留的提示裡）；「退回此版本」只在編輯中出現，不可逆 → W6 確認框逐項列出。
+function revertSection(view, detail, version) {
+  const changes = paramDiff(version.current, version, true).filter((row) => row.change !== "same");
+  const effect = changes.length
+    ? `退回這一版會改變 ${changes.length} 個參數。`
+    : "這一版的參數就是目前的內容，沒有東西可退。";
   const revertButton = element("button", {
     type: "button", class: "editing-only", "data-testid": "history-revert", text: "退回此版本",
   });
-  revertButton.disabled = differing === 0;
-  revertButton.title = differing === 0 ? "這一版與目前版本相同，沒有東西可退" : "";
-  revertButton.addEventListener("click", () => revertTo(view, detail, version, differing, revertButton));
-  target.replaceChildren(
-    element("p", {
-      class: "diff-summary", "data-testid": "history-diff-summary",
-      text: differing ? `與目前版本相比：${differing} 個參數不同（左邊是那一版，右邊是目前）` : "與目前版本沒有參數不同。",
-    }),
-    element("ul", {}, rows),
+  revertButton.disabled = changes.length === 0;
+  revertButton.title = changes.length === 0 ? effect : "";
+  revertButton.addEventListener("click", () => revertTo(view, detail, version, changes, revertButton));
+  return element("div", { class: "revert-section" }, [
+    element("p", { class: "revert-effect", "data-testid": "history-revert-effect", text: effect }),
     element("div", { class: "panel-actions" }, [
-      element("span", { class: "hint", text: "退版會產生一筆新的變更紀錄並寫出到目標；歷史不會被改寫，之後仍可再退。" }),
+      element("span", {
+        class: "hint",
+        text: "退回＝內容回到這一筆完成後的樣子（不是撤銷這一筆）。退版會產生一筆新的變更紀錄並寫出到目標；"
+          + "歷史不會被改寫，之後仍可再退。",
+      }),
       revertButton,
     ]),
-  );
+  ]);
 }
 
 // 退版時 schema 跟著回到那一版（#39 的定案）。會改到開發者設的限制，所以確認框先說、完成後再說一次，
@@ -2445,14 +2511,17 @@ const SCHEMA_DONE_TEXT = {
   remove: "這份現在沒有 schema。",
 };
 
-async function revertTo(view, detail, version, differing, button) {
+async function revertTo(view, detail, version, changes, button) {
   if (isBusy(button)) return;
   const short = version.sha.slice(0, 7);
   const ok = await confirmAction(
     "退回此版本？",
-    `「${detail.name}」會回到版本 ${short} 的內容：${differing} 個參數會改變、並寫出到目標。` +
-    "這會產生一筆新的變更紀錄；歷史不會被改寫，之後仍可再退。" + (SCHEMA_EFFECT_TEXT[version.schema_effect] || ""),
+    `「${detail.name}」會回到版本 ${short} 完成後的內容：下面 ${changes.length} 個參數會從目前的值改成退回後的值，`
+      + "並寫出到目標。這會產生一筆新的變更紀錄；歷史不會被改寫，之後仍可再退。"
+      + (SCHEMA_EFFECT_TEXT[version.schema_effect] || ""),
     "退回此版本",
+    changes.map((row) => `${row.path.replace(/\\\./g, ".")}：目前 ${row.from === undefined ? "（無）" : row.from}`
+      + ` → 退回後 ${row.to === undefined ? "（無）" : row.to}`),
   );
   if (!ok) return;
   await whileBusy(button, "退版中…", async () => {
@@ -2489,7 +2558,8 @@ async function revertTo(view, detail, version, differing, button) {
 // ── W5 差異檢視（#30）────────────────────────────────────────────────────────
 // 只在偏離時出現（§7.7、ADR-00000008）：橫幅說明目標被介面外修改、沒有對應紀錄與作者；主區域是
 // 來源（repo，唯一真實來源）與目標（磁碟現況）的並排參數比對——使用者要做的是「判斷哪一邊是對的」，
-// 並排比合併差異更貼這個決策。呈現與 W4 歷史差異同一套（參數為單位、同樣的 data-change 與顏色）。
+// 並排比合併差異更貼這個決策。呈現與 W4 歷史差異同一套（參數為單位、同樣的 data-change 與顏色）；
+// 比對方式不同：這裡不帶每個值各自的型別（paramDiff 的 byType）。
 // 處置的三個按鈕是 #31。
 function driftBanner(detail, withEntry) {
   const banner = element("div", { class: "notice error drift-banner", "data-testid": "drift-banner" }, [
@@ -2588,24 +2658,33 @@ async function applyMissing(detail, errorEl) {
 }
 
 // 兩棵值樹以參數為單位比：same／changed／added（右邊有、左邊沒有）／removed（左邊有、右邊沒有）。
-// W4（那一版 vs 目前）與 W5（來源 vs 目標）共用，顏色語言因此一致。
-function paramDiff(left, right) {
+// W4（這一筆之前 vs 之後、目前 vs 退回後）與 W5（來源 vs 目標）共用，顏色語言因此一致。
+// `byType`（W4，F10）：兩邊都帶後端從各自內容推斷的「每個值各自的型別」（`leaf_types`，鍵是實際
+// 路徑 `w[0]`），顯示與比對都用它——清單元素共用的合併型別（`w[]`）會把沒動的那格算成改了、也看不出
+// `1 → 1.0`。型別不同也算改了：數字 5 變成字串 "5" 顯示出來的字一樣，不比型別就看不出來；顯示時
+// 在值後面標出型別。W5 的左邊帶人工指定的型別，不比。
+function paramDiff(left, right, byType = false) {
   const leaves = (payload) => new Map(
     paramRows({ types: payload.types || {}, values: payload.values || {}, draft_values: null })
       .filter((row) => !row.container)
-      .map((row) => [row.path, displayValue(row.value, row.type)]),
+      .map((row) => {
+        const type = byType ? (payload.leaf_types || {})[row.path] || row.type : row.type;
+        return [row.path, { text: displayValue(row.value, type), type }];
+      }),
   );
   const older = leaves(left);
   const current = leaves(right);
   const paths = [...current.keys(), ...[...older.keys()].filter((path) => !current.has(path))];
   return paths.map((path) => {
-    const from = older.get(path);
-    const to = current.get(path);
+    const before = older.get(path);
+    const after = current.get(path);
     let change = "same";
-    if (from === undefined) change = "added";
-    else if (to === undefined) change = "removed";
-    else if (from !== to) change = "changed";
-    return { path, from, to, change };
+    if (before === undefined) change = "added";
+    else if (after === undefined) change = "removed";
+    else if (before.text !== after.text || (byType && before.type !== after.type)) change = "changed";
+    const retyped = byType && before && after && before.type !== after.type;
+    const shown = (leaf) => leaf && (retyped ? `${leaf.text}（${TYPE_LABEL[leaf.type] || leaf.type}）` : leaf.text);
+    return { path, from: shown(before), to: shown(after), change };
   });
 }
 

@@ -3945,26 +3945,291 @@ def test_history_filter_all_shows_onboarding_as_a_behaviour(open_page, browse_ro
     assert "import" not in page.inner_text("[data-testid='history-list']")
 
 
-def test_selecting_a_change_shows_which_parameters_differ_from_the_current_version(
-    open_page, browse_root, api
-):
-    # #26：差異以參數為單位——哪個參數從什麼變成什麼；沒變的標為相同，不是文字行差異。
+def _entries(page) -> list:
+    """目前列表上每一筆的 testid，最新在前。"""
+    return page.eval_on_selector_all(
+        "[data-testid^='history-entry-']", "els => els.map(e => e.dataset.testid)"
+    )
+
+
+def _select(page, testid: str, wait_for: str = "[data-testid='history-diff-summary']"):
+    """點一筆、等它被選取，再等差異區的 `wait_for`——點下去時差異區就同步換成「載入中」，
+    等到的一定是這一筆的內容。"""
+    page.click(f"[data-testid='{testid}']")
+    page.wait_for_selector(f"[data-testid='{testid}'][aria-selected='true']")
+    page.wait_for_selector(wait_for)
+
+
+def _diff_cells(page, path: str) -> tuple:
+    row = f"[data-testid='diff-row-{path}']"
+    return (
+        page.get_attribute(row, "data-change"),
+        page.inner_text(f"{row} [data-testid='diff-from']"),
+        page.inner_text(f"{row} [data-testid='diff-to']"),
+    )
+
+
+def test_selecting_a_change_shows_what_that_change_did(open_page, browse_root, api):
+    # #26；人工驗收 U25 的回歸（F10）：點一筆＝那一次改了什麼——count 從改之前的 1 變成 2，
+    # 不是「那一版 → 目前」（那樣會是 2 → 3，看不出這一次做了什麼）；沒變的標相同。
     entry = _history_via_api(
         api, browse_root, ["count: 1\nspeed: 5\n", "count: 2\nspeed: 5\n", "count: 3\nspeed: 5\n"]
     )
     page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
-    older = page.eval_on_selector_all(
-        "[data-testid^='history-entry-']", "els => els[els.length - 1].dataset.testid"
+
+    _select(page, _entries(page)[-1])
+
+    assert _diff_cells(page, "count") == ("changed", "1", "2")
+    assert _diff_cells(page, "speed")[0] == "same"
+    assert "改了 1 個參數" in page.inner_text("[data-testid='history-diff-summary']")
+
+
+def test_the_newest_change_shows_its_own_change(open_page, browse_root, api):
+    # 和目前比的話，最新那一筆永遠「沒有不同」——剛進版改了什麼，在歷史裡反而點不到（F10）。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n", "count: 3\n"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    _select(page, _entries(page)[0])
+
+    assert _diff_cells(page, "count") == ("changed", "2", "3")
+    # 前一筆（→2）就在列表上：不提示「前一筆被篩掉」。
+    assert page.query_selector("[data-testid='history-hidden-preceding']") is None
+
+
+def test_a_change_shows_the_same_before_and_after_under_either_filter(open_page, browse_root, api):
+    # 「改之前」是這一筆寫入之前，和篩選無關：切到「全部」再點同一筆，前後值一樣。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n", "count: 3\n"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+    older = _entries(page)[-1]
+    _select(page, older)
+    under_content = _diff_cells(page, "count")
+
+    page.click("[data-testid='history-filter'] button[data-filter='all']")
+    page.wait_for_selector("text=納入管理")
+    _select(page, older)
+
+    assert _diff_cells(page, "count") == under_content == ("changed", "1", "2")
+
+
+def test_onboarding_says_there_is_no_earlier_version_but_can_still_be_reverted_to(
+    open_page, browse_root, api
+):
+    # 納入管理是第一筆：沒有更早的版本可比，照實說；退回到這一版仍然可以（#27）。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    _select_first_version(page)
+
+    assert "沒有更早的版本" in page.inner_text("[data-testid='history-diff-note']")
+    assert page.is_visible("[data-testid='history-revert']")
+
+
+def test_a_settings_change_says_no_parameter_value_changed(open_page, browse_root, api):
+    # 調整設定（這裡是產生 schema）不改參數值：照實說，不讓人以為壞掉或什麼都沒做。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
+    _api_json(api, "POST", f"/api/configs/{entry['uid']}/schema")
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+    page.click("[data-testid='history-filter'] button[data-filter='all']")
+    page.wait_for_selector("text=調整設定")
+
+    _select(page, _entries(page)[0], "[data-testid='history-diff-note']")
+
+    note = page.inner_text("[data-testid='history-diff-note']")
+    assert "參數值沒變" in note and "schema" in note
+
+
+def test_an_overwrite_record_says_the_source_did_not_change(open_page, browse_root, api):
+    # 以來源覆蓋目標只留一筆空的「修改參數」：設定庫的內容沒變、目標被改回來源，
+    # 被蓋掉的現場值沒有紀錄。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
+    pathlib.Path(entry["target"]).write_text("count: 9\n", encoding="utf-8")
+    _api_json(api, "POST", f"/api/configs/{entry['uid']}/resolve", {"action": "overwrite"})
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    _select(page, _entries(page)[0], "[data-testid='history-diff-note']")
+
+    note = page.inner_text("[data-testid='history-diff-note']")
+    assert "設定庫的內容沒變" in note and "沒有紀錄" in note
+
+
+def test_a_record_hidden_by_the_filter_just_before_this_one_is_pointed_out(
+    open_page, browse_root, api
+):
+    # 1 → 2 → 3 → 退回到 2 → 4：只看內容變更時退版那筆不列，→4 那一筆的「改之前」（2）和列表上
+    # 下一筆的「改之後」（3）接不起來——說明前一筆是退回舊版本、切到「全部」看得到。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n", "count: 3\n"])
+    content = _api_json(api, "GET", f"/api/configs/{entry['uid']}/history")
+    _api_json(api, "POST", f"/api/configs/{entry['uid']}/revert", {"version": content[-1]["sha"]})
+    _api_json(api, "POST", "/api/drafts", {"uid": entry["uid"], "edits": {"count": 4}})
+    _api_json(api, "POST", "/api/promote", {})
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    _select(page, _entries(page)[0], "[data-testid='history-hidden-preceding']")
+
+    hint = page.inner_text("[data-testid='history-hidden-preceding']")
+    assert "退回舊版本" in hint and "全部" in hint
+
+
+def test_only_a_manual_type_is_not_a_change_and_leaves_nothing_to_revert(
+    open_page, browse_root, api
+):
+    # 720 只是被人工指定成 double、內容沒變：兩邊都用從內容推斷的型別比，不出現 720 → 720.0 的
+    # 假差異；退回這一版沒有東西可退（按鈕停用、原因寫在看得到的地方）。
+    entry = _history_via_api(api, browse_root, ["height: 720\n"])
+    specify = {"path": "height", "type": "float"}
+    _api_json(api, "POST", f"/api/configs/{entry['uid']}/types", specify)
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"], expect_entries=False)
+
+    _select_first_version(page)
+
+    assert "沒有東西可退" in page.inner_text("[data-testid='history-revert-effect']")
+    assert page.is_disabled("[data-testid='history-revert']")
+
+
+def test_the_revert_effect_is_visible_and_the_confirmation_lists_each_change(
+    open_page, browse_root, api
+):
+    # 退回會改什麼：差異區一行看得到的字說幾個參數，確認框逐項列「目前 → 退回後」（§7.1 原則 2）。
+    entry = _history_via_api(api, browse_root, ["count: 1\nspeed: 5\n", "count: 3\nspeed: 5\n"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+    _select_first_version(page)
+    assert "1 個參數" in page.inner_text("[data-testid='history-revert-effect']")
+    # 按鈕旁寫明退回＝回到這一筆完成後的內容，不是撤銷這一筆。
+    assert "完成後" in page.inner_text(".revert-section .hint")
+
+    page.click("[data-testid='history-revert']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+
+    items = page.inner_text("[data-testid='confirm-items']")
+    assert "count" in items and "目前 3" in items and "退回後 1" in items and "speed" not in items
+    page.click("[data-testid='confirm-cancel']")
+
+
+def test_a_read_only_viewer_also_sees_what_reverting_would_change(open_page, browse_root, api):
+    # 「退回此版本」只在編輯中出現；退回會改什麼的那一行字不是——唯讀的人也看得到這一版和現在差多少。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 3\n"])
+    holder = open_page(identity=_REMEMBERED)
+    holder.wait_for_selector("[data-testid='promote-all']", state="visible")
+    viewer = open_page(same_browser_as=holder)
+    viewer.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+    page = _open_history(viewer, entry["uid"])
+
+    _select(page, _entries(page)[0], "[data-testid='history-revert-effect']")
+
+    assert page.is_visible("[data-testid='history-revert-effect']")
+    assert page.is_hidden("[data-testid='history-revert']")
+
+
+def _adopt(api, entry, target_text: str) -> None:
+    """目標在介面外被改成 `target_text`，再「將目標現況納入來源」——留一筆採納現場調整。"""
+    pathlib.Path(entry["target"]).write_text(target_text, encoding="utf-8")
+    _api_json(api, "POST", f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
+
+
+def test_a_number_turned_string_is_a_change_shown_with_both_types(open_page, browse_root, api):
+    # 5 → "5"：顯示出來的字一樣，不比型別就看不出來（定案第 6 點③）；值後面標出型別。
+    entry = _history_via_api(api, browse_root, ["count: 5\n"])
+    _adopt(api, entry, 'count: "5"\n')
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    _select(page, _entries(page)[0])
+
+    change, before, after = _diff_cells(page, "count")
+    assert (change, "（int）" in before, "（string）" in after) == ("changed", True, True)
+
+
+def test_an_integer_turned_decimal_is_a_change(open_page, browse_root, api):
+    # 720 → 720.0：內容裡的型別真的變了（定案第 6 點②），照樣算改了。
+    entry = _history_via_api(api, browse_root, ["height: 720\n"])
+    _adopt(api, entry, "height: 720.0\n")
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    _select(page, _entries(page)[0])
+
+    assert _diff_cells(page, "height")[0] == "changed"
+
+
+def test_an_untouched_list_element_stays_the_same_when_another_changes_type(
+    open_page, browse_root, api
+):
+    # [1, 2] → [1, 2.5]：清單元素整條共用的型別變成小數，但第 0 格沒動——仍是相同，只改了 1 個。
+    entry = _history_via_api(api, browse_root, ["w: [1, 2]\n"])
+    _adopt(api, entry, "w: [1, 2.5]\n")
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    _select(page, _entries(page)[0])
+
+    assert (_diff_cells(page, "w[0]")[0], _diff_cells(page, "w[1]")[0]) == ("same", "changed")
+
+
+def test_a_list_element_turned_decimal_is_a_change_and_leaves_something_to_revert(
+    open_page, browse_root, api
+):
+    # [1, 2.5] → [1.0, 2.5]：第 0 格從整數變小數，是真的改了；退回納入管理那一版也就有東西可退。
+    entry = _history_via_api(api, browse_root, ["w: [1, 2.5]\n"])
+    _adopt(api, entry, "w: [1.0, 2.5]\n")
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+    _select(page, _entries(page)[0])
+    assert _diff_cells(page, "w[0]")[0] == "changed"
+
+    _select_first_version(page)
+
+    assert page.is_enabled("[data-testid='history-revert']")
+
+
+def test_the_confirmation_says_none_for_a_parameter_the_version_does_not_have(
+    open_page, browse_root, api
+):
+    # 目前比納入管理那一版多一個參數：退回後那個參數就沒有了，確認框寫「（無）」。
+    entry = _history_via_api(api, browse_root, ["count: 1\n"])
+    _adopt(api, entry, "count: 1\nextra: 2\n")
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+    _select_first_version(page)
+
+    page.click("[data-testid='history-revert']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+
+    items = page.inner_text("[data-testid='confirm-items']")
+    assert "extra" in items and "退回後 （無）" in items
+    page.click("[data-testid='confirm-cancel']")
+
+
+def test_an_unreadable_previous_version_shows_the_reason_and_is_not_called_the_first(
+    open_page, browse_root, api, repo
+):
+    # 有人繞過工具把來源複本改壞並提交：之後那一筆算不出改了什麼——原樣說原因與下一步，不說成第一筆。
+    entry = _history_via_api(api, browse_root, ["count: 1\n"])
+    source = _api_json(api, "GET", f"/api/configs/{entry['uid']}")["source"]
+    (repo / source).write_text("count: [1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "--", source], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=dev", "-c", "user.email=d@e.x", "commit", "-q",
+         "-m", "手動改壞來源（不是本工具的紀錄）"],
+        check=True,
     )
+    _adopt(api, entry, "count: 7\n")
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
 
-    page.click(f"[data-testid='{older}']")
-    page.wait_for_selector("[data-testid='diff-row-count']")
+    _select(page, _entries(page)[0], "[data-testid='history-diff-note']")
 
-    assert page.get_attribute("[data-testid='diff-row-count']", "data-change") == "changed"
-    assert page.inner_text("[data-testid='diff-row-count'] [data-testid='diff-from']") == "2"
-    assert page.inner_text("[data-testid='diff-row-count'] [data-testid='diff-to']") == "3"
-    assert page.get_attribute("[data-testid='diff-row-speed']", "data-change") == "same"
-    assert "1 個參數不同" in page.inner_text("[data-testid='history-diff-summary']")
+    note = page.inner_text("[data-testid='history-diff-note']")
+    assert ("前一版讀不到" in note, "下一步" in note, "第一筆" in note) == (True, True, False)
+
+
+def test_switching_the_filter_clears_a_hint_written_for_the_old_filter(open_page, browse_root, api):
+    # 「前一筆被篩掉」是照當時的篩選寫的：切到「全部」後那一筆就看得到了，差異區回到初始說明。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n", "count: 3\n"])
+    content = _api_json(api, "GET", f"/api/configs/{entry['uid']}/history")
+    _api_json(api, "POST", f"/api/configs/{entry['uid']}/revert", {"version": content[-1]["sha"]})
+    _api_json(api, "POST", "/api/drafts", {"uid": entry["uid"], "edits": {"count": 4}})
+    _api_json(api, "POST", "/api/promote", {})
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+    _select(page, _entries(page)[0], "[data-testid='history-hidden-preceding']")
+
+    page.click("[data-testid='history-filter'] button[data-filter='all']")
+    page.wait_for_selector("[data-testid='history-list'] .history-kind:text-is('退回舊版本')")
+
+    assert page.query_selector("[data-testid='history-hidden-preceding']") is None
 
 
 def test_returning_from_history_shows_the_parameter_table_again(open_page, browse_root, api):

@@ -1936,6 +1936,170 @@ def test_version_detail_of_another_configs_sha_is_refused(api, sources_root):
     assert exc.value.code == _UNPROCESSABLE
 
 
+# ── T9：一筆紀錄改了什麼（人工驗收 U25 的回歸，F10）──────────────────────────
+# 點一筆要看的是「那一次改了什麼」：版本內容另帶這一筆寫入之前（previous）、目前來源（current）、
+# 緊鄰的前一筆紀錄（preceding）。
+
+
+def _version(api, uid, sha):
+    return _get(api, f"/api/configs/{uid}/history/{sha}")
+
+
+def test_the_newest_change_carries_the_values_it_started_from(api, sources_root):
+    # 1 → 2 → 3：最新那一筆（→3）寫入之前是 2——不是「和目前比」那樣什麼都沒有。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f10_newest.yaml", b"count: 1\n")
+    _promote_value(api, entry["uid"], "count", 2)
+    _promote_value(api, entry["uid"], "count", 3)
+    newest = _history(api, entry["uid"])[0]["sha"]
+
+    version = _version(api, entry["uid"], newest)
+
+    assert (version["previous"]["values"], version["values"]) == ({"count": 2}, {"count": 3})
+
+
+def test_onboarding_has_no_earlier_version_and_no_preceding_record(api, sources_root):
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f10_first.yaml", b"count: 1\n")
+    imported = _history(api, entry["uid"], "import")[0]["sha"]
+
+    version = _version(api, entry["uid"], imported)
+
+    assert (version["previous"], version["previous_error"], version["preceding"]) == (
+        None, None, None,
+    )
+
+
+def test_the_value_before_a_change_is_what_came_just_before_even_a_revert(api, sources_root):
+    # 1 → 2 → 3 → 退回到 2 → 5：→5 那一筆寫入之前是退版後的 2，不是跳過退版、拿 3 來比；
+    # 緊鄰的前一筆紀錄就是那筆退版。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f10_after_revert.yaml", b"count: 1\n")
+    _promote_value(api, entry["uid"], "count", 2)
+    second = _history(api, entry["uid"])[0]["sha"]
+    _promote_value(api, entry["uid"], "count", 3)
+    _post(api, f"/api/configs/{entry['uid']}/revert", {"version": second})
+    _promote_value(api, entry["uid"], "count", 5)
+    newest = _history(api, entry["uid"])[0]["sha"]
+
+    version = _version(api, entry["uid"], newest)
+
+    assert (version["previous"]["values"], version["preceding"]["kind"]) == ({"count": 2}, "revert")
+
+
+def test_an_overwrite_record_has_the_same_values_before_and_after(api, sources_root):
+    # 以來源覆蓋目標只留一筆空的修改參數紀錄：設定庫的內容沒變，前後相同。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f10_overwrite.yaml", b"count: 1\n")
+    pathlib.Path(entry["target"]).write_bytes(b"count: 9\n")
+    _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "overwrite"})
+    overwrite = _history(api, entry["uid"])[0]["sha"]
+
+    version = _version(api, entry["uid"], overwrite)
+
+    assert version["previous"]["values"] == version["values"] == {"count": 1}
+
+
+def test_a_manual_type_does_not_change_the_types_versions_are_compared_with(api, sources_root):
+    # 人工指定只影響欄位表：720 指定成 double 之後，目前來源比較用的型別仍從內容推斷（int），
+    # 和那一版同一套規則——否則會出現 720 → 720.0 這種假差異。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f10_manual.yaml", b"height: 720\n")
+    _specify(api, entry["uid"], "height", "float")
+    imported = _history(api, entry["uid"], "import")[0]["sha"]
+
+    version = _version(api, entry["uid"], imported)
+
+    assert (version["current"]["types"], version["types"]) == ({"height": "int"}, {"height": "int"})
+
+
+def test_an_integer_turned_decimal_in_the_content_is_a_type_change(api, sources_root):
+    # 內容裡的型別真的變了（目標被改成 720.0、再納入來源）：前後的型別不同，照樣算改了。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f10_decimal.yaml", b"height: 720\n")
+    pathlib.Path(entry["target"]).write_bytes(b"height: 720.0\n")
+    _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
+    adopted = _history(api, entry["uid"])[0]["sha"]
+
+    version = _version(api, entry["uid"], adopted)
+
+    assert (version["previous"]["types"], version["types"]) == (
+        {"height": "int"}, {"height": "float"},
+    )
+
+
+def test_a_number_turned_string_in_the_content_is_a_type_change(api, sources_root):
+    # 5 → "5"：顯示出來的字一樣，前後的型別不同（int 對 string），照樣算改了。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f10_string.yaml", b"count: 5\n")
+    pathlib.Path(entry["target"]).write_bytes(b'count: "5"\n')
+    _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
+    adopted = _history(api, entry["uid"])[0]["sha"]
+
+    version = _version(api, entry["uid"], adopted)
+
+    assert (version["previous"]["types"], version["types"]) == (
+        {"count": "int"}, {"count": "string"},
+    )
+
+
+def test_only_the_literal_changed_is_the_same_value_and_type(api, sources_root):
+    # TOML 的 1_000 與 1000 都是整數 1000：只有字面寫法不同，值與型別都相同
+    # （字面寫法是 F9 那一類，不算參數差異）。
+    _clear_drafts(api)
+    entry = _onboard_as(api, sources_root, "f10_literal.toml", b"n = 1_000\n", "toml")
+    pathlib.Path(entry["target"]).write_bytes(b"n = 1000\n")
+    _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
+    adopted = _history(api, entry["uid"])[0]["sha"]
+
+    version = _version(api, entry["uid"], adopted)
+
+    assert (version["previous"]["values"], version["previous"]["types"]) == (
+        version["values"], version["types"],
+    )
+
+
+def test_each_list_element_carries_its_own_type(api, sources_root):
+    # 清單元素在 types 裡整條共用一個合併後的型別（w[]）；leaf_types 每一格各自算：
+    # [1, 2.5] 的第 0 格是 int，改成 [1.0, 2.5] 後是 float——逐格比才看得出這一格真的改了。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f10_leaves.yaml", b"w: [1, 2.5]\n")
+    pathlib.Path(entry["target"]).write_bytes(b"w: [1.0, 2.5]\n")
+    _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
+    adopted = _history(api, entry["uid"])[0]["sha"]
+
+    version = _version(api, entry["uid"], adopted)
+
+    assert (version["previous"]["leaf_types"], version["leaf_types"]) == (
+        {"w": "list", "w[0]": "int", "w[1]": "float"},
+        {"w": "list", "w[0]": "float", "w[1]": "float"},
+    )
+
+def test_an_unreadable_previous_version_is_reported_not_called_the_first(api, sources_root, repo):
+    # 前一版讀不到或解析不了（有人繞過工具把來源改壞）：這一版照常回，previous 為 null 並說原因與
+    # 下一步——不能說成「這是第一筆」。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地改 config-repo 裡的來源複本並提交")
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f10_broken.yaml", b"count: 1\n")
+    source = _get(api, f"/api/configs/{entry['uid']}")["source"]
+    (pathlib.Path(repo) / source).write_text("count: [1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", repo, "add", "--", source], check=True)
+    subprocess.run(
+        ["git", "-C", repo, "-c", "user.name=dev", "-c", "user.email=d@e.x", "commit", "-q",
+         "-m", "手動改壞來源（不是本工具的紀錄）"],
+        check=True,
+    )
+    pathlib.Path(entry["target"]).write_bytes(b"count: 7\n")
+    _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
+    adopted = _history(api, entry["uid"])[0]["sha"]
+
+    version = _version(api, entry["uid"], adopted)
+
+    assert version["previous"] is None
+    assert "下一步" in version["previous_error"] and version["values"] == {"count": 7}
+
+
 # ── T9：解除納管（DELETE /api/configs/{uid}，#28）──────────────────────────────
 
 
