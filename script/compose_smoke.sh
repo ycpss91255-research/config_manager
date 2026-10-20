@@ -80,12 +80,15 @@ json() {
   python3 -c 'import json, sys; d = json.load(sys.stdin); print(eval(sys.argv[1]))' "$1"
 }
 
-# call <方法> <路徑> [JSON 內容] —— 帶著同一罐 cookie 打後端，回應印到 stdout。
+# call <方法> <路徑> [JSON 內容] —— 帶著同一罐 cookie 打後端，回應印到 stdout。取得了編輯權
+# （EDITING 有值）就帶上識別碼：寫入只接受持有編輯權的那個瀏覽器（F23）。
+EDITING=""
 call() {
   local method="$1" path="$2" body="${3:-}"
   local -a args=(--silent --show-error --fail-with-body --max-time 20
     --cookie "${WORK}/cookies" --cookie-jar "${WORK}/cookies" --request "${method}")
   [[ -n "${body}" ]] && args+=(--header 'content-type: application/json' --data "${body}")
+  [[ -n "${EDITING}" ]] && args+=(--header "x-cm-editing-token: ${EDITING}")
   curl "${args[@]}" "${API}${path}"
 }
 
@@ -204,6 +207,8 @@ survives_recreation() {
   docker exec "${BACKEND}" sh -c 'printf "max_vel: 0.8\n" > "$1" && mkdir -p "$2"' _ "${target}" "${extra}"
 
   call POST /api/session '{"name":"實測","email":"smoke@example.com","role":"developer"}' >/dev/null
+  # 取得編輯權（F23）：之後的寫入都帶它。容器重建後是新的程序、只做讀取，不必釋放。
+  EDITING="$(call POST /api/session/lock | json 'd["token"]')"
   call POST /api/allowed-roots "{\"prefix\":\"${extra}\"}" >/dev/null
   local entry uid
   entry="$(call POST /api/configs "{\"source_path\":\"${target}\",\"format\":\"yaml\",\"ambiguity_note\":\"\"}")"
