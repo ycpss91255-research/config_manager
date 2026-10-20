@@ -325,12 +325,13 @@ class ImportRequest:
 
 
 def _import(api: str, wanted: ImportRequest) -> int:
-    """納管一份 config：先以 `--name`／`--email` 設身分，再 POST 到與畫面相同的 /api/configs
-    （ADR-00000009）。
+    """納管一份 config：先以 `--name`／`--email` 設身分，取得編輯權，帶識別碼 POST 到與畫面相同的
+    /api/configs，做完（含失敗）釋放（ADR-00000009；F23：寫入只接受持有編輯權的那一方，CLI 和
+    頁面同一套規則——有人正在編輯時不繞過它）。
 
     偵測（format／歧義）是確認畫面的事；CLI 這一層要求 `--format` 明寫，與端點收
     「已確認的值」對齊，不在 CLI 自己重做一套偵測。身分屬於各自的 client（#288）：後端發的
-    瀏覽器票在 cookie 裡，兩個請求用同一個 cookie 罐，第二個才接得上第一個設的身分。
+    瀏覽器票在 cookie 裡，幾個請求用同一個 cookie 罐，後面的才接得上第一個設的身分。
     """
     jar = urllib.request.build_opener(
         urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
@@ -340,24 +341,53 @@ def _import(api: str, wanted: ImportRequest) -> int:
     try:
         with jar.open(_json_request(f"{api}/api/session", who), timeout=_TIMEOUT):
             pass
-        with jar.open(_json_request(f"{api}/api/configs", payload), timeout=_TIMEOUT) as response:
+        token = _take_editing(jar, api)
+    except urllib.error.HTTPError as error:
+        print(_import_refusal(error), file=sys.stderr)
+        return 1
+    except (OSError, ValueError, http.client.HTTPException) as error:
+        return _unreachable(f"{api}/api/session", error)
+    except (KeyError, TypeError) as error:
+        return _unexpected_response(api, error)
+    try:
+        return _onboard_holding(jar, api, payload, token)
+    finally:
+        _release_editing(jar, api, token)
+
+
+def _take_editing(jar: urllib.request.OpenerDirector, api: str) -> str:
+    """取得編輯權、回識別碼。上一個階段逾時清了草稿：CLI 一取得就把這個數字領走了，說出來。"""
+    request = urllib.request.Request(f"{api}/api/session/lock", data=b"", method="POST")
+    with jar.open(request, timeout=_TIMEOUT) as response:
+        held = json.loads(response.read().decode("utf-8"))
+    if not isinstance(held, dict):
+        # --api 指到別的服務：200 但不是物件。交給 _unexpected_response 說，不崩成 traceback。
+        raise TypeError(f"取得編輯權的回應不是物件：{type(held).__name__}")
+    if held.get("cleared_drafts"):
+        print(
+            f"注意：上一個編輯階段逾時釋放時，清除了 {held['cleared_drafts']} 份未進版的草稿"
+            "（不是這次納管造成的）。"
+        )
+    return str(held["token"])
+
+
+def _onboard_holding(
+    jar: urllib.request.OpenerDirector, api: str, payload: dict[str, str], token: str
+) -> int:
+    request = _json_request(f"{api}/api/configs", payload, token=token)
+    try:
+        with jar.open(request, timeout=_TIMEOUT) as response:
             entry = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
-        # 端點以結構化訊息回絕（白名單外、重複、未設身分）。把它的 detail 帶出來——
-        # 那是可行動的（欄位＋原因＋下一步），不是自己另編一句。
+        # 端點以結構化訊息回絕（白名單外、重複…）。把它的 detail 帶出來——那是可行動的
+        # （欄位＋原因＋下一步），不是自己另編一句。
         print(
             f"config_manager: 納管失敗（{_http_detail(error)}）。下一步：依上面的原因修正後重試",
             file=sys.stderr,
         )
         return 1
     except (OSError, ValueError, http.client.HTTPException) as error:
-        print(
-            f"config_manager: 讀不到 {api}/api/configs（{error}）。"
-            f"下一步：確認 backend 已啟動，或以 --api 指定它的位址",
-            file=sys.stderr,
-        )
-        return 1
-
+        return _unreachable(f"{api}/api/configs", error)
     try:
         print(f"已納管 {entry['ref']} ← {entry['target']}")
     except (KeyError, TypeError) as error:
@@ -365,12 +395,51 @@ def _import(api: str, wanted: ImportRequest) -> int:
     return 0
 
 
-def _json_request(url: str, payload: dict[str, str]) -> urllib.request.Request:
+def _release_editing(jar: urllib.request.OpenerDirector, api: str, token: str) -> None:
+    request = _json_request(f"{api}/api/session/lock", {"token": token}, method="DELETE")
+    try:
+        with jar.open(request, timeout=_TIMEOUT):
+            pass
+    except (OSError, ValueError, http.client.HTTPException) as error:
+        print(
+            f"config_manager: 編輯權沒能釋放（{error}）。"
+            "下一步：不必處理，約 150 秒後會因續期逾時自動收回；急著編輯的話稍候再重新整理頁面",
+            file=sys.stderr,
+        )
+
+
+def _import_refusal(error: urllib.error.HTTPError) -> str:
+    """設身分或取得編輯權被拒。有人正在編輯（409 held）時說出是誰、從何時開始；其餘照
+    `_http_detail` 同一套排成一行（body 只能讀一次，所以先讀出來）。"""
+    detail = _error_detail(error)
+    if isinstance(detail, dict) and detail.get("kind") == "held":
+        holder = detail.get("holder") or {}
+        return (
+            f"config_manager: 沒有納管：{holder.get('name')}（{holder.get('email')}）"
+            f"自 {detail.get('started_at')} 起正在編輯（一次只允許一個編輯階段）。"
+            "下一步：等對方關掉頁面或逾時釋放後再試；如果那是你自己在頁面上編輯，先關掉那個分頁"
+        )
+    reason = f"HTTP {error.code}" if detail is _UNREADABLE else _detail_line(detail)
+    return f"config_manager: 納管失敗（{reason}）。下一步：依上面的原因修正後重試"
+
+
+def _unreachable(url: str, error: Exception) -> int:
+    print(
+        f"config_manager: 讀不到 {url}（{error}）。"
+        "下一步：確認 backend 已啟動，或以 --api 指定它的位址",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _json_request(
+    url: str, payload: dict[str, str], *, token: str = "", method: str = "POST"
+) -> urllib.request.Request:
+    headers = {"content-type": "application/json"}
+    if token:
+        headers["x-cm-editing-token"] = token
     return urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"content-type": "application/json"},
-        method="POST",
+        url, data=json.dumps(payload).encode("utf-8"), headers=headers, method=method
     )
 
 
@@ -460,12 +529,26 @@ def _http_detail(error: urllib.error.HTTPError) -> str:
     偵測端點回 `{message, file, line}`（#195），檔案瀏覽的拒絕回 `{kind, message, ...}`（#13），
     納管／白名單維護等回字串。
     """
+    detail = _error_detail(error)
+    return f"HTTP {error.code}" if detail is _UNREADABLE else _detail_line(detail)
+
+
+_UNREADABLE = object()  # body 讀不出 detail
+
+
+def _error_detail(error: urllib.error.HTTPError) -> object:
+    """HTTPError body 裡的 detail；讀不出來回 `_UNREADABLE`。body 只能讀一次。"""
     try:
-        detail = json.loads(error.read().decode("utf-8"))["detail"]
+        return json.loads(error.read().decode("utf-8"))["detail"]
     except (OSError, ValueError, http.client.HTTPException, KeyError, TypeError):
         # TypeError：body 是合法 JSON 但非物件（null／陣列／字面值），["detail"] 下標會拋它。
         # 少了它，指到別的服務／代理層時 CLI 會崩成裸 traceback 而非回退狀態行（不變式 2）。
-        return f"HTTP {error.code}"
+        return _UNREADABLE
+
+
+def _detail_line(detail: object) -> str:
+    """把 detail 排成人看的一行：物件取 `message`（有行號帶行號），驗證錯誤清單逐筆
+    「欄位：訊息」。"""
     if isinstance(detail, dict):
         message = detail.get("message", detail)
         line = detail.get("line")

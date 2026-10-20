@@ -663,13 +663,22 @@ function apiFetch(url, init = {}) {
 }
 
 // 會寫入的請求（F23）：後端只接受持有編輯權的那個分頁——帶上這個分頁的編輯階段識別碼。還沒取得
-// （或已轉唯讀）就不帶，讓後端說原因；不送字串 "null"。
+// （或已轉唯讀）就不帶，讓後端說原因；不送字串 "null"。被擋的原因是「編輯權已失效」、而且送出時
+// 用的就是這個分頁現在的識別碼，才轉唯讀——晚到的舊回應不把剛換到的新識別碼清掉。回應照樣交回
+// 呼叫端，原因由各處在自己的位置顯示。
 const EDITING_HEADER = "X-CM-Editing-Token";
 
-function editFetch(url, init = {}) {
+async function editFetch(url, init = {}) {
   const headers = new Headers(init.headers || {});
-  if (sessionToken) headers.set(EDITING_HEADER, sessionToken);
-  return apiFetch(url, { ...init, headers });
+  const used = sessionToken;
+  if (used) headers.set(EDITING_HEADER, used);
+  const response = await apiFetch(url, { ...init, headers });
+  if (response.status === 410 && used && used === sessionToken) {
+    const payload = await response.clone().json().catch(() => null);
+    const detail = payload && payload.detail;
+    if (detail && detail.kind === "editing_lost") loseEditing(detail.message);
+  }
+  return response;
 }
 
 const UNGROUPED = "ungrouped";
@@ -3069,6 +3078,14 @@ function setReadonly(holder, startedAt, reason) {
   if (renewTimer) { clearInterval(renewTimer); renewTimer = null; }
 }
 
+// 這個分頁在不知情時失去了編輯權（被釋放後別人接手、逾時被收回…，F23）：轉唯讀，唯讀橫幅原樣
+// 寫出後端的原因（含下一步：重新整理）。可能是閒置逾時被退出了：馬上問後端，是的話回身分輸入頁。
+function loseEditing(reason) {
+  rememberToken(null);
+  setReadonly(null, null, reason);
+  if (idleTimer) idleTick(false);
+}
+
 function setEditing() {
   document.body.dataset.readonly = "false";
   readonlyBanner.hidden = true;
@@ -3081,7 +3098,19 @@ function identityLabel(identity) {
   return `${identity.name}・${ROLE_TEXT[identity.role] || identity.role}`;
 }
 
-async function acquireSession() {
+// 正在進行的那一次取得：取得還沒回來時又回到清單，不再送第二次——兩發一起接續，晚到的那一發
+// 會把先到的那一發剛換到的識別碼清掉，把自己鎖成唯讀（F23 審查）。
+let acquiring = null;
+
+function acquireSession() {
+  // 已經持有（回到清單時也會走到這裡）：不再接續——接續會換識別碼，還帶著舊識別碼、正在路上的
+  // 寫入就會被後端擋下（F23）。
+  if (sessionToken) return Promise.resolve();
+  if (!acquiring) acquiring = takeSession().finally(() => { acquiring = null; });
+  return acquiring;
+}
+
+async function takeSession() {
   // 重新整理：舊頁面卸載時已送出釋放，存著的識別碼可能還有效（釋放晚到）也可能已失效（釋放先到）。
   // 先試著接續（後端會換一個新的識別碼，晚到的舊釋放就動不了它）；失效了就往下重新取得。
   const token = storedToken();
@@ -3128,6 +3157,8 @@ async function renewSession(token, resuming = false) {
       return true;
     }
     if (response.status === 410) {
+      // 晚到的舊續期或舊接續（這段時間已經換了識別碼）：它失效不代表現在的這一個失效，不清掉。
+      if (resuming ? sessionToken && token !== sessionToken : token !== sessionToken) return false;
       rememberToken(null);
       // 使用中的階段失效（逾時被回收或已釋放）：明確轉唯讀並說明，不替使用者悄悄重新取得。
       if (!resuming) {

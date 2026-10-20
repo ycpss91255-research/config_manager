@@ -11,12 +11,12 @@ from __future__ import annotations
 from subprocess import CalledProcessError
 from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from config_manager.api.history import require_entry
 from config_manager.api.checks import checks_for
-from config_manager.api.browser import Browsers
+from config_manager.api.lock import Editing
 from config_manager.api.session import Identity
 from config_manager.api.shapes import as_problem, drafts_view
 from config_manager.core.drafts import Stage, adopt_draft
@@ -40,23 +40,22 @@ class ResolveInput(BaseModel):
     action: Literal["overwrite", "adopt", "adopt_draft"]
 
 
-def register_drift(
-    app: FastAPI, repo: str, browsers: Browsers, stage_box: dict[str, Stage]
-) -> None:
-    """把偏離處置與寫出修復的端點掛上 app。抽出來的理由同 `register_history`（C901）。"""
+def register_drift(app: FastAPI, repo: str, editing: Editing) -> None:
+    """把偏離處置與寫出修復的端點掛上 app。抽出來的理由同 `register_history`（C901）。兩支都經
+    `editing.write`：只接受持有編輯權的那個分頁（F23）。"""
 
     @app.post("/api/configs/{uid}/resolve")
-    def resolve_drift(
-        uid: str, payload: ResolveInput, identity: Identity | None = Depends(browsers.current)
-    ) -> dict[str, object]:
+    def resolve_drift(uid: str, payload: ResolveInput, request: Request) -> dict[str, object]:
         """處置一份偏離的 config（設計文件 §3.5.3、§5.4）。三個出口都由人選、都留下痕跡。"""
-        return _resolve(repo, identity, stage_box, uid, payload.action)
+        with editing.write(request, "處置偏離") as identity:
+            return _resolve(repo, identity, editing.stage_box, uid, payload.action)
 
     @app.post("/api/configs/{uid}/apply")
-    def apply_missing(uid: str) -> dict[str, object]:
+    def apply_missing(uid: str, request: Request) -> dict[str, object]:
         """未部署的寫出修復（設計文件 §5.4）：目標不存在時把來源寫到 target；repo 沒變、不留
         紀錄。目標已存在→409，不覆蓋。"""
-        return _apply_missing(repo, uid)
+        with editing.write(request, "寫出到目標"):
+            return _apply_missing(repo, uid)
 
 
 def _permissions_of(repo: str, uid: str) -> tuple[FileEntry, Permissions]:
@@ -91,14 +90,8 @@ def _target_text(entry: FileEntry) -> str | None:
 
 
 def _resolve(
-    repo: str, identity: Identity | None, stage_box: dict[str, Stage], uid: str, action: str
+    repo: str, identity: Identity, stage_box: dict[str, Stage], uid: str, action: str
 ) -> dict[str, object]:
-    if identity is None:
-        raise HTTPException(
-            status_code=409,
-            detail="尚未設定身分，無法處置偏離——處置會留下變更紀錄，需要作者。"
-            "下一步：先 POST /api/session 設定姓名與 email",
-        )
     entry, permissions = _permissions_of(repo, uid)
     roots = root_prefixes(repo)
     target_text = _target_text(entry)
@@ -189,8 +182,8 @@ def _latest(repo: str, uid: str) -> dict[str, object]:
 def _apply_missing(repo: str, uid: str) -> dict[str, object]:
     """寫出修復：目標**不存在**時把來源寫到 target，不留紀錄。
 
-    目標那個位置已經有東西（一般檔、目錄、符號連結）→ 409，一個位元組都不動。這條路不要身分、
-    不留紀錄，所以它不能覆蓋任何既有內容——那會是「無紀錄地改掉現場」。要以來源蓋過既有的檔案，
+    目標那個位置已經有東西（一般檔、目錄、符號連結）→ 409，一個位元組都不動。這條路不留紀錄
+    （但同樣只接受持有編輯權的分頁，F23），所以它不能覆蓋任何既有內容——那會是「無紀錄地改掉現場」。要以來源蓋過既有的檔案，
     走 `resolve` 的 `overwrite`（要身分、留一筆紀錄；介面上先確認）。「在不在」由寫入那一步
     自己原子地判定（`only_if_missing`），不是先看再寫。
     """

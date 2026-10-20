@@ -21,7 +21,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from config_manager.api.attributes import register_attributes
-from config_manager.api.browser import Browsers
 from config_manager.api.checks import checks_for
 from config_manager.api.drafts import register_drafts
 from config_manager.api.drift import register_drift
@@ -31,6 +30,7 @@ from config_manager.api.shapes import as_problem
 from config_manager.api.search import register_search
 from config_manager.api.lock import (
     EDITING_HEADER,
+    Editing,
     LockBox,
     register_session,
     require_permission,
@@ -207,7 +207,13 @@ def create_app(
     # 各瀏覽器宣告的身分（#288：身分屬於各自的瀏覽器，不是一份全域）。放在 app 上而不是一個模組層
     # 的全域——後者會讓同一個行程裡起兩個 app 互相看見對方的身分。部署模式下閒置逾時會退出並
     # 釋放它持有的階段（#48）。
-    browsers = seat_browsers(stage_box, lock_box, timeouts.idle if mode == DEPLOYMENT else None)
+    # 寫入的門檻（F23）：會寫入的路由只接受持有編輯權的那個分頁。身分表放在它裡面
+    # （`editing.browsers`）。
+    editing = Editing(
+        seat_browsers(stage_box, lock_box, timeouts.idle if mode == DEPLOYMENT else None),
+        stage_box,
+        lock_box,
+    )
 
     @app.get("/api/configs")
     def list_configs() -> list[dict[str, object]]:
@@ -221,11 +227,10 @@ def create_app(
         return [_as_row(entry, state) for entry, state in scan(repo)]
 
     @app.post("/api/configs")
-    def onboard_config(
-        payload: ConfigInput, identity: Identity | None = Depends(browsers.current)
-    ) -> dict[str, object]:
+    def onboard_config(payload: ConfigInput, request: Request) -> dict[str, object]:
         """納管新檔案（設計文件 §3.5.3）。"""
-        return _onboard_config(repo, root_prefixes(repo), identity, payload)
+        with editing.write(request, "納管") as identity:
+            return _onboard_config(repo, root_prefixes(repo), identity, payload)
 
     @app.get("/api/configs/{uid}")
     def config_detail(uid: str) -> dict[str, object]:
@@ -240,7 +245,7 @@ def create_app(
 
     @app.get("/api/candidate-count")
     def candidate_count(
-        prefix: str, identity: Identity | None = Depends(browsers.current)
+        prefix: str, identity: Identity | None = Depends(editing.browsers.current)
     ) -> dict[str, object]:
         """數一個前綴底下有幾個可納管檔（§7.9 新增流程的即時預覽，#206）。
 
@@ -255,15 +260,15 @@ def create_app(
         return _inspect(root_prefixes(repo), payload)
 
     _register_mode(app, mode)
-    _register_allowed_roots(app, repo, browsers)
-    register_drafts(app, repo, browsers, stage_box)
-    register_history(app, repo, browsers, stage_box)
-    _register_unmanage(app, repo, browsers, stage_box)
-    register_drift(app, repo, browsers, stage_box)
+    _register_allowed_roots(app, repo, editing)
+    register_drafts(app, repo, editing)
+    register_history(app, repo, editing)
+    _register_unmanage(app, repo, editing)
+    register_drift(app, repo, editing)
     register_search(app, repo)
-    register_schema(app, repo, browsers)
-    register_attributes(app, repo, browsers)
-    register_session(app, browsers, stage_box, lock_box)
+    register_schema(app, repo, editing)
+    register_attributes(app, repo, editing)
+    register_session(app, editing.browsers, stage_box, lock_box)
     return app
 
 
@@ -285,31 +290,22 @@ def _register_mode(app: FastAPI, mode: str) -> None:
         return {"mode": mode}
 
 
-def _register_unmanage(
-    app: FastAPI, repo: str, browsers: Browsers, stage_box: dict[str, Stage]
-) -> None:
+def _register_unmanage(app: FastAPI, repo: str, editing: Editing) -> None:
     """解除納管的端點（§3.5.3 表上既有，#28）。抽出來的理由同 `_register_allowed_roots`（C901）。"""
 
     @app.delete("/api/configs/{uid}")
-    def unmanage_config(
-        uid: str, identity: Identity | None = Depends(browsers.current)
-    ) -> dict[str, object]:
+    def unmanage_config(uid: str, request: Request) -> dict[str, object]:
         """解除納管：從清單檔移除、來源複本自 repo 拿掉、記一筆 unmanage；**不刪 target**
         （§5.5）。"""
-        return _unmanage_config(repo, identity, stage_box, uid)
+        with editing.write(request, "解除納管") as identity:
+            return _unmanage_config(repo, identity, editing.stage_box, uid)
 
 
 def _unmanage_config(
-    repo: str, identity: Identity | None, stage_box: dict[str, Stage], uid: str
+    repo: str, identity: Identity, stage_box: dict[str, Stage], uid: str
 ) -> dict[str, object]:
     """解除納管的邏輯（#28）：需要身分（紀錄要作者）、這份有未進版草稿先擋（預設落向安全），
     再交給 `io/unmanage`。回被解除的條目，介面據此從樹上拿掉它。"""
-    if identity is None:
-        raise HTTPException(
-            status_code=409,
-            detail="尚未設定身分，無法解除納管——變更紀錄需要作者。"
-            "下一步：先 POST /api/session 設定姓名與 email",
-        )
     entry = require_entry(read_config_list(repo), uid)
     if uid in stage_box["stage"].drafts:
         raise HTTPException(
@@ -327,11 +323,11 @@ def _unmanage_config(
     return _as_entry(removed)
 
 
-def _register_allowed_roots(app: FastAPI, repo: str, browsers: Browsers) -> None:
+def _register_allowed_roots(app: FastAPI, repo: str, editing: Editing) -> None:
     """把白名單維護的三個端點（檢視／新增／移除，§7.9）掛上 app。
 
     抽出來讓 `create_app` 不因這一組路由而過度複雜（C901）；三者同屬白名單維護、放一起讀。
-    身分由 `browsers.current` 取（這個瀏覽器宣告的那個），與 `create_app` 裡其餘路由一致。
+    新增與移除經 `editing.write`：只接受持有編輯權的那個分頁，身分是它的（F23）。
     """
 
     @app.get("/api/allowed-roots")
@@ -345,18 +341,16 @@ def _register_allowed_roots(app: FastAPI, repo: str, browsers: Browsers) -> None
         return _allowed_roots_view(repo)
 
     @app.post("/api/allowed-roots")
-    def add_root(
-        payload: AllowedRootInput, identity: Identity | None = Depends(browsers.current)
-    ) -> dict[str, object]:
+    def add_root(payload: AllowedRootInput, request: Request) -> dict[str, object]:
         """把一個路徑前綴加進白名單（§7.9, #202）。僅開發者可用；記下是誰、何時加的。"""
-        return _add_allowed_root(repo, identity, payload)
+        with editing.write(request, "新增白名單") as identity:
+            return _add_allowed_root(repo, identity, payload)
 
     @app.delete("/api/allowed-roots")
-    def remove_root(
-        payload: RemoveRootInput, identity: Identity | None = Depends(browsers.current)
-    ) -> dict[str, object]:
+    def remove_root(payload: RemoveRootInput, request: Request) -> dict[str, object]:
         """把一個路徑前綴從白名單移除（§7.9, #15）。僅開發者可用；確認在前，回更新後的清單。"""
-        return _remove_allowed_root(repo, identity, payload)
+        with editing.write(request, "移除白名單") as identity:
+            return _remove_allowed_root(repo, identity, payload)
 
 
 def _reject_nul(value: str, field: str) -> None:
@@ -371,18 +365,12 @@ def _reject_nul(value: str, field: str) -> None:
 
 
 def _onboard_config(
-    repo: str, roots: tuple[str, ...], identity: Identity | None, payload: ConfigInput
+    repo: str, roots: tuple[str, ...], identity: Identity, payload: ConfigInput
 ) -> dict[str, object]:
     """納管新檔案的邏輯。收確認畫面已確認過的請求（來源路徑、format、歧義確認），呼叫
     `io/onboard`。偵測（format／型別／歧義）不在這裡——那在確認畫面就做完了（#12 的 D4、
-    #195）。抽成模組層函式，端點的 closure 只負責接線，`create_app` 才不會愈長愈複雜。"""
-    if identity is None:
-        # 納管會產生一筆變更紀錄，需要作者。沒有身分就無從署名——先設身分。
-        raise HTTPException(
-            status_code=409,
-            detail="尚未設定身分，無法納管。下一步：先 POST /api/session 設定姓名與 email",
-        )
-
+    #195）。抽成模組層函式，端點的 closure 只負責接線，`create_app` 才不會愈長愈複雜。
+    作者是持有編輯權的那個分頁的身分（寫入的門檻在 `editing.write`，F23）。"""
     _reject_nul(payload.source_path, "source_path")
     request = OnboardRequest(
         source_path=payload.source_path,

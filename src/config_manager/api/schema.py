@@ -16,11 +16,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from subprocess import CalledProcessError
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
-from config_manager.api.lock import require_permission
-from config_manager.api.browser import Browsers
+from config_manager.api.lock import Editing, require_permission
 from config_manager.api.session import Identity
 from config_manager.core.errors import ManualTypeError, SyntaxParse, TypeNotSpecified
 from config_manager.core.manual_types import manual_types
@@ -47,23 +46,21 @@ class TypeInput(BaseModel):
     type: str | None = None
 
 
-def register_schema(app: FastAPI, repo: str, browsers: Browsers) -> None:
-    """把 schema 骨架的端點掛上 app。"""
+def register_schema(app: FastAPI, repo: str, editing: Editing) -> None:
+    """把 schema 骨架與人工指定型別的端點掛上 app。都經 `editing.write`（F23）。"""
 
     @app.post("/api/configs/{uid}/schema")
-    def draft_config_schema(
-        uid: str, identity: Identity | None = Depends(browsers.current)
-    ) -> dict[str, object]:
+    def draft_config_schema(uid: str, request: Request) -> dict[str, object]:
         """產生 schema 骨架：存進 `.schemas/`、條目記下路徑、記一筆 meta。回 uid 與 schema 路徑。"""
-        return _draft(repo, identity, uid)
+        with editing.write(request, "產生 schema") as identity:
+            return _draft(repo, identity, uid)
 
     @app.post("/api/configs/{uid}/types")
-    def specify_parameter_type(
-        uid: str, payload: TypeInput, identity: Identity | None = Depends(browsers.current)
-    ) -> dict[str, object]:
+    def specify_parameter_type(uid: str, payload: TypeInput, request: Request) -> dict[str, object]:
         """人工指定一個參數的型別（#285）；`type` 為 null 是清除那個指定。寫進 schema、
         記一筆 meta。"""
-        return _specify(repo, identity, uid, payload)
+        with editing.write(request, "指定型別") as identity:
+            return _specify(repo, identity, uid, payload)
 
 
 def _draft(repo: str, identity: Identity | None, uid: str) -> dict[str, object]:
