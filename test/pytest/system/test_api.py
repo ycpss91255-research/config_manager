@@ -2799,7 +2799,8 @@ _WRITE_ROUTES = {
 }
 # 不寫入的 POST、編輯階段自己的端點：不看識別碼。
 _NOT_WRITE_ROUTES = {
-    ("POST", "/api/inspect"), ("POST", "/api/session"), ("POST", "/api/session/activity"),
+    ("POST", "/api/inspect"), ("POST", "/api/session"), ("DELETE", "/api/session"),
+    ("POST", "/api/session/activity"),
     ("POST", "/api/session/lock"), ("DELETE", "/api/session/lock"),
     ("POST", "/api/session/lock/renew"), ("POST", "/api/session/lock/release"),
 }
@@ -2985,6 +2986,263 @@ def test_after_a_renew_timeout_the_old_token_cannot_write(api, sources_root):
         _set_session(api)
 
     assert (refused, drafts) == ((_GONE, "editing_lost"), 0)
+
+
+# ── T9：退出（DELETE /api/session，F3）─────────────────────────────────────────────
+# 只影響送請求的這個瀏覽器；持有編輯權時當場釋放並清掉目前全部共用草稿；有東西會丟先確認。
+# 每則收尾都把 `_browser` 的身分設回來（之後的規格要用）。
+
+
+def _exit(api, opener=None, **body):
+    """以 `opener`（預設 `_browser`）退出；回 (狀態碼, 回應或 detail)。"""
+    request = urllib.request.Request(
+        f"{api}/api/session", data=json.dumps(body).encode("utf-8"),
+        headers={"content-type": "application/json"}, method="DELETE",
+    )
+    try:
+        with (opener or _browser).open(request, timeout=_TIMEOUT) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        return error.code, _detail(error)
+
+
+def test_exiting_ends_this_browsers_identity(api):
+    _set_session(api)
+    try:
+        _exit(api)
+        after = (_get(api, "/api/session"), _get(api, "/api/session/idle").get("left"))
+    finally:
+        _set_session(api)
+
+    assert after == (None, True)
+
+
+def test_exiting_while_holding_releases_and_clears_the_drafts_without_telling_the_next(
+    api, sources_root
+):
+    # 暫行規則：持有者確認退出 → 釋放、清掉目前全部共用草稿；下一個取得的人不被告知清了幾份
+    # （那句話只用在逾時）。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f3_exit_holding.yaml", b"count: 1\n")
+    session = _lock(api)
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"])
+    try:
+        code, left = _exit(api, confirmed=True, token=session["token"])
+        state = (_lock(api, "GET")["held"], _get(api, "/api/drafts")["count"])
+        # 下一個取得的人緊接著取得：中間不經過會先取得編輯權的輔助函式（它們會把待回報的份數領走）。
+        _set_session(api)
+        taken = _lock(api)
+        _lock(api, "DELETE", payload={"token": taken["token"]})
+    finally:
+        # 修正前退出什麼都沒做：收尾把階段與草稿放掉，不留給之後的規格。
+        _lock(api, "DELETE", payload={"token": session["token"]})
+        _set_session(api)
+        _clear_drafts(api)
+
+    assert (code, left, state, taken["cleared_drafts"]) == (
+        200, {"left": True, "released": True, "cleared_drafts": 1}, (False, 0), 0,
+    )
+
+
+@pytest.mark.parametrize("risk", ["drafts", "unsaved", "other_tab"])
+def test_exiting_with_something_to_lose_asks_first_and_changes_nothing(
+    api, sources_root, risk
+):
+    # 有東西會丟而沒帶 confirmed：持有時有草稿、區塊裡有沒存的改動、或持有的是同一個瀏覽器的另一個
+    # 分頁（這個分頁沒有識別碼）→ 409 confirm_required，身分、編輯權、草稿都沒動。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, f"f3_exit_risk_{risk}.yaml", b"count: 1\n")
+    session = _lock(api)
+    body = {"token": session["token"]}
+    if risk == "drafts":
+        _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"])
+    elif risk == "unsaved":
+        body["unsaved"] = True
+    else:
+        body = {}
+    try:
+        code, detail = _exit(api, **body)
+        kept = (
+            _get(api, "/api/session") is not None,
+            _lock(api, "GET")["held"],
+            _get(api, "/api/drafts")["count"],
+        )
+    finally:
+        _lock(api, "DELETE", payload={"token": session["token"]})
+        _set_session(api)
+        _clear_drafts(api)
+
+    asked = isinstance(detail, dict) and detail.get("kind") == "confirm_required" and bool(
+        detail.get(risk)
+    )
+    assert (code, asked, kept) == (_CONFLICT, True, (True, True, 1 if risk == "drafts" else 0))
+
+
+def test_exiting_does_not_touch_another_browsers_editing_session(api, sources_root):
+    # 只影響送請求的瀏覽器：另一個瀏覽器持有時，它的識別碼仍有效、草稿份數不變。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f3_exit_other.yaml", b"count: 1\n")
+    other = _another_browser()
+    _request_as(other, api, "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
+    theirs, _ = _open_json(other, f"{api}/api/session/lock", "POST", None)
+    _open_json(
+        other, f"{api}/api/drafts", "POST", {"uid": entry["uid"], "edits": {"count": 2}},
+        token=theirs["token"],
+    )
+    try:
+        code, left = _exit(api, confirmed=True)
+        renewed = _refusal(lambda: _open_json(
+            other, f"{api}/api/session/lock/renew", "POST", {"token": theirs["token"]}
+        ))
+        drafts = _get(api, "/api/drafts")["count"]
+    finally:
+        _open_json(other, f"{api}/api/drafts", "DELETE", None, token=theirs["token"])
+        _open_json(other, f"{api}/api/session/lock", "DELETE", {"token": theirs["token"]})
+        _set_session(api)
+
+    released = left.get("released") if isinstance(left, dict) else left
+    assert (code, released, renewed, drafts) == (200, False, (200, None), 1)
+
+
+def test_exiting_without_an_identity_still_succeeds(api):
+    fresh = _another_browser()
+
+    code, left = _exit(api, fresh)
+
+    assert (code, left) == (200, {"left": True, "released": False, "cleared_drafts": 0})
+
+
+def test_after_exiting_another_identity_takes_the_session_at_once(api):
+    # 換人換角色：退出 → 以另一個身分進入 → 立刻取得編輯權，不必等、不必換瀏覽器。
+    _set_session(api)
+    session = _lock(api)
+    try:
+        _exit(api, confirmed=True, token=session["token"])
+        _post(api, "/api/session", {"name": "林巡檢", "email": "lin@example.com", "role": "user"})
+        taken = _lock(api)
+        _lock(api, "DELETE", payload={"token": taken["token"]})
+    finally:
+        _lock(api, "DELETE", payload={"token": session["token"]})  # 修正前退出沒放掉
+        _set_session(api)
+
+    assert taken["holder"]["name"] == "林巡檢"
+
+
+def test_the_idle_status_tells_an_exit_from_an_unknown_ticket(api):
+    # 已退出（left）與「後端沒有這張票的紀錄」（例如服務重啟過）分得開；都不是閒置逾時。
+    exited, unknown = _another_browser(), _another_browser()
+    _request_as(exited, api, "/api/session", {"name": "王小美", "email": "mei@example.com"})
+    _exit(api, exited)
+
+    seen = [
+        _request_as(browser, api, "/api/session/idle", method="GET")[0]
+        for browser in (exited, unknown)
+    ]
+
+    assert [(view.get("left"), view["timed_out"]) for view in seen] == [
+        (True, False), (False, False),
+    ]
+
+
+def _draft_write(api, entry, token):
+    """以 `token` 存一份草稿；回 (狀態碼, kind)，沒被擋是 (200, None)。"""
+    return _refusal(
+        lambda: _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, token)
+    )
+
+
+def test_after_exiting_a_write_without_a_token_is_refused_for_lack_of_an_identity(
+    api, sources_root
+):
+    # 票留著，但它上面已經沒有身分：需要作者的寫入被擋在「先設身分」。
+    entry = _onboard(api, sources_root, "f3_exit_no_identity.yaml", b"count: 1\n")
+    try:
+        _exit(api)
+        refused = _draft_write(api, entry, None)
+    finally:
+        _set_session(api)
+
+    assert refused == (_CONFLICT, None)
+
+
+def test_after_exiting_the_old_tabs_token_can_no_longer_write(api, sources_root):
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f3_exit_old_token.yaml", b"count: 1\n")
+    session = _lock(api)
+    try:
+        _exit(api, confirmed=True, token=session["token"])
+        refused = _draft_write(api, entry, session["token"])
+        drafts = _get(api, "/api/drafts")["count"]
+    finally:
+        _lock(api, "DELETE", payload={"token": session["token"]})
+        _set_session(api)
+        _clear_drafts(api)
+
+    assert (refused, drafts) == ((_GONE, "editing_lost"), 0)
+
+
+def test_entering_again_in_the_same_browser_does_not_revive_the_old_tabs_token(
+    api, sources_root
+):
+    # 同一個瀏覽器的分頁共用一張票：重新進入之後，舊分頁不會因此恢復寫入（新的識別碼才行）。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f3_exit_reenter.yaml", b"count: 1\n")
+    old = _lock(api)
+    try:
+        _exit(api, confirmed=True, token=old["token"])
+        _set_session(api)
+        new = _lock(api)
+        try:
+            outcome = tuple(_draft_write(api, entry, held["token"]) for held in (old, new))
+        finally:
+            _lock(api, "DELETE", payload={"token": new["token"]})
+    finally:
+        _lock(api, "DELETE", payload={"token": old["token"]})  # 修正前退出沒放掉
+        _set_session(api)
+        _clear_drafts(api)
+
+    assert outcome == ((_GONE, "editing_lost"), (200, None))
+
+
+def test_exiting_while_nobody_holds_the_session_leaves_the_drafts_alone(api, sources_root):
+    # 草稿只有一份共用的、不記是誰存的：編輯權空著時退出不清、也不必確認（使用者 10/20 定案 b）。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f3_exit_free.yaml", b"count: 1\n")
+    session = _lock(api)
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"])
+    _lock(api, "DELETE", payload={"token": session["token"]})  # 正常釋放：草稿留著
+    try:
+        code, left = _exit(api)
+        drafts = _get(api, "/api/drafts")["count"]
+    finally:
+        _set_session(api)
+        _clear_drafts(api)
+
+    assert (code, left, drafts) == (
+        200, {"left": True, "released": False, "cleared_drafts": 0}, 1,
+    )
+
+
+def test_exiting_after_the_idle_timeout_says_it_timed_out(api, sources_root):
+    # 這個瀏覽器其實已經閒置逾時（例如筆電睡過頭、頁面還沒問到）才按退出：逾時那一刻已釋放並清掉
+    # 草稿（照逾時的規則）。退出照實說是逾時——不說成「原本沒有編輯權」，也不記成已退出。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip(_IN_PLACE_ONLY)
+    entry = _onboard(api, sources_root, "f3_exit_timed_out.yaml", b"count: 1\n")
+    _clear_drafts(api)
+    with _later(api) as (session, ahead):
+        _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"])
+        ahead(10)
+
+        code, left = _exit(api, token=session["token"])
+        idle = _get(api, "/api/session/idle")
+    taken = _lock(api)  # 逾時清掉的份數照規則留給下一個取得的人；領走，不留給之後的規格
+    _lock(api, "DELETE", payload={"token": taken["token"]})
+
+    assert (code, left, (idle["timed_out"], idle.get("left"))) == (
+        200, {"left": True, "released": False, "cleared_drafts": 0, "timed_out": True},
+        (True, False),
+    )
 
 
 # ── T9：檢查編輯權與寫入是一段，和釋放、接手排隊；時間不倒退（F23）──────────────────────
@@ -3422,7 +3680,7 @@ def test_development_mode_never_idles_out(api_developing):
         renewed = _lock(api_developing, path="/api/session/lock/renew", payload={"token": token})
 
     assert status == dict.fromkeys(("timeout_seconds", "warn_seconds", "remaining_seconds")) | {
-        "timed_out": False
+        "timed_out": False, "left": False,
     }
     assert still["name"] == "陳小明"
     assert renewed["holder"]["name"] == "陳小明"

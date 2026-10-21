@@ -5145,6 +5145,334 @@ def test_a_late_refusal_of_an_older_renew_does_not_clear_the_current_token(open_
     )
 
 
+# ── 退出（F3）──────────────────────────────────────────────────────────────────────
+_EXIT = "[data-testid='exit']"
+_LEFT_NOTICE = "[data-testid='session-left']"
+
+
+def _holding_page(open_page, **options):
+    """一個持有編輯權的頁面（取得完成；進版鈕在取得之前就看得到，不能只等它）。"""
+    page = _enter_identity(open_page(**options))
+    page.wait_for_function("() => Boolean(sessionToken)")
+    return page
+
+
+def _exit_and_confirm(page):
+    page.click(_EXIT)
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+
+
+def _cannot_announce(page):
+    """讓這一頁存不進 localStorage（例如私密視窗）：它退出時通知送不出去，其他分頁走退回的那條路
+    ——下一次跟後端溝通時才知道。只換這一頁自己的 setItem，其他分頁照常。"""
+    page.evaluate(
+        "() => { Storage.prototype.setItem = () => { throw new Error('QuotaExceededError'); }; }"
+    )
+
+
+def test_the_exit_button_is_in_the_header_even_while_read_only(open_page, listing):
+    listing("a")
+    holder = _holding_page(open_page)
+    viewer = open_page(same_browser_as=holder)
+    viewer.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+
+    assert (holder.is_visible(_EXIT), viewer.is_visible(_EXIT)) == (True, True)
+
+
+def test_exiting_with_nothing_to_lose_goes_straight_to_the_identity_page(open_page, listing, api):
+    listing("a")
+    page = _holding_page(open_page)
+
+    page.click(_EXIT)
+
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    notice = page.inner_text(_LEFT_NOTICE)
+    assert ("已退出" in notice, _api_json(api, "GET", "/api/session/lock")["held"]) == (True, False)
+
+
+def test_exiting_with_a_draft_asks_first_and_cancelling_changes_nothing(open_page, repo):
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+    page.wait_for_function("() => Boolean(sessionToken)")
+    page.fill(_param_value("count"), "4")
+    _save(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+
+    page.click(_EXIT)
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    body = page.inner_text("[data-testid='confirm-body']")
+    page.click("[data-testid='confirm-cancel']")
+
+    assert ("1 份" in body, page.is_visible("[data-testid='config-tree']")) == (True, True)
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (1)"
+
+
+def test_exiting_with_only_unsaved_edits_says_those_will_be_lost(open_page, repo):
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+    page.wait_for_function("() => Boolean(sessionToken)")
+    page.fill(_param_value("count"), "4")  # 沒有按儲存
+
+    page.click(_EXIT)
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+
+    body = page.inner_text("[data-testid='confirm-body']")
+    assert ("還沒儲存的改動將遺失" in body, "0 份" in body) == (True, False)
+    page.click("[data-testid='confirm-cancel']")
+
+
+def test_exiting_from_a_read_only_tab_warns_about_the_tab_that_is_editing(open_page, listing):
+    listing("a")
+    holder = _holding_page(open_page)
+    viewer = open_page(same_browser_as=holder)
+    viewer.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+
+    viewer.click(_EXIT)
+    viewer.wait_for_selector("[data-testid='confirm-dialog'][open]")
+
+    assert "另一個分頁正在編輯" in viewer.inner_text("[data-testid='confirm-body']")
+    viewer.click("[data-testid='confirm-cancel']")
+
+
+def test_confirming_the_exit_clears_the_drafts_and_says_how_many(open_page, repo, api):
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+    page.wait_for_function("() => Boolean(sessionToken)")
+    page.fill(_param_value("count"), "4")
+    _save(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+
+    _exit_and_confirm(page)
+
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    notice = page.inner_text(_LEFT_NOTICE)
+    assert ("清除了 1 份" in notice, _api_json(api, "GET", "/api/drafts")["count"]) == (True, 0)
+
+
+def test_after_exiting_in_development_mode_only_the_role_is_asked_again(open_page, listing):
+    # 開發模式：姓名、Email 留在表單上，只要重選角色（換角色不必重打身分，§7.8.1）。
+    listing("a")
+    page = _holding_page(open_page, mode="development")
+
+    page.click(_EXIT)
+
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    filled = (page.input_value("[data-testid='identity-name']"),
+              page.input_value("[data-testid='identity-email']"))
+    assert filled == (_NAME, _EMAIL)
+
+
+def test_after_exiting_in_deployment_mode_the_form_is_blank(open_page, listing):
+    # 部署模式：現場多人共用——退出後不留上一個人的姓名與 Email。
+    listing("a")
+    page = _holding_page(open_page)
+
+    page.click(_EXIT)
+
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    filled = (page.input_value("[data-testid='identity-name']"),
+              page.input_value("[data-testid='identity-email']"))
+    assert filled == ("", "")
+
+
+def test_after_exiting_the_workspace_is_empty_and_a_developer_can_edit_at_once(
+    open_page, repo
+):
+    # 換角色：退出 → 以開發者進入 → 立刻能編輯；舊角色打開的區塊不留著。
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+    page.wait_for_function("() => Boolean(sessionToken)")
+    page.click(_EXIT)
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+
+    page.click("[data-testid='role-toggle'] button[data-role='developer']")
+    _enter_identity(page)
+    page.wait_for_function("() => Boolean(sessionToken)")
+
+    editing = page.get_attribute("body", "data-readonly")
+    whitelist = page.is_visible("[data-testid='open-whitelist']")
+    assert page.query_selector(f"[data-testid='panel-{_PARAM_UID}']") is None
+    assert (editing, whitelist) == ("false", True)
+
+
+def test_a_failed_exit_stays_on_the_main_page_with_the_reason(open_page, listing):
+    listing("a")
+    page = _holding_page(open_page)
+    page.route("**/api/session", lambda route: route.fulfill(
+        status=500, content_type="application/json",
+        body=json.dumps({"detail": "服務暫時出錯。下一步：稍後再試"}),
+    ) if route.request.method == "DELETE" else route.continue_())
+
+    page.click(_EXIT)
+    page.wait_for_selector("[data-testid='exit-error']", state="visible")
+
+    assert ("服務暫時出錯" in page.inner_text("[data-testid='exit-error']"),
+            page.is_visible("[data-testid='config-tree']")) == (True, True)
+
+
+def test_another_tab_of_the_same_browser_learns_this_browser_has_exited(open_page, listing):
+    # 持有的分頁沒收到另一個分頁的退出通知：下一次跟後端溝通（這裡直接叫續期）就回到身分輸入頁，
+    # 說明是退出，不是閒置逾時。
+    listing("a")
+    holder = _holding_page(open_page)
+    viewer = open_page(same_browser_as=holder)
+    viewer.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+    _cannot_announce(viewer)
+    _exit_and_confirm(viewer)
+    viewer.wait_for_selector("[data-testid='identity-form']", state="visible")
+
+    holder.evaluate("renewSession(sessionToken)")
+
+    holder.wait_for_selector("[data-testid='identity-form']", state="visible")
+    told = "已退出" in holder.inner_text(_LEFT_NOTICE)
+    assert (told, holder.is_hidden("[data-testid='session-timeout']")) == (True, True)
+
+
+def test_the_other_tabs_of_this_browser_leave_at_once_when_one_exits(open_page, listing):
+    # 一個分頁按了退出，同一個瀏覽器的其他分頁立刻一起回到身分輸入頁（使用者 10/21 選定），不等續期
+    # 或閒置輪詢。唯讀分頁沒有識別碼、不續期；它的閒置輪詢也停掉（開發模式本來就沒有）。
+    listing("a")
+    holder = _holding_page(open_page)
+    viewer = open_page(same_browser_as=holder)
+    viewer.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+    viewer.wait_for_function("() => idleTimer !== null")
+    viewer.evaluate("stopIdleWatch()")
+
+    holder.click(_EXIT)
+
+    viewer.wait_for_selector("[data-testid='identity-form']", state="visible", timeout=5000)
+    assert "已退出" in viewer.inner_text(_LEFT_NOTICE)
+
+
+def test_a_ticket_the_service_no_longer_knows_is_not_reported_as_an_idle_timeout(
+    open_page, listing
+):
+    # 部署模式：後端沒有這張票的紀錄（例如服務重新啟動過）——說身分已失效，不說成閒置逾時。
+    listing("a")
+    page = _holding_page(open_page)
+    page.wait_for_function("() => idleTimer !== null")  # 部署模式的閒置監看已經開始
+    page.context.clear_cookies()
+
+    page.evaluate("idleTick(false)")
+
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    told = "身分已失效" in page.inner_text(_LEFT_NOTICE)
+    assert (told, page.is_hidden("[data-testid='session-timeout']")) == (True, True)
+
+
+def test_after_exiting_in_development_mode_an_identity_from_an_earlier_load_is_kept(
+    open_page, listing
+):
+    # 這一頁載入時身分就是現成的（重新整理過、或第二個分頁）：表單上沒打過字，也留著姓名與 Email。
+    listing("a")
+    page = open_page(identity=_REMEMBERED, mode="development")
+    page.wait_for_function("() => Boolean(sessionToken)")
+
+    page.click(_EXIT)
+
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    filled = (page.input_value("[data-testid='identity-name']"),
+              page.input_value("[data-testid='identity-email']"))
+    assert filled == (_NAME, _EMAIL)
+
+
+def test_the_exit_button_cannot_be_pressed_while_an_action_is_running(open_page, repo):
+    # 進版跑到一半就退出，會釋放它正在用的編輯權、清掉它正在進版的草稿。
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    _held, release = _hold(page, "**/api/promote")
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector("[data-testid='promote-all'][aria-busy='true']")
+    while_running = page.is_disabled(_EXIT)
+
+    release()
+
+    page.wait_for_selector("[data-testid='promote-all']:not([aria-busy='true'])")
+    assert (while_running, page.is_disabled(_EXIT)) == (True, False)
+
+
+def test_a_panel_that_arrives_after_exiting_is_not_put_back_into_the_workspace(open_page, repo):
+    # 區塊的內容還在路上就退出：晚到的回應不能把上一個身分的區塊放回工作區。
+    _listing_with(repo, "count: 3\n")
+    page = _holding_page(open_page)
+    _held, release = _hold(page, f"**/api/configs/{_PARAM_UID}", method="GET")
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector("[data-testid='panel-loading']")
+    page.click(_EXIT)
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+
+    release()
+    page.wait_for_timeout(500)
+
+    assert page.query_selector("[data-testid='workspace'] [data-uid]") is None
+
+
+def test_an_open_confirmation_closes_when_the_page_returns_to_the_identity_form(open_page, repo):
+    # 確認框還開著，同一個瀏覽器的另一個分頁先退出了（通知到了這一頁）：回到身分輸入頁時確認框一起
+    # 關掉——留著的話，之後按下去會以「已確認」送出，釋放之後才進來的人的編輯權、清掉他的草稿。
+    _listing_with(repo, "count: 3\n")
+    holder = _open_panel(open_page())
+    holder.wait_for_function("() => Boolean(sessionToken)")
+    holder.fill(_param_value("count"), "4")
+    _save(holder)
+    holder.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    viewer = open_page(same_browser_as=holder)
+    viewer.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+    holder.click(_EXIT)
+    holder.wait_for_selector("[data-testid='confirm-dialog'][open]")
+
+    _exit_and_confirm(viewer)
+
+    holder.wait_for_selector("[data-testid='identity-form']", state="visible")
+    assert holder.is_hidden("[data-testid='confirm-dialog']")
+
+
+def test_a_write_refused_after_another_tab_exited_says_it_was_not_written(open_page, repo, api):
+    # 另一個分頁退出了、這個分頁沒收到通知就按儲存：後端擋下（F23），回到身分輸入頁時說是退出，
+    # 也說剛才的改動沒有寫進去。這個分頁的續期與閒置輪詢先停掉，讓它只從這次寫入得知。
+    _listing_with(repo, "count: 3\n")
+    holder = _open_panel(open_page())
+    holder.wait_for_function("() => Boolean(sessionToken)")
+    holder.evaluate("() => { stopIdleWatch(); clearInterval(renewTimer); renewTimer = null; }")
+    viewer = open_page(same_browser_as=holder)
+    viewer.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+    _cannot_announce(viewer)
+    _exit_and_confirm(viewer)
+    viewer.wait_for_selector("[data-testid='identity-form']", state="visible")
+
+    holder.fill(_param_value("count"), "4")
+    _save(holder)
+
+    holder.wait_for_selector("[data-testid='identity-form']", state="visible")
+    notice = holder.inner_text(_LEFT_NOTICE)
+    drafts = _api_json(api, "GET", "/api/drafts")["count"]
+    assert ("已退出" in notice, "沒有寫進去" in notice, drafts) == (True, True, 0)
+
+
+def test_when_the_exit_finds_an_idle_timeout_the_page_says_it_timed_out(open_page, listing):
+    # 後端說按下退出時其實已閒置逾時（例如筆電睡過頭）：照閒置逾時說，不說成「已退出、沒有編輯權」。
+    listing("a")
+    page = _holding_page(open_page)
+
+    def timed_out(route):
+        if route.request.method != "DELETE":
+            route.continue_()
+            return
+        answer = route.fetch()  # 真的退出（放掉編輯權），只把回答換成「其實已逾時」
+        route.fulfill(response=answer, json={**answer.json(), "timed_out": True})
+
+    page.route("**/api/session", timed_out)
+
+    page.click(_EXIT)
+
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    assert (page.is_visible("[data-testid='session-timeout']"), page.is_hidden(_LEFT_NOTICE)) == (
+        True, True,
+    )
+
+
 # ── 人工驗證：檢查差異的回饋、窄視窗排版 ─────────────────────────────────────
 
 _NARROW = 390  # 手機直立的寬度；工具列在這個寬度下不該拆字、不該讓頁面左右捲
