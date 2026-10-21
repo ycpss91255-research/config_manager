@@ -16,6 +16,9 @@
 **閒置逾時（#48）也以票為單位**：部署模式下，一個瀏覽器的人太久沒操作就退出（身分清掉）。邏輯在
 `api/session.IdleSeats`（純邏輯、收 `now`）；這裡是它與 HTTP 之間的那一層——從 cookie 取票、讀注入的
 時鐘、把「這張票剛逾時」交給 `on_timeout`（接線的人據此釋放它持有的編輯階段）。
+
+**退出（F3）也以票為單位**：人按「退出」，這個瀏覽器的身分清掉、記下「已退出」，直到它重新說自己是
+誰。票留著——同一個瀏覽器的其他分頁靠它問得出「這個瀏覽器已退出」，而不是當成閒置逾時或服務重啟。
 """
 
 import re
@@ -57,21 +60,26 @@ class Browsers:
         self._clock = clock
         self._on_timeout = on_timeout
         self._locked = locked
+        # 已退出、還沒重新說自己是誰的票（F3）。
+        self._left: set[str] = set()
 
     def current(self, request: Request) -> Identity | None:
-        """這個請求的瀏覽器宣告過的身分；沒票、票上沒身分、或已閒置逾時回 None。給端點以
+        """這個請求的瀏覽器宣告過的身分；沒票、票上沒身分、已閒置逾時或已退出回 None。給端點以
         `Depends` 取用。"""
         with self._locked():
             now = self._clock()
             self._expire(now)
             ticket = ticket_of(request)
-            return self._seats.identity(ticket, now) if ticket else None
+            if not ticket or ticket in self._left:
+                return None
+            return self._seats.identity(ticket, now)
 
     def declare(self, request: Request, response: Response, identity: Identity) -> None:
         """記下這個瀏覽器的身分。沒票（或票的形狀不對）就發一張新的、寫進回應的 cookie。"""
         ticket = ticket_of(request) or secrets.token_urlsafe(32)
         with self._locked():
             self._seats.declare(ticket, identity, self._clock())
+            self._left.discard(ticket)
         response.set_cookie(COOKIE, ticket, httponly=True, samesite="lax", path="/")
 
     def sweep(self) -> None:
@@ -90,24 +98,43 @@ class Browsers:
             now = self._clock()
             self._expire(now)
             ticket = ticket_of(request)
-            if ticket:
+            if ticket and ticket not in self._left:
                 self._seats.touch(ticket, now)
+
+    def timed_out(self, request: Request) -> bool:
+        """這個瀏覽器是不是因閒置被退出、而且還沒重新說自己是誰（已退出的不算）。"""
+        ticket = ticket_of(request)
+        if not ticket:
+            return False
+        with self._locked():
+            self._expire(self._clock())
+            return ticket not in self._left and self._seats.timed_out(ticket)
+
+    def leave(self, request: Request) -> None:
+        """這個瀏覽器退出（F3）：身分清掉、記下「已退出」。票留著（見模組說明）；沒票什麼都不做。"""
+        ticket = ticket_of(request)
+        if ticket:
+            with self._locked():
+                self._left.add(ticket)
 
     def idle_view(self, request: Request) -> dict[str, object]:
         """這個瀏覽器的閒置狀態，給介面顯示提示用：逾時與提示的秒數（不逾時為 null）、還剩幾秒
-        （沒身分為 null）、是不是剛因閒置被退出。判定在後端，介面只顯示。"""
+        （沒身分為 null）、是不是剛因閒置被退出、是不是按了退出（F3；退出優先）。三者都不是而且
+        沒身分＝後端沒有這張票的紀錄（例如服務重啟過）。判定在後端，介面只顯示。"""
         ticket = ticket_of(request) or ""
         timeout = self._seats.timeout
         with self._locked():
             now = self._clock()
             self._expire(now)
-            remaining = self._seats.remaining(ticket, now)
-            timed_out = self._seats.timed_out(ticket)
+            left = ticket in self._left
+            remaining = None if left else self._seats.remaining(ticket, now)
+            timed_out = not left and self._seats.timed_out(ticket)
         return {
             "timeout_seconds": None if timeout is None else timeout.total_seconds(),
             "warn_seconds": None if timeout is None else idle_warning(timeout).total_seconds(),
             "remaining_seconds": None if remaining is None else remaining.total_seconds(),
             "timed_out": timed_out,
+            "left": left,
         }
 
 

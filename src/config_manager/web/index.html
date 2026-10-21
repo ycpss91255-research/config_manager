@@ -466,6 +466,9 @@
 
   <!-- 逾時退出提示（#48）：部署模式閒置逾時後，這個瀏覽器被退出、回到這一頁時出現。 -->
   <p class="notice" data-testid="session-timeout" role="status" hidden></p>
+  <!-- 退出提示（F3）：按了「退出」（這個分頁或同一個瀏覽器的另一個分頁）、或後端已沒有這個瀏覽器的
+       紀錄（例如服務重新啟動過）而回到這一頁時出現，說是哪一種——不說成閒置逾時。 -->
+  <p class="notice" data-testid="session-left" role="status" hidden></p>
   <p class="error" data-testid="identity-error" hidden></p>
 
   <label>
@@ -523,6 +526,8 @@
   <button type="button" class="promote editing-only" data-testid="promote-all" disabled>進版 (0)</button>
   <!-- 說明（#54）：開新分頁，不把人從改到一半的畫面帶走。 -->
   <a class="help-link" data-testid="help-link" href="help.html" target="_blank" rel="noopener">說明</a>
+  <!-- 退出（F3）：換人、換角色。唯讀的分頁也有——只影響這個瀏覽器，不動別的瀏覽器。 -->
+  <button type="button" data-testid="exit">退出</button>
 </header>
 
 <!-- W6 確認對話框：捨棄變更（全域／單一）等不可逆動作共用；含可見標題與後果說明。 -->
@@ -547,6 +552,8 @@
   </div>
   <div class="notice error banner" data-testid="promote-error" hidden></div>
   <div class="notice banner" data-testid="promote-done" hidden></div>
+  <!-- 退出失敗（F3）：留在主畫面，原樣說原因。 -->
+  <div class="notice error banner" data-testid="exit-error" role="alert" hidden></div>
   <!-- 「檢查差異」的回饋：檢查中／檢查完（幾份、結果）／失敗。全部一致時畫面不會變，沒有這一行
        就看不出到底有沒有執行（人工驗證）。 -->
   <p class="scan-status" data-testid="scan-status" role="status" hidden></p>
@@ -1255,10 +1262,14 @@ function mountNotice(node) {
 }
 
 const panelGenerations = new Map();  // 每份 config 自己的世代（晚到的舊回應不覆蓋新開的）
+// 工作區的世代：回身分輸入頁（退出、逾時）時加一。上一個身分還在路上的區塊內容回來時不放回工作區（F3）。
+let workspaceEpoch = 0;
 
 async function openPanel(uid, notice) {
   const generation = (panelGenerations.get(uid) || 0) + 1;
   panelGenerations.set(uid, generation);
+  const epoch = workspaceEpoch;
+  const stale = () => epoch !== workspaceEpoch || generation !== panelGenerations.get(uid);
   if (!slotFor(uid)) {
     mountView(uid, element("p", {
       class: "notice", "data-testid": "panel-loading", text: "載入中…",
@@ -1268,7 +1279,7 @@ async function openPanel(uid, notice) {
     const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(uid)}`);
     if (!response.ok) throw new Refused(await loadErrorText(response));
     const detail = await response.json();
-    if (generation !== panelGenerations.get(uid)) return;
+    if (stale()) return;
     const panel = panelNode(detail);
     if (notice) panel.insertBefore(notice, panel.children[1] || null);  // 上一個動作的結果放在標頭下
     // 重畫一個已經開著的區塊（進版、捨棄、改屬性之後）：位置在換上去之前才量，換完還原。
@@ -1277,7 +1288,7 @@ async function openPanel(uid, notice) {
     mountView(uid, panel, "panel");
     if (position) restorePanelPosition(panel, position);
   } catch (error) {
-    if (generation !== panelGenerations.get(uid)) return;
+    if (stale()) return;
     // 大聲失敗（不變式 2）：說出讀不到，不留一個空表假裝這份 config 沒有參數。
     mountView(uid, element("div", {
       class: "notice error", "data-testid": `panel-error-${uid}`,
@@ -2886,6 +2897,10 @@ const confirmDialog = document.querySelector("[data-testid='confirm-dialog']");
 // 發生什麼、什麼不會變、能不能復原；確認鈕寫的是那個動作本身（`okLabel`，不是一律「確認」），
 // 取消鈕永遠在、Esc 也是取消；**開啟時焦點在取消**——手滑按到 Enter 不會把東西刪掉。
 // `items` 是要一併列給人看的清單（例如移除白名單時受影響的項目），沒有就不顯示。
+// 開著的確認框的「取消」：回身分輸入頁時呼叫，確認框跟著關掉——留著的話，之後按下去會替已經離開的
+// 身分做事（F3）。沒開著是 null。
+let cancelOpenConfirm = null;
+
 function confirmAction(title, body, okLabel = "確認", items = []) {
   confirmDialog.querySelector("[data-testid='confirm-title']").textContent = title;
   confirmDialog.querySelector("[data-testid='confirm-body']").textContent = body;
@@ -2895,6 +2910,7 @@ function confirmAction(title, body, okLabel = "確認", items = []) {
   confirmDialog.querySelector("[data-testid='confirm-ok']").textContent = okLabel;
   return new Promise((resolve) => {
     const finish = (answer) => {
+      cancelOpenConfirm = null;
       okButton.removeEventListener("click", onOk);
       cancelButton.removeEventListener("click", onCancel);
       confirmDialog.removeEventListener("cancel", onCancel);
@@ -2910,6 +2926,7 @@ function confirmAction(title, body, okLabel = "確認", items = []) {
     // Esc 走 `cancel` 事件，不聽 `close`：`close` 連我們自己關對話框時也會發、而且是晚一拍才發——
     // 上一個確認剛關、下一個確認緊接著開的話，那個晚到的 `close` 會把新的這一個當成被取消。
     confirmDialog.addEventListener("cancel", onCancel);
+    cancelOpenConfirm = onCancel;
     confirmDialog.showModal();
     cancelButton.focus();
   });
@@ -2924,6 +2941,7 @@ async function whileBusy(button, label, work) {
   button.setAttribute("aria-busy", "true");
   button.inert = true;  // 滑鼠與鍵盤都按不到；不動 disabled——那是各個動作自己在管的
   button.textContent = label;
+  refreshExitButton();
   try {
     return await work();
   } finally {
@@ -2931,7 +2949,13 @@ async function whileBusy(button, label, work) {
     button.inert = false;
     // 動作自己改過按鈕文字（例如進版後變成「進版 (0)」）就不動它。
     if (button.textContent === label) button.textContent = idle;
+    refreshExitButton();
   }
+}
+
+// 有動作正在跑（進版、寫出…）時不能退出（F3）：退出會釋放編輯權、清掉草稿，跑到一半的動作會被擋下。
+function refreshExitButton() {
+  exitButton.disabled = document.querySelector("[aria-busy='true']") !== null;
 }
 
 // 要先確認的動作在最前面問這個：已經在跑就不再開一次確認對話框。
@@ -3079,11 +3103,21 @@ function setReadonly(holder, startedAt, reason) {
 }
 
 // 這個分頁在不知情時失去了編輯權（被釋放後別人接手、逾時被收回…，F23）：轉唯讀，唯讀橫幅原樣
-// 寫出後端的原因（含下一步：重新整理）。可能是閒置逾時被退出了：馬上問後端，是的話回身分輸入頁。
+// 寫出後端的原因（含下一步：重新整理）。可能是這個瀏覽器退出了、或閒置逾時被退出了：馬上問後端。
 function loseEditing(reason) {
   rememberToken(null);
   setReadonly(null, null, reason);
-  if (idleTimer) idleTick(false);
+  askWhyEditingEnded(true);
+}
+
+// 編輯權在這個分頁不知情時沒了（或收到另一個分頁的退出通知）：問後端這個瀏覽器怎麼了。同一個瀏覽器的
+// 另一個分頁按了「退出」（F3）
+// → 回身分輸入頁、說是退出（開發模式也問；`refusedWrite`＝是寫入被擋才發現的，另說剛才的改動沒有
+// 寫進去）；部署模式下閒置逾時、或後端已沒有這個瀏覽器的紀錄（#48）→ 照閒置狀態處理。
+async function askWhyEditingEnded(refusedWrite = false) {
+  const view = await idleRequest(false);
+  if (view && view.left) leaveForExit(null, refusedWrite);
+  else if (idleTimer) applyIdle(view);
 }
 
 function setEditing() {
@@ -3163,8 +3197,8 @@ async function renewSession(token, resuming = false) {
       // 使用中的階段失效（逾時被回收或已釋放）：明確轉唯讀並說明，不替使用者悄悄重新取得。
       if (!resuming) {
         setReadonly(null, null, "編輯階段已失效（逾時被回收或已釋放），這個分頁現在是唯讀。重新整理頁面以重新取得。");
-        // 階段失效可能是因為這個瀏覽器閒置逾時被退出了：馬上問後端，是的話回身分輸入頁（#48）。
-        if (idleTimer) idleTick(false);
+        // 階段失效可能是因為這個瀏覽器退出了（F3）或閒置逾時被退出了（#48）：馬上問後端。
+        askWhyEditingEnded(false);
       }
     }
     return false;
@@ -3187,6 +3221,122 @@ window.addEventListener("pagehide", () => {
       keepalive: true,
     }).catch(() => {});
   }
+});
+
+// ── 退出（F3）────────────────────────────────────────────────────────────────
+// 換人、換角色：清掉這個瀏覽器的身分，回到身分輸入頁。只影響這個瀏覽器（別的瀏覽器的身分與編輯權
+// 不動），所以唯讀的分頁也能按。這個瀏覽器持有編輯權時當場釋放，並清掉目前全部共用草稿（暫行規則：
+// 可能包含從前一位接手的草稿，F22 未解）。有東西會丟——未進版的草稿、區塊裡沒存的改動、持有的是這個
+// 瀏覽器的另一個分頁——後端回 confirm_required，照它說的逐項寫進確認框，確認了才再送一次。
+const exitButton = document.querySelector("[data-testid='exit']");
+const exitErrorEl = document.querySelector("[data-testid='exit-error']");
+const leftNotice = document.querySelector("[data-testid='session-left']");
+const EXITED_TEXT = "這個瀏覽器已退出（在這個或另一個分頁按了「退出」），它持有的編輯權已一併釋放。"
+  + "下一步：重新輸入身分以繼續（可以換人、換角色）。";
+const EXITED_REFUSED_TEXT = "這個瀏覽器已退出（在另一個分頁按了「退出」），它持有的編輯權已一併釋放；"
+  + "剛才在這個分頁送出的改動沒有寫進去。下一步：重新輸入身分以繼續（可以換人、換角色）。";
+const GONE_TEXT = "身分已失效：後端沒有這個瀏覽器的紀錄（例如服務重新啟動過），不是閒置逾時；編輯權也已失效。"
+  + "下一步：重新輸入身分以繼續。";
+
+async function sendExit(confirmed) {
+  const response = await apiFetch(`${API_BASE}/api/session`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      confirmed,
+      unsaved: workspace.querySelector("[data-dirty='true']") !== null,
+      token: sessionToken,
+    }),
+  });
+  return { response, payload: await response.json().catch(() => null) };
+}
+
+function exitLosses(detail) {
+  const losses = [];
+  if (detail.drafts) {
+    losses.push(`${detail.drafts} 份未進版的草稿將遺失（清掉的是目前全部共用草稿，可能包含從前一位接手的）`);
+  }
+  if (detail.unsaved) losses.push("目前區塊裡還沒儲存的改動將遺失");
+  if (detail.other_tab) losses.push("這個瀏覽器另一個分頁正在編輯，退出會釋放它的編輯權，那邊沒存的改動也會丟失");
+  return losses;
+}
+
+async function exitBrowser() {
+  exitErrorEl.hidden = true;
+  try {
+    let { response, payload } = await sendExit(false);
+    const detail = payload && payload.detail;
+    if (response.status === 409 && detail && detail.kind === "confirm_required") {
+      const ok = await confirmAction(
+        "退出這個瀏覽器？",
+        `${exitLosses(detail).join("；")}。無法復原；這個瀏覽器的其他分頁也會跟著退出。`,
+        "退出並丟掉",
+      );
+      if (!ok || !identityForm.hidden) return;  // 取消了，或確認框開著時已經回到身分輸入頁
+      ({ response, payload } = await sendExit(true));
+    }
+    if (!response.ok) {
+      const why = payload && payload.detail ? detailText(payload.detail) : `${response.status} ${response.statusText}`;
+      showExitError(`退出失敗，仍在主畫面：${why}`);
+      return;
+    }
+    announceExit();
+    // 按下去時其實已閒置逾時（例如筆電睡過頭、頁面還沒問到）：照閒置逾時說，不說成「沒有編輯權」。
+    if (payload && payload.timed_out) leaveForIdle(null);
+    else leaveForExit(payload);
+  } catch (error) {
+    showExitError(failureText("退出", error));
+  }
+}
+
+function showExitError(text) {
+  exitErrorEl.textContent = text;
+  exitErrorEl.hidden = false;
+}
+
+// 退出了（這個分頁按的；`result` 是 null＝後端說這個瀏覽器已退出，是另一個分頁按的）：回身分輸入頁並
+// 說明。開發模式姓名與 Email 留在表單上、只要重選角色（換角色不必重打身分）；部署模式一律清空——
+// 共用機器，下一個坐下來的可能是別人。模式未知也清空。
+function leaveForExit(result, refusedWrite = false) {
+  const leaving = currentIdentity;
+  leaveMainPage(document.body.dataset.mode !== "development");
+  refillIdentity(leaving);
+  const elsewhere = refusedWrite ? EXITED_REFUSED_TEXT : EXITED_TEXT;
+  showIdentityForm(false, result ? exitedText(result) : elsewhere);
+}
+
+// 開發模式：姓名與 Email 照剛才的身分填回表單。這一頁載入時身分就是現成的（重新整理過、第二個分頁）
+// 的話，表單上本來沒有字。部署模式與模式未知不填。
+function refillIdentity(identity) {
+  if (!identity || document.body.dataset.mode !== "development") return;
+  identityForm.elements.name.value = identity.name;
+  identityForm.elements.email.value = identity.email;
+}
+
+function exitedText(result) {
+  const released = result.released ? "編輯權已釋放" : "這個瀏覽器原本沒有編輯權，別人的編輯不受影響";
+  const cleared = result.cleared_drafts ? `，清除了 ${result.cleared_drafts} 份未進版的草稿` : "";
+  return `已退出：${released}${cleared}。下一步：重新輸入身分以繼續（可以換人、換角色）。`;
+}
+
+exitButton.addEventListener("click", () => whileBusy(exitButton, "退出中…", exitBrowser));
+
+// 退出後通知這個瀏覽器的其他分頁，讓它們立刻一起回身分輸入頁（使用者 10/21 選定）——唯讀分頁沒有續期、
+// 開發模式沒有閒置輪詢，不通知的話它們要到重新整理才知道。同一個來源的分頁共用 localStorage：寫一筆，
+// 其他分頁就收到 `storage` 事件（寫的那一頁自己收不到）。收到的分頁問後端這個瀏覽器是不是真的已退出，
+// 是才離開。存不進去（私密視窗等）就退回原本那條路：下一次跟後端溝通時才知道。
+const EXITED_KEY = "cm.session.exited";
+
+function announceExit() {
+  try {
+    localStorage.setItem(EXITED_KEY, String(Date.now()));
+  } catch (_error) {
+    // 見上：其他分頁改在下一次跟後端溝通時得知。
+  }
+}
+
+window.addEventListener("storage", (event) => {
+  if (event.key === EXITED_KEY && identityForm.hidden) askWhyEditingEnded(false);
 });
 
 // ── W1 身分輸入 ──────────────────────────────────────────────────────────────
@@ -3279,10 +3429,10 @@ async function idleTick(active = interacted) {
 
 function applyIdle(view) {
   if (!view || !idleTimer) return;
-  if (view.timed_out || view.remaining_seconds === null) {
-    leaveForIdle(view.timeout_seconds);
-    return;
-  }
+  // 三種「沒身分了」各說各的（F3）：按了退出、閒置逾時、後端沒有這張票的紀錄（例如服務重啟過）。
+  if (view.left) { leaveForExit(null); return; }
+  if (view.timed_out) { leaveForIdle(view.timeout_seconds); return; }
+  if (view.remaining_seconds === null) { leaveForGone(); return; }
   idleLeft = { seconds: view.remaining_seconds, at: Date.now() };
   const warning = view.remaining_seconds <= view.warn_seconds;
   idleWarning.hidden = !warning;
@@ -3304,18 +3454,40 @@ function showIdleCountdown() {
   if (seconds === 0) idleTick(false);
 }
 
-// 逾時：後端已清掉這個瀏覽器的身分、釋放了它的編輯階段。回身分輸入頁並說明發生了什麼。
+// 逾時：後端已清掉這個瀏覽器的身分、釋放了它的編輯階段。回身分輸入頁並說明發生了什麼。表單清空：
+// 下一個坐下來的可能是別人，不留上一個人的姓名與 Email 給他按。
 function leaveForIdle(timeoutSeconds) {
+  leaveMainPage(true);
+  showIdentityForm(timeoutSeconds || true);
+}
+
+// 後端已沒有這個瀏覽器的紀錄（例如服務重新啟動過）：身分與編輯權都已失效，但不是閒置逾時（F3）。
+function leaveForGone() {
+  const leaving = currentIdentity;
+  leaveMainPage(document.body.dataset.mode !== "development");
+  refillIdentity(leaving);
+  showIdentityForm(false, GONE_TEXT);
+}
+
+// 離開主畫面、回身分輸入頁（閒置逾時、退出、身分已失效）：開著的確認框取消、停掉閒置監看與續期、
+// 丟掉識別碼與身分。工作區清空——上一個身分打開的區塊（含沒存的改動、開發者才有的入口）不留給下一個
+// 進來的人，還在路上的區塊內容回來時也不放回去（F3）。
+// `blank`：表單也清空；角色一律回到預設（每次重選，預設落向安全）。
+function leaveMainPage(blank) {
+  if (cancelOpenConfirm) cancelOpenConfirm();
+  workspaceEpoch += 1;
   stopIdleWatch();
   if (renewTimer) { clearInterval(renewTimer); renewTimer = null; }
   rememberToken(null);
   currentIdentity = null;
-  // 表單清空、角色回到預設：下一個坐下來的可能是別人，不留上一個人的姓名、Email 與角色給他按。
-  identityForm.reset();
+  for (const node of [...workspace.children]) if (node !== workspaceEmpty) node.remove();
+  refreshWorkspaceEmpty();
+  clearPromoteBanners();
+  exitErrorEl.hidden = true;
+  if (blank) identityForm.reset();
   for (const button of roleToggle.querySelectorAll("button[data-role]")) {
     button.setAttribute("aria-pressed", String(button.dataset.role === "user"));
   }
-  showIdentityForm(timeoutSeconds || true);
 }
 
 function noteInteraction() {
@@ -3354,11 +3526,13 @@ function rememberIdentity(identity) {
   }
 }
 
-// `timedOut`：因閒置被退出後回到這一頁（值是逾時的秒數，不知道就給 true）——說明發生了什麼，
-// 不留一張沒頭沒尾的表單。
-function showIdentityForm(timedOut = false) {
+// `timedOut`：因閒置被退出後回到這一頁（值是逾時的秒數，不知道就給 true）；`left`：退出、或身分已
+// 失效時要說的話（F3）——說明發生了什麼，不留一張沒頭沒尾的表單。
+function showIdentityForm(timedOut = false, left = "") {
   hideAllPageViews();
   timeoutNotice.hidden = !timedOut;
+  leftNotice.hidden = !left;
+  leftNotice.textContent = left;
   if (timedOut) {
     const minutes = typeof timedOut === "number" ? `超過 ${Math.round(timedOut / 60) || 1} 分鐘` : "過久";
     timeoutNotice.textContent =
@@ -4186,7 +4360,9 @@ async function loadMode() {
   // 因閒置被退出的——是的話補上說明（重新整理後也一樣，#48）。
   showIdentityForm();
   const idle = await idleRequest(false);
-  if (idle && idle.timed_out && !identityForm.hidden) showIdentityForm(idle.timeout_seconds || true);
+  if (!idle || identityForm.hidden) return;
+  if (idle.left) showIdentityForm(false, EXITED_TEXT);  // 退出後重新整理也說得出是退出（F3）
+  else if (idle.timed_out) showIdentityForm(idle.timeout_seconds || true);
 })();
 </script>
 

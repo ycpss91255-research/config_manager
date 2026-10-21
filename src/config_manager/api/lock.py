@@ -64,6 +64,16 @@ class SessionInput(BaseModel):
     role: str = USER
 
 
+class ExitInput(BaseModel):
+    """退出（F3）的請求主體。`confirmed`：人已確認會丟掉的東西；`unsaved`：送請求的分頁的
+    區塊裡有還沒儲存的改動（只有頁面知道）；`token`：送請求的分頁持有的階段識別碼（沒有＝
+    這個分頁不是持有的那個）。"""
+
+    confirmed: bool = False
+    unsaved: bool = False
+    token: str | None = None
+
+
 
 _Stamp = TypeVar("_Stamp")
 
@@ -196,8 +206,9 @@ def seat_browsers(
 def register_session(
     app: FastAPI, browsers: Browsers, stage_box: dict[str, Stage], box: LockBox
 ) -> None:
-    """把身分（POST／GET /api/session）與編輯階段的端點掛上 app。身分與階段是兩件事（T13），但
-    設身分要看階段有沒有被別人持有，所以接線放在一起。抽出來的理由同 `register_history`（C901）。
+    """把身分（POST／GET／DELETE /api/session）與編輯階段的端點掛上 app。身分與階段是兩件事
+    （T13），但設身分要看階段有沒有被別人持有，所以接線放在一起。抽出來的理由同
+    `register_history`（C901）。
 
     身分屬於各自的瀏覽器（#288）：`browsers` 以瀏覽器票為鍵記身分，端點以
     `Depends(browsers.current)` 取「這個請求的瀏覽器」宣告過的身分。"""
@@ -236,6 +247,19 @@ def register_session(
         ——逾時是退出，要重新輸入身分。回更新後的閒置狀態。"""
         browsers.active(request)
         return browsers.idle_view(request)
+
+    @app.delete("/api/session")
+    def leave_session(payload: ExitInput, request: Request) -> dict[str, object]:
+        """退出（F3，本 repo 對 §3.5.3 的追加）：清掉這個瀏覽器的身分，好換人、換角色。只影響送請求
+        的瀏覽器——票留著，別的瀏覽器的身分、編輯權與草稿都不動；不必帶識別碼（同一個瀏覽器的唯讀
+        分頁也能退出），沒有身分也照樣成功。
+
+        這個瀏覽器持有編輯階段時當場釋放，並清掉**目前全部共用草稿**（暫行規則，F22 未解：可能包含
+        接手來的草稿）；下一個取得的人不會被告知份數（那句話只用在逾時）。有東西會丟——持有時有
+        草稿、區塊裡有沒存的改動、持有的是同一個瀏覽器的另一個分頁——而沒帶 `confirmed` → 409
+        `confirm_required`，什麼都不動。這個瀏覽器其實已經閒置逾時 → 帶 `timed_out: true`。"""
+        with box.locked():
+            return _leave(browsers, stage_box, box, payload, request)
 
     register_lock(app, browsers, stage_box, box)
 
@@ -338,6 +362,44 @@ def _renew(
     except SessionExpired as error:
         raise HTTPException(status_code=410, detail=str(error)) from error
     return {**_session_view(session), "token": session.token}
+
+
+def _leave(
+    browsers: Browsers,
+    stage_box: dict[str, Stage],
+    box: LockBox,
+    payload: ExitInput,
+    request: Request,
+) -> dict[str, object]:
+    sweep(browsers, stage_box, box)
+    if browsers.timed_out(request):
+        # 其實已經閒置逾時（頁面還沒問到）：逾時那一刻已照逾時的規則釋放、清草稿。照實說，不記成
+        # 已退出（閒置狀態仍說逾時）；也不必確認——身分已經沒了，沒有東西留得住。
+        return {"left": True, "released": False, "cleared_drafts": 0, "timed_out": True}
+    ticket = ticket_of(request)
+    current = box.lock.current
+    held = current if ticket is not None and box.holder_ticket == ticket else None
+    drafts = len(stage_box["stage"].drafts) if held is not None else 0
+    other_tab = held is not None and payload.token != held.token
+    if not payload.confirmed and (drafts or other_tab or payload.unsaved):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "kind": "confirm_required", "drafts": drafts, "other_tab": other_tab,
+                "unsaved": payload.unsaved, "message": _CONFIRM_EXIT,
+            },
+        )
+    if held is not None:
+        box.give_up(held.token, ticket)
+        stage_box["stage"] = discard(stage_box["stage"])
+    browsers.leave(request)
+    return {"left": True, "released": held is not None, "cleared_drafts": drafts}
+
+
+_CONFIRM_EXIT = (
+    "退出會丟掉東西（份數與種類見 drafts、unsaved、other_tab），這次沒有退出。"
+    "下一步：確定要退出就帶 confirmed: true 再送一次 DELETE /api/session；不想丟就先進版或儲存"
+)
 
 
 def sweep(browsers: Browsers, stage_box: dict[str, Stage], box: LockBox) -> None:
