@@ -5163,11 +5163,11 @@ def _exit_and_confirm(page):
     page.click("[data-testid='confirm-ok']")
 
 
-def _deaf_to_other_tabs(page):
-    """讓這一頁收不到其他分頁的退出通知——模擬通知沒送到（例如存不進 localStorage 的私密視窗），
-    看退回的那條路：下一次跟後端溝通時才知道。在 window 上以捕獲階段攔下，頁面自己的監聽收不到。"""
+def _cannot_announce(page):
+    """讓這一頁存不進 localStorage（例如私密視窗）：它退出時通知送不出去，其他分頁走退回的那條路
+    ——下一次跟後端溝通時才知道。只換這一頁自己的 setItem，其他分頁照常。"""
     page.evaluate(
-        "() => window.addEventListener('storage', (e) => e.stopImmediatePropagation(), true)"
+        "() => { Storage.prototype.setItem = () => { throw new Error('QuotaExceededError'); }; }"
     )
 
 
@@ -5316,9 +5316,9 @@ def test_another_tab_of_the_same_browser_learns_this_browser_has_exited(open_pag
     # 說明是退出，不是閒置逾時。
     listing("a")
     holder = _holding_page(open_page)
-    _deaf_to_other_tabs(holder)
     viewer = open_page(same_browser_as=holder)
     viewer.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+    _cannot_announce(viewer)
     _exit_and_confirm(viewer)
     viewer.wait_for_selector("[data-testid='identity-form']", state="visible")
 
@@ -5436,9 +5436,9 @@ def test_a_write_refused_after_another_tab_exited_says_it_was_not_written(open_p
     holder = _open_panel(open_page())
     holder.wait_for_function("() => Boolean(sessionToken)")
     holder.evaluate("() => { stopIdleWatch(); clearInterval(renewTimer); renewTimer = null; }")
-    _deaf_to_other_tabs(holder)
     viewer = open_page(same_browser_as=holder)
     viewer.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+    _cannot_announce(viewer)
     _exit_and_confirm(viewer)
     viewer.wait_for_selector("[data-testid='identity-form']", state="visible")
 
