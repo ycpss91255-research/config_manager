@@ -347,6 +347,30 @@ def test_import_says_how_many_drafts_the_last_session_left_behind(editing_answer
     assert "2 份" in capsys.readouterr().out
 
 
+def test_import_does_not_crash_when_the_lock_answer_is_not_an_object(editing_answers, capsys):
+    # --api 指到別的服務：取得編輯權回 200、body 卻是陣列——可讀訊息＋非零結束，不崩成 traceback。
+    _, replies = editing_answers
+    replies[("POST", "/api/session/lock")] = []
+
+    code = _import_nav2()
+
+    assert (code, "下一步：" in capsys.readouterr().err) == (1, True)
+
+
+def test_import_refusal_with_a_validation_list_is_readable(editing_answers, capsys):
+    # 設身分被 422 拒、detail 是 FastAPI 的驗證錯誤清單：一行「欄位：訊息」，不把送出的值原樣回吐
+    # （#250 的做法）。
+    _, replies = editing_answers
+    replies[("POST", "/api/session")] = _http_error(
+        422, [{"loc": ["body", "name"], "msg": "太長", "input": "不該被回吐的輸入"}]
+    )
+
+    code = _import_nav2()
+
+    err = capsys.readouterr().err
+    assert (code, "太長" in err, "不該被回吐的輸入" in err) == (1, True, False)
+
+
 def test_import_without_an_author_is_a_usage_error(capsys):
     # 沒有 --name／--email 就沒有作者可署名：argparse 的用法錯誤（結束碼 2），不會打到端點。
     with pytest.raises(SystemExit) as exc:

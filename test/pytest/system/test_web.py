@@ -5042,14 +5042,14 @@ def test_a_tab_that_lost_its_editing_session_is_refused_on_save_and_turns_read_o
     # 唯讀橫幅原樣寫出原因；草稿沒存下。
     _listing_with(repo, "count: 3\n")
     page = _open_panel(open_page())
-    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+    page.wait_for_function("() => Boolean(sessionToken)")  # 取得完成（進版鈕在取得之前就看得到）
     # 釋放但不讓頁面知道：記憶體裡的識別碼留著，像是被別處釋放了。
     page.evaluate("""() => apiFetch(`${API_BASE}/api/session/lock`, {
       method: "DELETE", headers: { "content-type": "application/json" },
       body: JSON.stringify({ token: sessionToken }),
     })""")
     other = _enter_identity(open_page())
-    other.wait_for_selector("[data-testid='promote-all']", state="visible")
+    other.wait_for_function("() => Boolean(sessionToken)")  # 另一個瀏覽器接手了
 
     page.fill(_param_value("count"), "4")
     _save(page)
@@ -5094,7 +5094,7 @@ def test_a_late_refusal_for_an_older_token_does_not_turn_the_tab_read_only(open_
     # 失去編輯權——不轉唯讀、不清掉現在的識別碼。
     _listing_with(repo, "count: 3\n")
     page = _enter_identity(open_page())
-    page.wait_for_selector("[data-testid='promote-all']", state="visible")
+    page.wait_for_function("() => Boolean(sessionToken)")
     page.route("**/api/drafts", lambda route: route.fulfill(
         status=410, content_type="application/json",
         body=json.dumps({"detail": {"kind": "editing_lost", "message": "這個分頁的編輯權已失效"}}),
@@ -5110,6 +5110,39 @@ def test_a_late_refusal_for_an_older_token_does_not_turn_the_tab_read_only(open_
     }""")
 
     assert readonly == "false"
+
+
+def test_after_returning_to_the_list_the_tab_can_still_save(open_page, repo):
+    # 回到清單之後識別碼還是這個分頁有效的那一個：照樣存得了草稿。
+    _listing_with(repo, "count: 3\n")
+    page = _enter_identity(open_page())
+    page.wait_for_function("() => Boolean(sessionToken)")
+    page.get_by_role("button", name="納管").click()
+    page.wait_for_selector("[data-testid='browse']", state="visible")
+    page.get_by_role("button", name="返回").click()
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+
+    page.fill(_param_value("count"), "4")
+    _save(page)
+
+    page.wait_for_selector(f"{_draft_dot(_PARAM_UID)}, [data-testid='readonly-banner']:visible")
+    assert page.is_visible(_draft_dot(_PARAM_UID))
+
+
+def test_a_late_refusal_of_an_older_renew_does_not_clear_the_current_token(open_page, repo):
+    # 晚到的舊續期（這段時間已經換了識別碼）被擋，不代表現在的識別碼失效：不清掉、不轉唯讀。
+    _listing_with(repo, "count: 3\n")
+    page = _enter_identity(open_page())
+    page.wait_for_function("() => Boolean(sessionToken)")
+    before = page.evaluate("sessionToken")
+
+    page.evaluate("renewSession('an-older-token-0000')")
+
+    assert (page.get_attribute("body", "data-readonly"), page.evaluate("sessionToken")) == (
+        "false", before,
+    )
 
 
 # ── 人工驗證：檢查差異的回饋、窄視窗排版 ─────────────────────────────────────

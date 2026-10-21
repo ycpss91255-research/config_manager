@@ -2896,16 +2896,26 @@ def test_another_browser_cannot_renew_or_resume_the_holders_session(api, resume)
     other = _another_browser()
     _request_as(other, api, "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
     session = _lock(api)
+    current = session["token"]  # 收尾要放掉的是「現在有效」的那一個
     try:
-        refused = _refusal(lambda: _open_json(
-            other, f"{api}/api/session/lock/renew", "POST",
-            {"token": session["token"], "resume": resume},
+        try:
+            theirs, _ = _open_json(
+                other, f"{api}/api/session/lock/renew", "POST",
+                {"token": current, "resume": resume},
+            )
+            # 沒擋的話，別的瀏覽器接續會換掉識別碼：收尾用新的那一個——否則這一則的失敗會留下一個
+            # 沒人放的編輯階段，把之後的規格一起拖下水。
+            current = theirs["token"]
+            refused = 200
+        except urllib.error.HTTPError as error:
+            refused = error.code
+        still = _refusal(lambda: _lock(
+            api, path="/api/session/lock/renew", payload={"token": session["token"]}
         ))
-        still = _lock(api, path="/api/session/lock/renew", payload={"token": session["token"]})
     finally:
-        _lock(api, "DELETE", payload={"token": session["token"]})
+        _lock(api, "DELETE", payload={"token": current})
 
-    assert (refused[0], still["token"]) == (_GONE, session["token"])
+    assert (refused, still) == (_GONE, (200, None))
 
 
 @pytest.mark.parametrize("beacon", [False, True])
