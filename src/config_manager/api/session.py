@@ -109,6 +109,14 @@ class SessionExpired(Exception):
     """續期的階段已失效（逾時被回收、已釋放、或識別碼不對）：明確失敗，不靜默重新取得。"""
 
 
+def session_gone(token: str) -> SessionExpired:
+    """這個識別碼的編輯階段已失效——續期時階段不在了，或（API 層）送的不是取得它的那個瀏覽器。"""
+    return SessionExpired(
+        f"識別碼 {token[:6]}… 的編輯階段已失效（逾時被回收或已釋放），這個分頁現在是唯讀。"
+        "下一步：重新整理頁面以重新取得編輯階段"
+    )
+
+
 # 續期逾時的預設值：頁面每 30 秒續期一次，瀏覽器會把背景分頁的計時器節流到約每分鐘一次，
 # 所以留兩次節流後的心跳再多一點——短到異常中斷後幾分鐘內就釋放，長到背景分頁不被誤收。
 DEFAULT_RENEW_TIMEOUT = timedelta(seconds=150)
@@ -147,10 +155,7 @@ class SessionLock:
         """續期。階段已失效（回收／釋放／識別碼不對）→ `SessionExpired`，不會替你重新取得。"""
         self.sweep(now)
         if self.current is None or self.current.token != token:
-            raise SessionExpired(
-                f"識別碼 {token[:6]}… 的編輯階段已失效（逾時被回收或已釋放），這個分頁現在是唯讀。"
-                "下一步：重新整理頁面以重新取得編輯階段"
-            )
+            raise session_gone(token)
         self.current = replace(self.current, renewed_at=now)
         return self.current
 

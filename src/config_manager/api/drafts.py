@@ -9,13 +9,13 @@ from __future__ import annotations
 
 from subprocess import CalledProcessError
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from config_manager.api.checks import checks_for
 from config_manager.api.history import require_entry, source_unreadable
+from config_manager.api.lock import Editing
 from config_manager.api.schema import as_specified
-from config_manager.api.browser import Browsers
 from config_manager.api.session import Identity
 from config_manager.api.shapes import as_problem, drafts_view
 from config_manager.core.drafts import Stage, discard, promote, save_draft
@@ -53,15 +53,14 @@ class DraftInput(BaseModel):
     overrides: dict[str, str] = {}
 
 
-def register_drafts(
-    app: FastAPI, repo: str, browsers: Browsers, stage_box: dict[str, Stage]
-) -> None:
+def register_drafts(app: FastAPI, repo: str, editing: Editing) -> None:
     """把草稿與進版的端點（三段式的儲存／捨棄／進版，ADR-00000022）掛上 app（#18／#19）。
 
     抽成一個模組的理由同 `api/history`：`routes.py` 已貼近單檔行數上限（C0302）。
-    `stage_box` 是目前階段的容器（不可變 `Stage` 每次換新的進去），`browsers` 給儲存與進版取作者
-    （這個瀏覽器的身分，#288）。
+    `editing.stage_box` 是目前階段的容器（不可變 `Stage` 每次換新的進去）；寫入都經 `editing.write`
+    ——只接受持有編輯權的那個分頁，作者是它的身分（#288、F23）。
     """
+    stage_box = editing.stage_box
 
     @app.get("/api/drafts")
     def list_drafts() -> dict[str, object]:
@@ -69,34 +68,32 @@ def register_drafts(
         return drafts_view(stage_box["stage"])
 
     @app.post("/api/drafts")
-    def save_one_draft(
-        payload: DraftInput, identity: Identity | None = Depends(browsers.current)
-    ) -> dict[str, object]:
+    def save_one_draft(payload: DraftInput, request: Request) -> dict[str, object]:
         """儲存草稿：把欄位表送來的改動套到來源複本上、跑三層驗證、存進編輯階段（#18／#21）。
         不產生變更紀錄、不寫到目標——那是進版的事。"""
-        return _save_draft(repo, identity, stage_box, payload)
+        with editing.write(request, "儲存草稿"):
+            return _save_draft(repo, stage_box, payload)
 
     @app.delete("/api/drafts")
-    def discard_all_drafts() -> dict[str, object]:
+    def discard_all_drafts(request: Request) -> dict[str, object]:
         """捨棄變更（全域）：清空全部草稿，來源與目標皆不動。"""
-        return _discard_drafts(stage_box, None)
+        with editing.write(request, "捨棄變更"):
+            return _discard_drafts(stage_box, None)
 
     @app.delete("/api/drafts/{uid}")
-    def discard_one_draft(uid: str) -> dict[str, object]:
+    def discard_one_draft(uid: str, request: Request) -> dict[str, object]:
         """捨棄變更（單一 config）。"""
-        return _discard_drafts(stage_box, uid)
+        with editing.write(request, "捨棄變更"):
+            return _discard_drafts(stage_box, uid)
 
     @app.post("/api/promote")
-    def promote_all_drafts(
-        identity: Identity | None = Depends(browsers.current),
-    ) -> dict[str, object]:
+    def promote_all_drafts(request: Request) -> dict[str, object]:
         """進版（全域動作）：全部草稿一次驗證、記錄、寫出，整批原子（#19、ADR-00000022）。"""
-        return _promote_all(repo, root_prefixes(repo), identity, stage_box)
+        with editing.write(request, "進版") as identity:
+            return _promote_all(repo, root_prefixes(repo), identity, stage_box)
 
 
-def _save_draft(
-    repo: str, identity: Identity | None, stage_box: dict[str, Stage], payload: DraftInput
-) -> dict[str, object]:
+def _save_draft(repo: str, stage_box: dict[str, Stage], payload: DraftInput) -> dict[str, object]:
     """儲存草稿的邏輯（#18／#21）：以來源複本為底套上改動、跑驗證、存進階段。不記錄、不寫目標
     ——那是進版的事。
 
@@ -105,11 +102,6 @@ def _save_draft(
     `problems` 列出那幾條警告（各帶 `rule`），介面據此讓人逐條填理由再送（#42）。存成後回草稿
     清單，另帶這份內容的全部警告（`warnings`，含已填理由略過的）。
     """
-    if identity is None:
-        raise HTTPException(
-            status_code=409,
-            detail="尚未設定身分，無法儲存草稿。下一步：先 POST /api/session 設定姓名與 email",
-        )
     entry = require_entry(read_config_list(repo), payload.uid)
     checks = checks_for(repo, entry, payload.overrides)
     try:
@@ -166,15 +158,9 @@ def _discard_drafts(stage_box: dict[str, Stage], uid: str | None) -> dict[str, o
 
 
 def _promote_all(
-    repo: str, roots: tuple[str, ...], identity: Identity | None, stage_box: dict[str, Stage]
+    repo: str, roots: tuple[str, ...], identity: Identity, stage_box: dict[str, Stage]
 ) -> dict[str, object]:
     """進版的邏輯（#19）：core promote 全部驗證 → io apply 寫出＋記錄（失敗整批回滾）→ 清空草稿。"""
-    if identity is None:
-        raise HTTPException(
-            status_code=409,
-            detail="尚未設定身分，無法進版——變更紀錄需要作者。"
-            "下一步：先 POST /api/session 設定姓名與 email",
-        )
     stage = stage_box["stage"]
     if not stage.drafts:
         raise HTTPException(

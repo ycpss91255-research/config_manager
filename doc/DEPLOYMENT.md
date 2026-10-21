@@ -89,6 +89,14 @@ just docker dev run
 留得下來的東西住在 `config_repo` 這個 volume。`docker compose down`（或 `just docker stop`）
 **不會**刪它；`docker compose down --volumes` 會——那是唯一真實來源，刪之前先備份。
 
+## 只跑一個後端
+
+**後端只能跑一個行程**：不要開多個 worker，也不要把後端開成多個副本（compose 的 `scale`、
+`replicas`）。編輯權（一次只有一個人能改）、草稿與輸入過的身分都在那一個行程的記憶體裡；
+「檢查編輯權」和「寫入」也靠行程內的一把先到先處理的鎖排隊、不交錯（F23）。開成兩個行程，兩邊各有一份
+編輯權，就會兩個人同時在改。`config_manager serve` 把 app 物件直接交給 uvicorn，本來就只會
+起一個行程；compose 檔也沒有設副本。
+
 ## 備份與還原
 
 設定庫（`config_repo` 這個 volume）是唯一真實來源：納管清單、每一份的來源內容、白名單、全部的變更歷史

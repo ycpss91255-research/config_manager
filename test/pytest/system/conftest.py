@@ -17,6 +17,7 @@
 保真度。只在其中一種環境會壞的缺陷，正是跑兩次才抓得到而跑一次抓不到的。
 """
 
+import gc
 import os
 import pathlib
 import socket
@@ -29,6 +30,7 @@ import urllib.request
 import pytest
 import uvicorn
 
+from config_manager.api.lock import LockBox
 from config_manager.api.routes import create_app
 from config_manager.core.roles import DEVELOPMENT
 
@@ -242,6 +244,38 @@ def api_developing(repo, sources_root, api):
         _wait_until_answering(base)
         yield base
     finally:
+        server.should_exit = True
+        thread.join(timeout=_STARTUP_TIMEOUT)
+
+
+@pytest.fixture
+def api_alone(repo, sources_root, api):
+    """這一則自己起的一個**部署模式**服務，回 (位址, 它的 LockBox)（F23 的排隊規格用）。
+
+    排隊的規格會讓伺服器那邊的執行緒停在中間；停住時它拿著那一把鎖。逐則起、逐則收：卡住只影響
+    這一則，不拖累整個 session 共用的 `api`。LockBox 從建 app 前後的物件差出來，不用
+    `_find_lock_box`（那支要求剛好一個持有中的，這個服務持有時會和它撞）。收尾時放掉還持有的
+    階段、把排隊通知換回去。連對著映像跑時也就地起（比照 `api_developing`）。
+    """
+    del sources_root, api  # 只為了排序：白名單已由 `api` 種好
+    before = {id(obj) for obj in gc.get_objects() if isinstance(obj, LockBox)}
+    app = create_app(repo)
+    box = next(
+        obj for obj in gc.get_objects() if isinstance(obj, LockBox) and id(obj) not in before
+    )
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    base = f"http://127.0.0.1:{port}"
+    try:
+        _wait_until_answering(base)
+        yield base, box
+    finally:
+        box.guard.on_wait = lambda: None
+        if box.lock.current is not None:
+            box.lock.release(box.lock.current.token)
         server.should_exit = True
         thread.join(timeout=_STARTUP_TIMEOUT)
 

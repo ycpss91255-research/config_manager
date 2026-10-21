@@ -12,8 +12,11 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
-from dataclasses import dataclass
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import TypeVar, cast
 from datetime import datetime, timedelta, UTC
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -28,12 +31,17 @@ from config_manager.api.session import (
     SessionHeld,
     SessionLock,
     author,
+    session_gone,
 )
 from config_manager.core.roles import USER, permits
 from config_manager.api.shapes import drafts_view
 from config_manager.core.drafts import Stage, discard
 
 Clock = Callable[[], datetime]
+
+# 會寫入的請求帶這個分頁的編輯階段識別碼的標頭（F23）。放標頭不放網址：不進伺服器紀錄與瀏覽紀錄；
+# 不放 body：沒有 body 的寫入（解除納管、進版、捨棄…）不必為它新增一個。
+EDITING_HEADER = "x-cm-editing-token"
 
 
 def utc_now() -> datetime:
@@ -57,6 +65,57 @@ class SessionInput(BaseModel):
 
 
 
+_Stamp = TypeVar("_Stamp")
+
+
+def _nothing() -> None:
+    return None
+
+
+class Guard:
+    """一把**先到先處理**的行程內鎖（F23）：寫入的「檢查＋寫入」、取得、續期、接續、釋放、逾時回收、
+    閒置退出拿同一把，排隊、不交錯。同一個執行緒可以重入（寫入 → 回收 → 閒置退出是巢狀的）。
+
+    `enter(stamp)` 拿號碼牌、在拿號碼牌的同一刻呼叫 `stamp()` 記下到達時間，輪到才回；執行的順序因此
+    就是到達的順序。重入不排隊、回 None。`on_wait` 是「有請求開始排隊」的通知：要等之前呼叫一次，
+    預設什麼都不做——它只觀察、不影響誰先誰後，只有規格會換掉它。
+
+    規則：只在同步的端點裡拿（async 端點在事件迴圈上拿會卡住整個服務）；拿著時不等別的執行緒。
+    **只保證一個行程內的互斥**：服務只能跑一個後端行程（多個 worker 或副本不受支援）。
+    """
+
+    def __init__(self) -> None:
+        self._turn = threading.Condition()
+        self._next = 0  # 下一張號碼牌
+        self._serving = 0  # 輪到的號碼牌
+        self._owner: int | None = None
+        self._depth = 0
+        self.on_wait: Callable[[], None] = _nothing
+
+    def enter(self, stamp: Callable[[], _Stamp]) -> _Stamp | None:
+        me = threading.get_ident()
+        with self._turn:
+            if self._owner == me:
+                self._depth += 1
+                return None
+            ticket, self._next = self._next, self._next + 1
+            arrived = stamp()
+            if ticket != self._serving:
+                self.on_wait()
+                while ticket != self._serving:
+                    self._turn.wait()
+            self._owner, self._depth = me, 1
+            return arrived
+
+    def leave(self) -> None:
+        with self._turn:
+            self._depth -= 1
+            if self._depth == 0:
+                self._owner = None
+                self._serving += 1
+                self._turn.notify_all()
+
+
 @dataclass
 class LockBox:
     """階段鎖與「上次回收清掉幾份草稿」的容器；掛在 app 上（同 browsers／stage_box）。"""
@@ -64,8 +123,55 @@ class LockBox:
     lock: SessionLock
     clock: Clock
     cleared_drafts: int = 0
-    # 持有階段的是哪個瀏覽器（票，#288）。它閒置逾時退出時，階段跟著釋放（#48）。
+    # 持有階段的是哪個瀏覽器（票，#288）。它閒置逾時退出時，階段跟著釋放（#48）；續期、接續、釋放與
+    # 寫入都只對它有效（F23）。階段一沒了就清掉，和階段一起改，不會留著指向已經不持有的票。
     holder_ticket: str | None = None
+    # 寫入、釋放、回收與閒置退出排隊用的那一把鎖（F23）。
+    guard: Guard = field(default_factory=Guard)
+    # 拿著鎖的那一段的時間（不在鎖裡是 None）。只在拿著鎖時讀寫。
+    _moment: datetime | None = field(default=None, init=False, repr=False)
+
+    @contextmanager
+    def locked(self) -> Iterator[datetime]:
+        """拿著鎖做一段事，交出這一段的時間：**拿號碼牌那一刻**讀的時鐘（請求到達的時間）。
+
+        鎖先到先處理，所以執行順序就是到達順序、時間自然不倒退；持有者的續期排在自己的長寫入後面
+        時，用的是它到達的時間，排隊的時間不算在它頭上。同一個執行緒重入時沿用外層的時間——一段裡
+        只有一個「現在」。沒有跨請求共用的「最晚時間」：撥回時鐘就是撥回（F23 審查後）。
+        """
+        arrived = self.guard.enter(self.clock)
+        outer = arrived is not None
+        try:
+            if outer:
+                self._moment = arrived
+            yield cast(datetime, self._moment)
+        finally:
+            if outer:
+                self._moment = None
+            self.guard.leave()
+
+    def now(self) -> datetime:
+        """現在：拿著鎖的那一段裡是那一段的時間，否則排隊拿一次號碼牌、讀那一刻的時鐘。"""
+        with self.locked() as moment:
+            return moment
+
+    def holds(self, token: str, ticket: str | None) -> bool:
+        """這個識別碼是目前階段的、而且送的就是取得它的那個瀏覽器（F23：識別碼綁瀏覽器）。"""
+        return ticket is not None and self.holder_ticket == ticket and self.lock.holds(token)
+
+    def take(self, holder: Identity, ticket: str | None, now: datetime) -> EditingSession:
+        """以 `holder` 取得階段並記下是哪個瀏覽器取得的；已被占用丟 `SessionHeld`。"""
+        session = self.lock.acquire(holder, now)
+        self.holder_ticket = ticket
+        return session
+
+    def give_up(self, token: str, ticket: str | None) -> bool:
+        """持有的那個瀏覽器釋放；識別碼不對、或送的是別的瀏覽器 → 什麼都不做、回 False。"""
+        if not self.holds(token, ticket):
+            return False
+        self.lock.release(token)
+        self.holder_ticket = None
+        return True
 
 
 def seat_browsers(
@@ -80,13 +186,11 @@ def seat_browsers(
         if current is None or box.holder_ticket != ticket:
             return
         box.lock.release(current.token)
+        box.holder_ticket = None
         box.cleared_drafts += len(stage_box["stage"].drafts)
         stage_box["stage"] = discard(stage_box["stage"])
 
-    def now() -> datetime:
-        return box.clock()
-
-    return Browsers(now, idle_timeout, release_idle)
+    return Browsers(box.now, idle_timeout, release_idle, locked=box.locked)
 
 
 def register_session(
@@ -107,8 +211,10 @@ def register_session(
         **這不是登入。** 沒有密碼、不驗證、角色是自我宣告（ADR-00000020）。身分記在這個瀏覧器的
         票上；第一次來會發票（回應的 Set-Cookie）。
         """
-        identity = _checked_identity(browsers, box, stage_box, payload)
-        browsers.declare(request, response, identity)
+        # 「別人有沒有持有」和「記下身分」是一段：中間不讓別人插進來取得（F23）。
+        with box.locked():
+            identity = _checked_identity(browsers, box, stage_box, payload)
+            browsers.declare(request, response, identity)
         return _as_session(identity)
 
     @app.get("/api/session")
@@ -142,70 +248,162 @@ def register_lock(
     @app.get("/api/session/lock")
     def lock_status() -> dict[str, object]:
         """誰在編輯（無人→`held: false`）。不回識別碼。"""
-        sweep(browsers, stage_box, box)
-        return _status(box)
+        with box.locked():
+            sweep(browsers, stage_box, box)
+            return _status(box)
 
     @app.post("/api/session/lock")
-    def acquire_lock(
-        request: Request, identity: Identity | None = Depends(browsers.current)
-    ) -> dict[str, object]:
-        """以這個瀏覽器的身分取得編輯階段；已被占用→409（持有者姓名、email、開始時間）。"""
-        sweep(browsers, stage_box, box)
-        if identity is None:
-            raise HTTPException(
-                status_code=409,
-                detail="尚未設定身分，無法取得編輯階段。"
-                "下一步：先 POST /api/session 設定姓名與 email",
-            )
-        try:
-            session = box.lock.acquire(identity, box.clock())
-        except SessionHeld as error:
-            raise HTTPException(status_code=409, detail=_held_detail(error)) from error
-        box.holder_ticket = ticket_of(request)
-        cleared, box.cleared_drafts = box.cleared_drafts, 0
+    def acquire_lock(request: Request) -> dict[str, object]:
+        """以這個瀏覽器的身分取得編輯階段；已被占用→409（持有者姓名、email、開始時間）。回收、
+        查身分、取得在同一段鎖裡（F23）。"""
+        with box.locked() as now:
+            sweep(browsers, stage_box, box)
+            identity = browsers.current(request)
+            if identity is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="尚未設定身分，無法取得編輯階段。"
+                    "下一步：先 POST /api/session 設定姓名與 email",
+                )
+            try:
+                session = box.take(identity, ticket_of(request), now)
+            except SessionHeld as error:
+                raise HTTPException(status_code=409, detail=_held_detail(error)) from error
+            cleared, box.cleared_drafts = box.cleared_drafts, 0
         return {**_session_view(session), "token": session.token, "cleared_drafts": cleared}
 
     @app.post("/api/session/lock/renew")
-    def renew_lock(payload: TokenInput) -> dict[str, object]:
+    def renew_lock(payload: TokenInput, request: Request) -> dict[str, object]:
         """續期；階段已失效→410（不替你重新取得，前端轉唯讀並說明）。回應帶這個分頁接下來要用
-        的識別碼（`token`）：一般續期不變，`resume`（重新整理後接續）會換新的。"""
-        # 先在 API 層 sweep：逾時的階段要在這裡清草稿、清身分並記下數量——SessionLock 自己的
-        # sweep 只會把階段丟掉，之後就沒人知道有東西該清。
-        sweep(browsers, stage_box, box)
-        try:
-            keep = box.lock.resume if payload.resume else box.lock.renew
-            session = keep(payload.token, box.clock())
-        except SessionExpired as error:
-            raise HTTPException(status_code=410, detail=str(error)) from error
-        return {**_session_view(session), "token": session.token}
+        的識別碼（`token`）：一般續期不變，`resume`（重新整理後接續）會換新的。只對取得這個階段的
+        瀏覽器有效（F23）：別的瀏覽器拿著識別碼來續期、接續，和識別碼失效一樣是 410。"""
+        with box.locked():
+            return _renew(browsers, stage_box, box, payload, ticket_of(request))
 
     @app.post("/api/session/lock/release")
-    async def release_lock_beacon(request: Request) -> dict[str, object]:
+    def release_lock_beacon(
+        request: Request, token: str = Depends(_beacon_token)
+    ) -> dict[str, object]:
         """頁面關閉時以 `navigator.sendBeacon` 釋放。beacon 只能 POST，且為了不觸發跨來源預檢
-        （關頁當下預檢多半來不及）以 text/plain 送——所以這裡自己把 body 當 JSON 解析。"""
-        try:
-            token = json.loads(await request.body())["token"]
-        except (ValueError, KeyError, TypeError) as error:
-            raise HTTPException(
-                status_code=422,
-                detail="釋放編輯階段的請求內容讀不出識別碼（需要 {\"token\": …}）。"
-                "下一步：送出這個分頁取得階段時拿到的 token",
-            ) from error
-        return {"released": box.lock.release(str(token))}
+        （關頁當下預檢多半來不及）以 text/plain 送——body 由 `_beacon_token` 自己解析。
+
+        本體是同步的：拿鎖要在執行緒池裡拿，在事件迴圈上拿會卡住整個服務（F23）。讀 body 是 async，
+        放在依賴裡、不拿鎖。"""
+        with box.locked():
+            return {"released": box.give_up(token, ticket_of(request))}
 
     @app.delete("/api/session/lock")
-    def release_lock(payload: TokenInput) -> dict[str, object]:
-        """持有者主動釋放（正常關閉頁面）。身分留著：重新整理也會觸發釋放，同一個人回來不必再填。"""
-        return {"released": box.lock.release(payload.token)}
+    def release_lock(payload: TokenInput, request: Request) -> dict[str, object]:
+        """持有者主動釋放（正常關閉頁面）。身分留著：重新整理也會觸發釋放，同一個人回來不必再填。
+        只對取得這個階段的瀏覽器有效（F23）。"""
+        with box.locked():
+            return {"released": box.give_up(payload.token, ticket_of(request))}
+
+
+async def _beacon_token(request: Request) -> str:
+    """beacon 的 body（text/plain 的 JSON）裡的識別碼；讀不出來 422。"""
+    try:
+        return str(json.loads(await request.body())["token"])
+    except (ValueError, KeyError, TypeError) as error:
+        raise HTTPException(
+            status_code=422,
+            detail="釋放編輯階段的請求內容讀不出識別碼（需要 {\"token\": …}）。"
+            "下一步：送出這個分頁取得階段時拿到的 token",
+        ) from error
+
+
+def _no_earlier_than_last_renewal(box: LockBox) -> datetime:
+    """續期用的時間：這一段的時間，但不早於目前階段的最後續期時間——最後續期時間只增不減，系統
+    時間被調回去也不會把它寫回過去（F23）。"""
+    now = box.now()
+    current = box.lock.current
+    return current.renewed_at if current is not None and current.renewed_at > now else now
+
+
+def _renew(
+    browsers: Browsers,
+    stage_box: dict[str, Stage],
+    box: LockBox,
+    payload: TokenInput,
+    ticket: str | None,
+) -> dict[str, object]:
+    # 先在 API 層 sweep：逾時的階段要在這裡清草稿、清身分並記下數量——SessionLock 自己的
+    # sweep 只會把階段丟掉，之後就沒人知道有東西該清。
+    sweep(browsers, stage_box, box)
+    try:
+        if not box.holds(payload.token, ticket):
+            raise session_gone(payload.token)
+        keep = box.lock.resume if payload.resume else box.lock.renew
+        session = keep(payload.token, _no_earlier_than_last_renewal(box))
+    except SessionExpired as error:
+        raise HTTPException(status_code=410, detail=str(error)) from error
+    return {**_session_view(session), "token": session.token}
 
 
 def sweep(browsers: Browsers, stage_box: dict[str, Stage], box: LockBox) -> None:
     """回收逾時的階段：草稿一併清除並記下數量（下次取得時回報）。先讓閒置逾時的瀏覽器退出（#48，
     它持有的階段在那裡釋放），再回收續期逾時的。續期逾時不清身分（分頁斷了，人不一定走了）。"""
-    browsers.sweep()
-    for _expired in box.lock.sweep(box.clock()):
-        box.cleared_drafts += len(stage_box["stage"].drafts)
-        stage_box["stage"] = discard(stage_box["stage"])
+    with box.locked() as now:
+        browsers.sweep()
+        for _expired in box.lock.sweep(now):
+            box.holder_ticket = None
+            box.cleared_drafts += len(stage_box["stage"].drafts)
+            stage_box["stage"] = discard(stage_box["stage"])
+
+
+@dataclass
+class Editing:
+    """寫入的門檻（F23）：只接受持有編輯權的那個分頁。
+
+    會寫入的端點都以 `with editing.write(request, "<動作>") as identity:` 包住「業務檢查＋寫入」。
+    請求要在 `X-CM-Editing-Token` 帶目前編輯階段的識別碼，而且送請求的瀏覽器票就是取得它的那一張
+    （另一個瀏覽器拿到識別碼也不行）。不寫入的端點（讀取、身分、編輯階段本身、偵測）不經過這裡。
+    """
+
+    browsers: Browsers
+    stage_box: dict[str, Stage]
+    box: LockBox
+
+    @contextmanager
+    def write(self, request: Request, action: str) -> Iterator[Identity]:
+        """依序：回收逾時的 → 帶了識別碼但不對（已釋放、逾時被收回、被接手、別的瀏覽器）→ 410
+        `editing_lost`；沒帶也沒身分 → 409 先設身分；有身分沒帶 → 410 `editing_missing`。之後才是
+        角色（403）與各端點自己的檢查，都在 yield 之內。"""
+        # 「檢查＋寫入」整段拿著鎖（F23 條件 2）：和釋放、回收、接手排隊，檢查通過之後不會有人在
+        # 寫入之前把編輯權拿走。
+        with self.box.locked():
+            sweep(self.browsers, self.stage_box, self.box)
+            identity = self.browsers.current(request)
+            token = request.headers.get(EDITING_HEADER, "")
+            if token and not self.box.holds(token, ticket_of(request)):
+                raise _refused("editing_lost", _LOST.format(action=action))
+            if not token and identity is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"尚未設定身分，無法{action}。"
+                    "下一步：先 POST /api/session 設定姓名與 email",
+                )
+            if not token:
+                raise _refused("editing_missing", _MISSING.format(action=action))
+            if identity is None:
+                # 同一段裡只有一個「現在」：持有者的票閒置退出時階段已一起釋放（release_idle），
+                # 走不到這裡；萬一走到，照失效說。
+                raise _refused("editing_lost", _LOST.format(action=action))
+            yield identity
+
+
+_LOST = (
+    "這個分頁的編輯權已失效（已釋放或退出、逾時被收回，或已被別人接手），這次的{action}沒有寫進去。"
+    "下一步：重新整理頁面以重新取得編輯權；有人正在編輯時會以唯讀進入"
+)
+_MISSING = (
+    "這個分頁沒有編輯權，這次的{action}沒有寫進去——一次只有一個分頁能修改。"
+    "下一步：重新整理頁面；有人正在編輯時，等對方離開或逾時釋放後再試"
+)
+
+
+def _refused(kind: str, message: str) -> HTTPException:
+    return HTTPException(status_code=410, detail={"kind": kind, "message": message})
 
 
 def _checked_identity(

@@ -21,6 +21,7 @@
 import re
 import secrets
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timedelta
 
 from fastapi import Request, Response
@@ -39,7 +40,10 @@ class Browsers:
     """每個瀏覽器各自的身分，以票為鍵。掛在 app 上（同 stage_box），同一行程起兩個 app 互不相見。
 
     `idle_timeout` 是閒置逾時（None＝不逾時，開發模式）；`clock` 是注入的時鐘（T13：讀系統時間的
-    實作測不了逾時）。`on_timeout(票)` 在一張票剛因閒置退出時被呼叫一次。
+    實作測不了逾時）。`on_timeout(票)` 在一張票剛因閒置退出時被呼叫一次。`locked` 給出和編輯階段
+    共用的那一把鎖（F23）：身分表的讀寫和寫入、釋放、回收排在一起，也不會在走訪時被別的執行緒改掉；
+    `clock` 在鎖裡讀到的是那一段的時間。每個操作只讀一次時鐘——同一個請求裡回收與查身分用同一個
+    「現在」。
     """
 
     def __init__(
@@ -47,49 +51,63 @@ class Browsers:
         clock: Callable[[], datetime],
         idle_timeout: timedelta | None = None,
         on_timeout: Callable[[str], None] = lambda _ticket: None,
+        locked: Callable[[], AbstractContextManager[object]] = nullcontext,
     ) -> None:
         self._seats = IdleSeats(idle_timeout)
         self._clock = clock
         self._on_timeout = on_timeout
+        self._locked = locked
 
     def current(self, request: Request) -> Identity | None:
         """這個請求的瀏覽器宣告過的身分；沒票、票上沒身分、或已閒置逾時回 None。給端點以
         `Depends` 取用。"""
-        self.sweep()
-        ticket = ticket_of(request)
-        return self._seats.identity(ticket, self._clock()) if ticket else None
+        with self._locked():
+            now = self._clock()
+            self._expire(now)
+            ticket = ticket_of(request)
+            return self._seats.identity(ticket, now) if ticket else None
 
     def declare(self, request: Request, response: Response, identity: Identity) -> None:
         """記下這個瀏覽器的身分。沒票（或票的形狀不對）就發一張新的、寫進回應的 cookie。"""
         ticket = ticket_of(request) or secrets.token_urlsafe(32)
-        self._seats.declare(ticket, identity, self._clock())
+        with self._locked():
+            self._seats.declare(ticket, identity, self._clock())
         response.set_cookie(COOKIE, ticket, httponly=True, samesite="lax", path="/")
 
     def sweep(self) -> None:
         """讓閒置逾時的瀏覽器退出，並逐張交給 `on_timeout`。任何會看身分或編輯階段的請求都先掃
         一次，所以逾時的人在別人碰到他留下的東西之前就已經退出。"""
-        for ticket in self._seats.expire(self._clock()):
+        with self._locked():
+            self._expire(self._clock())
+
+    def _expire(self, now: datetime) -> None:
+        for ticket in self._seats.expire(now):
             self._on_timeout(ticket)
 
     def active(self, request: Request) -> None:
         """這個瀏覽器的人剛才有在操作：重新起算閒置。已逾時就不動（逾時是退出，不是暫停）。"""
-        self.sweep()
-        ticket = ticket_of(request)
-        if ticket:
-            self._seats.touch(ticket, self._clock())
+        with self._locked():
+            now = self._clock()
+            self._expire(now)
+            ticket = ticket_of(request)
+            if ticket:
+                self._seats.touch(ticket, now)
 
     def idle_view(self, request: Request) -> dict[str, object]:
         """這個瀏覽器的閒置狀態，給介面顯示提示用：逾時與提示的秒數（不逾時為 null）、還剩幾秒
         （沒身分為 null）、是不是剛因閒置被退出。判定在後端，介面只顯示。"""
-        self.sweep()
         ticket = ticket_of(request) or ""
         timeout = self._seats.timeout
-        remaining = self._seats.remaining(ticket, self._clock())
+        with self._locked():
+            now = self._clock()
+            self._expire(now)
+            remaining = self._seats.remaining(ticket, now)
+            timed_out = self._seats.timed_out(ticket)
         return {
             "timeout_seconds": None if timeout is None else timeout.total_seconds(),
             "warn_seconds": None if timeout is None else idle_warning(timeout).total_seconds(),
             "remaining_seconds": None if remaining is None else remaining.total_seconds(),
-            "timed_out": self._seats.timed_out(ticket),
+            "timed_out": timed_out,
         }
 
 

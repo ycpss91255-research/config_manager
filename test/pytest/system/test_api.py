@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +30,7 @@ import urllib.request
 import pytest
 
 import config_manager
+from config_manager.api import drafts as drafts_api
 from config_manager.core.allowed_roots import load as load_allowed_roots
 from config_manager.api.lock import LockBox
 from config_manager.core.errors import UidHorizonReached
@@ -71,26 +73,59 @@ def _get(api, path):
         return json.loads(response.read().decode("utf-8"))
 
 
-def _post(api, path, payload):
-    request = urllib.request.Request(
-        f"{api}{path}",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"content-type": "application/json"},
-        method="POST",
-    )
-    with _browser.open(request, timeout=_TIMEOUT) as response:
-        return json.loads(response.read().decode("utf-8"))
+# 寫入只接受持有編輯權的那個分頁（F23）：輔助函式寫入時自己「取得 → 帶標頭送出 → 釋放」。不寫入的
+# POST（身分、編輯階段本身、偵測）不帶。取不到編輯權（沒身分、別人正持有）就照樣送、不帶識別碼——
+# 讓後端自己說為什麼擋（尚未設定身分、沒有編輯權）。
+_EDITING_HEADER = "X-CM-Editing-Token"
+_NOT_A_WRITE = ("/api/session", "/api/inspect")
+_ACQUIRE = object()  # 預設：寫入時自己取得；測試要自帶（或刻意不帶）識別碼時傳字串或 None
 
 
-def _delete(api, path, payload):
-    request = urllib.request.Request(
-        f"{api}{path}",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"content-type": "application/json"},
-        method="DELETE",
-    )
-    with _browser.open(request, timeout=_TIMEOUT) as response:
-        return json.loads(response.read().decode("utf-8"))
+def _writes(method, path):
+    return method != "GET" and not path.startswith(_NOT_A_WRITE)
+
+
+def _open_json(opener, url, method, payload, *, token=None):
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {"content-type": "application/json"}
+    if token:
+        headers[_EDITING_HEADER] = token
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with opener.open(request, timeout=_TIMEOUT) as response:
+        body = response.read().decode("utf-8")
+        return (json.loads(body) if body else None), response.headers
+
+
+@contextlib.contextmanager
+def _holding(opener, api):
+    """這個瀏覽器取得編輯權、交出識別碼，做完就釋放；取不到交出 None（不吞掉寫入本身的錯）。"""
+    try:
+        held, _ = _open_json(opener, f"{api}/api/session/lock", "POST", None)
+    except urllib.error.HTTPError:
+        held = None
+    try:
+        yield held and held["token"]
+    finally:
+        if held:
+            _open_json(opener, f"{api}/api/session/lock", "DELETE", {"token": held["token"]})
+
+
+def _send(api, method, path, payload=None, *, token=_ACQUIRE):
+    """這個瀏覽器（`_browser`）送一個請求、回解析後的 body；HTTP 錯誤照樣丟 HTTPError。寫入預設自己
+    取得編輯權；測試要自帶識別碼（或刻意不帶：None）時傳 `token`。"""
+    url = f"{api}{path}"
+    if token is _ACQUIRE and _writes(method, path):
+        with _holding(_browser, api) as held:
+            return _open_json(_browser, url, method, payload, token=held)[0]
+    return _open_json(_browser, url, method, payload, token=None if token is _ACQUIRE else token)[0]
+
+
+def _post(api, path, payload, token=_ACQUIRE):
+    return _send(api, "POST", path, payload, token=token)
+
+
+def _delete(api, path, payload, token=_ACQUIRE):
+    return _send(api, "DELETE", path, payload, token=token)
 
 
 def _detail(error):
@@ -432,6 +467,22 @@ def test_cli_import_goes_through_the_same_endpoint_as_the_page(api, sources_root
     # 真的納管了：它的 target 出現在清單裡（走同一支端點，不是 CLI 自己讀清單檔）。
     targets = [row["target"] for row in _get(api, "/api/configs")]
     assert source in targets
+
+
+def test_cli_import_is_refused_while_someone_edits_even_the_same_person(api, sources_root):
+    # F23：一次只有一個編輯階段——同一個人在頁面上編輯時，CLI 也不繞過它寫進去；說出是誰。
+    _set_session(api)
+    held = _lock(api)
+    source = _write_source(sources_root, "cli_held.yaml")
+    try:
+        result = _cli(
+            "import", "--api", api, "--source", source, "--format", "yaml", *_AUTHOR_FLAGS
+        )
+    finally:
+        _lock(api, "DELETE", payload={"token": held["token"]})
+
+    targets = [row["target"] for row in _get(api, "/api/configs")]
+    assert (result.returncode, "陳小明" in result.stderr, source in targets) == (1, True, False)
 
 
 def test_browse_lists_a_directory_within_the_whitelist(api, sources_root):
@@ -1531,7 +1582,10 @@ def test_onboard_after_the_uid_horizon_is_a_500_with_a_message(api, sources_root
 
 
 def _clear_drafts(api):
-    # 階段掛在 app 上、跨規格存活；每則自己清，不靠「前一則有清」（#153）。
+    # 階段掛在 app 上、跨規格存活；每則自己清，不靠「前一則有清」（#153）。捨棄也要編輯權（F23），
+    # 取得要有身分：這個瀏覽器還沒說自己是誰才設——不改掉前一則刻意設的角色。
+    if _get(api, "/api/session") is None:
+        _set_session(api)
     _delete(api, "/api/drafts", {})
 
 
@@ -2108,9 +2162,7 @@ def test_unmanaging_removes_the_config_from_the_list_and_keeps_the_target_file(a
     _clear_drafts(api)
     entry = _onboard(api, sources_root, "unmanage.yaml", b"count: 1\n")
 
-    request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
-    with _browser.open(request, timeout=_TIMEOUT) as response:
-        removed = json.loads(response.read().decode("utf-8"))
+    removed = _send(api, "DELETE", f"/api/configs/{entry['uid']}")
 
     assert removed["uid"] == entry["uid"]
     assert entry["uid"] not in [row["uid"] for row in _get(api, "/api/configs")]
@@ -2124,9 +2176,7 @@ def test_unmanaging_records_an_unmanage_change_by_the_session_identity(api, sour
     _clear_drafts(api)
     entry = _onboard(api, sources_root, "unmanage_rec.yaml", b"count: 1\n")
 
-    request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
-    with _browser.open(request, timeout=_TIMEOUT):
-        pass
+    _send(api, "DELETE", f"/api/configs/{entry['uid']}")
 
     latest = subprocess.run(
         ["git", "-C", repo, "log", "-1", "--format=%s|%an <%ae>"],
@@ -2141,9 +2191,8 @@ def test_unmanaging_with_a_pending_draft_is_a_conflict(api, sources_root):
     entry = _onboard(api, sources_root, "unmanage_draft.yaml", b"count: 1\n")
     _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
 
-    request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
     with pytest.raises(urllib.error.HTTPError) as exc:
-        _browser.open(request, timeout=_TIMEOUT)
+        _send(api, "DELETE", f"/api/configs/{entry['uid']}")
 
     assert exc.value.code == _CONFLICT
     _clear_drafts(api)
@@ -2151,10 +2200,8 @@ def test_unmanaging_with_a_pending_draft_is_a_conflict(api, sources_root):
 
 def test_unmanaging_an_unknown_uid_is_not_found(api):
     _set_session(api)
-    request = urllib.request.Request(f"{api}/api/configs/zzzzzzz9", method="DELETE")
-
     with pytest.raises(urllib.error.HTTPError) as exc:
-        _browser.open(request, timeout=_TIMEOUT)
+        _send(api, "DELETE", "/api/configs/zzzzzzz9")
 
     assert exc.value.code == _NOT_FOUND
 
@@ -2404,9 +2451,7 @@ def test_search_reflects_promoted_changes_and_unmanaged_configs(api, sources_roo
     assert _search(api, "111", "參數值")["hits"] == []
     assert [h["uid"] for h in _search(api, "222", "參數值")["hits"]] == [entry["uid"]]
 
-    request = urllib.request.Request(f"{api}/api/configs/{entry['uid']}", method="DELETE")
-    with _browser.open(request, timeout=_TIMEOUT):
-        pass
+    _send(api, "DELETE", f"/api/configs/{entry['uid']}")
     assert _search(api, "222", "參數值")["hits"] == []
 
 
@@ -2423,12 +2468,11 @@ def test_search_with_an_unknown_scope_is_unprocessable_not_empty(api):
 
 
 def _request_as(opener, api, path, payload=None, method="POST"):
-    data = None if payload is None else json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        f"{api}{path}", data=data, headers={"content-type": "application/json"}, method=method
-    )
-    with opener.open(request, timeout=_TIMEOUT) as response:
-        return json.loads(response.read().decode("utf-8")), response.headers
+    """以 `opener` 這個瀏覽器送；寫入時它自己取得編輯權（F23：識別碼只對取得它的瀏覽器有效）。"""
+    if _writes(method, path):
+        with _holding(opener, api) as held:
+            return _open_json(opener, f"{api}{path}", method, payload, token=held)
+    return _open_json(opener, f"{api}{path}", method, payload)
 
 
 def test_an_identity_belongs_to_the_browser_that_entered_it(api):
@@ -2724,6 +2768,520 @@ def test_the_page_can_release_its_session_with_a_plain_text_beacon(api):
     assert _lock(api, "GET")["held"] is False
 
 
+# ── T9：寫入只接受持有編輯權的那個分頁（F23）─────────────────────────────────────
+# 會寫入的 14 條路由要在 X-CM-Editing-Token 帶目前編輯階段的識別碼，而且送請求的瀏覽器就是取得
+# 它的那一個。payload 挑「舊後端會因為別的原因拒絕、不留副作用」的值（不存在的 uid／路徑）。
+
+_WRITES = [
+    ("POST", "/api/configs", {"source_path": "/nonexistent/f23.yaml", "format": "yaml"}),
+    ("DELETE", "/api/configs/zzzzzzz9", None),
+    ("POST", "/api/allowed-roots", {"prefix": "/nonexistent/f23"}),
+    ("DELETE", "/api/allowed-roots", {"prefix": "/nonexistent/f23"}),
+    ("POST", "/api/drafts", {"uid": "zzzzzzz9", "edits": {}}),
+    ("DELETE", "/api/drafts", None),
+    ("DELETE", "/api/drafts/zzzzzzz9", None),
+    ("POST", "/api/promote", {}),
+    ("POST", "/api/configs/zzzzzzz9/revert", {"version": "0123456"}),
+    ("POST", "/api/configs/zzzzzzz9/resolve", {"action": "overwrite"}),
+    ("POST", "/api/configs/zzzzzzz9/apply", None),
+    ("POST", "/api/configs/zzzzzzz9/schema", None),
+    ("POST", "/api/configs/zzzzzzz9/types", {"path": "x", "type": "int"}),
+    ("POST", "/api/configs/zzzzzzz9/attributes", {"name": "x", "hostname": "h"}),
+]
+_WRITE_ROUTES = {
+    ("POST", "/api/configs"), ("DELETE", "/api/configs/{uid}"),
+    ("POST", "/api/allowed-roots"), ("DELETE", "/api/allowed-roots"),
+    ("POST", "/api/drafts"), ("DELETE", "/api/drafts"), ("DELETE", "/api/drafts/{uid}"),
+    ("POST", "/api/promote"), ("POST", "/api/configs/{uid}/revert"),
+    ("POST", "/api/configs/{uid}/resolve"), ("POST", "/api/configs/{uid}/apply"),
+    ("POST", "/api/configs/{uid}/schema"), ("POST", "/api/configs/{uid}/types"),
+    ("POST", "/api/configs/{uid}/attributes"),
+}
+# 不寫入的 POST、編輯階段自己的端點：不看識別碼。
+_NOT_WRITE_ROUTES = {
+    ("POST", "/api/inspect"), ("POST", "/api/session"), ("POST", "/api/session/activity"),
+    ("POST", "/api/session/lock"), ("DELETE", "/api/session/lock"),
+    ("POST", "/api/session/lock/renew"), ("POST", "/api/session/lock/release"),
+}
+
+
+def _refusal(call):
+    """呼叫 `call`，回 (狀態碼, detail 的 kind)；沒被擋回 (200, None)。"""
+    try:
+        call()
+    except urllib.error.HTTPError as error:
+        detail = _detail(error)
+        return error.code, detail.get("kind") if isinstance(detail, dict) else None
+    return 200, None
+
+
+def test_every_route_that_changes_something_is_a_write_or_explicitly_not_one(api):
+    # 護欄：之後新增一條會寫入的路由卻沒歸類，這一則會紅（不分修正前後，一直成立）。
+    paths = _get(api, "/api/openapi.json")["paths"]
+    changing = {
+        (method.upper(), path)
+        for path, operations in paths.items() for method in operations if method != "get"
+    }
+
+    assert changing == _WRITE_ROUTES | _NOT_WRITE_ROUTES
+
+
+@pytest.mark.parametrize(("method", "path", "payload"), _WRITES)
+def test_a_write_without_the_editing_token_is_refused(api, method, path, payload):
+    # 有身分、沒帶識別碼（唯讀分頁、還沒取得）：410 editing_missing，這次沒有寫進去。
+    _clear_drafts(api)
+    _set_session(api)
+
+    refused = _refusal(lambda: _send(api, method, path, payload, token=None))
+
+    assert refused == (_GONE, "editing_missing")
+
+
+def test_a_released_token_cannot_write_and_nothing_changes(api, sources_root):
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f23_released.yaml", b"count: 1\n")
+    session = _lock(api)
+    _lock(api, "DELETE", payload={"token": session["token"]})
+
+    refused = _refusal(lambda: _post(
+        api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"]
+    ))
+
+    assert (refused, _get(api, "/api/drafts")["count"]) == ((_GONE, "editing_lost"), 0)
+
+
+def test_after_a_takeover_the_old_token_cannot_write_into_the_new_holders_session(
+    api, sources_root
+):
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f23_takeover.yaml", b"count: 1\n")
+    session = _lock(api)
+    _lock(api, "DELETE", payload={"token": session["token"]})
+    other = _another_browser()
+    _request_as(other, api, "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
+    theirs, _ = _open_json(other, f"{api}/api/session/lock", "POST", None)
+    try:
+        refused = _refusal(lambda: _post(
+            api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"]
+        ))
+        in_their_session = _get(api, "/api/drafts")["count"]
+    finally:
+        _open_json(other, f"{api}/api/session/lock", "DELETE", {"token": theirs["token"]})
+        _set_session(api)
+
+    assert (refused, in_their_session) == ((_GONE, "editing_lost"), 0)
+
+
+def test_another_browser_carrying_the_holders_token_cannot_write(api, sources_root):
+    # 識別碼綁瀏覽器：另一個（有身分的）瀏覽器拿到持有者的識別碼來送，一樣擋——擋下的原因是票不對，
+    # 不是沒身分。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f23_borrowed.yaml", b"count: 1\n")
+    other = _another_browser()
+    _request_as(other, api, "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
+    session = _lock(api)
+    try:
+        refused = _refusal(lambda: _open_json(
+            other, f"{api}/api/drafts", "POST", {"uid": entry["uid"], "edits": {"count": 2}},
+            token=session["token"],
+        ))
+        drafts = _get(api, "/api/drafts")["count"]
+    finally:
+        _lock(api, "DELETE", payload={"token": session["token"]})
+
+    assert (refused, drafts) == ((_GONE, "editing_lost"), 0)
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_another_browser_cannot_renew_or_resume_the_holders_session(api, resume):
+    _set_session(api)
+    other = _another_browser()
+    _request_as(other, api, "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
+    session = _lock(api)
+    current = session["token"]  # 收尾要放掉的是「現在有效」的那一個
+    try:
+        try:
+            theirs, _ = _open_json(
+                other, f"{api}/api/session/lock/renew", "POST",
+                {"token": current, "resume": resume},
+            )
+            # 沒擋的話，別的瀏覽器接續會換掉識別碼：收尾用新的那一個——否則這一則的失敗會留下一個
+            # 沒人放的編輯階段，把之後的規格一起拖下水。
+            current = theirs["token"]
+            refused = 200
+        except urllib.error.HTTPError as error:
+            refused = error.code
+        still = _refusal(lambda: _lock(
+            api, path="/api/session/lock/renew", payload={"token": session["token"]}
+        ))
+    finally:
+        _lock(api, "DELETE", payload={"token": current})
+
+    assert (refused, still) == (_GONE, (200, None))
+
+
+@pytest.mark.parametrize("beacon", [False, True])
+def test_another_browser_cannot_release_the_holders_session(api, beacon):
+    _set_session(api)
+    other = _another_browser()
+    _request_as(other, api, "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
+    session = _lock(api)
+    body = json.dumps({"token": session["token"]}).encode("utf-8")
+    request = (
+        urllib.request.Request(
+            f"{api}/api/session/lock/release", data=body,
+            headers={"content-type": "text/plain;charset=UTF-8"}, method="POST",
+        )
+        if beacon else
+        urllib.request.Request(
+            f"{api}/api/session/lock", data=body,
+            headers={"content-type": "application/json"}, method="DELETE",
+        )
+    )
+    try:
+        with other.open(request, timeout=_TIMEOUT) as response:
+            released = json.loads(response.read().decode("utf-8"))
+        held = _lock(api, "GET")["held"]
+    finally:
+        _lock(api, "DELETE", payload={"token": session["token"]})
+
+    assert (released, held) == ({"released": False}, True)
+
+
+def test_after_an_idle_timeout_the_old_token_is_refused_as_lost_editing(api, sources_root):
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip(_IN_PLACE_ONLY)
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f23_idle.yaml", b"count: 1\n")
+    with _later(api) as (session, ahead):
+        ahead(10)
+
+        refused = _refusal(lambda: _post(
+            api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"]
+        ))
+
+    assert refused == (_GONE, "editing_lost")
+
+
+def test_after_a_renew_timeout_the_old_token_cannot_write(api, sources_root):
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip(_IN_PLACE_ONLY)
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f23_renew_timeout.yaml", b"count: 1\n")
+    session = _lock(api)
+    box = _find_lock_box()
+    real_clock = box.clock
+    try:
+        # 過了續期逾時（150 秒）、還沒到閒置逾時（10 分鐘）：收回的是續期逾時這一條。
+        box.clock = lambda: real_clock() + datetime.timedelta(minutes=3)
+        refused = _refusal(lambda: _post(
+            api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"]
+        ))
+        drafts = _get(api, "/api/drafts")["count"]
+    finally:
+        box.clock = real_clock
+        if box.lock.current is not None:
+            box.lock.release(box.lock.current.token)
+        _set_session(api)
+
+    assert (refused, drafts) == ((_GONE, "editing_lost"), 0)
+
+
+# ── T9：檢查編輯權與寫入是一段，和釋放、接手排隊；時間不倒退（F23）──────────────────────
+# 每則自己起服務（`api_alone`）：伺服器那邊的執行緒會停在中間。停住的是「真正動手的那個函式」；
+# 「有請求開始排隊」用鎖上的 on_wait 觀察（只觀察、不影響誰先誰後）。每個等待都有上限，finally 一律
+# 放行。
+
+_WAIT = 5
+
+
+def _in_background(call):
+    """在另一個執行緒裡送請求；回 (執行緒, 結果)。結果是 {"value": …}、{"refused": (碼, detail)}
+    或 {"failed": 說明}。"""
+    outcome = {}
+
+    def run():
+        try:
+            outcome["value"] = call()
+        except urllib.error.HTTPError as error:
+            outcome["refused"] = (error.code, _detail(error))
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            outcome["failed"] = repr(error)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, outcome
+
+
+def _first(event, thread):
+    """等到 `event` 發生或 `thread` 做完，先到先算，最多 `_WAIT` 秒。"""
+    deadline = time.monotonic() + _WAIT
+    while time.monotonic() < deadline and not event.is_set() and thread.is_alive():
+        time.sleep(0.01)
+
+
+def _outcome(result):
+    """背景請求的結果寫成 (狀態碼, kind)：成功是 (200, None)。"""
+    if "refused" in result:
+        code, detail = result["refused"]
+        return code, detail.get("kind") if isinstance(detail, dict) else None
+    return (200, None) if "value" in result else (None, result.get("failed"))
+
+
+def _pause(original):
+    """`original` 的一個「先停在閘門前」的版本：回 (換上的函式, 進到閘門的事件, 閘門)。"""
+    entered, gate = threading.Event(), threading.Event()
+
+    def paused(*args, **kwargs):
+        entered.set()
+        gate.wait(_WAIT)
+        return original(*args, **kwargs)
+
+    return paused, entered, gate
+
+
+def _ready(base, sources_root, name):
+    """在這個服務上設身分、納管一份 count: 1、取得編輯權；回 (條目, 取得的回應)。"""
+    _set_session(base)
+    entry = _onboard(base, sources_root, name, b"count: 1\n")
+    return entry, _lock(base)
+
+
+def _beacon(base, token):
+    request = urllib.request.Request(
+        f"{base}/api/session/lock/release", data=json.dumps({"token": token}).encode("utf-8"),
+        headers={"content-type": "text/plain;charset=UTF-8"}, method="POST",
+    )
+    with _browser.open(request, timeout=_TIMEOUT) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _renew(base, token):
+    return _lock(base, path="/api/session/lock/renew", payload={"token": token})
+
+
+@pytest.mark.parametrize(("method", "path", "payload"), _WRITES)
+def test_a_release_that_gets_the_lock_first_turns_the_queued_write_away(
+    api_alone, sources_root, method, path, payload
+):
+    # ①釋放先到：DELETE 釋放停在真正動手之前（拿著鎖），寫入在排隊 → 放行後寫入 410、草稿份數不變。
+    # 14 條寫入都一樣。
+    base, box = api_alone
+    name = f"f23_first_release_{method}_{path.strip('/').replace('/', '_')}.yaml"
+    _, session = _ready(base, sources_root, name)
+    token = session["token"]
+    paused, entered, gate = _pause(box.lock.release)
+    box.lock.release = paused
+    queued = threading.Event()
+    box.guard.on_wait = queued.set
+    try:
+        releasing, _ = _in_background(lambda: _lock(base, "DELETE", payload={"token": token}))
+        entered.wait(_WAIT)
+        writing, wrote = _in_background(lambda: _send(base, method, path, payload, token=token))
+        _first(queued, writing)
+    finally:
+        gate.set()
+        releasing.join(_WAIT)
+        writing.join(_WAIT)
+        del box.lock.release
+
+    assert (_outcome(wrote), _get(base, "/api/drafts")["count"]) == ((_GONE, "editing_lost"), 0)
+
+
+def test_a_release_that_arrives_during_a_write_waits_for_it(api_alone, sources_root, monkeypatch):
+    # ②寫入先到：寫入停在檢查之後、寫入之前（拿著鎖），DELETE 釋放要排隊 → 放行後寫入 200、釋放
+    # released:true；之後舊識別碼寫入 410、草稿份數不變。
+    base, box = api_alone
+    entry, session = _ready(base, sources_root, "f23_release_waits.yaml")
+    token = session["token"]
+    paused, entered, gate = _pause(drafts_api.save_draft)
+    monkeypatch.setattr(drafts_api, "save_draft", paused)
+    queued = threading.Event()
+    box.guard.on_wait = queued.set
+    try:
+        writing, wrote = _in_background(lambda: _post(
+            base, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, token
+        ))
+        entered.wait(_WAIT)
+        releasing, released = _in_background(
+            lambda: _lock(base, "DELETE", payload={"token": token})
+        )
+        _first(queued, releasing)
+        waited = releasing.is_alive()
+    finally:
+        gate.set()
+        writing.join(_WAIT)
+        releasing.join(_WAIT)
+
+    later = _refusal(lambda: _post(
+        base, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 3}}, token
+    ))
+    drafts = _get(base, "/api/drafts")["count"]
+    assert (waited, _outcome(wrote), released.get("value"), later, drafts) == (
+        True, (200, None), {"released": True}, (_GONE, "editing_lost"), 1,
+    )
+
+
+def test_a_takeover_that_arrives_during_a_write_waits_and_is_told_of_the_draft(
+    api_alone, sources_root, monkeypatch
+):
+    # ③寫入先到、逾時接手排隊：時鐘撥過續期逾時、另一個瀏覽器取得要排隊 → 放行後寫入 200，接手者
+    # 被告知清了 1 份、他的階段裡 0 份（那份草稿不會悄悄進到接手者的階段）。
+    base, box = api_alone
+    other = _another_browser()
+    _request_as(other, base, "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
+    entry, session = _ready(base, sources_root, "f23_takeover_waits.yaml")
+    paused, entered, gate = _pause(drafts_api.save_draft)
+    monkeypatch.setattr(drafts_api, "save_draft", paused)
+    queued = threading.Event()
+    box.guard.on_wait = queued.set
+    real_clock = box.clock
+    try:
+        writing, wrote = _in_background(lambda: _post(
+            base, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"]
+        ))
+        entered.wait(_WAIT)
+        # 過了續期逾時（150 秒）、還沒到閒置逾時（10 分鐘）。
+        box.clock = lambda: real_clock() + datetime.timedelta(minutes=3)
+        taking, taken = _in_background(
+            lambda: _open_json(other, f"{base}/api/session/lock", "POST", None)[0]
+        )
+        _first(queued, taking)
+    finally:
+        gate.set()
+        writing.join(_WAIT)
+        taking.join(_WAIT)
+        box.clock = real_clock
+
+    drafts = _get(base, "/api/drafts")["count"]
+    assert (_outcome(wrote), taken.get("value", {}).get("cleared_drafts"), drafts) == (
+        (200, None), 1, 0,
+    )
+
+
+def test_a_queued_beacon_release_does_not_stall_other_requests(
+    api_alone, sources_root, monkeypatch
+):
+    # 護欄：beacon 釋放在排隊時，事件迴圈沒被它卡住——寫入還拿著鎖的時候，其他請求就照常回應
+    # （async 端點裡拿鎖就會卡住整個服務）。
+    base, box = api_alone
+    entry, session = _ready(base, sources_root, "f23_beacon_queued.yaml")
+    paused, entered, gate = _pause(drafts_api.save_draft)
+    monkeypatch.setattr(drafts_api, "save_draft", paused)
+    queued = threading.Event()
+    box.guard.on_wait = queued.set
+    try:
+        writing, _ = _in_background(lambda: _post(
+            base, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"]
+        ))
+        entered.wait(_WAIT)
+        releasing, _ = _in_background(lambda: _beacon(base, session["token"]))
+        _first(queued, releasing)
+        with _browser.open(f"{base}/api/mode", timeout=1) as response:
+            answered = json.loads(response.read().decode("utf-8"))
+        still_held = writing.is_alive() and not gate.is_set()
+    finally:
+        gate.set()
+        writing.join(_WAIT)
+        releasing.join(_WAIT)
+
+    assert ("mode" in answered, still_held) == (True, True)
+
+
+def test_a_renew_never_moves_the_last_renewal_back(api_alone, sources_root):
+    # 時間不倒退：最後續期時間只增不減——系統時間被調回去，晚一點的續期也不把它寫回過去。
+    base, box = api_alone
+    _, session = _ready(base, sources_root, "f23_renewal_forward.yaml")
+    real_clock = box.clock
+    try:
+        box.clock = lambda: real_clock() + datetime.timedelta(seconds=60)
+        ahead = datetime.datetime.fromisoformat(_renew(base, session["token"])["renewed_at"])
+        box.clock = lambda: real_clock() + datetime.timedelta(seconds=30)
+        later = datetime.datetime.fromisoformat(_renew(base, session["token"])["renewed_at"])
+    finally:
+        box.clock = real_clock
+
+    assert later >= ahead
+
+
+def test_queued_requests_run_in_the_order_they_arrived(api_alone, sources_root, monkeypatch):
+    # 護欄（先到先處理）：長寫入期間排了兩發續期（第 30 秒、第 170 秒到）。照到達順序執行，兩發都
+    # 成立；較晚到的那發若先執行，170 秒沒續期就被當成逾時、兩發都 410。
+    base, box = api_alone
+    entry, session = _ready(base, sources_root, "f23_fifo.yaml")
+    paused, entered, gate = _pause(drafts_api.save_draft)
+    monkeypatch.setattr(drafts_api, "save_draft", paused)
+    waiting = threading.Event()
+    box.guard.on_wait = waiting.set
+    real_clock = box.clock
+    try:
+        writing, _ = _in_background(lambda: _post(
+            base, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"]
+        ))
+        entered.wait(_WAIT)
+        renewals = []
+        for seconds in (30, 170):
+            box.clock = lambda later=seconds: real_clock() + datetime.timedelta(seconds=later)
+            waiting.clear()
+            renewing, renewed = _in_background(lambda: _renew(base, session["token"]))
+            _first(waiting, renewing)
+            renewals.append((renewing, renewed))
+    finally:
+        gate.set()
+        writing.join(_WAIT)
+        for renewing, _ in renewals:
+            renewing.join(_WAIT)
+        box.clock = real_clock
+
+    assert [_outcome(renewed) for _, renewed in renewals] == [(200, None), (200, None)]
+
+
+def test_a_session_already_taken_back_is_not_revived_by_an_earlier_time(api_alone, sources_root):
+    # 護欄：已經被續期逾時收回的階段，之後的舊續期（時間較早也一樣）是 410，不會復活——收回是狀態。
+    base, box = api_alone
+    _, session = _ready(base, sources_root, "f23_not_revived.yaml")
+    real_clock = box.clock
+    try:
+        box.clock = lambda: real_clock() + datetime.timedelta(minutes=3)
+        _lock(base, "GET")  # 問一次就回收（續期逾時）
+        box.clock = lambda: real_clock() + datetime.timedelta(minutes=2)
+        refused = _refusal(lambda: _renew(base, session["token"]))
+    finally:
+        box.clock = real_clock
+
+    assert refused[0] == _GONE
+
+
+def test_the_holders_renew_queued_behind_its_own_long_write_is_not_counted_against_it(
+    api_alone, sources_root, monkeypatch
+):
+    # 護欄：持有者的續期排在自己的長寫入後面，排隊等的時間不算進去——用的是它到達時的時間，不是
+    # 拿到鎖時的時間，否則持有者會被自己的寫入收掉。
+    base, box = api_alone
+    entry, session = _ready(base, sources_root, "f23_queued_renew.yaml")
+    paused, entered, gate = _pause(drafts_api.save_draft)
+    monkeypatch.setattr(drafts_api, "save_draft", paused)
+    queued = threading.Event()
+    box.guard.on_wait = queued.set
+    real_clock = box.clock
+    try:
+        writing, _ = _in_background(lambda: _post(
+            base, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"]
+        ))
+        entered.wait(_WAIT)
+        box.clock = lambda: real_clock() + datetime.timedelta(seconds=100)
+        renewing, renewed = _in_background(lambda: _renew(base, session["token"]))
+        _first(queued, renewing)
+        box.clock = lambda: real_clock() + datetime.timedelta(seconds=200)
+    finally:
+        gate.set()
+        writing.join(_WAIT)
+        renewing.join(_WAIT)
+        box.clock = real_clock
+
+    assert _outcome(renewed) == (200, None)
+
+
 # ── T9／T13：閒置逾時（GET /api/session/idle、POST /api/session/activity，#48）──────
 # 部署模式：一個瀏覽器的人 10 分鐘沒操作就退出（身分清掉）、它持有的編輯階段釋放、草稿清除並回報。
 # 逾時前 1 分鐘起介面提示，可延長。開發模式不逾時。判定在後端、時鐘就地注入（T13）。
@@ -2777,8 +3335,8 @@ def test_ten_idle_minutes_end_the_identity_and_release_the_session(api, sources_
         pytest.skip(_IN_PLACE_ONLY)
     entry = _onboard(api, sources_root, "idle_drafts.yaml", b"count: 1\n")
     _clear_drafts(api)
-    with _later(api) as (_session, ahead):
-        _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
+    with _later(api) as (session, ahead):
+        _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"])
         ahead(10)
 
         assert _get(api, "/api/session") is None  # 自動退出：這個瀏覽器不再有身分
@@ -3505,23 +4063,13 @@ def test_adding_a_root_that_is_already_whitelisted_says_nothing_was_added(api, s
 
 def test_the_removal_confirmation_is_worded_for_a_person_not_for_the_api(api, sources_root):
     _set_session(api)
-    request = urllib.request.Request(
-        f"{api}/api/allowed-roots",
-        data=json.dumps({"prefix": "/nonexistent/never-added", "confirmed": False}).encode(),
-        headers={"content-type": "application/json"}, method="DELETE",
-    )
     with pytest.raises(urllib.error.HTTPError) as missing:
-        _browser.open(request, timeout=_TIMEOUT)
+        _delete(api, "/api/allowed-roots", {"prefix": "/nonexistent/never-added"})
     assert missing.value.code == _NOT_FOUND
 
     stored = _get(api, "/api/allowed-roots")["roots"][0]["prefix"]
-    request = urllib.request.Request(
-        f"{api}/api/allowed-roots",
-        data=json.dumps({"prefix": stored, "confirmed": False}).encode(),
-        headers={"content-type": "application/json"}, method="DELETE",
-    )
     with pytest.raises(urllib.error.HTTPError) as exc:
-        _browser.open(request, timeout=_TIMEOUT)
+        _delete(api, "/api/allowed-roots", {"prefix": stored, "confirmed": False})
 
     detail = json.loads(exc.value.read())["detail"]
     assert detail["kind"] == "confirm_required"

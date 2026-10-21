@@ -77,12 +77,22 @@ json() {
 
 # call <方法> <路徑> [JSON 內容] —— 帶著身分的 cookie 打後端，回應印到 stdout。
 # 只讀 cookie、不寫回：背景那個持續進版的迴圈與前景共用同一張票，兩邊同時寫同一個檔會互相蓋掉。
+# 取得了編輯權（EDITING 有值）就帶上識別碼：寫入只接受持有編輯權的那個瀏覽器（F23）。背景迴圈是
+# 之後才分出來的子程序，帶著同一個值；一般續期不換識別碼。
+EDITING=""
 call() {
   local method="$1" path="$2" body="${3:-}"
   local -a args=(--silent --show-error --fail-with-body --max-time 20
     --cookie "${WORK}/cookies" --request "${method}")
   [[ -n "${body}" ]] && args+=(--header 'content-type: application/json' --data "${body}")
+  [[ -n "${EDITING}" ]] && args+=(--header "x-cm-editing-token: ${EDITING}")
   curl "${args[@]}" "${API}${path}"
+}
+
+# 以「演練」的身分取得編輯權（F23）。服務重啟後是新的程序：身分與編輯權都不在了，要重新來一次。
+take_editing() {
+  call POST /api/session '{"name":"演練","email":"drill@example.com","role":"developer"}' >/dev/null
+  EDITING="$(call POST /api/session/lock | json 'd["token"]')"
 }
 
 wait_for_service() {
@@ -162,6 +172,8 @@ onboard() {
 }
 
 promote() {
+  # 寫入本身不算續期；三次備份可能超過續期逾時（150 秒），先續期，否則編輯權被收回、草稿被清掉。
+  call POST /api/session/lock/renew "{\"token\":\"${EDITING}\"}" >/dev/null
   call POST /api/drafts "{\"uid\":\"$1\",\"edits\":{\"max_vel\":$2}}" >/dev/null
   call POST /api/promote '{}' >/dev/null
 }
@@ -189,6 +201,7 @@ seed() {
     --header 'content-type: application/json' \
     --data '{"name":"演練","email":"drill@example.com","role":"developer"}' \
     "${API}/api/session" >/dev/null
+  take_editing
   call POST /api/allowed-roots "{\"prefix\":\"${CM_TARGET_ROOT}/extra\"}" >/dev/null
   KEEP="$(onboard keep.yaml)"
   LOST="$(onboard lost.yaml)"
@@ -306,6 +319,7 @@ restores_and_compares_again() {
 
 repairs_the_missing_and_leaves_the_drifted() {
   STEP="補回缺檔"
+  take_editing  # 還原之後重啟過：寫出修復也只接受持有編輯權的那個瀏覽器（F23）
   call POST "/api/configs/${LOST}/apply" >/dev/null
   local after
   after="$(fingerprint lost.yaml)"
@@ -318,11 +332,15 @@ repairs_the_missing_and_leaves_the_drifted() {
   STEP="偏離不覆寫"
   [[ "$(fingerprint drift.yaml)" == "${DRIFT_EDITED}" ]] \
     || fail "drift.yaml 在還原與啟動之後被改掉了" "還原與啟動都不該寫任何目標檔；偏離要由人處置"
+  # 帶身分與編輯權去叫：被拒的原因要是「目標已經存在」，不是沒有身分或編輯權（那樣 409 會假通過）。
   local code
-  code="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 20 \
+  code="$(curl --silent --output "${WORK}/drift-apply.out" --write-out '%{http_code}' --max-time 20 \
+    --cookie "${WORK}/cookies" --header "x-cm-editing-token: ${EDITING}" \
     --request POST "${API}/api/configs/${DRIFT}/apply")"
   [[ "${code}" == "409" ]] \
     || fail "對偏離的那一份叫寫出修復回的是 HTTP ${code}，預期 409" "寫出修復只補不存在的檔案，不覆蓋既有內容"
+  grep -q '目標檔案已經存在' "${WORK}/drift-apply.out" \
+    || fail "寫出修復回 409，但原因不是目標已經存在：$(cat "${WORK}/drift-apply.out")" "檢查請求有沒有帶身分與編輯權"
   [[ "$(fingerprint drift.yaml)" == "${DRIFT_EDITED}" && "$(state_of "${DRIFT}")" == "drift" ]] \
     || fail "被 409 拒絕之後 drift.yaml 的內容或狀態變了" "被拒絕的寫出修復不該動到檔案"
   ok "drift.yaml 沒有被自動覆寫：還原、啟動、寫出修復（HTTP 409）之後內容都還是手改的那一版"

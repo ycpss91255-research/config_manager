@@ -907,7 +907,7 @@ client），它們的**決定與接線**——拿哪份 repo、失敗時的結�
 | 拿完好的備份還原、啟動服務：清單、已進版的值、歷史、白名單都回來，HEAD 是備份裡那一版 |
 | 還原後目標狀態**重新比對**：沒動過的一致、被刪掉的未部署、被改過的偏離 |
 | 未部署的那一份用寫出修復補回：內容與擁有者、權限都與原本相同 |
-| 偏離的那一份**沒有被自動覆寫**：還原與啟動之後內容仍是被改過的；對它叫寫出修復是 409、內容不變 |
+| 偏離的那一份**沒有被自動覆寫**：還原與啟動之後內容仍是被改過的；對它叫寫出修復是 409（原因是目標已經存在，不是沒有身分或編輯權）、內容不變 |
 
 **三個位置各自說得出的事不同。** 設定庫層說「備份與還原這兩個動作本身對不對」；主機端指令說「人實際打的
 那兩道指令會不會在不該動的時候動」；演練說「在真的容器、真的 volume、真的權限底下，整套走得完」。演練
@@ -955,6 +955,12 @@ host networking。那半邊由 compose 自己的規格負責（#90；介面是 T
 HttpOnly、關閉瀏覽器即失效），之後每個請求以 cookie 帶票；`GET /api/session` 只回這個瀏覽器自己宣告過的身分，別的
 瀏覽器看到 null、沒有身分的請求在需要作者的端點得到 409。CORS 因此 `allow_credentials`，前端 fetch 一律帶 `credentials`。
 規格以兩罐 cookie 對照（`_browser`／`_another_browser`）。
+
+**會寫入的端點另外只接受持有編輯權的那個分頁（F23）**：請求標頭 `X-CM-Editing-Token` 帶目前編輯階段的識別碼，而且送請求的
+瀏覽器票就是取得這個階段的那一張；寫入的「檢查＋寫入」與取得、續期、接續、釋放、逾時回收、閒置退出排在同一把行程內的鎖後面，
+不交錯；這把鎖**先到先處理**。規格的輔助函式寫入時自己「取得 → 帶標頭送 → 釋放」。**服務只能跑一個後端行程**：編輯權、草稿與身分都在行程記憶體裡，
+多個 worker 或副本不受支援。排隊的規格以「替換真正動手的那個函式停在中間」加上鎖上「有請求開始排隊」的通知（`on_wait`，
+預設什麼都不做、只觀察、不影響誰拿到鎖）觀察，比照時鐘的注入；每個等待都有上限，逐則起服務，卡住只影響那一則。
 
 **服務重啟後，已進版的都在；草稿、身分、編輯階段不在（#51；驗證清單 U40）。** 已進版的來源、納管清單、白名單與歷史住在
 config-repo，重啟後的服務從檔讀回來，目標狀態當下重新比對（一致的仍是一致、偏離的仍是偏離）；草稿、身分、編輯階段掛在
@@ -1022,7 +1028,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **單筆內容（`GET /api/configs/{uid}`，§3.5.3 表上既有）：回 metadata（name／hostname／ref／target／source／format／groups／permissions〔條目自己的、沒寫回 defaults〕）＋`types`（欄位路徑→型別，與 inspect 同形）＋`values`（來源複本解析後的值樹），供 W3 欄位表渲染（#20）；有未進版草稿時另回 `draft_values`（草稿文字解析後的值樹，介面以它當「目前值」、`values` 當「來源值」並列，#21）；另回 `target_values`（target 磁碟現況解析後的值樹，差異檢視據此並排，#30；target 不存在→null、讀不到／非 UTF-8／解析不了→null 並在 `target_error` 說原因——現況壞掉是要呈現的事實、不是 500）；`raw`→`types` 空、`values` 為 null（不假裝 0 個欄位，§7.5.4）；uid 不在清單→404；來源複本讀不到／解析不了→帶檔名與下一步的 500** |
 | **變更歷史（`GET /api/configs/{uid}/history?prefix=…`，§3.5.3 表上既有）：回該 uid 的紀錄、最新在前，每筆 `{sha, kind, summary, author, at, body}`；`prefix` 逗號分隔的類型清單，不給就只看內容變更（`cfg`＋`adopt`，§7.6.1／圖 7——`import`／`revert`／`meta`／`unmanage` 要明點）；含未知類型→422 列出允許值（不靜默當成沒過濾）；uid 不在清單→404（#23）** |
 | **解除納管（`DELETE /api/configs/{uid}`，§3.5.3 表上既有）：從清單檔移除條目、來源複本自 repo 拿掉、記一筆 `unmanage`；**不刪 target**（§5.5：解除管理不改變系統當前行為）；回被解除的條目、清單不再列它；有未進版草稿→409、未設身分→409、uid 不在→404；寫入失敗整批回滾、帶訊息的 500（#28）** |
-| **偏離處置（`POST /api/configs/{uid}/resolve`，body `{action}`，§3.5.3 的 resolve 動作）：`overwrite`→來源寫回目標、記一筆空 `cfg`（以來源覆蓋目標）；`adopt`→目標現況走第 1 層驗證，過→一筆 `adopt` 進版資料走 apply（來源＝現場、寫出、狀態回一致），含非法值→422 列問題、來源不動；`adopt_draft`→現況載入草稿並回 `warnings`（不擋、不碰 repo 與目標）。目標與來源一致→409（沒有偏離）、目標不存在→409 指去寫出修復、未設身分→409、uid 不在→404、目標白名單外／非 UTF-8→422。**寫出修復（`POST /api/configs/{uid}/apply`，§3.5.3 的 apply 動作）**：目標**不存在**時來源寫到目標、不留紀錄（#29）；**目標已存在→409、檔案不動（內容、inode、mtime）、狀態與歷史不變**——與來源不同或相同都一樣；要蓋過既有的檔案走 `resolve` 的 `overwrite`（要身分、留一筆有作者的紀錄）** |
+| **偏離處置（`POST /api/configs/{uid}/resolve`，body `{action}`，§3.5.3 的 resolve 動作）：`overwrite`→來源寫回目標、記一筆空 `cfg`（以來源覆蓋目標）；`adopt`→目標現況走第 1 層驗證，過→一筆 `adopt` 進版資料走 apply（來源＝現場、寫出、狀態回一致），含非法值→422 列問題、來源不動；`adopt_draft`→現況載入草稿並回 `warnings`（不擋、不碰 repo 與目標）。目標與來源一致→409（沒有偏離）、目標不存在→409 指去寫出修復、未設身分→409、uid 不在→404、目標白名單外／非 UTF-8→422。**寫出修復（`POST /api/configs/{uid}/apply`，§3.5.3 的 apply 動作）**：目標**不存在**時來源寫到目標、不留紀錄（#29）；**目標已存在→409、檔案不動（內容、inode、mtime）、狀態與歷史不變**——與來源不同或相同都一樣；要蓋過既有的檔案走 `resolve` 的 `overwrite`（留一筆有作者的紀錄）。寫出修復不留紀錄，但同樣只接受持有編輯權的分頁（要身分、要識別碼，F23）** |
 | **搜尋（`GET /api/search?q=&scope=`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：五檔範圍、預設「全部」；回以 config 為單位的命中 `{uid, name, target, matched:[範圍…], params:[{path, value}]}` 與 `unindexed`（來源複本壞掉、參數沒進索引的那幾份）；索引每次請求從真實來源重建，所以修改後舊值不再命中、解除納管後索引移除；未知範圍→422 列五個允許值、`q` 空→422（#32） |
 | **產生 schema 骨架（`POST /api/configs/{uid}/schema`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：僅開發者（403）、需身分（409）；骨架存進 config-repo 的 `.schemas/<uid>.json`、條目記下 `schema`、記一筆 `meta`，回 `{uid, schema}`；`GET /api/configs/{uid}` 另回 `schema`（路徑或 null）；已有 schema→409（不覆寫）、`raw`／頂層不是物件→422 說原因、uid 不在→404（#38） |
 | **第 2 層接在三個寫入點上（#39）**：儲存草稿（`POST /api/drafts`）、進版（`POST /api/promote`，依**此刻**的 schema 重驗）、將現況納入來源（`resolve` 的 `adopt`）——不符 schema→422，detail 另帶 `file`（驗的是哪一份：存草稿與進版是 repo 內的來源複本，納入現況是目標路徑），`problems` 每筆另帶 `path`（欄位路徑；第 1 層為 null）；`adopt_draft` 照載、schema 的問題列成警告；清單檔指到的 schema 讀不出來（不在、不是 JSON、不是合法 schema、指到 `.schemas/` 外）→結構化的 500 `{message, file}`，**不當成沒有 schema 放行** |
@@ -1031,11 +1037,15 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **單筆內容帶 schema 的欄位提示（#40）**：`GET /api/configs/{uid}` 另回 `constraints`（欄位路徑→`minimum`／`maximum`／`exclusiveMinimum`／`exclusiveMaximum`／`multipleOf`／`enum`／`minLength`／`maxLength`／`description`，鍵與 `types` 同一套路徑文法；只鎖型別的骨架回空；字串長度是 F6 起加的，`required` 不是欄位提示）；schema 讀不出來→值照回、`constraints` 空、`schema_error` 說原因與下一步（不讓整份內容跟著讀不到） |
 | **人工指定型別（`POST /api/configs/{uid}/types`，body `{path, type}`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：僅開發者（403）、需身分（409）；`type` 是 `int`／`float`／`bool`／`string` 之一→寫進 schema、記一筆 `meta`（`指定「<path>」的型別為 <名稱>`），`null`→清除那個指定、記一筆 `meta`；回 `{uid, path, type, schema}`。單筆內容的 `types` 以指定為準、另回 `manual_types`（欄位路徑→指定的型別）。**與現值不相容→422 說原因與下一步、什麼都不寫**；不認得的型別／不存在或不是單一參數的路徑／`raw`→422；沒指定過要清除→409；uid 不在→404。**指定成 double 的欄位，介面送整數值也寫成帶小數點**（#285） |
 | **修改屬性（`POST /api/configs/{uid}/attributes`，body `{name, hostname, groups, description}`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：僅開發者（403）、需身分（409）；寫回清單檔、記一筆 `meta`（說明逐項寫出改了什麼），回 `{uid, name, hostname, ref, groups, description}`。清單列與單筆內容另回 `description`。**改名不影響 uid 與任何關聯**——歷史、草稿、搜尋都還在同一份底下，目標不動；屬性變更不出現在預設的歷史（只看內容變更）。值不合法→422，detail `{message, field}`；什麼都沒改→409；uid 不在→404（#286） |
-| **編輯階段（`GET`／`POST`／`DELETE /api/session/lock`、`POST /api/session/lock/renew`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 GET /api/session／#122）：頁面載入時以目前身分取得（回識別碼、持有者、開始時間、上次逾時清了幾份草稿）；已被占用→409 `{kind:"held", holder{name,email}, started_at}`；續期用識別碼，階段已失效→410（不替你重新取得）；釋放不清身分（重新整理也會觸發釋放，同一個人回來不必再填）。**別人持有時 `POST /api/session` 換身分→409**（否則持有者接下來的紀錄會掛到別人頭上）；同一個人再設不擋。**續期逾時兩種模式都有**（`CM_SESSION_TIMEOUT` 秒；未設＝預設值，不是不逾時）：持有分頁異常中斷、心跳停了就回收，否則之後的人永遠唯讀；由注入的時鐘判定，回收時草稿一併清除、下一個取得者被告知清了 N 份。頁面關閉時以 `POST /api/session/lock/release`（sendBeacon、text/plain，不必跨來源預檢）釋放（#33；部署模式的閒置逾時是 #48） |
+| **編輯階段（`GET`／`POST`／`DELETE /api/session/lock`、`POST /api/session/lock/renew`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 GET /api/session／#122）：頁面載入時以目前身分取得（回識別碼、持有者、開始時間、上次逾時清了幾份草稿）；已被占用→409 `{kind:"held", holder{name,email}, started_at}`；續期用識別碼，階段已失效→410（不替你重新取得）；釋放不清身分（重新整理也會觸發釋放，同一個人回來不必再填）。**別人持有時 `POST /api/session` 換身分→409**（否則持有者接下來的紀錄會掛到別人頭上）；同一個人再設不擋。**續期逾時兩種模式都有**（`CM_SESSION_TIMEOUT` 秒；未設＝預設值，不是不逾時）：持有分頁異常中斷、心跳停了就回收，否則之後的人永遠唯讀；由注入的時鐘判定，回收時草稿一併清除、下一個取得者被告知清了 N 份。頁面關閉時以 `POST /api/session/lock/release`（sendBeacon、text/plain，不必跨來源預檢）釋放（#33；部署模式的閒置逾時是 #48）。**取得時記下是哪個瀏覽器（票）；續期、接續、釋放與寫入都只對那個瀏覽器有效（F23）** |
 | **重新整理後接續編輯階段**：`POST /api/session/lock/renew` 的回應帶這個分頁接下來要用的 `token`；body 帶 `resume: true`（頁面剛載入、拿存著的識別碼回來）時**換一個新的識別碼**——舊頁面卸載時送出的釋放若晚到，帶的是舊識別碼、動不了接續後的階段。識別碼已失效→410，由前端重新取得（人工驗證 U38） |
+| **（F23）寫入只接受持有編輯權那個分頁的請求**：會寫入的 14 條路由——`POST /api/configs`、`DELETE /api/configs/{uid}`、`POST`／`DELETE /api/allowed-roots`（含未確認的預覽）、`POST /api/drafts`、`DELETE /api/drafts[/{uid}]`、`POST /api/promote`、`POST …/revert`、`…/resolve`、`…/apply`、`…/schema`、`…/types`、`…/attributes`——都要在標頭 `X-CM-Editing-Token` 帶目前編輯階段的識別碼，而且送請求的瀏覽器票就是取得這個階段的那一張。帶的識別碼已失效（已釋放、續期逾時被收回、閒置逾時退出、已被接手），或是另一個瀏覽器帶著持有者的識別碼 → **410 `{kind:"editing_lost", message}`**；有身分但沒帶 → **410 `{kind:"editing_missing", message}`**（訊息不出現 API 用語）；沒身分也沒帶 → 409 先設身分；之後才是角色 403 與各端點自己的檢查。被擋時這次沒有寫進去：草稿份數、設定庫 HEAD、目標檔逐位元組都不變；message 說這次沒有寫進去與下一步。不寫入的 POST（`/api/inspect`、`/api/session`、`/api/session/activity`）與編輯階段自己的端點不看這個標頭；CORS 放行這個標頭 |
+| **（F23）續期、接續、釋放只對取得這個階段的瀏覽器有效**：另一個瀏覽器帶持有者的識別碼續期或接續 → 410，識別碼不換；用 `DELETE` 或 beacon 釋放 → `released:false`、階段還在。持有者的識別碼照樣能續期、寫入 |
+| **（F23）檢查編輯權與寫入是一段，和釋放、接手排隊，不交錯**：①**釋放先到**——釋放停在真正動手之前、寫入在排隊 → 放行釋放後寫入 410，草稿份數、HEAD、目標都沒動（14 條寫入都一樣）；②**寫入先到、釋放排隊**——寫入停在檢查之後、寫入之前，`DELETE` 釋放要排隊等寫入做完：放行後寫入 200、釋放 `released:true`，之後再用舊識別碼寫入 → 410、草稿份數不變；③**寫入先到、逾時接手排隊**——寫入停在檢查之後，時鐘撥過續期逾時、另一個瀏覽器取得要排隊：放行後寫入 200，接手者的取得回 `cleared_drafts:1`、他的階段裡 0 份草稿（那份草稿不會悄悄進到接手者的階段）；④beacon 釋放在排隊時，其他請求（`GET /api/mode`）照常回應 |
+| **（F23）時間不倒退**：鎖先到先處理，拿號碼牌的同一刻記下到達時間，處理用的就是它——執行的順序就是到達的順序，排在後面的請求依到達順序執行；續期時最後續期時間只增不減（系統時間被調回去也不會寫回過去）；已經被收回的階段，之後的舊續期一樣是 410、不會復活；持有者的續期排在自己的長寫入後面時，用的是它到達的時間，排隊的時間不算在它頭上。沒有跨請求共用的「最晚時間」：就地撥時鐘的規格撥回之後互不影響 |
 | **單一版本內容（`GET /api/configs/{uid}/history/{sha}`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 GET /api/session／#122）：回那一版來源複本的 `{sha, types, values}`（形狀同單筆內容端點），供歷史檢視算參數層級差異（§7.6.2）；sha 不在這份 config 的歷史→422、uid 不在清單→404（#26） |
 | **（人工驗收 U25 的回歸，F10）單一版本內容另帶「這一筆改了什麼」與「退回會改什麼」要比的兩邊**：`previous` 是**這一筆寫入之前**同一個檔的 `{types, values}`（git 上一個版本；中間夾著退版、調整設定也一樣，比的是緊鄰的寫入之前，不跳過任何類型）；「納入管理」那筆沒有更早的版本→`previous: null`；前一版讀不到或解析不了→`previous: null` 並在 `previous_error` 寫出原因與下一步（**不說成第一筆**，這一版本身照常回）；`current` 是目前來源複本的 `{types, values}`；`preceding` 是這份 config 緊鄰的前一筆紀錄 `{sha, kind}`（不論類型；第一筆→`null`）。**三邊的 `types` 都從各自的內容推斷，不套人工指定**——人工指定只影響欄位表，比較兩版時兩邊同一套規則：只有人工指定成 double、內容沒變→兩邊型別相同；內容裡 `720` 改成 `720.0`→`int` 對 `float`；數字 `5` 改成字串 `"5"`→`int` 對 `string`；只有字面寫法不同（TOML 的 `1_000` 與 `1000`）→值與型別都相同；以來源覆蓋目標留下的空紀錄→`previous` 與這一版相同。**三邊另帶 `leaf_types`：每個值各自的型別，鍵是頁面列的實際路徑（`w[0]`、`a\.b.c`）**——`types` 的清單元素整條共用一個合併後的型別（`w[]`），`[1, 2.5]` 的第 0 格在 `leaf_types` 是 `int`、`[1.0, 2.5]` 的是 `float` |
-| **草稿（`POST /api/drafts`，body `{uid, edits}`）：以來源複本為底套 `edits`（路徑→新值）、跑第 1 層、存進階段，回 `{count, drafts:[{uid, format}]}`；不產生變更紀錄、目標不變；第 1 層沒過→422，detail 為結構化 `{message, uid, problems:[{line, message, suggestion, severity, lines}]}`（供欄位表標示那一列）且階段不變；路徑找不到→422、uid 不在清單→404、未設身分→409。`GET /api/drafts` 回同形；`DELETE /api/drafts[/{uid}]` 捨棄全部／一份，指名的沒草稿→404（#19）** |
+| **草稿（`POST /api/drafts`，body `{uid, edits}`）：以來源複本為底套 `edits`（路徑→新值）、跑第 1 層、存進階段，回 `{count, drafts:[{uid, format}]}`；不產生變更紀錄、目標不變；第 1 層沒過→422，detail 為結構化 `{message, uid, problems:[{line, message, suggestion, severity, lines}]}`（供欄位表標示那一列）且階段不變；路徑找不到→422、uid 不在清單→404、未設身分→409。`GET /api/drafts` 回同形；`DELETE /api/drafts[/{uid}]` 捨棄全部／一份，指名的沒草稿→404（#19）；捨棄也只接受持有編輯權的分頁（F23）** |
 | 進版端點（`POST /api/promote`）：驗證失敗時**不產生變更紀錄也不寫出**（原子性）；422 的 detail 同草稿的結構化形（指名哪一份 uid 的哪些參數）；沒草稿→409、未設身分→409；成功回 `{promoted:[uid…], count:0}`、每份各一筆 `cfg` 紀錄、作者＝session 身分、目標改變、草稿清空（#19） |
 | **退版（`POST /api/configs/{uid}/revert`，body `{version}`，§3.5.3 表上既有）：`version` 必須是這份 config 歷史裡的一筆 sha（前綴可）→ 以那一版的來源內容當一筆 `revert` 紀錄寫回並寫出目標（`revert(<uid>): rollback to <sha7>`，設計 §2.3），目標內容等於那一版、歷史多一筆而先前紀錄全在（ADR-00000005）；預設「只看內容變更」的歷史不顯示這筆；sha 不在這份的歷史→422（不把別份的內容寫進來）、這份有未進版草稿→409、未設身分→409、uid 不在清單→404；寫出／記錄失敗整批回滾、帶訊息的 500（同進版）。介面不提供 reset（#24）** |
 | **退版時 schema 跟著回到那一版（#39 的定案，ADR-00000021）**：那一版當時的 schema 與現在不同→連同內容在**同一筆** `revert` 紀錄裡回到當時的 schema（`schema_effect: "restore"`）；那一版當時還沒有 schema→拿掉 schema 檔、條目不再指到它（`"remove"`）；一樣→不動（`null`）。退版本身不驗證——內容超過今天的 schema 上限照樣退得回去。`GET …/history/{sha}` 另回同一個 `schema_effect`，確認框據此先說 |
@@ -1049,7 +1059,8 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 
 | 驗證的行為 |
 |---|
-| 每個指令映射到正確的端點與參數 |
+| 每個指令映射到正確的端點與參數（`import` 是設身分 → 取得編輯權 → 帶識別碼納管 → 釋放四步，F23） |
+| **（F23）`import` 和頁面同一套規則**：先取得編輯權、帶識別碼納管、做完（含失敗）就釋放；有人正在編輯（包括同一個人在頁面上）→ 非零結束，說出是誰、從何時開始與下一步，什麼都沒寫；取得時上一個階段逾時清了草稿，照樣說出份數 |
 | 端點回錯誤時，CLI 以非零碼結束並印出可讀訊息 |
 | 服務未啟動時，訊息明確指出服務未啟動（而非連線錯誤堆疊） |
 | **（F1）`browse --path <白名單內的檔案>` 與畫面一樣：印出它所在目錄的清單，並寫出「已選：<路徑>」** |
@@ -1126,6 +1137,7 @@ CLI 是 HTTP 端點的 client（ADR-00000009），**其測試不重複驗證業�
 | **（退版會改什麼看得到，F10）選一筆之後，差異區有一行看得到的字（唯讀也看得到，不只放在滑鼠停留的提示裡）：退回這一版會改變幾個參數，或「這一版的參數就是目前的內容，沒有東西可退」（這時「退回此版本」停用）；按鈕旁寫明退回＝內容回到這一筆完成後的樣子；確認對話框逐項列出會改的參數「目前的值 → 退回後的值」（沒有的一邊寫「（無）」）；只有人工指定型別、內容與目前相同的那一版，算「沒有東西可退」，確認框不出現 `720 → 720.0` 這種假差異** |
 | **（#39）退版會動到 schema 時，確認框先說（回到當時的 schema／不再有 schema），完成的通知再說一次；不動 schema 的退版不提** |
 | 開第二個分頁 → 顯示唯讀，並指出持有者（姓名、email、開始時間）；會寫入的控制項不出現；持有者不受影響；持有者關閉頁面（pagehide 釋放）後，下一個分頁重新整理、填身分即可取得（#33） |
+| **（F23）持有分頁在不知情時失去編輯權（被釋放後另一個瀏覽器接手）→ 再按儲存：後端擋下，頁面轉唯讀，唯讀橫幅原樣寫出後端的原因（下一步重新整理），草稿沒存下、進版仍是 (0)；只有送出時用的識別碼仍是這個分頁目前的識別碼才轉唯讀（晚到的舊回應不把新識別碼清掉）；持有中進納管或白名單畫面再返回，識別碼不換、仍能儲存** |
 | 部署模式閒置逾時 → 自動退出且階段釋放 |
 | **一般使用者模式下，型別欄為純文字**、白名單與屬性編輯入口**不顯示**（非停用） |
 | 切換為開發者後，上述元素出現 |
@@ -1578,19 +1590,19 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath、列目錄，與指向檔案時改列上層目錄並選它（上層重跑一次判定，F1）——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185）。兩次開檔之間被抽換的競速分支 T9 走不到，與 `io/source` 的同類限制相同 | 已落地（`browse`） |
 | `io/candidate` | T24（候選檔案數預覽，介面議定於 #206）：不以白名單為閘門、遞迴數一般檔（不讀內容）、每層 O_NOFOLLOW 不跟隨連結、深度／項目上限觸及回部分計數＋capped | 已落地（`count_candidates`） |
 | `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202）；移除以檔案原樣 prefix 定位、找不到丟 `PrefixNotFound`、commit 失敗回滾同樣以真實 fs＋git 斷言（#15） | 已落地（`read_allowed_roots`／`add_allowed_root`／`remove_allowed_root`） |
-| `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/configs/{uid}`、`DELETE /api/configs/{uid}`、`GET /api/configs/{uid}/history`、`POST /api/configs/{uid}/revert`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots`、`GET`／`POST`／`DELETE /api/drafts[/{uid}]`、`POST /api/promote` 與 CORS 中介層） |
-| `api/drift` | T9 | 已落地（`POST /api/configs/{uid}/resolve`、`POST /api/configs/{uid}/apply`——偏離處置與寫出修復，#29；寫出修復只補回不存在的目標，已存在→409） |
-| `api/drafts` | T9 | 已落地（`GET`／`POST`／`DELETE /api/drafts`、`DELETE /api/drafts/{uid}`、`POST /api/promote`——草稿與進版的端點，自 `api/routes` 拆出以免該模組超過千行；儲存與進版接上 schema、規則與略過的理由，#41／#42） |
+| `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/configs/{uid}`、`DELETE /api/configs/{uid}`、`GET /api/configs/{uid}/history`、`POST /api/configs/{uid}/revert`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots`、`GET`／`POST`／`DELETE /api/drafts[/{uid}]`、`POST /api/promote` 與 CORS 中介層——放行編輯階段識別碼的標頭 `X-CM-Editing-Token`，F23） |
+| `api/drift` | T9 | 已落地（`POST /api/configs/{uid}/resolve`、`POST /api/configs/{uid}/apply`——偏離處置與寫出修復，#29；寫出修復只補回不存在的目標，已存在→409；偏離處置與寫出修復都只接受持有編輯權的分頁，F23） |
+| `api/drafts` | T9 | 已落地（`GET`／`POST`／`DELETE /api/drafts`、`DELETE /api/drafts/{uid}`、`POST /api/promote`——草稿與進版的端點，自 `api/routes` 拆出以免該模組超過千行；儲存與進版接上 schema、規則與略過的理由，#41／#42；寫入只接受持有編輯權的分頁，F23） |
 | `api/checks` | T9 | 已落地（`checks_for` 集中讀一份 config 此刻的 schema 與規則，儲存、進版、偏離處置共用；`overrides_in` 從紀錄內文取出略過的規則與理由，#41／#42） |
 | `api/shapes` | 無獨立測試介面——`api/routes` 與 `api/drift` 共用的回應形狀（草稿檢視、驗證問題），行為由 T9 的草稿與處置端點擋著（#29） | 已落地 |
 | `api/search` | T9 | 已落地（`GET /api/search`——參數層級搜尋，索引每次請求重建，#32） |
 | `api/attributes` | T9 | 已落地（`POST /api/configs/{uid}/attributes`——僅開發者，修改名稱／群組／主機／說明，#286） |
 | `api/schema` | T9 | 已落地（`POST /api/configs/{uid}/schema`——僅開發者，產生 schema 骨架，#38；`schema_view` 供單筆內容帶欄位提示、人工指定的型別與 schema 的錯誤，#40／#285；`POST /api/configs/{uid}/types` 指定／清除型別、`as_specified` 讓指定成 double 的欄位寫出帶小數點，#285） |
 | `api/history` | T9 | 已落地（`GET /api/configs/{uid}/history`、`GET /api/configs/{uid}/history/{sha}`、`POST /api/configs/{uid}/revert`——歷史與退版的端點與邏輯，自 `api/routes` 拆出以免該模組超過千行，#24） |
-| `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`）；`import` 以 `--name`／`--email`（`--role`）自帶作者——CLI 不是瀏覽器，沒有頁面上輸入過的身分可沿用（#288） |
-| `api/browser` | T9 | 已落地（`Browsers`：以後端發的瀏覽器票（cookie `cm_browser`，HttpOnly、SameSite=Lax、session cookie）為鍵記各瀏覽器的身分；端點以 `Depends(browsers.current)` 取「這個請求的瀏覽器」的身分；形狀不合的票當沒帶、重新發，#288；閒置逾時的 HTTP 這一層——讀注入的時鐘、逾時的票交給 `on_timeout`、`idle_view` 給介面顯示，#48） |
+| `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`）；`import` 以 `--name`／`--email`（`--role`）自帶作者——CLI 不是瀏覽器，沒有頁面上輸入過的身分可沿用（#288）；`import` 和頁面同一套規則：取得編輯權 → 帶識別碼納管 → 釋放（F23） |
+| `api/browser` | T9 | 已落地（`Browsers`：以後端發的瀏覽器票（cookie `cm_browser`，HttpOnly、SameSite=Lax、session cookie）為鍵記各瀏覽器的身分；端點以 `Depends(browsers.current)` 取「這個請求的瀏覽器」的身分；形狀不合的票當沒帶、重新發，#288；閒置逾時的 HTTP 這一層——讀注入的時鐘、逾時的票交給 `on_timeout`、`idle_view` 給介面顯示，#48；身分表的讀寫和編輯階段共用同一把鎖，F23） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 已落地：身分（`author`）；階段 `SessionLock` 的 acquire／renew／resume（重新整理後接續、換識別碼）／release／sweep，時鐘注入（#33） |
-| `api/lock` | T9 | 已落地（`POST`／`GET /api/session` 與編輯階段的取得／續期／釋放／狀態端點——設身分要看階段有沒有被別人持有，接線放一起；逾時回收清草稿並回報，#33；權限門檻 `require_permission` 也在這裡，白名單維護、候選數預覽、產生 schema、型別指定與屬性編輯共用，誰能做什麼問 `core/roles.permits`，#47） |
+| `api/lock` | T9 | 已落地（`POST`／`GET /api/session` 與編輯階段的取得／續期／釋放／狀態端點——設身分要看階段有沒有被別人持有，接線放一起；逾時回收清草稿並回報，#33；權限門檻 `require_permission` 也在這裡，白名單維護、候選數預覽、產生 schema、型別指定與屬性編輯共用，誰能做什麼問 `core/roles.permits`，#47；寫入的編輯權檢查（識別碼＋瀏覽器票）、一把先到先處理的行程內鎖讓寫入、釋放、回收與閒置退出排隊、拿號碼牌時記下到達時間、續期時最後續期時間只增不減、`on_wait` 排隊通知，F23） |
 | `api/errors` | T13——`InvalidAuthor` 於身分輸入驗證時被斷言 | 已落地 |
 | `web/` | T11 | 已落地。執行通路於 #97 補上：`test/pytest/system/test_web.py`，Playwright 驅動 Chromium，行覆蓋率由 V8 自己算。`help.html`（#54）是沒有腳本的靜態說明頁，同樣由 T11 觀察（段落、不連外、點名的介面用字存在於 `index.html`） |
 | `**/__init__.py` | 無——見「刻意的空格」 | 已落地 |

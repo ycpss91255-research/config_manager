@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from subprocess import CalledProcessError
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from config_manager.api.checks import overrides_in
-from config_manager.api.browser import Browsers
+from config_manager.api.lock import Editing
 from config_manager.api.session import Identity
 from config_manager.core.drafts import Promotion, Stage
 from config_manager.core.errors import SyntaxParse
@@ -35,11 +35,9 @@ class RevertInput(BaseModel):
     version: str = Field(min_length=7, max_length=40, pattern=r"^[0-9a-fA-F]+$")
 
 
-def register_history(
-    app: FastAPI, repo: str, browsers: Browsers, stage_box: dict[str, Stage]
-) -> None:
+def register_history(app: FastAPI, repo: str, editing: Editing) -> None:
     """把歷史與退版的端點（§7.6）掛上 app（#23／#24）。抽出來的理由同 `_register_allowed_roots`
-    （C901）。"""
+    （C901）。退版經 `editing.write`：只接受持有編輯權的那個分頁（F23）。"""
 
     @app.get("/api/configs/{uid}/history")
     def config_history(uid: str, prefix: str | None = None) -> list[dict[str, object]]:
@@ -53,11 +51,10 @@ def register_history(
         return _version_detail(repo, uid, sha)
 
     @app.post("/api/configs/{uid}/revert")
-    def revert_config(
-        uid: str, payload: RevertInput, identity: Identity | None = Depends(browsers.current)
-    ) -> dict[str, object]:
+    def revert_config(uid: str, payload: RevertInput, request: Request) -> dict[str, object]:
         """退版（設計文件 §3.5.3、§5.3）：以反向變更寫回舊版內容並寫出目標，不改寫歷史（#24）。"""
-        return _revert_config(repo, identity, stage_box, uid, payload)
+        with editing.write(request, "退版") as identity:
+            return _revert_config(repo, identity, editing.stage_box, uid, payload)
 
 
 # 歷史預設只看內容變更（§7.6.1、圖 7）：cfg 與 adopt 才真的改了內容；revert／meta 會干擾判讀，
@@ -220,7 +217,7 @@ def _find_version(changes: list[Change], entry: FileEntry, sha: str) -> Change:
 
 def _revert_config(
     repo: str,
-    identity: Identity | None,
+    identity: Identity,
     stage_box: dict[str, Stage],
     uid: str,
     payload: RevertInput,
@@ -235,12 +232,6 @@ def _revert_config(
     版本必須是**這份 config** 歷史裡的一筆（拿別份的 sha 會把別人的內容寫進來→422）；這份有未進版
     的草稿時不退（草稿是以退版前的來源為底做的，退了就對不起來——先進版或捨棄，409，不變式 4）。
     """
-    if identity is None:
-        raise HTTPException(
-            status_code=409,
-            detail="尚未設定身分，無法退版——變更紀錄需要作者。"
-            "下一步：先 POST /api/session 設定姓名與 email",
-        )
     config_list = read_config_list(repo)
     entry = require_entry(config_list, uid)
     if uid in stage_box["stage"].drafts:
