@@ -362,7 +362,10 @@ def _take_editing(jar: urllib.request.OpenerDirector, api: str) -> str:
         held = json.loads(response.read().decode("utf-8"))
     if not isinstance(held, dict):
         # --api 指到別的服務：200 但不是物件。交給 _unexpected_response 說，不崩成 traceback。
-        raise TypeError(f"取得編輯權的回應不是物件：{type(held).__name__}")
+        raise TypeError(
+            f"取得編輯權的回應不是物件（{type(held).__name__}）。"
+            "下一步：確認 --api 指向的是本服務的 backend"
+        )
     if held.get("cleared_drafts"):
         print(
             f"注意：上一個編輯階段逾時釋放時，清除了 {held['cleared_drafts']} 份未進版的草稿"
