@@ -2987,6 +2987,160 @@ def test_after_a_renew_timeout_the_old_token_cannot_write(api, sources_root):
     assert (refused, drafts) == ((_GONE, "editing_lost"), 0)
 
 
+# ── T9：退出（DELETE /api/session，F3）─────────────────────────────────────────────
+# 只影響送請求的這個瀏覽器；持有編輯權時當場釋放並清掉目前全部共用草稿；有東西會丟先確認。
+# 每則收尾都把 `_browser` 的身分設回來（之後的規格要用）。
+
+
+def _exit(api, opener=None, **body):
+    """以 `opener`（預設 `_browser`）退出；回 (狀態碼, 回應或 detail)。"""
+    request = urllib.request.Request(
+        f"{api}/api/session", data=json.dumps(body).encode("utf-8"),
+        headers={"content-type": "application/json"}, method="DELETE",
+    )
+    try:
+        with (opener or _browser).open(request, timeout=_TIMEOUT) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        return error.code, _detail(error)
+
+
+def test_exiting_ends_this_browsers_identity(api):
+    _set_session(api)
+    try:
+        _exit(api)
+        after = (_get(api, "/api/session"), _get(api, "/api/session/idle").get("left"))
+    finally:
+        _set_session(api)
+
+    assert after == (None, True)
+
+
+def test_exiting_while_holding_releases_and_clears_the_drafts_without_telling_the_next(
+    api, sources_root
+):
+    # 暫行規則：持有者確認退出 → 釋放、清掉目前全部共用草稿；下一個取得的人不被告知清了幾份
+    # （那句話只用在逾時）。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f3_exit_holding.yaml", b"count: 1\n")
+    session = _lock(api)
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"])
+    try:
+        code, left = _exit(api, confirmed=True, token=session["token"])
+        state = (_lock(api, "GET")["held"], _get(api, "/api/drafts")["count"])
+    finally:
+        # 修正前退出什麼都沒做：收尾把階段與草稿放掉，不留給之後的規格。
+        _lock(api, "DELETE", payload={"token": session["token"]})
+        _set_session(api)
+        _clear_drafts(api)
+    taken = _lock(api)
+    _lock(api, "DELETE", payload={"token": taken["token"]})
+
+    assert (code, left, state, taken["cleared_drafts"]) == (
+        200, {"left": True, "released": True, "cleared_drafts": 1}, (False, 0), 0,
+    )
+
+
+@pytest.mark.parametrize("risk", ["drafts", "unsaved", "other_tab"])
+def test_exiting_with_something_to_lose_asks_first_and_changes_nothing(
+    api, sources_root, risk
+):
+    # 有東西會丟而沒帶 confirmed：持有時有草稿、區塊裡有沒存的改動、或持有的是同一個瀏覽器的另一個
+    # 分頁（這個分頁沒有識別碼）→ 409 confirm_required，身分、編輯權、草稿都沒動。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, f"f3_exit_risk_{risk}.yaml", b"count: 1\n")
+    session = _lock(api)
+    body = {"token": session["token"]}
+    if risk == "drafts":
+        _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"])
+    elif risk == "unsaved":
+        body["unsaved"] = True
+    else:
+        body = {}
+    try:
+        code, detail = _exit(api, **body)
+        kept = (
+            _get(api, "/api/session") is not None,
+            _lock(api, "GET")["held"],
+            _get(api, "/api/drafts")["count"],
+        )
+    finally:
+        _lock(api, "DELETE", payload={"token": session["token"]})
+        _set_session(api)
+        _clear_drafts(api)
+
+    asked = isinstance(detail, dict) and detail.get("kind") == "confirm_required" and bool(
+        detail.get(risk)
+    )
+    assert (code, asked, kept) == (_CONFLICT, True, (True, True, 1 if risk == "drafts" else 0))
+
+
+def test_exiting_does_not_touch_another_browsers_editing_session(api, sources_root):
+    # 只影響送請求的瀏覽器：另一個瀏覽器持有時，它的識別碼仍有效、草稿份數不變。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f3_exit_other.yaml", b"count: 1\n")
+    other = _another_browser()
+    _request_as(other, api, "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
+    theirs, _ = _open_json(other, f"{api}/api/session/lock", "POST", None)
+    _open_json(
+        other, f"{api}/api/drafts", "POST", {"uid": entry["uid"], "edits": {"count": 2}},
+        token=theirs["token"],
+    )
+    try:
+        code, left = _exit(api, confirmed=True)
+        renewed = _refusal(lambda: _open_json(
+            other, f"{api}/api/session/lock/renew", "POST", {"token": theirs["token"]}
+        ))
+        drafts = _get(api, "/api/drafts")["count"]
+    finally:
+        _open_json(other, f"{api}/api/drafts", "DELETE", None, token=theirs["token"])
+        _open_json(other, f"{api}/api/session/lock", "DELETE", {"token": theirs["token"]})
+        _set_session(api)
+
+    released = left.get("released") if isinstance(left, dict) else left
+    assert (code, released, renewed, drafts) == (200, False, (200, None), 1)
+
+
+def test_exiting_without_an_identity_still_succeeds(api):
+    fresh = _another_browser()
+
+    code, left = _exit(api, fresh)
+
+    assert (code, left) == (200, {"left": True, "released": False, "cleared_drafts": 0})
+
+
+def test_after_exiting_another_identity_takes_the_session_at_once(api):
+    # 換人換角色：退出 → 以另一個身分進入 → 立刻取得編輯權，不必等、不必換瀏覽器。
+    _set_session(api)
+    session = _lock(api)
+    try:
+        _exit(api, confirmed=True, token=session["token"])
+        _post(api, "/api/session", {"name": "林巡檢", "email": "lin@example.com", "role": "user"})
+        taken = _lock(api)
+        _lock(api, "DELETE", payload={"token": taken["token"]})
+    finally:
+        _lock(api, "DELETE", payload={"token": session["token"]})  # 修正前退出沒放掉
+        _set_session(api)
+
+    assert taken["holder"]["name"] == "林巡檢"
+
+
+def test_the_idle_status_tells_an_exit_from_an_unknown_ticket(api):
+    # 已退出（left）與「後端沒有這張票的紀錄」（例如服務重啟過）分得開；都不是閒置逾時。
+    exited, unknown = _another_browser(), _another_browser()
+    _request_as(exited, api, "/api/session", {"name": "王小美", "email": "mei@example.com"})
+    _exit(api, exited)
+
+    seen = [
+        _request_as(browser, api, "/api/session/idle", method="GET")[0]
+        for browser in (exited, unknown)
+    ]
+
+    assert [(view.get("left"), view["timed_out"]) for view in seen] == [
+        (True, False), (False, False),
+    ]
+
+
 # ── T9：檢查編輯權與寫入是一段，和釋放、接手排隊；時間不倒退（F23）──────────────────────
 # 每則自己起服務（`api_alone`）：伺服器那邊的執行緒會停在中間。停住的是「真正動手的那個函式」；
 # 「有請求開始排隊」用鎖上的 on_wait 觀察（只觀察、不影響誰先誰後）。每個等待都有上限，finally 一律
