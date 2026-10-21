@@ -12,9 +12,11 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import TypeVar
 from datetime import datetime, timedelta, UTC
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -63,6 +65,57 @@ class SessionInput(BaseModel):
 
 
 
+_Stamp = TypeVar("_Stamp")
+
+
+def _nothing() -> None:
+    return None
+
+
+class Guard:
+    """一把**先到先處理**的行程內鎖（F23）：寫入的「檢查＋寫入」、取得、續期、接續、釋放、逾時回收、
+    閒置退出拿同一把，排隊、不交錯。同一個執行緒可以重入（寫入 → 回收 → 閒置退出是巢狀的）。
+
+    `enter(stamp)` 拿號碼牌、在拿號碼牌的同一刻呼叫 `stamp()` 記下到達時間，輪到才回；執行的順序因此
+    就是到達的順序。重入不排隊、回 None。`on_wait` 是「有請求開始排隊」的通知：要等之前呼叫一次，
+    預設什麼都不做——它只觀察、不影響誰先誰後，只有規格會換掉它。
+
+    規則：只在同步的端點裡拿（async 端點在事件迴圈上拿會卡住整個服務）；拿著時不等別的執行緒。
+    **只保證一個行程內的互斥**：服務只能跑一個後端行程（多個 worker 或副本不受支援）。
+    """
+
+    def __init__(self) -> None:
+        self._turn = threading.Condition()
+        self._next = 0  # 下一張號碼牌
+        self._serving = 0  # 輪到的號碼牌
+        self._owner: int | None = None
+        self._depth = 0
+        self.on_wait: Callable[[], None] = _nothing
+
+    def enter(self, stamp: Callable[[], _Stamp]) -> _Stamp | None:
+        me = threading.get_ident()
+        with self._turn:
+            if self._owner == me:
+                self._depth += 1
+                return None
+            ticket, self._next = self._next, self._next + 1
+            arrived = stamp()
+            if ticket != self._serving:
+                self.on_wait()
+                while ticket != self._serving:
+                    self._turn.wait()
+            self._owner, self._depth = me, 1
+            return arrived
+
+    def leave(self) -> None:
+        with self._turn:
+            self._depth -= 1
+            if self._depth == 0:
+                self._owner = None
+                self._serving += 1
+                self._turn.notify_all()
+
+
 @dataclass
 class LockBox:
     """階段鎖與「上次回收清掉幾份草稿」的容器；掛在 app 上（同 browsers／stage_box）。"""
@@ -73,6 +126,8 @@ class LockBox:
     # 持有階段的是哪個瀏覽器（票，#288）。它閒置逾時退出時，階段跟著釋放（#48）；續期、接續、釋放與
     # 寫入都只對它有效（F23）。階段一沒了就清掉，和階段一起改，不會留著指向已經不持有的票。
     holder_ticket: str | None = None
+    # 寫入、釋放、回收與閒置退出排隊用的那一把鎖（F23）。
+    guard: Guard = field(default_factory=Guard)
 
     def holds(self, token: str, ticket: str | None) -> bool:
         """這個識別碼是目前階段的、而且送的就是取得它的那個瀏覽器（F23：識別碼綁瀏覽器）。"""
