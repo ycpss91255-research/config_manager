@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +30,7 @@ import urllib.request
 import pytest
 
 import config_manager
+from config_manager.api import drafts as drafts_api
 from config_manager.core.allowed_roots import load as load_allowed_roots
 from config_manager.api.lock import LockBox
 from config_manager.core.errors import UidHorizonReached
@@ -2970,7 +2972,8 @@ def test_after_a_renew_timeout_the_old_token_cannot_write(api, sources_root):
     box = _find_lock_box()
     real_clock = box.clock
     try:
-        box.clock = lambda: real_clock() + datetime.timedelta(minutes=10)
+        # 過了續期逾時（150 秒）、還沒到閒置逾時（10 分鐘）：收回的是續期逾時這一條。
+        box.clock = lambda: real_clock() + datetime.timedelta(minutes=3)
         refused = _refusal(lambda: _post(
             api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"]
         ))
@@ -2982,6 +2985,301 @@ def test_after_a_renew_timeout_the_old_token_cannot_write(api, sources_root):
         _set_session(api)
 
     assert (refused, drafts) == ((_GONE, "editing_lost"), 0)
+
+
+# ── T9：檢查編輯權與寫入是一段，和釋放、接手排隊；時間不倒退（F23）──────────────────────
+# 每則自己起服務（`api_alone`）：伺服器那邊的執行緒會停在中間。停住的是「真正動手的那個函式」；
+# 「有請求開始排隊」用鎖上的 on_wait 觀察（只觀察、不影響誰先誰後）。每個等待都有上限，finally 一律
+# 放行。
+
+_WAIT = 5
+
+
+def _in_background(call):
+    """在另一個執行緒裡送請求；回 (執行緒, 結果)。結果是 {"value": …}、{"refused": (碼, detail)}
+    或 {"failed": 說明}。"""
+    outcome = {}
+
+    def run():
+        try:
+            outcome["value"] = call()
+        except urllib.error.HTTPError as error:
+            outcome["refused"] = (error.code, _detail(error))
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            outcome["failed"] = repr(error)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, outcome
+
+
+def _first(event, thread):
+    """等到 `event` 發生或 `thread` 做完，先到先算，最多 `_WAIT` 秒。"""
+    deadline = time.monotonic() + _WAIT
+    while time.monotonic() < deadline and not event.is_set() and thread.is_alive():
+        time.sleep(0.01)
+
+
+def _outcome(result):
+    """背景請求的結果寫成 (狀態碼, kind)：成功是 (200, None)。"""
+    if "refused" in result:
+        code, detail = result["refused"]
+        return code, detail.get("kind") if isinstance(detail, dict) else None
+    return (200, None) if "value" in result else (None, result.get("failed"))
+
+
+def _pause(original):
+    """`original` 的一個「先停在閘門前」的版本：回 (換上的函式, 進到閘門的事件, 閘門)。"""
+    entered, gate = threading.Event(), threading.Event()
+
+    def paused(*args, **kwargs):
+        entered.set()
+        gate.wait(_WAIT)
+        return original(*args, **kwargs)
+
+    return paused, entered, gate
+
+
+def _ready(base, sources_root, name):
+    """在這個服務上設身分、納管一份 count: 1、取得編輯權；回 (條目, 取得的回應)。"""
+    _set_session(base)
+    entry = _onboard(base, sources_root, name, b"count: 1\n")
+    return entry, _lock(base)
+
+
+def _beacon(base, token):
+    request = urllib.request.Request(
+        f"{base}/api/session/lock/release", data=json.dumps({"token": token}).encode("utf-8"),
+        headers={"content-type": "text/plain;charset=UTF-8"}, method="POST",
+    )
+    with _browser.open(request, timeout=_TIMEOUT) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _renew(base, token):
+    return _lock(base, path="/api/session/lock/renew", payload={"token": token})
+
+
+@pytest.mark.parametrize(("method", "path", "payload"), _WRITES)
+def test_a_release_that_gets_the_lock_first_turns_the_queued_write_away(
+    api_alone, sources_root, method, path, payload
+):
+    # ①釋放先到：DELETE 釋放停在真正動手之前（拿著鎖），寫入在排隊 → 放行後寫入 410、草稿份數不變。
+    # 14 條寫入都一樣。
+    base, box = api_alone
+    name = f"f23_first_release_{method}_{path.strip('/').replace('/', '_')}.yaml"
+    _, session = _ready(base, sources_root, name)
+    token = session["token"]
+    paused, entered, gate = _pause(box.lock.release)
+    box.lock.release = paused
+    queued = threading.Event()
+    box.guard.on_wait = queued.set
+    try:
+        releasing, _ = _in_background(lambda: _lock(base, "DELETE", payload={"token": token}))
+        entered.wait(_WAIT)
+        writing, wrote = _in_background(lambda: _send(base, method, path, payload, token=token))
+        _first(queued, writing)
+    finally:
+        gate.set()
+        releasing.join(_WAIT)
+        writing.join(_WAIT)
+        del box.lock.release
+
+    assert (_outcome(wrote), _get(base, "/api/drafts")["count"]) == ((_GONE, "editing_lost"), 0)
+
+
+def test_a_release_that_arrives_during_a_write_waits_for_it(api_alone, sources_root, monkeypatch):
+    # ②寫入先到：寫入停在檢查之後、寫入之前（拿著鎖），DELETE 釋放要排隊 → 放行後寫入 200、釋放
+    # released:true；之後舊識別碼寫入 410、草稿份數不變。
+    base, box = api_alone
+    entry, session = _ready(base, sources_root, "f23_release_waits.yaml")
+    token = session["token"]
+    paused, entered, gate = _pause(drafts_api.save_draft)
+    monkeypatch.setattr(drafts_api, "save_draft", paused)
+    queued = threading.Event()
+    box.guard.on_wait = queued.set
+    try:
+        writing, wrote = _in_background(lambda: _post(
+            base, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, token
+        ))
+        entered.wait(_WAIT)
+        releasing, released = _in_background(
+            lambda: _lock(base, "DELETE", payload={"token": token})
+        )
+        _first(queued, releasing)
+        waited = releasing.is_alive()
+    finally:
+        gate.set()
+        writing.join(_WAIT)
+        releasing.join(_WAIT)
+
+    later = _refusal(lambda: _post(
+        base, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 3}}, token
+    ))
+    drafts = _get(base, "/api/drafts")["count"]
+    assert (waited, _outcome(wrote), released.get("value"), later, drafts) == (
+        True, (200, None), {"released": True}, (_GONE, "editing_lost"), 1,
+    )
+
+
+def test_a_takeover_that_arrives_during_a_write_waits_and_is_told_of_the_draft(
+    api_alone, sources_root, monkeypatch
+):
+    # ③寫入先到、逾時接手排隊：時鐘撥過續期逾時、另一個瀏覽器取得要排隊 → 放行後寫入 200，接手者
+    # 被告知清了 1 份、他的階段裡 0 份（那份草稿不會悄悄進到接手者的階段）。
+    base, box = api_alone
+    other = _another_browser()
+    _request_as(other, base, "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
+    entry, session = _ready(base, sources_root, "f23_takeover_waits.yaml")
+    paused, entered, gate = _pause(drafts_api.save_draft)
+    monkeypatch.setattr(drafts_api, "save_draft", paused)
+    queued = threading.Event()
+    box.guard.on_wait = queued.set
+    real_clock = box.clock
+    try:
+        writing, wrote = _in_background(lambda: _post(
+            base, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"]
+        ))
+        entered.wait(_WAIT)
+        # 過了續期逾時（150 秒）、還沒到閒置逾時（10 分鐘）。
+        box.clock = lambda: real_clock() + datetime.timedelta(minutes=3)
+        taking, taken = _in_background(
+            lambda: _open_json(other, f"{base}/api/session/lock", "POST", None)[0]
+        )
+        _first(queued, taking)
+    finally:
+        gate.set()
+        writing.join(_WAIT)
+        taking.join(_WAIT)
+        box.clock = real_clock
+
+    drafts = _get(base, "/api/drafts")["count"]
+    assert (_outcome(wrote), taken.get("value", {}).get("cleared_drafts"), drafts) == (
+        (200, None), 1, 0,
+    )
+
+
+def test_a_queued_beacon_release_does_not_stall_other_requests(
+    api_alone, sources_root, monkeypatch
+):
+    # 護欄：beacon 釋放在排隊時，事件迴圈沒被它卡住——寫入還拿著鎖的時候，其他請求就照常回應
+    # （async 端點裡拿鎖就會卡住整個服務）。
+    base, box = api_alone
+    entry, session = _ready(base, sources_root, "f23_beacon_queued.yaml")
+    paused, entered, gate = _pause(drafts_api.save_draft)
+    monkeypatch.setattr(drafts_api, "save_draft", paused)
+    queued = threading.Event()
+    box.guard.on_wait = queued.set
+    try:
+        writing, _ = _in_background(lambda: _post(
+            base, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"]
+        ))
+        entered.wait(_WAIT)
+        releasing, _ = _in_background(lambda: _beacon(base, session["token"]))
+        _first(queued, releasing)
+        with _browser.open(f"{base}/api/mode", timeout=1) as response:
+            answered = json.loads(response.read().decode("utf-8"))
+        still_held = writing.is_alive() and not gate.is_set()
+    finally:
+        gate.set()
+        writing.join(_WAIT)
+        releasing.join(_WAIT)
+
+    assert ("mode" in answered, still_held) == (True, True)
+
+
+def test_a_renew_never_moves_the_last_renewal_back(api_alone, sources_root):
+    # 時間不倒退：最後續期時間只增不減——系統時間被調回去，晚一點的續期也不把它寫回過去。
+    base, box = api_alone
+    _, session = _ready(base, sources_root, "f23_renewal_forward.yaml")
+    real_clock = box.clock
+    try:
+        box.clock = lambda: real_clock() + datetime.timedelta(seconds=60)
+        ahead = datetime.datetime.fromisoformat(_renew(base, session["token"])["renewed_at"])
+        box.clock = lambda: real_clock() + datetime.timedelta(seconds=30)
+        later = datetime.datetime.fromisoformat(_renew(base, session["token"])["renewed_at"])
+    finally:
+        box.clock = real_clock
+
+    assert later >= ahead
+
+
+def test_queued_requests_run_in_the_order_they_arrived(api_alone, sources_root, monkeypatch):
+    # 護欄（先到先處理）：長寫入期間排了兩發續期（第 30 秒、第 170 秒到）。照到達順序執行，兩發都
+    # 成立；較晚到的那發若先執行，170 秒沒續期就被當成逾時、兩發都 410。
+    base, box = api_alone
+    entry, session = _ready(base, sources_root, "f23_fifo.yaml")
+    paused, entered, gate = _pause(drafts_api.save_draft)
+    monkeypatch.setattr(drafts_api, "save_draft", paused)
+    waiting = threading.Event()
+    box.guard.on_wait = waiting.set
+    real_clock = box.clock
+    try:
+        writing, _ = _in_background(lambda: _post(
+            base, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"]
+        ))
+        entered.wait(_WAIT)
+        renewals = []
+        for seconds in (30, 170):
+            box.clock = lambda later=seconds: real_clock() + datetime.timedelta(seconds=later)
+            waiting.clear()
+            renewing, renewed = _in_background(lambda: _renew(base, session["token"]))
+            _first(waiting, renewing)
+            renewals.append((renewing, renewed))
+    finally:
+        gate.set()
+        writing.join(_WAIT)
+        for renewing, _ in renewals:
+            renewing.join(_WAIT)
+        box.clock = real_clock
+
+    assert [_outcome(renewed) for _, renewed in renewals] == [(200, None), (200, None)]
+
+
+def test_a_session_already_taken_back_is_not_revived_by_an_earlier_time(api_alone, sources_root):
+    # 護欄：已經被續期逾時收回的階段，之後的舊續期（時間較早也一樣）是 410，不會復活——收回是狀態。
+    base, box = api_alone
+    _, session = _ready(base, sources_root, "f23_not_revived.yaml")
+    real_clock = box.clock
+    try:
+        box.clock = lambda: real_clock() + datetime.timedelta(minutes=3)
+        _lock(base, "GET")  # 問一次就回收（續期逾時）
+        box.clock = lambda: real_clock() + datetime.timedelta(minutes=2)
+        refused = _refusal(lambda: _renew(base, session["token"]))
+    finally:
+        box.clock = real_clock
+
+    assert refused[0] == _GONE
+
+
+def test_the_holders_renew_queued_behind_its_own_long_write_is_not_counted_against_it(
+    api_alone, sources_root, monkeypatch
+):
+    # 護欄：持有者的續期排在自己的長寫入後面，排隊等的時間不算進去——用的是它到達時的時間，不是
+    # 拿到鎖時的時間，否則持有者會被自己的寫入收掉。
+    base, box = api_alone
+    entry, session = _ready(base, sources_root, "f23_queued_renew.yaml")
+    paused, entered, gate = _pause(drafts_api.save_draft)
+    monkeypatch.setattr(drafts_api, "save_draft", paused)
+    queued = threading.Event()
+    box.guard.on_wait = queued.set
+    real_clock = box.clock
+    try:
+        writing, _ = _in_background(lambda: _post(
+            base, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"]
+        ))
+        entered.wait(_WAIT)
+        box.clock = lambda: real_clock() + datetime.timedelta(seconds=100)
+        renewing, renewed = _in_background(lambda: _renew(base, session["token"]))
+        _first(queued, renewing)
+        box.clock = lambda: real_clock() + datetime.timedelta(seconds=200)
+    finally:
+        gate.set()
+        writing.join(_WAIT)
+        renewing.join(_WAIT)
+        box.clock = real_clock
+
+    assert _outcome(renewed) == (200, None)
 
 
 # ── T9／T13：閒置逾時（GET /api/session/idle、POST /api/session/activity，#48）──────
