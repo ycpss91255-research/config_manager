@@ -6,16 +6,21 @@
 目標。記錄與寫出成對、整批原子（ADR-00000006、ADR-00000022）：
 
 **第 k 份失敗 → 前 k−1 份已寫出的目標檔案還原為進版前內容、全部已產生的變更紀錄一併撤銷。**
-目標靠寫前拍下的位元組還原（`replace_atomically`）；repo 靠 `reset_hard` 回進版前的 HEAD
-——commit 與來源複本一次退回，不逐筆 revert（那會各留一筆「退回」紀錄，與「整批不進版」
-不符）。回滾本身失敗才丟 `PromoteLeftBehind`（同時說出原本的失敗與沒還原的目標）。
+目標靠寫前拍下的位元組**與 owner／group／mode** 還原（`replace_atomically` 加 finalize，和寫出
+走同一條路；F29：只放回位元組會讓目標變成暫存檔的 0600、服務帳號擁有）；**只還原真的寫出過的
+目標**——`write` 本身原子，失敗那一份（與其後的）目標根本沒動，回滾不去碰它（否則 root 擁有的
+目標會被換成服務帳號的檔）；repo 靠 `reset_hard` 回進版前的 HEAD——commit 與來源複本一次退回，
+不逐筆 revert（那會各留一筆「退回」紀錄，與「整批不進版」不符）。回滾本身失敗（含 owner 設不
+回去）才丟 `PromoteLeftBehind`（同時說出原本的失敗與沒還原的目標）。
 """
 
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 
 from config_manager.core.drafts import Promotion
 from config_manager.io.atomic import replace_atomically
@@ -47,24 +52,45 @@ def apply(
     roots = tuple(allowed_roots)
     extras = companions or {}
     before_head = head(repo)
-    before_targets: list[tuple[str, bytes | None]] = []
+    touched: list[_Snapshot] = []
     try:
         for plan in promotions:
-            before_targets.append((plan.target, read_or_none(plan.target)))
             replace_atomically(os.path.join(repo, plan.source), as_bytes(plan.text))
             beside = extras.get(plan.uid, ())
             for relative, text in beside:
                 # 回滾時 reset 只還原 git 追蹤的檔案；這次才新寫的檔案要另外記下來拿掉。
                 absolute = os.path.join(repo, relative)
-                before_targets.append((absolute, read_or_none(absolute)))
+                touched.append(_snapshot(absolute))
                 _place(absolute, text)
             stage(repo, plan.source, *(relative for relative, _ in beside))
             record(repo, plan.uid, plan.kind, plan.summary, author)
+            # 先拍、寫成功才列入要還原的：write 原子，失敗＝目標沒動，回滾不該再去重寫它（F29）。
+            before = _snapshot(plan.target)
             write(plan.target, plan.text, plan.permissions, roots)
+            touched.append(before)
     except BaseException as failure:
-        _rollback(repo, before_head, before_targets, failure)
+        _rollback(repo, before_head, touched, failure)
         raise
     return [plan.uid for plan in promotions]
+
+
+@dataclass(frozen=True)
+class _Snapshot:
+    """一個目標在進版前的樣子：位元組（不存在＝None）與 owner／group／mode——回滾據以還原。"""
+
+    path: str
+    content: bytes | None
+    uid: int = 0
+    gid: int = 0
+    mode: int = 0
+
+
+def _snapshot(path: str) -> _Snapshot:
+    content = read_or_none(path)
+    if content is None:
+        return _Snapshot(path, None)
+    info = os.stat(path)
+    return _Snapshot(path, content, info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode))
 
 
 def _place(absolute: str, text: str | None) -> None:
@@ -77,33 +103,42 @@ def _place(absolute: str, text: str | None) -> None:
     replace_atomically(absolute, text.encode("utf-8"))
 
 
-def _restore(target: str, before: bytes | None) -> None:
-    """把一個目標回寫成拍下的內容；進版前不存在的就刪掉（沒有就什麼都不做）。"""
-    if before is None:
-        if os.path.lexists(target):
-            os.remove(target)
-    else:
-        replace_atomically(target, before)
+def _restore(before: _Snapshot) -> None:
+    """把一個目標回寫成拍下的內容與 owner／group／mode；進版前不存在的就刪掉（沒有就什麼都不做）。
+
+    owner／mode 在 rename 前套在暫存檔上（和 `io/writer` 同一條路）：設不回去就不換上去，
+    目標維持現狀、例外交給呼叫端列為殘留——不靜默留成服務帳號擁有的 0600（不變式 2）。
+    """
+    if before.content is None:
+        if os.path.lexists(before.path):
+            os.remove(before.path)
+        return
+
+    def _restore_metadata(temporary: str) -> None:
+        os.chown(temporary, before.uid, before.gid)
+        os.chmod(temporary, before.mode)
+
+    replace_atomically(before.path, before.content, finalize=_restore_metadata)
 
 
 def _rollback(
     repo: str,
     before_head: str,
-    before_targets: Sequence[tuple[str, bytes | None]],
+    touched: Sequence[_Snapshot],
     failure: BaseException,
 ) -> None:
-    """還原到進版前：目標（與一起寫回 repo 的其他檔案）逐個回寫拍下的內容（原本不存在的就刪），
-    repo reset 回進版前 HEAD。
+    """還原到進版前：寫出過的目標（與一起寫回 repo 的其他檔案）逐個回寫拍下的內容與 owner／mode
+    （原本不存在的就刪），repo reset 回進版前 HEAD。
 
     任一步還原不了就記下，最後大聲失敗——不蓋掉原本的失敗（`__cause__` 指向它），也不讓
     「目標已是新內容、紀錄卻沒了」的半套狀態悄悄留著。
     """
     leftover: list[str] = []
-    for target, before in reversed(before_targets):
+    for before in reversed(touched):
         try:
-            _restore(target, before)
+            _restore(before)
         except (OSError, WriterError) as error:
-            leftover.append(f"{target}（{error}）")
+            leftover.append(f"{before.path}（{error}）")
     try:
         reset_hard(repo, before_head)
     except (OSError, subprocess.CalledProcessError) as error:
