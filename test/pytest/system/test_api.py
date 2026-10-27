@@ -19,6 +19,7 @@ import json
 import os
 import pathlib
 import re
+import stat
 import subprocess
 import sys
 import threading
@@ -1779,6 +1780,169 @@ def test_promote_kth_write_failure_restores_targets_and_withdraws_records(
     assert pathlib.Path(second["target"]).read_bytes() == b"speed: 1\n"
     assert _head(repo) == before  # 第 1 份的紀錄撤銷
     assert _get(api, "/api/drafts")["count"] == failing_call  # 兩份草稿都保留，修好後可重試
+
+
+
+def _inject_second_write_failure(monkeypatch):
+    """第 2 份寫出失敗（第 1 份已寫出、已記錄，回滾才有東西可還原）；回被呼叫的目標清單。"""
+    real_write = promote_io.write
+    calls = []
+
+    def _second_write_fails(target, content, permissions, roots):
+        calls.append(target)
+        if len(calls) == 2:
+            raise TargetNotWritable(f"注入：{target} 寫不進去。下一步：無")
+        real_write(target, content, permissions, roots)
+
+    monkeypatch.setattr(promote_io, "write", _second_write_fails)
+    return calls
+
+
+def _temporaries_in(directory):
+    return sorted(p.name for p in pathlib.Path(directory).iterdir() if p.name.startswith(".config_manager-"))
+
+
+def _repo_state(repo):
+    porcelain = subprocess.run(
+        ["git", "-C", repo, "status", "--porcelain"], capture_output=True, text=True, check=True
+    ).stdout
+    count = subprocess.run(
+        ["git", "-C", repo, "rev-list", "--count", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    return _head(repo), count, porcelain
+
+
+def test_promote_rollback_restores_mode_and_owner_and_leaves_no_temporary_file(
+    api, sources_root, repo, monkeypatch
+):
+    # T9（F29）：回到進版前不只是位元組——mode、owner／group 也要回來；目錄不留暫存檔；repo 乾淨、
+    # 筆數不變。進版前先把第 1 份目標設成 0640（和暫存檔的 0600 不同），差異才看得出來。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地 monkeypatch 寫出並讀 HEAD，外部映像控不了 server 端模組")
+    _clear_drafts(api)
+    first = _onboard(api, sources_root, "rollback_mode_a.yaml")
+    second = _onboard(api, sources_root, "rollback_mode_b.yaml", b"speed: 1\n")
+    os.chmod(first["target"], 0o640)
+    before_stat = os.stat(first["target"])
+    _post(api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.2}})
+    _post(api, "/api/drafts", {"uid": second["uid"], "edits": {"speed": 2}})
+    before_repo = _repo_state(repo)
+    _inject_second_write_failure(monkeypatch)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/promote", {})
+
+    assert exc.value.code == _SERVER_ERROR
+    after_stat = os.stat(first["target"])
+    assert pathlib.Path(first["target"]).read_bytes() == b"max_vel: 0.8\n"
+    assert stat.S_IMODE(after_stat.st_mode) == 0o640  # 不是暫存檔留下的 0600
+    assert (after_stat.st_uid, after_stat.st_gid) == (before_stat.st_uid, before_stat.st_gid)
+    assert _temporaries_in(pathlib.Path(first["target"]).parent) == []
+    assert _repo_state(repo) == before_repo  # HEAD、筆數、乾淨
+
+
+def test_promote_rollback_does_not_touch_the_config_whose_write_failed(
+    api, sources_root, repo, monkeypatch
+):
+    # T9（F29）：寫出失敗的那一份目標從沒被動過（write 原子、失敗＝沒動），回滾不該再去重寫它——
+    # 位元組、mode、inode、修改時間都和進版前相同。否則 root 擁有的目標會被換成服務帳號的檔。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地 monkeypatch 寫出並讀 HEAD，外部映像控不了 server 端模組")
+    _clear_drafts(api)
+    first = _onboard(api, sources_root, "rollback_untouched_a.yaml")
+    second = _onboard(api, sources_root, "rollback_untouched_b.yaml", b"speed: 1\n")
+    os.chmod(second["target"], 0o640)
+    before = os.stat(second["target"])
+    _post(api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.2}})
+    _post(api, "/api/drafts", {"uid": second["uid"], "edits": {"speed": 2}})
+    _inject_second_write_failure(monkeypatch)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/promote", {})
+
+    assert exc.value.code == _SERVER_ERROR
+    after = os.stat(second["target"])
+    assert pathlib.Path(second["target"]).read_bytes() == b"speed: 1\n"
+    assert (after.st_ino, after.st_mtime_ns, stat.S_IMODE(after.st_mode)) == (
+        before.st_ino, before.st_mtime_ns, 0o640,
+    )
+
+
+def test_a_rollback_that_cannot_restore_a_target_names_it_and_leaves_it_as_new_content(
+    api, sources_root, repo, monkeypatch
+):
+    # T9（U24 第 2 輪）：第 2 份寫出失敗、回滾還原第 1 份時原子替換也失敗 → 500 的訊息同時列出
+    # 殘留的目標路徑、原本的失敗與下一步；被列出的目標此刻**真的是新內容**（不是基準）；
+    # 沒列的那份維持基準；HEAD 回到進版前；草稿保留。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地 monkeypatch 寫出並讀 HEAD，外部映像控不了 server 端模組")
+    _clear_drafts(api)
+    first = _onboard(api, sources_root, "rollback_stuck_a.yaml")
+    second = _onboard(api, sources_root, "rollback_stuck_b.yaml", b"speed: 1\n")
+    _post(api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.2}})
+    _post(api, "/api/drafts", {"uid": second["uid"], "edits": {"speed": 2}})
+    before = _head(repo)
+    _inject_second_write_failure(monkeypatch)
+    real_replace = promote_io.replace_atomically
+
+    def _restoring_first_target_fails(target, content, **kwargs):
+        if target == first["target"]:
+            raise TargetNotWritable(f"注入：{target} 還原時寫不進去。下一步：無")
+        real_replace(target, content, **kwargs)
+
+    monkeypatch.setattr(promote_io, "replace_atomically", _restoring_first_target_fails)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/promote", {})
+
+    assert exc.value.code == _SERVER_ERROR
+    detail = _detail(exc.value)
+    assert first["target"] in detail and "還原時寫不進去" in detail
+    assert "原本的失敗" in detail and "寫不進去" in detail
+    assert "下一步" in detail
+    assert pathlib.Path(first["target"]).read_bytes() == b"max_vel: 1.2\n"  # 列出的殘留是真的
+    assert pathlib.Path(second["target"]).read_bytes() == b"speed: 1\n"
+    assert _head(repo) == before
+    assert _get(api, "/api/drafts")["count"] == 2
+
+
+def test_a_rollback_whose_chown_fails_names_the_target_as_left_behind(
+    api, sources_root, repo, monkeypatch
+):
+    # T9（F29）：還原時 owner 設不回去（例如原本 root 擁有、服務帳號設不回 root）→ 誠實列為殘留，
+    # 不靜默留成服務帳號的檔。原子替換：設不回去就不換上去，目標維持新內容。
+    # 服務不以 root 跑，CI 測不到真的設回 root；以注入 PermissionError 觀察「設不回去時怎麼說」。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地 monkeypatch 寫出並讀 HEAD，外部映像控不了 server 端模組")
+    _clear_drafts(api)
+    first = _onboard(api, sources_root, "rollback_chown_a.yaml")
+    second = _onboard(api, sources_root, "rollback_chown_b.yaml", b"speed: 1\n")
+    _post(api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.2}})
+    _post(api, "/api/drafts", {"uid": second["uid"], "edits": {"speed": 2}})
+    before = _head(repo)
+    _inject_second_write_failure(monkeypatch)
+    real_chown = os.chown
+    chowns = []
+
+    def _restore_chown_fails(path, uid, gid, **kwargs):
+        # 第 1 次是第 1 份寫出時設擁有者（成功）；之後的是回滾還原時設回去（注入失敗）。
+        chowns.append(path)
+        if len(chowns) >= 2:
+            raise PermissionError(1, "Operation not permitted")
+        real_chown(path, uid, gid, **kwargs)
+
+    monkeypatch.setattr(os, "chown", _restore_chown_fails)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/promote", {})
+
+    assert exc.value.code == _SERVER_ERROR
+    detail = _detail(exc.value)
+    assert first["target"] in detail and "Operation not permitted" in detail
+    assert "原本的失敗" in detail
+    assert len(chowns) >= 2  # 回滾真的試著把擁有者設回去
+    assert pathlib.Path(first["target"]).read_bytes() == b"max_vel: 1.2\n"
+    assert _head(repo) == before
 
 
 # ── T9：單筆內容（GET /api/configs/{uid}，#20）────────────────────────────────
