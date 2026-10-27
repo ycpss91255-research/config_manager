@@ -20,7 +20,7 @@ import os
 import stat
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from config_manager.core.drafts import Promotion
 from config_manager.io.atomic import replace_atomically
@@ -49,40 +49,42 @@ def apply(
     `companions` 是 uid → 那份 config 要**在同一筆紀錄裡**一起寫回 repo 的其他檔案（退版時
     跟著回到那一版的 schema 與清單檔，#39）。它們與來源複本同進同退：失敗回滾時一起還原。
     """
-    roots = tuple(allowed_roots)
-    extras = companions or {}
+    batch = _Batch(repo, author, tuple(allowed_roots), companions or {})
     before_head = head(repo)
-    touched: list[_Snapshot] = []
     try:
         for plan in promotions:
-            _apply_one(repo, plan, extras.get(plan.uid, ()), author, roots, touched)
+            batch.apply_one(plan)
     except BaseException as failure:
-        _rollback(repo, before_head, touched, failure)
+        _rollback(repo, before_head, batch.touched, failure)
         raise
     return [plan.uid for plan in promotions]
 
 
-def _apply_one(
-    repo: str,
-    plan: Promotion,
-    beside: Companions,
-    author: str,
-    roots: tuple[str, ...],
-    touched: list[_Snapshot],
-) -> None:
-    """一份 config：寫來源複本與同行檔案 → stage → record → 寫目標；`touched` 記下回滾要還原的。"""
-    replace_atomically(os.path.join(repo, plan.source), as_bytes(plan.text))
-    for relative, text in beside:
-        # 回滾時 reset 只還原 git 追蹤的檔案；這次才新寫的檔案要另外記下來拿掉。
-        absolute = os.path.join(repo, relative)
-        touched.append(_snapshot(absolute))
-        _place(absolute, text)
-    stage(repo, plan.source, *(relative for relative, _ in beside))
-    record(repo, plan.uid, plan.kind, plan.summary, author)
-    # 先拍、寫成功才列入要還原的：write 原子，失敗＝目標沒動，回滾不該再去重寫它（F29）。
-    before = _snapshot(plan.target)
-    write(plan.target, plan.text, plan.permissions, roots)
-    touched.append(before)
+@dataclass
+class _Batch:
+    """一次進版共用的東西，與回滾要還原的清單（`touched`：寫出過的目標、寫回 repo 的同行檔案）。"""
+
+    repo: str
+    author: str
+    roots: tuple[str, ...]
+    companions: Mapping[str, Companions]
+    touched: list[_Snapshot] = field(default_factory=list)
+
+    def apply_one(self, plan: Promotion) -> None:
+        """一份 config：寫來源複本與同行檔案 → stage → record → 寫目標。"""
+        replace_atomically(os.path.join(self.repo, plan.source), as_bytes(plan.text))
+        beside = self.companions.get(plan.uid, ())
+        for relative, text in beside:
+            # 回滾時 reset 只還原 git 追蹤的檔案；這次才新寫的檔案要另外記下來拿掉。
+            absolute = os.path.join(self.repo, relative)
+            self.touched.append(_snapshot(absolute))
+            _place(absolute, text)
+        stage(self.repo, plan.source, *(relative for relative, _ in beside))
+        record(self.repo, plan.uid, plan.kind, plan.summary, self.author)
+        # 先拍、寫成功才列入要還原的：write 原子，失敗＝目標沒動，回滾不該再去重寫它（F29）。
+        before = _snapshot(plan.target)
+        write(plan.target, plan.text, plan.permissions, self.roots)
+        self.touched.append(before)
 
 
 @dataclass(frozen=True)
