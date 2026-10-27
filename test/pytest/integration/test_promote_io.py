@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import stat
 import subprocess
 
@@ -21,6 +22,8 @@ from config_manager.io.preflight import CONFIG_LIST_NAME
 from config_manager.io.promote import apply
 
 _AUTHOR = "陳小明 <ming@example.com>"
+_SECOND = 2  # 第 2 份：第 1 份已寫出、已記錄，回滾才有東西可還原
+_MODE_BEFORE = 0o640  # 和暫存檔的 0600 不同，還原有沒有回復 mode 才看得出來
 _SEED = """\
 list_version = 1
 
@@ -46,7 +49,8 @@ def _repo(tmp_path):
 
 
 def _plan(tmp_path, repo, name, text, before):
-    """一份要進版的 config：來源複本在 repo/files、目標在 tmp_path/targets，目標先放進版前的內容。"""
+    """一份要進版的 config：來源複本在 repo/files、目標在 tmp_path/targets，
+    目標先放進版前的內容。"""
     targets = tmp_path / "targets"
     targets.mkdir(exist_ok=True)
     target = targets / f"{name}.yaml"
@@ -65,7 +69,7 @@ def _second_write_fails(monkeypatch):
 
     def _write(target, content, permissions, roots):
         seen.append(target)
-        if len(seen) == 2:
+        if len(seen) == _SECOND:
             raise TargetNotWritable(f"注入：{target} 寫不進去。下一步：無")
         real_write(target, content, permissions, roots)
 
@@ -73,11 +77,12 @@ def _second_write_fails(monkeypatch):
 
 
 def test_a_rollback_restores_the_mode_the_target_had_before(tmp_path, monkeypatch):
-    # F29：進版前 0640 → 第 2 份失敗回滾 → 第 1 份不但內容回來，mode 也是 0640（不是暫存檔的 0600）。
+    # F29：進版前 0640 → 第 2 份失敗回滾 → 第 1 份不但內容回來，mode 也是 0640
+    #（不是暫存檔的 0600）。
     repo = _repo(tmp_path)
     first = _plan(tmp_path, repo, "a", "max_vel: 1.2\n", "max_vel: 0.8\n")
     second = _plan(tmp_path, repo, "b", "speed: 2\n", "speed: 1\n")
-    os.chmod(first.target, 0o640)
+    os.chmod(first.target, _MODE_BEFORE)
     before_head = head(str(repo))
     _second_write_fails(monkeypatch)
 
@@ -85,13 +90,15 @@ def test_a_rollback_restores_the_mode_the_target_had_before(tmp_path, monkeypatc
         apply(str(repo), [first, second], _AUTHOR, [str(tmp_path / "targets")])
 
     info = os.stat(first.target)
-    assert open(first.target, "rb").read() == b"max_vel: 0.8\n"
-    assert stat.S_IMODE(info.st_mode) == 0o640
+    assert pathlib.Path(first.target).read_bytes() == b"max_vel: 0.8\n"
+    assert stat.S_IMODE(info.st_mode) == _MODE_BEFORE
     assert (info.st_uid, info.st_gid) == (os.getuid(), os.getgid())
     assert head(str(repo)) == before_head
 
 
-def test_a_rollback_that_cannot_finish_names_the_leftover_and_keeps_the_cause(tmp_path, monkeypatch):
+def test_a_rollback_that_cannot_finish_names_the_leftover_and_keeps_the_cause(
+    tmp_path, monkeypatch
+):
     # U24 第 2 輪：還原第 1 份時原子替換失敗 → PromoteLeftBehind 指名那個目標與原因、帶原本的失敗，
     # `__cause__` 是原本的失敗；第 1 份此刻是新內容（真的殘留）、第 2 份沒動、HEAD 回到進版前。
     repo = _repo(tmp_path)
@@ -115,6 +122,6 @@ def test_a_rollback_that_cannot_finish_names_the_leftover_and_keeps_the_cause(tm
     assert first.target in message and "還原時寫不進去" in message
     assert "原本的失敗" in message and "下一步" in message
     assert isinstance(caught.value.__cause__, TargetNotWritable)
-    assert open(first.target, "rb").read() == b"max_vel: 1.2\n"
-    assert open(second.target, "rb").read() == b"speed: 1\n"
+    assert pathlib.Path(first.target).read_bytes() == b"max_vel: 1.2\n"
+    assert pathlib.Path(second.target).read_bytes() == b"speed: 1\n"
     assert head(str(repo)) == before_head

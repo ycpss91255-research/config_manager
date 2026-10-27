@@ -3834,7 +3834,8 @@ def test_a_promote_that_fails_midway_shows_the_leftover_message_verbatim(open_pa
     _save_draft_for(page, _SECOND_UID, "speed", "2.5")
     left_behind = (
         "進版中途失敗後回滾未竟，未還原：/srv/cm/targets/a.yaml（還原時寫不進去）。"
-        "原本的失敗：目標目錄無法寫入。下一步：先照原本的失敗處理，再手動把上列目標還原成進版前內容並核對 git 歷史"
+        "原本的失敗：目標目錄無法寫入。"
+        "下一步：先照原本的失敗處理，再手動把上列目標還原成進版前內容並核對 git 歷史"
     )
     page.route(
         "**/api/promote",

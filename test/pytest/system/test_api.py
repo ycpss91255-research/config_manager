@@ -1783,14 +1783,19 @@ def test_promote_kth_write_failure_restores_targets_and_withdraws_records(
 
 
 
+_SECOND_WRITE = 2  # 第 k 份（k=2）：第 1 份已寫出、已記錄，回滾才有東西可還原
+_MODE_BEFORE_PROMOTE = 0o640  # 和暫存檔的 0600 不同，還原有沒有回復 mode 才看得出來
+_TWO_DRAFTS = 2
+
+
 def _inject_second_write_failure(monkeypatch):
-    """第 2 份寫出失敗（第 1 份已寫出、已記錄，回滾才有東西可還原）；回被呼叫的目標清單。"""
+    """第 2 份寫出失敗；回被呼叫的目標清單。"""
     real_write = promote_io.write
     calls = []
 
     def _second_write_fails(target, content, permissions, roots):
         calls.append(target)
-        if len(calls) == 2:
+        if len(calls) == _SECOND_WRITE:
             raise TargetNotWritable(f"注入：{target} 寫不進去。下一步：無")
         real_write(target, content, permissions, roots)
 
@@ -1799,7 +1804,8 @@ def _inject_second_write_failure(monkeypatch):
 
 
 def _temporaries_in(directory):
-    return sorted(p.name for p in pathlib.Path(directory).iterdir() if p.name.startswith(".config_manager-"))
+    names = (p.name for p in pathlib.Path(directory).iterdir())
+    return sorted(name for name in names if name.startswith(".config_manager-"))
 
 
 def _repo_state(repo):
@@ -1807,7 +1813,8 @@ def _repo_state(repo):
         ["git", "-C", repo, "status", "--porcelain"], capture_output=True, text=True, check=True
     ).stdout
     count = subprocess.run(
-        ["git", "-C", repo, "rev-list", "--count", "HEAD"], capture_output=True, text=True, check=True
+        ["git", "-C", repo, "rev-list", "--count", "HEAD"],
+        capture_output=True, text=True, check=True,
     ).stdout.strip()
     return _head(repo), count, porcelain
 
@@ -1822,7 +1829,7 @@ def test_promote_rollback_restores_mode_and_owner_and_leaves_no_temporary_file(
     _clear_drafts(api)
     first = _onboard(api, sources_root, "rollback_mode_a.yaml")
     second = _onboard(api, sources_root, "rollback_mode_b.yaml", b"speed: 1\n")
-    os.chmod(first["target"], 0o640)
+    os.chmod(first["target"], _MODE_BEFORE_PROMOTE)
     before_stat = os.stat(first["target"])
     _post(api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.2}})
     _post(api, "/api/drafts", {"uid": second["uid"], "edits": {"speed": 2}})
@@ -1835,7 +1842,7 @@ def test_promote_rollback_restores_mode_and_owner_and_leaves_no_temporary_file(
     assert exc.value.code == _SERVER_ERROR
     after_stat = os.stat(first["target"])
     assert pathlib.Path(first["target"]).read_bytes() == b"max_vel: 0.8\n"
-    assert stat.S_IMODE(after_stat.st_mode) == 0o640  # 不是暫存檔留下的 0600
+    assert stat.S_IMODE(after_stat.st_mode) == _MODE_BEFORE_PROMOTE  # 不是暫存檔留下的 0600
     assert (after_stat.st_uid, after_stat.st_gid) == (before_stat.st_uid, before_stat.st_gid)
     assert _temporaries_in(pathlib.Path(first["target"]).parent) == []
     assert _repo_state(repo) == before_repo  # HEAD、筆數、乾淨
@@ -1851,7 +1858,7 @@ def test_promote_rollback_does_not_touch_the_config_whose_write_failed(
     _clear_drafts(api)
     first = _onboard(api, sources_root, "rollback_untouched_a.yaml")
     second = _onboard(api, sources_root, "rollback_untouched_b.yaml", b"speed: 1\n")
-    os.chmod(second["target"], 0o640)
+    os.chmod(second["target"], _MODE_BEFORE_PROMOTE)
     before = os.stat(second["target"])
     _post(api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.2}})
     _post(api, "/api/drafts", {"uid": second["uid"], "edits": {"speed": 2}})
@@ -1864,7 +1871,7 @@ def test_promote_rollback_does_not_touch_the_config_whose_write_failed(
     after = os.stat(second["target"])
     assert pathlib.Path(second["target"]).read_bytes() == b"speed: 1\n"
     assert (after.st_ino, after.st_mtime_ns, stat.S_IMODE(after.st_mode)) == (
-        before.st_ino, before.st_mtime_ns, 0o640,
+        before.st_ino, before.st_mtime_ns, _MODE_BEFORE_PROMOTE,
     )
 
 
@@ -1903,7 +1910,7 @@ def test_a_rollback_that_cannot_restore_a_target_names_it_and_leaves_it_as_new_c
     assert pathlib.Path(first["target"]).read_bytes() == b"max_vel: 1.2\n"  # 列出的殘留是真的
     assert pathlib.Path(second["target"]).read_bytes() == b"speed: 1\n"
     assert _head(repo) == before
-    assert _get(api, "/api/drafts")["count"] == 2
+    assert _get(api, "/api/drafts")["count"] == _TWO_DRAFTS
 
 
 def test_a_rollback_whose_chown_fails_names_the_target_as_left_behind(
@@ -1927,7 +1934,7 @@ def test_a_rollback_whose_chown_fails_names_the_target_as_left_behind(
     def _restore_chown_fails(path, uid, gid, **kwargs):
         # 第 1 次是第 1 份寫出時設擁有者（成功）；之後的是回滾還原時設回去（注入失敗）。
         chowns.append(path)
-        if len(chowns) >= 2:
+        if len(chowns) >= _SECOND_WRITE:
             raise PermissionError(1, "Operation not permitted")
         real_chown(path, uid, gid, **kwargs)
 
@@ -1940,7 +1947,7 @@ def test_a_rollback_whose_chown_fails_names_the_target_as_left_behind(
     detail = _detail(exc.value)
     assert first["target"] in detail and "Operation not permitted" in detail
     assert "原本的失敗" in detail
-    assert len(chowns) >= 2  # 回滾真的試著把擁有者設回去
+    assert len(chowns) >= _SECOND_WRITE  # 回滾真的試著把擁有者設回去
     assert pathlib.Path(first["target"]).read_bytes() == b"max_vel: 1.2\n"
     assert _head(repo) == before
 
