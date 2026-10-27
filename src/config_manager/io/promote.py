@@ -55,23 +55,34 @@ def apply(
     touched: list[_Snapshot] = []
     try:
         for plan in promotions:
-            replace_atomically(os.path.join(repo, plan.source), as_bytes(plan.text))
-            beside = extras.get(plan.uid, ())
-            for relative, text in beside:
-                # 回滾時 reset 只還原 git 追蹤的檔案；這次才新寫的檔案要另外記下來拿掉。
-                absolute = os.path.join(repo, relative)
-                touched.append(_snapshot(absolute))
-                _place(absolute, text)
-            stage(repo, plan.source, *(relative for relative, _ in beside))
-            record(repo, plan.uid, plan.kind, plan.summary, author)
-            # 先拍、寫成功才列入要還原的：write 原子，失敗＝目標沒動，回滾不該再去重寫它（F29）。
-            before = _snapshot(plan.target)
-            write(plan.target, plan.text, plan.permissions, roots)
-            touched.append(before)
+            _apply_one(repo, plan, extras.get(plan.uid, ()), author, roots, touched)
     except BaseException as failure:
         _rollback(repo, before_head, touched, failure)
         raise
     return [plan.uid for plan in promotions]
+
+
+def _apply_one(
+    repo: str,
+    plan: Promotion,
+    beside: Companions,
+    author: str,
+    roots: tuple[str, ...],
+    touched: list[_Snapshot],
+) -> None:
+    """一份 config：寫來源複本與同行檔案 → stage → record → 寫目標；`touched` 記下回滾要還原的。"""
+    replace_atomically(os.path.join(repo, plan.source), as_bytes(plan.text))
+    for relative, text in beside:
+        # 回滾時 reset 只還原 git 追蹤的檔案；這次才新寫的檔案要另外記下來拿掉。
+        absolute = os.path.join(repo, relative)
+        touched.append(_snapshot(absolute))
+        _place(absolute, text)
+    stage(repo, plan.source, *(relative for relative, _ in beside))
+    record(repo, plan.uid, plan.kind, plan.summary, author)
+    # 先拍、寫成功才列入要還原的：write 原子，失敗＝目標沒動，回滾不該再去重寫它（F29）。
+    before = _snapshot(plan.target)
+    write(plan.target, plan.text, plan.permissions, roots)
+    touched.append(before)
 
 
 @dataclass(frozen=True)
