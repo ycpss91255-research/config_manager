@@ -1041,7 +1041,10 @@ async function load() {
     if (generation !== loadGeneration) return;  // 有更新的載入開始了，這次過時、丟棄
     rows = data;
     loadError = null;
-    render();
+    // 搜尋框有字就重跑搜尋（F27）：清單是現在的，命中（或失敗的原因）也要是現在的——否則
+    // 「檢查完成」和停機時留下的「搜尋失敗」紅框並排。重跑仍失敗時紅框留著、摘要另說。
+    if (search.value.trim()) await runSearch();
+    else render();
     refreshScanSummary();
     loadDrafts();
   } catch (error) {
@@ -1076,6 +1079,13 @@ function refreshScanSummary() {
   if (scanStatus.hidden) return;
   if (loadError !== null) {
     setScanStatus("failed", "檢查失敗：讀不到清單，原因見下方。修正後再按一次「檢查差異」。");
+    return;
+  }
+  if (searchError !== null) {
+    // 清單讀到了、重跑的搜尋卻失敗（F27）：說清楚哪一半成功、哪一半沒有，不寫成「檢查完成」。
+    const when = new Date().toLocaleTimeString("zh-TW", { hour12: false });
+    setScanStatus("failed",
+      `${when} 清單已重新讀到，共 ${rows.length} 份，但搜尋失敗（${searchError}）。修正後再按一次「檢查差異」。`);
     return;
   }
   const counts = {};
