@@ -1009,9 +1009,14 @@ def _search_fails(page, query: str = "b") -> None:
     page.wait_for_selector(_SEARCH_ERROR)
 
 
-def _hold_search(held: list):
+def _hold_search(held: list, holding: dict):
+    # holding["now"] 為真時先不回（之後由規格自己決定何時、回什麼，模擬晚到的回應）；否則放行。
+    # 不用 unroute 切換：unroute 會把還握著的 route 收掉，之後就不能再 fulfill。
     def _keep(route):
-        held.append(route)  # 先不回，之後由規格自己決定何時、回什麼（模擬晚到的回應）
+        if holding["now"]:
+            held.append(route)
+        else:
+            route.continue_()
     return _keep
 
 
@@ -1044,8 +1049,10 @@ def test_clearing_the_search_after_it_failed_shows_the_list_as_it_is_now(open_pa
 
     page.fill(_SEARCH, "")
 
-    page.wait_for_selector(f"[data-testid='tree-item-{_SECOND_UID}']", state="detached")
-    assert page.is_visible(f"[data-testid='tree-item-{_PARAM_UID}']")
+    # 紅框那段期間樹上本來就沒有任何條目，所以要等的是「現況」出現：a 回來、b 沒有。
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}']", state="visible")
+    assert page.query_selector(f"[data-testid='tree-item-{_SECOND_UID}']") is None
+    assert page.query_selector(_SEARCH_ERROR) is None
 
 
 def test_a_failed_search_marks_the_summary_as_not_reconfirmed(open_page, repo):
@@ -1065,14 +1072,14 @@ def test_a_failed_search_marks_the_summary_as_not_reconfirmed(open_page, repo):
 def test_a_late_search_answer_does_not_overwrite_a_newer_query_or_a_cleared_box(open_page, repo):
     # 較舊的回應晚到：不蓋掉較新的關鍵字，也不蓋掉清空後的完整清單。
     page = _two_entries(open_page, repo)
-    held = []
-    page.route(_ANY_SEARCH, _hold_search(held))
+    held, holding = [], {"now": True}
+    page.route(_ANY_SEARCH, _hold_search(held, holding))
     page.fill(_SEARCH, "a")
     for _ in range(50):
         if held:
             break
         page.wait_for_timeout(100)
-    page.unroute(_ANY_SEARCH)
+    holding["now"] = False
 
     page.fill(_SEARCH, "b")
     page.wait_for_function(_ONE_DOT)
@@ -1082,13 +1089,13 @@ def test_a_late_search_answer_does_not_overwrite_a_newer_query_or_a_cleared_box(
     assert page.is_visible(f"[data-testid='tree-item-{_SECOND_UID}']")
     assert page.query_selector(f"[data-testid='tree-item-{_PARAM_UID}']") is None
 
-    page.route(_ANY_SEARCH, _hold_search(held))
+    holding["now"] = True
     page.fill(_SEARCH, "a")
     for _ in range(50):
         if held:
             break
         page.wait_for_timeout(100)
-    page.unroute(_ANY_SEARCH)
+    holding["now"] = False
     page.fill(_SEARCH, "")
     page.wait_for_function(_TWO_DOTS)
     held.pop().fulfill(status=200, content_type="application/json", body=_hits(_PARAM_UID))
