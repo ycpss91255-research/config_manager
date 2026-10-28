@@ -3128,11 +3128,10 @@ function setReadonly(holder, startedAt, reason) {
   const who = holder
     ? `目前由 ${holder.name}（${holder.email}）自 ${formatTime(startedAt)} 起編輯中。`
     : "";
+  const standard = `${who}一次只允許一個編輯階段；等對方離開或逾時釋放後重新整理即可取得。不提供強制接管。`;
   readonlyBanner.replaceChildren(
     element("strong", { text: "唯讀模式。" }),
-    element("p", {
-      text: reason || `${who}一次只允許一個編輯階段；等對方離開或逾時釋放後重新整理即可取得。不提供強制接管。`,
-    }),
+    element("p", { text: reason ? (who ? `${reason}${who}` : reason) : standard }),
   );
   readonlyBanner.hidden = false;
   if (renewTimer) { clearInterval(renewTimer); renewTimer = null; }
@@ -3151,7 +3150,7 @@ const EDITING_ENDED_TEXT = "編輯階段已失效，這個分頁現在是唯讀�
 function endEditing(reason, refusedWrite = false) {
   rememberToken(null);
   setReadonly(null, null, reason);
-  askWhyEditingEnded(refusedWrite);
+  askWhyEditingEnded(refusedWrite, reason);
 }
 
 // 編輯權在這個分頁不知情時沒了（或收到另一個分頁的退出通知）：依序問既有端點，依答案顯示（F28）：
@@ -3164,7 +3163,7 @@ function endEditing(reason, refusedWrite = false) {
 // 查詢帶世代號：這段期間人重新進入了（離開主畫面會加 workspaceEpoch），晚到的答案不覆蓋新狀態。
 let whyGeneration = 0;
 
-async function askWhyEditingEnded(refusedWrite = false) {
+async function askWhyEditingEnded(refusedWrite = false, reason = null) {
   const generation = ++whyGeneration;
   const epoch = workspaceEpoch;
   const stale = () => generation !== whyGeneration || epoch !== workspaceEpoch
@@ -3179,7 +3178,7 @@ async function askWhyEditingEnded(refusedWrite = false) {
   if (identity === undefined) return;  // 問不到：原因不明，維持原本的字
   const lock = await askJson(`${API_BASE}/api/session/lock`);
   if (stale()) return;
-  if (lock && lock.held && lock.holder) setReadonly(lock.holder, lock.started_at, null);
+  if (lock && lock.held && lock.holder) setReadonly(lock.holder, lock.started_at, reason);
   else if (idleTimer && view) applyIdle(view);  // 部署模式：閒置倒數照後端說的（身分還在時）
 }
 
@@ -4427,8 +4426,7 @@ const retryButton = document.querySelector("[data-testid='backend-retry']");
 const backendProblems = { mode: null, identity: null };
 
 function backendProblemText(action, error) {
-  if (error instanceof Refused) return `問不到後端：${error.message}然後按「重試」。`;
-  return `問不到後端：${failureText(action, error)}或按「重試」。`;
+  return `問不到後端：${failureText(action, error)}`;
 }
 
 function showBackendProblems() {
