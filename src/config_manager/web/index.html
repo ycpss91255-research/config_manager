@@ -3291,10 +3291,13 @@ function exitLosses(detail) {
   return losses;
 }
 
+// 進行中分兩段（F24）：先問後端要不要確認那一發寫「確認退出條件中…」；確認框開著、人還沒選時
+// 退出鈕還原成「退出」（不是進行中——那看起來像已經在退出）；按「退出並丟掉」真正送出才「退出中…」。
 async function exitBrowser() {
+  if (isBusy(exitButton)) return;
   exitErrorEl.hidden = true;
   try {
-    let { response, payload } = await sendExit(false);
+    let { response, payload } = await whileBusy(exitButton, "確認退出條件中…", () => sendExit(false));
     const detail = payload && payload.detail;
     if (response.status === 409 && detail && detail.kind === "confirm_required") {
       const ok = await confirmAction(
@@ -3303,7 +3306,7 @@ async function exitBrowser() {
         "退出並丟掉",
       );
       if (!ok || !identityForm.hidden) return;  // 取消了，或確認框開著時已經回到身分輸入頁
-      ({ response, payload } = await sendExit(true));
+      ({ response, payload } = await whileBusy(exitButton, "退出中…", () => sendExit(true)));
     }
     if (!response.ok) {
       const why = payload && payload.detail ? detailText(payload.detail) : `${response.status} ${response.statusText}`;
@@ -3349,7 +3352,7 @@ function exitedText(result) {
   return `已退出：${released}${cleared}。下一步：重新輸入身分以繼續（可以換人、換角色）。`;
 }
 
-exitButton.addEventListener("click", () => whileBusy(exitButton, "退出中…", exitBrowser));
+exitButton.addEventListener("click", exitBrowser);
 
 // 退出後通知這個瀏覽器的其他分頁，讓它們立刻一起回身分輸入頁（使用者 10/21 選定）——唯讀分頁沒有續期、
 // 開發模式沒有閒置輪詢，不通知的話它們要到重新整理才知道。同一個來源的分頁共用 localStorage：寫一筆，
