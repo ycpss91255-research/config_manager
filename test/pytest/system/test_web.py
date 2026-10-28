@@ -5428,7 +5428,7 @@ def test_cancelling_the_exit_leaves_the_button_usable(open_page, repo):
 
     page.click("[data-testid='confirm-cancel']")
 
-    page.wait_for_selector("[data-testid='confirm-dialog']:not([open])")
+    page.wait_for_selector("[data-testid='confirm-dialog']:not([open])", state="attached")
     assert (page.inner_text(_EXIT), _busy(page, _EXIT)) == ("退出", False)
     page.click(_EXIT)
     page.wait_for_selector("[data-testid='confirm-dialog'][open]")  # 可以再按
@@ -5771,9 +5771,16 @@ def test_a_late_answer_about_an_old_session_does_not_overwrite_a_new_one(open_pa
     page = _holding_page(open_page, mode="development")
     _renew_refused(page)
     held, release = _hold_why(page)
+    token = page.evaluate("sessionToken")
     page.evaluate("renewSession(sessionToken)")
     page.wait_for_selector("[data-testid='readonly-banner']", state="visible")
     page.unroute("**/api/session/lock/renew")
+    # 410 是攔截出來的，後端其實還記著這個分頁持有：真的放掉，
+    # 退出才不會被當成「另一個分頁正在編輯」而要確認。
+    page.evaluate("""token => apiFetch(`${API_BASE}/api/session/lock`, {
+      method: "DELETE", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token }),
+    })""", token)
 
     page.click(_EXIT)
     page.wait_for_selector("[data-testid='identity-form']", state="visible")
