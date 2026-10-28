@@ -6805,3 +6805,116 @@ def test_an_ordinary_user_sees_no_developer_mark_anywhere(open_page, repo):
     page = _open_panel(open_page())
 
     assert page.query_selector_all(_DEV_MARK) == []
+
+
+# ── F15：多行字串不被壓成一行、沒碰的欄位不被送出 ──────────────────────────────────
+# 人工驗收後讀程式發現：字串列是 `<input type=text>`，瀏覽器會拿掉值裡的換行；儲存又把所有
+# 「現值≠來源值」的欄位都送出去——沒碰過的多行值一打開就算改、存同區塊任何欄位就被寫成一行。
+
+_MULTILINE_YAML = "notes: |-\n  第一行\n  第二行\ncount: 1\n"
+
+
+def _save_button() -> str:
+    return f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save']"
+
+
+def _save_and_wait(page) -> None:
+    page.click(_save_button())
+    page.wait_for_selector(
+        f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save-note']", state="visible"
+    )
+
+
+def _draft_bodies(page) -> list:
+    bodies: list = []
+
+    def note(request):
+        if request.url.endswith("/api/drafts") and request.method == "POST":
+            bodies.append(json.loads(request.post_data or "{}"))
+
+    page.on("request", note)
+    return bodies
+
+
+def _multiline_toggle(path: str) -> str:
+    return f"[data-testid='param-{path}'] [data-testid='param-multiline']"
+
+
+def test_a_multiline_string_opens_unchanged_with_its_line_breaks(open_page, repo):
+    # F15-1：兩行的值打開就是兩行，列不標已改、儲存停用——人什麼都沒碰。
+    _listing_with(repo, _MULTILINE_YAML)
+    page = _open_panel(open_page())
+
+    assert (
+        page.input_value(_param_value("notes")),
+        page.get_attribute("[data-testid='param-notes']", "data-changed"),
+        page.is_disabled(_save_button()),
+    ) == ("第一行\n第二行", "false", True)
+
+
+def test_saving_another_field_does_not_send_an_untouched_multiline_string(open_page, repo):
+    # F15-2：只改 count，送出的 edits 只有 count；沒碰的多行值不在裡面、不會被壓成一行。
+    _listing_with(repo, _MULTILINE_YAML)
+    page = _open_panel(open_page())
+    bodies = _draft_bodies(page)
+
+    page.fill(_param_value("count"), "2")
+    _save_and_wait(page)
+
+    assert [body["edits"] for body in bodies] == [{"count": 2}]
+
+
+def test_a_string_can_be_changed_to_several_lines_and_comes_back_the_same(open_page, repo):
+    # 單行值切成多行、填兩行、儲存、重新整理：顯示的仍是那兩行（草稿讀回相同）。
+    _listing_with(repo, "notes: v\ncount: 1\n")
+    page = _open_panel(open_page())
+
+    page.click(_multiline_toggle("notes"))
+    page.fill(_param_value("notes"), "a\nb")
+    _save_and_wait(page)
+    page.reload()
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+
+    assert page.input_value(_param_value("notes")) == "a\nb"
+
+
+def test_switching_a_string_between_one_line_and_several_does_not_change_it(open_page, repo):
+    # D1：切換控制項不是編輯——值不變、不標已改、儲存仍停用；切回去也一樣。
+    _listing_with(repo, "notes: v\n")
+    page = _open_panel(open_page())
+
+    page.click(_multiline_toggle("notes"))
+    once = (page.input_value(_param_value("notes")), page.is_disabled(_save_button()))
+    page.click(_multiline_toggle("notes"))
+    twice = (page.input_value(_param_value("notes")), page.is_disabled(_save_button()))
+
+    assert (once, twice) == (("v", True), ("v", True))
+
+
+def test_saving_a_second_field_keeps_the_first_fields_draft_value(open_page, repo):
+    # D1 的前提：改成只送人動過的欄位之後，先前存的草稿值不能因此丟掉。
+    _listing_with(repo, "a: 1\nb: 2\n")
+    page = _open_panel(open_page())
+
+    page.fill(_param_value("a"), "10")
+    _save_and_wait(page)
+    page.fill(_param_value("b"), "20")
+    _save_and_wait(page)
+    page.reload()
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+
+    shown = (page.input_value(_param_value("a")), page.input_value(_param_value("b")))
+    assert shown == ("10", "20")
+
+
+def test_an_ini_string_row_has_no_multiline_toggle_and_stays_a_single_line_input(open_page, repo):
+    # B1：ini 不支援多行值——字串列沒有「多行」切換、維持單行輸入框（422 那一半在 T9）。
+    _listing_with(repo, "[s]\nname = v\n", fmt="ini")
+    page = _open_panel(open_page())
+
+    assert (
+        page.query_selector(_multiline_toggle("s.name")),
+        page.get_attribute(_param_value("s.name"), "type"),
+    ) == (None, "text")

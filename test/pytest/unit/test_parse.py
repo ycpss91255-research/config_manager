@@ -6,6 +6,7 @@
 
 import pytest
 
+from config_manager.core import errors as core_errors
 from config_manager.core.errors import SyntaxParse, UnknownPath, UnsupportedFormat
 from config_manager.core.parse import Parsed, dump, parse, set_value, values
 
@@ -715,3 +716,119 @@ def test_a_reordered_json_object_with_one_changed_value_changes_only_that_value(
     set_value(parsed, "o", {"2": 3, "10": 1, "name": "a"})
 
     assert dump(parsed) == '{"o": {"name": "a", "10": 1.0, "2": 3}, "x": 1}'
+
+
+# ── F16／F15：set_value 寫入的字串值重新 parse 後讀回相同（值與型別都相同）────────────
+# 人工驗收後讀程式發現：ini 的 `_ini_with` 把 `;`／`#` 之後全當註解、新值原樣塞入不加引號，
+# 而讀值的 configobj 去引號、吃前後空白、逗號分清單、`#` 起行內註解、`%(name)s` 插值——
+# 寫的規則和讀的規則不同，寫進去的和讀回來的就不一樣。預期值一律是「寫進去的那個字串」。
+# 無法無損表示的值（ini 含換行、含兩種三引號）要具名拒絕、文件一個位元組都不變，不靜默轉換。
+
+_INI_ONE_KEY = "[s]\nname = v\n"
+
+
+def _read_back_ini(text: str, value: str) -> tuple[str, object]:
+    parsed = parse(text, "ini")
+    set_value(parsed, "s.name", value)
+    out = dump(parsed)
+    return out, values(parse(out, "ini"))["s"]["name"]
+
+
+def _unrepresentable():
+    found = getattr(core_errors, "UnrepresentableValue", None)
+    assert found is not None, "core.errors 還沒有 UnrepresentableValue（無法無損表示的值）"
+    return found
+
+
+def test_ini_a_value_containing_a_semicolon_is_replaced_whole_not_kept_as_a_comment():
+    # F16-1：`a;b` 整個是值（configobj 不把 `;` 當行內註解），改成 abc 不能留下 `;b`。
+    _, read = _read_back_ini("[s]\nname = a;b\n", "abc")
+    assert read == "abc"
+
+
+def test_ini_a_new_value_containing_a_hash_reads_back_whole_and_keeps_the_inline_comment():
+    # F16-2：值裡的 `#` 不能變成註解；原本的行內註解 `#c` 要留著。
+    out, read = _read_back_ini("[s]\nname = a #c\n", "x#y")
+    assert (read, "#c" in out) == ("x#y", True)
+
+
+def test_ini_a_new_value_keeps_its_leading_and_trailing_whitespace():
+    # F16-3：前後空白是值的一部分（configobj 的規則是加引號才保得住）。
+    _, read = _read_back_ini('[s]\nname = "a b"\n', " a b ")
+    assert read == " a b "
+
+
+def test_ini_a_new_value_containing_double_quotes_reads_back():
+    # F16-4：值裡有一種引號，要用另一種引號包起來，讀回才相同、檔案才解析得了。
+    _, read = _read_back_ini(_INI_ONE_KEY, 'say "hi"')
+    assert read == 'say "hi"'
+
+
+def test_ini_a_new_value_containing_a_comma_stays_one_string():
+    # F16-5：configobj 把沒加引號的逗號當清單分隔；寫回要讓它讀成一個字串，型別不能變。
+    _, read = _read_back_ini(_INI_ONE_KEY, "a, b")
+    assert (read, isinstance(read, str)) == ("a, b", True)
+
+
+def test_ini_a_new_value_containing_a_backslash_reads_back():
+    # F16-6：反斜線不是跳脫（configobj 預設不處理）；寫回不得被吃掉或加倍。
+    _, read = _read_back_ini(_INI_ONE_KEY, "C:\\dir\\x")
+    assert read == "C:\\dir\\x"
+
+
+def test_ini_a_new_value_that_looks_like_interpolation_reads_back_literally():
+    # F16-7：`%(x)s` 是字面，不是插值；`100%` 也只是字。
+    text = "[s]\nx = 1\nname = v\n"
+    first, _ = _read_back_ini(text, "%(x)s")
+    _, second = _read_back_ini(text, "100%")
+    assert (values(parse(first, "ini"))["s"]["name"], second) == ("%(x)s", "100%")
+
+
+def test_ini_a_new_value_containing_a_newline_is_refused_and_the_document_is_unchanged():
+    # F16-8／B1：ini 不支援多行值；塞換行會把下一行變成壞行。要具名拒絕、文件不動。
+    parsed = parse(_INI_ONE_KEY, "ini")
+    with pytest.raises(_unrepresentable()):
+        set_value(parsed, "s.name", "a\nb")
+    assert dump(parsed) == _INI_ONE_KEY
+
+
+def test_ini_a_value_with_both_kinds_of_triple_quotes_is_refused_and_the_document_is_unchanged():
+    # configobj 文件：同時含兩種三引號的值沒有安全的引號寫法——無法無損表示就拒絕。
+    parsed = parse(_INI_ONE_KEY, "ini")
+    with pytest.raises(_unrepresentable()):
+        set_value(parsed, "s.name", "a'''b\"\"\"c")
+    assert dump(parsed) == _INI_ONE_KEY
+
+
+def test_ini_the_semicolon_belongs_to_the_value_and_the_hash_after_a_space_is_the_comment():
+    # F16-13：`a;b #c` 的值是 `a;b`、註解是 `#c`——改值後寫出的那一行要是 `name = abc #c`。
+    out, read = _read_back_ini("[s]\nname = a;b #c\n", "abc")
+    assert (out, read) == ("[s]\nname = abc #c\n", "abc")
+
+
+def test_ini_an_existing_triple_quoted_multiline_value_survives_editing_another_key():
+    # B1 的另一半：原本就有的三引號多行值不碰它、改別的鍵不能連帶壞掉或被拒絕（F16-9）。
+    text = "[s]\nnotes = '''a\nb'''\ncount = 1\n"
+    parsed = parse(text, "ini")
+    set_value(parsed, "s.count", "2")
+    out = dump(parsed)
+    assert (out, values(parse(out, "ini"))["s"]["notes"]) == (text.replace("= 1", "= 2"), "a\nb")
+
+
+_AWKWARD = ' a\nb, "c" #d \\e;f \'g\' 100% '
+
+
+@pytest.mark.parametrize(
+    ("fmt", "text", "untouched"),
+    [
+        ("yaml", "name: v\ncount: 1\n", "count: 1\n"),
+        ("json", '{"name": "v", "count": 1}\n', '"count": 1'),
+        ("toml", 'name = "v"\ncount = 1\n', "count = 1\n"),
+    ],
+)
+def test_a_string_with_newlines_quotes_hashes_and_commas_reads_back_the_same(fmt, text, untouched):
+    # F15 的下游：三種格式都有無損寫法，寫法由函式庫定、值不能變；沒改的行照舊。
+    parsed = parse(text, fmt)
+    set_value(parsed, "name", _AWKWARD)
+    out = dump(parsed)
+    assert (values(parse(out, fmt))["name"], untouched in out) == (_AWKWARD, True)
