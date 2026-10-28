@@ -3824,6 +3824,37 @@ def test_a_promote_that_fails_names_the_config_and_writes_nothing(open_page, rep
     assert page.inner_text("[data-testid='promote-all']") == "進版 (2)"
 
 
+
+def test_a_promote_that_fails_midway_shows_the_leftover_message_verbatim(open_page, repo):
+    # F29／U24：後端回 500 的字串（進版中途失敗、回滾未竟列出殘留）→ 橫幅原樣顯示那段字（含目標
+    # 路徑與下一步），草稿標記與「進版 (2)」保留，不出現成功訊息。
+    _listing_many(repo, {"a": "count: 3\n", "b": "speed: 1.5\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    _save_draft_for(page, _SECOND_UID, "speed", "2.5")
+    left_behind = (
+        "進版中途失敗後回滾未竟，未還原：/srv/cm/targets/a.yaml（還原時寫不進去）。"
+        "原本的失敗：目標目錄無法寫入。"
+        "下一步：先照原本的失敗處理，再手動把上列目標還原成進版前內容並核對 git 歷史"
+    )
+    page.route(
+        "**/api/promote",
+        lambda route: route.fulfill(
+            status=500, content_type="application/json", body=json.dumps({"detail": left_behind})
+        ),
+    )
+
+    page.click("[data-testid='promote-all']")
+
+    page.wait_for_selector("[data-testid='promote-error']", state="visible")
+    shown = page.inner_text("[data-testid='promote-error']")
+    assert "/srv/cm/targets/a.yaml" in shown and "下一步" in shown and "原本的失敗" in shown
+    assert page.inner_text("[data-testid='promote-all']") == "進版 (2)"
+    assert page.query_selector(_draft_dot(_PARAM_UID)) is not None
+    assert page.query_selector(_draft_dot(_SECOND_UID)) is not None
+    assert page.is_hidden("[data-testid='promote-done']")
+
+
 def test_discarding_all_drafts_asks_first_then_clears_them_leaving_the_target(open_page, repo):
     # AC4（全域）：捨棄變更先確認；取消什麼都不變，確認後草稿消失、來源與目標皆未改變。
     _listing_with(repo, "count: 3\n")
