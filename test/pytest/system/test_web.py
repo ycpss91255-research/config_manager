@@ -984,6 +984,196 @@ def test_an_error_without_a_reason_still_says_where_to_look(open_page, listing):
     assert "下一步：查看後端服務的紀錄" in text
 
 
+
+# ── 搜尋失敗之後（F26、F27；人工驗收 U04 的觀察）────────────────────────────────────
+# 停機中搜尋失敗、清空搜尋框不能把停機前的清單畫回來充數；後端恢復後重新載入成功要重跑搜尋。
+
+_SEARCH = "[data-testid='search-input']"
+_SEARCH_ERROR = "[data-testid='search-error']"
+_ANY_SEARCH = "**/api/search*"
+_ONE_DOT = "() => document.querySelectorAll(\"[data-testid='status-dot']\").length === 1"
+_TWO_DOTS = "() => document.querySelectorAll(\"[data-testid='status-dot']\").length === 2"
+
+
+def _two_entries(open_page, repo):
+    _listing_many(repo, {"a": "count: 3\n", "b": "speed: 1.5\n"})
+    page = _enter_identity(open_page())
+    page.wait_for_function(_TWO_DOTS)
+    page.select_option("[data-testid='search-scope']", "config 名稱")
+    return page
+
+
+def _search_fails(page, query: str = "b") -> None:
+    page.route(_ANY_SEARCH, lambda route: route.abort())
+    page.fill(_SEARCH, query)
+    page.wait_for_selector(_SEARCH_ERROR)
+
+
+def _hold_search(held: list, holding: dict):
+    # holding["now"] 為真時先不回（之後由規格自己決定何時、回什麼，模擬晚到的回應）；否則放行。
+    # 不用 unroute 切換：unroute 會把還握著的 route 收掉，之後就不能再 fulfill。
+    def _keep(route):
+        if holding["now"]:
+            held.append(route)
+        else:
+            route.continue_()
+    return _keep
+
+
+def _hits(*uids: str) -> str:
+    return json.dumps({
+        "query": "x", "scope": "全部", "scopes": ["全部"], "unindexed": [],
+        "hits": [{"uid": uid, "name": uid, "target": "/t", "matched": ["config 名稱"], "params": []}
+                 for uid in uids],
+    })
+
+
+def test_clearing_the_search_after_it_failed_rereads_the_list_and_says_it_cannot(open_page, repo):
+    # F26：搜尋失敗後清空搜尋框 → 重新讀清單；讀不到就是黏性的「讀不到」，不是停機前那兩份。
+    page = _two_entries(open_page, repo)
+    _search_fails(page)
+    page.route("**/api/configs", lambda route: route.abort())
+
+    page.fill(_SEARCH, "")
+
+    page.wait_for_selector("[data-testid='load-error']")
+    assert page.query_selector(f"[data-testid='tree-item-{_PARAM_UID}']") is None
+    assert page.query_selector("[data-testid='empty-state']") is None
+
+
+def test_clearing_the_search_after_it_failed_shows_the_list_as_it_is_now(open_page, repo):
+    # F26：讀得到 → 顯示現況（磁碟上 b 已不在清單），不是記憶體裡停機前的舊清單。
+    page = _two_entries(open_page, repo)
+    _search_fails(page)
+    _listing_many(repo, {"a": "count: 3\n"})
+
+    page.fill(_SEARCH, "")
+
+    # 紅框那段期間樹上本來就沒有任何條目，所以要等的是「現況」出現：a 回來、b 沒有。
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}']", state="visible")
+    assert page.query_selector(f"[data-testid='tree-item-{_SECOND_UID}']") is None
+    assert page.query_selector(_SEARCH_ERROR) is None
+
+
+def test_a_failed_search_marks_the_summary_as_not_reconfirmed(open_page, repo):
+    # F26：摘要列不能和紅框並排寫著「檢查完成」；寫成尚未重新確認、帶這一次的原因。
+    page = _two_entries(open_page, repo)
+    page.click("[data-testid='rescan']")
+    _scan_says(page, "全部一致")
+
+    _search_fails(page)
+
+    _scan_says(page, "尚未重新確認")
+    said = page.inner_text(_SCAN)
+    assert "檢查完成" not in said
+    assert "搜尋" in said and "送不出去" in said  # 原因原樣帶進來，不寫死斷線
+
+
+def test_a_late_search_answer_does_not_overwrite_a_newer_query_or_a_cleared_box(open_page, repo):
+    # 較舊的回應晚到：不蓋掉較新的關鍵字，也不蓋掉清空後的完整清單。
+    page = _two_entries(open_page, repo)
+    held, holding = [], {"now": True}
+    page.route(_ANY_SEARCH, _hold_search(held, holding))
+    page.fill(_SEARCH, "a")
+    for _ in range(50):
+        if held:
+            break
+        page.wait_for_timeout(100)
+    holding["now"] = False
+
+    page.fill(_SEARCH, "b")
+    page.wait_for_function(_ONE_DOT)
+    held.pop().fulfill(status=200, content_type="application/json", body=_hits(_PARAM_UID))
+    page.wait_for_timeout(300)
+
+    assert page.is_visible(f"[data-testid='tree-item-{_SECOND_UID}']")
+    assert page.query_selector(f"[data-testid='tree-item-{_PARAM_UID}']") is None
+
+    holding["now"] = True
+    page.fill(_SEARCH, "a")
+    for _ in range(50):
+        if held:
+            break
+        page.wait_for_timeout(100)
+    holding["now"] = False
+    page.fill(_SEARCH, "")
+    page.wait_for_function(_TWO_DOTS)
+    held.pop().fulfill(status=200, content_type="application/json", body=_hits(_PARAM_UID))
+    page.wait_for_timeout(300)
+
+    page.wait_for_function(_TWO_DOTS)
+
+
+def test_clearing_a_successful_search_does_not_reread_the_list(open_page, repo):
+    # 沒失敗過就只是取消過濾：完整清單回來，不另打 /api/configs。
+    page = _two_entries(open_page, repo)
+    seen = []
+
+    def _count(route):
+        seen.append(route.request.url)
+        route.continue_()
+
+    page.route("**/api/configs", _count)
+    page.fill(_SEARCH, "b")
+    page.wait_for_function(_ONE_DOT)
+
+    page.fill(_SEARCH, "")
+
+    page.wait_for_function(_TWO_DOTS)
+    assert seen == []
+
+
+def test_a_successful_reload_reruns_the_search_and_drops_the_old_failure(open_page, repo):
+    # F27：後端恢復後按「檢查差異」→ 清單與搜尋一起是現在的：紅框消失、只剩命中那份、摘要檢查完成。
+    page = _two_entries(open_page, repo)
+    _search_fails(page)
+    page.unroute(_ANY_SEARCH)
+
+    page.click("[data-testid='rescan']")
+
+    page.wait_for_selector(_SEARCH_ERROR, state="detached")
+    page.wait_for_function(_ONE_DOT)
+    assert page.is_visible(f"[data-testid='tree-item-{_SECOND_UID}']")
+    _scan_says(page, "全部一致")
+
+
+def test_a_successful_reload_uses_fresh_hits_not_the_old_ones(open_page, repo):
+    # F27：載入成功重跑搜尋，命中是現在的（後端這次說命中 a），不是上一次留下的 b。
+    page = _two_entries(open_page, repo)
+    page.fill(_SEARCH, "b")
+    page.wait_for_function(_ONE_DOT)
+    page.route(
+        _ANY_SEARCH,
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=_hits(_PARAM_UID)
+        ),
+    )
+
+    page.click("[data-testid='rescan']")
+
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='tree-item-{_SECOND_UID}']", state="detached")
+
+
+def test_a_reload_whose_rerun_search_still_fails_keeps_the_error_and_does_not_claim_success(
+    open_page, repo
+):
+    # F27：清單讀到了、重跑搜尋仍失敗 → 紅框留著（這一次的原因），摘要不寫成「檢查完成」。
+    page = _two_entries(open_page, repo)
+    _search_fails(page)
+
+    page.click("[data-testid='rescan']")
+
+    page.wait_for_function(
+        "() => !document.querySelector(\"[data-testid='scan-status']\")"
+        ".textContent.includes('檢查中')"
+    )
+    page.wait_for_selector(_SEARCH_ERROR)
+    said = page.inner_text(_SCAN)
+    assert "檢查完成" not in said
+    assert "搜尋失敗" in said
+
+
 # ── 操作後的回饋與位置保持（#50）────────────────────────────────────────────────
 # 做完一個動作：說一聲成了，而且人剛才的位置（折疊了什麼、捲到哪、焦點在哪）要留著。
 
