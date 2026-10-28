@@ -1009,7 +1009,7 @@ def _search_fails(page, query: str = "b") -> None:
     page.wait_for_selector(_SEARCH_ERROR)
 
 
-def _hold(held: list):
+def _hold_search(held: list):
     def _keep(route):
         held.append(route)  # 先不回，之後由規格自己決定何時、回什麼（模擬晚到的回應）
     return _keep
@@ -1066,7 +1066,7 @@ def test_a_late_search_answer_does_not_overwrite_a_newer_query_or_a_cleared_box(
     # 較舊的回應晚到：不蓋掉較新的關鍵字，也不蓋掉清空後的完整清單。
     page = _two_entries(open_page, repo)
     held = []
-    page.route(_ANY_SEARCH, _hold(held))
+    page.route(_ANY_SEARCH, _hold_search(held))
     page.fill(_SEARCH, "a")
     for _ in range(50):
         if held:
@@ -1082,7 +1082,7 @@ def test_a_late_search_answer_does_not_overwrite_a_newer_query_or_a_cleared_box(
     assert page.is_visible(f"[data-testid='tree-item-{_SECOND_UID}']")
     assert page.query_selector(f"[data-testid='tree-item-{_PARAM_UID}']") is None
 
-    page.route(_ANY_SEARCH, _hold(held))
+    page.route(_ANY_SEARCH, _hold_search(held))
     page.fill(_SEARCH, "a")
     for _ in range(50):
         if held:
