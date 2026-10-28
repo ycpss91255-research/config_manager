@@ -3141,19 +3141,56 @@ function setReadonly(holder, startedAt, reason) {
 // 這個分頁在不知情時失去了編輯權（被釋放後別人接手、逾時被收回…，F23）：轉唯讀，唯讀橫幅原樣
 // 寫出後端的原因（含下一步：重新整理）。可能是這個瀏覽器退出了、或閒置逾時被退出了：馬上問後端。
 function loseEditing(reason) {
-  rememberToken(null);
-  setReadonly(null, null, reason);
-  askWhyEditingEnded(true);
+  endEditing(reason, true);
 }
 
-// 編輯權在這個分頁不知情時沒了（或收到另一個分頁的退出通知）：問後端這個瀏覽器怎麼了。同一個瀏覽器的
-// 另一個分頁按了「退出」（F3）
-// → 回身分輸入頁、說是退出（開發模式也問；`refusedWrite`＝是寫入被擋才發現的，另說剛才的改動沒有
-// 寫進去）；部署模式下閒置逾時、或後端已沒有這個瀏覽器的紀錄（#48）→ 照閒置狀態處理。
+// 編輯階段在這個分頁不知情時沒了（續期被拒、寫入被擋，F28）：**先**立刻轉唯讀——橫幅寫 `reason`（寫入
+// 被擋是後端的原因原樣；續期被拒是中性的一句，不猜逾時、釋放或重啟）——**再**去問原因；問到才換字。
+const EDITING_ENDED_TEXT = "編輯階段已失效，這個分頁現在是唯讀。重新整理頁面以重新取得。";
+
+function endEditing(reason, refusedWrite = false) {
+  rememberToken(null);
+  setReadonly(null, null, reason);
+  askWhyEditingEnded(refusedWrite);
+}
+
+// 編輯權在這個分頁不知情時沒了（或收到另一個分頁的退出通知）：依序問既有端點，依答案顯示（F28）：
+// 1. `idle` 說已退出（同一個瀏覽器的另一個分頁按了「退出」，F3）→ 回身分輸入頁、說是退出（`refusedWrite`
+//    ＝是寫入被擋才發現的，另說剛才的改動沒有寫進去）；說閒置逾時 → 照閒置逾時說（部署模式，#48）。
+// 2. `GET /api/session` 回 null（後端沒有這個瀏覽器的紀錄，例如服務重新啟動過）→ 回身分輸入頁說身分已失效
+//    ——不分模式。
+// 3. `GET /api/session/lock` 說別人持有 → 唯讀橫幅指名持有者與開始時間。
+// 4. 都不是、或問不到 → 維持原本的字與唯讀。
+// 查詢帶世代號：這段期間人重新進入了（離開主畫面會加 workspaceEpoch），晚到的答案不覆蓋新狀態。
+let whyGeneration = 0;
+
 async function askWhyEditingEnded(refusedWrite = false) {
+  const generation = ++whyGeneration;
+  const epoch = workspaceEpoch;
+  const stale = () => generation !== whyGeneration || epoch !== workspaceEpoch
+    || document.body.dataset.readonly !== "true";
   const view = await idleRequest(false);
-  if (view && view.left) leaveForExit(null, refusedWrite);
-  else if (idleTimer) applyIdle(view);
+  if (stale()) return;
+  if (view && view.left) { leaveForExit(null, refusedWrite); return; }
+  if (view && view.timed_out) { leaveForIdle(view.timeout_seconds); return; }
+  const identity = await askJson(`${API_BASE}/api/session`);
+  if (stale()) return;
+  if (identity === null) { leaveForGone(); return; }
+  if (identity === undefined) return;  // 問不到：原因不明，維持原本的字
+  const lock = await askJson(`${API_BASE}/api/session/lock`);
+  if (stale()) return;
+  if (lock && lock.held && lock.holder) setReadonly(lock.holder, lock.started_at, null);
+  else if (idleTimer && view) applyIdle(view);  // 部署模式：閒置倒數照後端說的（身分還在時）
+}
+
+// 問一個只讀端點：回 JSON；後端有回但不是 200、或連不上 → undefined（和「回 null」分開）。
+async function askJson(url) {
+  try {
+    const response = await apiFetch(url);
+    return response.ok ? await response.json() : undefined;
+  } catch (_error) {
+    return undefined;
+  }
 }
 
 function setEditing() {
@@ -3230,12 +3267,9 @@ async function renewSession(token, resuming = false) {
       // 晚到的舊續期或舊接續（這段時間已經換了識別碼）：它失效不代表現在的這一個失效，不清掉。
       if (resuming ? sessionToken && token !== sessionToken : token !== sessionToken) return false;
       rememberToken(null);
-      // 使用中的階段失效（逾時被回收或已釋放）：明確轉唯讀並說明，不替使用者悄悄重新取得。
-      if (!resuming) {
-        setReadonly(null, null, "編輯階段已失效（逾時被回收或已釋放），這個分頁現在是唯讀。重新整理頁面以重新取得。");
-        // 階段失效可能是因為這個瀏覽器退出了（F3）或閒置逾時被退出了（#48）：馬上問後端。
-        askWhyEditingEnded(false);
-      }
+      // 使用中的階段失效：先明確轉唯讀（中性的一句，不猜原因），再問後端是退出、沒有紀錄、還是別人
+      // 持有（F28）；不替使用者悄悄重新取得。
+      if (!resuming) endEditing(EDITING_ENDED_TEXT, false);
     }
     return false;
   } catch (_error) {
