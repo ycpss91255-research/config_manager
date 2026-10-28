@@ -5714,7 +5714,7 @@ def test_when_someone_else_took_over_the_banner_names_them(open_page, listing):
     page.wait_for_selector("[data-testid='readonly-banner']:has-text('目前由')")
     said = page.inner_text("[data-testid='readonly-banner']")
     assert "王測試" in said and "起編輯中" in said
-    assert "逾時" not in said
+    assert "逾時被回收" not in said  # 不猜原因；持有者那句本來就說「等對方離開或逾時釋放」
 
 
 def test_a_refused_renew_with_nobody_holding_keeps_the_neutral_reason(open_page, listing):
