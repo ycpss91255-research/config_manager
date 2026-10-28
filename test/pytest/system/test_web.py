@@ -5499,7 +5499,8 @@ _RETRY = "[data-testid='backend-retry']"
 
 
 def test_the_identity_page_says_it_cannot_reach_the_backend_and_offers_retry(open_page):
-    # F25：載入時問模式與身分都送不出去 → 表單上方提示（不寫「離線」）＋「重試」；送出錯誤那一條仍藏著。
+    # F25：載入時問模式與身分都送不出去 → 表單上方提示（不寫「離線」）＋「重試」；
+    # 送出錯誤那一條仍藏著。
     page = open_page(unreachable="**/api/{mode,session}")
 
     page.wait_for_selector("[data-testid='identity-form']", state="visible")
@@ -5701,8 +5702,10 @@ def test_when_someone_else_took_over_the_banner_names_them(open_page, listing):
         "**/api/session/lock",
         lambda route: route.fulfill(
             status=200, content_type="application/json",
-            body=json.dumps({"held": True, "holder": {"name": "王測試", "email": "wang@example.com"},
-                             "started_at": "2026-10-28T01:00:00+00:00", "timeout_seconds": 150}),
+            body=json.dumps({
+                "held": True, "holder": {"name": "王測試", "email": "wang@example.com"},
+                "started_at": "2026-10-28T01:00:00+00:00", "timeout_seconds": 150,
+            }),
         ) if route.request.method == "GET" else route.continue_(),
     )
 
@@ -5744,7 +5747,9 @@ def test_a_write_refused_as_editing_lost_follows_the_same_path(open_page, repo):
         "**/api/drafts",
         lambda route: route.fulfill(
             status=410, content_type="application/json",
-            body=json.dumps({"detail": {"kind": "editing_lost", "message": "識別碼已失效。下一步：重新整理"}}),
+            body=json.dumps({
+                "detail": {"kind": "editing_lost", "message": "識別碼已失效。下一步：重新整理"},
+            }),
         ) if route.request.method == "POST" else route.continue_(),
     )
     held, release = _hold_why(page)
