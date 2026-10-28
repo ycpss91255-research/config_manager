@@ -5392,6 +5392,414 @@ def _cannot_announce(page):
     )
 
 
+
+# ── F24：退出鈕的進行中分兩段 ─────────────────────────────────────────────────────
+# 先問後端要不要確認（「確認退出條件中…」）；確認框開著時退出鈕還原「退出」；真正退出才「退出中…」。
+
+_EXIT_HELD = "**/api/session"
+
+
+def _page_with_a_draft(open_page, repo):
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+    page.wait_for_function("() => Boolean(sessionToken)")
+    page.fill(_param_value("count"), "4")
+    _save(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    return page
+
+
+def test_the_exit_button_says_exit_while_the_confirm_dialog_waits(open_page, repo):
+    # F24：確認框開著、人還沒選，退出鈕不能寫「退出中…」——那看起來像已經在退出。
+    page = _page_with_a_draft(open_page, repo)
+
+    page.click(_EXIT)
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+
+    assert page.inner_text(_EXIT) == "退出"
+    assert not _busy(page, _EXIT)
+    page.click("[data-testid='confirm-cancel']")
+
+
+def test_cancelling_the_exit_leaves_the_button_usable(open_page, repo):
+    page = _page_with_a_draft(open_page, repo)
+    page.click(_EXIT)
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+
+    page.click("[data-testid='confirm-cancel']")
+
+    page.wait_for_selector("[data-testid='confirm-dialog']:not([open])", state="attached")
+    assert (page.inner_text(_EXIT), _busy(page, _EXIT)) == ("退出", False)
+    page.click(_EXIT)
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")  # 可以再按
+    page.click("[data-testid='confirm-cancel']")
+
+
+def test_the_exit_button_is_busy_only_while_the_confirmed_exit_is_being_sent(open_page, repo):
+    # 第一發（問要不要確認）寫「確認退出條件中…」；確認之後真正送出那一發才「退出中…」。
+    page = _page_with_a_draft(open_page, repo)
+    held, release = _hold(page, _EXIT_HELD, method="DELETE")
+
+    page.click(_EXIT)
+    page.wait_for_selector(f"{_EXIT}[aria-busy='true']")
+    assert page.inner_text(_EXIT) == "確認退出條件中…"
+    release()
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    assert (page.inner_text(_EXIT), _busy(page, _EXIT)) == ("退出", False)
+
+    held, release = _hold(page, _EXIT_HELD, method="DELETE")
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_selector(f"{_EXIT}[aria-busy='true']")
+    assert page.inner_text(_EXIT) == "退出中…"
+    release()
+
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+
+
+def test_exiting_with_nothing_to_lose_does_not_open_a_dialog_and_shows_the_probe_text(
+    open_page, listing
+):
+    # 不需確認：第一發期間寫「確認退出條件中…」，沒有確認框，直接回身分輸入頁。
+    listing("a")
+    page = _holding_page(open_page)
+    held, release = _hold(page, _EXIT_HELD, method="DELETE")
+
+    page.click(_EXIT)
+    page.wait_for_selector(f"{_EXIT}[aria-busy='true']")
+    assert page.inner_text(_EXIT) == "確認退出條件中…"
+    release()
+
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    assert page.is_hidden("[data-testid='confirm-dialog']")
+
+
+def test_a_failed_exit_probe_restores_the_button_so_it_can_be_pressed_again(open_page, listing):
+    listing("a")
+    page = _holding_page(open_page)
+    page.route(
+        _EXIT_HELD,
+        lambda route: route.abort() if route.request.method == "DELETE" else route.continue_(),
+    )
+
+    page.click(_EXIT)
+
+    page.wait_for_selector("[data-testid='exit-error']:not([hidden])")
+    assert "「退出」送不出去" in page.inner_text("[data-testid='exit-error']")
+    assert (page.inner_text(_EXIT), _busy(page, _EXIT)) == ("退出", False)
+    assert page.is_visible("[data-testid='config-tree']")
+    page.unroute(_EXIT_HELD)
+    page.click(_EXIT)  # 可以再按：這次送得出去
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+
+
+# ── F25：身分輸入頁問不到後端 ─────────────────────────────────────────────────────
+
+_UNREACHABLE_NOTICE = "[data-testid='backend-unreachable']"
+_RETRY = "[data-testid='backend-retry']"
+
+
+def test_the_identity_page_says_it_cannot_reach_the_backend_and_offers_retry(open_page):
+    # F25：載入時問模式與身分都送不出去 → 表單上方提示（不寫「離線」）＋「重試」；
+    # 送出錯誤那一條仍藏著。
+    page = open_page(unreachable="**/api/{mode,session}")
+
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    page.wait_for_selector(f"{_UNREACHABLE_NOTICE}:not([hidden])")
+    said = page.inner_text(_UNREACHABLE_NOTICE)
+    assert "送不出去" in said and "重試" in said
+    assert "離線" not in said
+    assert page.is_visible(_RETRY)
+    assert page.is_hidden("[data-testid='identity-error']")
+
+
+def test_a_backend_that_answers_but_is_broken_is_reported_by_its_status(open_page):
+    page = open_page()
+    page.route(
+        "**/api/mode",
+        lambda route: route.fulfill(
+            status=502, content_type="text/html", body="<h1>Bad Gateway</h1>"
+        ),
+    )
+
+    page.reload()
+
+    page.wait_for_selector(f"{_UNREACHABLE_NOTICE}:not([hidden])")
+    said = page.inner_text(_UNREACHABLE_NOTICE)
+    assert "後端回了 502" in said and "查看後端服務的紀錄" in said
+    assert "送不出去" not in said
+
+
+def test_retry_asks_the_backend_again_and_clears_the_notice(open_page, api):
+    # 提示出現 → 後端回來 → 按「重試」→ 提示消失、模式徽章也重問到了。
+    page = open_page(unreachable="**/api/{mode,session}")
+    page.wait_for_selector(f"{_UNREACHABLE_NOTICE}:not([hidden])")
+    page.unroute("**/api/{mode,session}")
+
+    page.click(_RETRY)
+
+    page.wait_for_selector(f"{_UNREACHABLE_NOTICE}[hidden]", state="attached")
+    assert page.get_attribute("body", "data-mode") is not None
+    assert page.is_visible("[data-testid='identity-form']")  # 沒有身分：仍留在表單，不自動進清單
+
+
+def test_retry_with_a_remembered_identity_goes_to_the_list(open_page, api):
+    page = open_page(unreachable="**/api/{mode,session}", identity=_REMEMBERED)
+    page.wait_for_selector(f"{_UNREACHABLE_NOTICE}:not([hidden])")
+    page.unroute("**/api/{mode,session}")
+
+    page.click(_RETRY)
+
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+
+
+def test_retry_shows_it_is_running_and_reports_the_new_failure(open_page):
+    page = open_page(unreachable="**/api/{mode,session}")
+    page.wait_for_selector(f"{_UNREACHABLE_NOTICE}:not([hidden])")
+    held, release = _hold(page, "**/api/mode", method="GET")
+
+    page.click(_RETRY)
+
+    page.wait_for_selector(f"{_RETRY}[aria-busy='true']")
+    assert page.inner_text(_RETRY) == "重試中…"
+    release()
+    page.wait_for_selector(f"{_RETRY}:not([aria-busy])")
+    page.wait_for_selector(f"{_UNREACHABLE_NOTICE}:not([hidden])")  # 身分那一發仍送不出去：提示還在
+    assert page.is_visible("[data-testid='identity-form']")
+
+
+def test_retry_keeps_what_was_typed_into_the_form(open_page):
+    page = open_page(unreachable="**/api/{mode,session}")
+    page.wait_for_selector(f"{_UNREACHABLE_NOTICE}:not([hidden])")
+    page.fill("[data-testid='identity-name']", "王測試")
+    page.fill("[data-testid='identity-email']", "wang@example.com")
+    page.click("[data-testid='role-toggle'] button[data-role='developer']")
+
+    page.click(_RETRY)
+    page.wait_for_selector(f"{_RETRY}:not([aria-busy])")
+
+    assert page.input_value("[data-testid='identity-name']") == "王測試"
+    assert page.input_value("[data-testid='identity-email']") == "wang@example.com"
+    developer = "[data-testid='role-toggle'] button[data-role='developer']"
+    assert page.get_attribute(developer, "aria-pressed") == "true"
+
+
+def test_only_the_request_that_failed_is_reported(open_page):
+    # 模式問不到、身分問得到：提示只寫模式那一項；反過來只寫身分那一項。
+    page = open_page(unreachable="**/api/mode")
+    page.wait_for_selector(f"{_UNREACHABLE_NOTICE}:not([hidden])")
+    said = page.inner_text(_UNREACHABLE_NOTICE)
+    assert "模式" in said and "身分" not in said
+
+    other = open_page(unreachable="**/api/session")
+    other.wait_for_selector(f"{_UNREACHABLE_NOTICE}:not([hidden])")
+    said = other.inner_text(_UNREACHABLE_NOTICE)
+    assert "身分" in said and "模式" not in said
+
+
+# ── F28：續期或寫入被 410 擋下時的唯讀原因 ─────────────────────────────────────
+# 收到 410 先立刻唯讀、寫中性字；再問既有端點決定要不要換字。清 cookie 只是模擬「後端沒有這個瀏覽器
+# 的紀錄」的回應，不算測過服務重啟；真實重啟留給人工重驗。
+
+_NEUTRAL = "編輯階段已失效，這個分頁現在是唯讀。重新整理頁面以重新取得。"
+_WHY_PATTERNS = ("**/api/session", "**/api/session/idle", "**/api/session/lock")
+
+
+def _hold_why(page):
+    """把「問原因」的三個 GET 握住不回；回 (握住的清單, 放行函式)。放行後之後的查詢照常通過，
+    但握住的那幾個留給規格自己決定何時、回什麼。"""
+    held, holding = [], {"now": True}
+
+    def handler(route):
+        if route.request.method == "GET" and holding["now"]:
+            held.append(route)
+        else:
+            route.continue_()
+
+    for pattern in _WHY_PATTERNS:
+        page.route(pattern, handler)
+
+    def release():
+        holding["now"] = False
+        waiting, held[:] = list(held), []
+        for route in waiting:
+            route.continue_()
+
+    return held, release
+
+
+def _why_unreachable(page):
+    def handler(route):
+        if route.request.method == "GET":
+            route.abort()
+        else:
+            route.continue_()
+
+    for pattern in _WHY_PATTERNS:
+        page.route(pattern, handler)
+
+
+def _renew_refused(page):
+    page.route(
+        "**/api/session/lock/renew",
+        lambda route: route.fulfill(
+            status=410, content_type="application/json", body=json.dumps({"detail": "舊識別碼"})
+        ),
+    )
+
+
+def test_a_refused_renew_turns_read_only_at_once_with_a_neutral_reason(open_page, listing):
+    # 原因查詢全部握住不回：畫面不能等它們——立刻唯讀，字是中性的。
+    listing("a")
+    page = _holding_page(open_page)
+    _renew_refused(page)
+    held, release = _hold_why(page)
+
+    page.evaluate("renewSession(sessionToken)")
+
+    page.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+    said = page.inner_text("[data-testid='readonly-banner']")
+    assert _NEUTRAL in said
+    for word in ("逾時", "釋放", "重啟"):
+        assert word not in said
+    release()
+
+
+def test_a_refused_renew_whose_cause_cannot_be_asked_stays_read_only(open_page, listing):
+    listing("a")
+    page = _holding_page(open_page)
+    _renew_refused(page)
+    _why_unreachable(page)
+
+    page.evaluate("renewSession(sessionToken)")
+
+    page.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+    page.wait_for_timeout(500)
+    assert _NEUTRAL in page.inner_text("[data-testid='readonly-banner']")
+    assert page.is_visible("[data-testid='config-tree']")
+
+
+def test_when_the_service_no_longer_knows_the_browser_the_page_says_the_identity_is_gone(
+    open_page, listing
+):
+    # 開發模式也要分得出來：後端回「沒有這個瀏覽器的紀錄」→ 回身分輸入頁說身分已失效，不寫逾時。
+    listing("a")
+    page = _holding_page(open_page, mode="development")
+    page.context.clear_cookies()  # 模擬後端已沒有這張票的紀錄（不是真的重啟）
+
+    page.evaluate("renewSession(sessionToken)")
+
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    told = page.inner_text(_LEFT_NOTICE)
+    assert "身分已失效" in told and "逾時被回收" not in told
+
+
+def test_when_someone_else_took_over_the_banner_names_them(open_page, listing):
+    # 身分還在、後端說現在是別人持有 → 指名持有者與開始時間（已知的資訊），不寫逾時。
+    listing("a")
+    page = _holding_page(open_page)
+    _renew_refused(page)
+    page.route(
+        "**/api/session/lock",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({
+                "held": True, "holder": {"name": "王測試", "email": "wang@example.com"},
+                "started_at": "2026-10-28T01:00:00+00:00", "timeout_seconds": 150,
+            }),
+        ) if route.request.method == "GET" else route.continue_(),
+    )
+
+    page.evaluate("renewSession(sessionToken)")
+
+    page.wait_for_selector("[data-testid='readonly-banner']:has-text('目前由')")
+    said = page.inner_text("[data-testid='readonly-banner']")
+    assert "王測試" in said and "起編輯中" in said
+    assert "逾時被回收" not in said  # 不猜原因；持有者那句本來就說「等對方離開或逾時釋放」
+
+
+def test_a_refused_renew_with_nobody_holding_keeps_the_neutral_reason(open_page, listing):
+    # 身分在、沒人持有：不知道為什麼沒了，就不說原因。
+    listing("a")
+    page = _holding_page(open_page)
+    _renew_refused(page)
+    page.route(
+        "**/api/session/lock",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({"held": False, "timeout_seconds": 150}),
+        ) if route.request.method == "GET" else route.continue_(),
+    )
+
+    page.evaluate("renewSession(sessionToken)")
+
+    page.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+    page.wait_for_timeout(500)
+    said = page.inner_text("[data-testid='readonly-banner']")
+    assert _NEUTRAL in said
+    assert "逾時" not in said and "釋放" not in said
+
+
+def test_a_write_refused_as_editing_lost_follows_the_same_path(open_page, repo):
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+    page.wait_for_function("() => Boolean(sessionToken)")
+    page.route(
+        "**/api/drafts",
+        lambda route: route.fulfill(
+            status=410, content_type="application/json",
+            body=json.dumps({
+                "detail": {"kind": "editing_lost", "message": "識別碼已失效。下一步：重新整理"},
+            }),
+        ) if route.request.method == "POST" else route.continue_(),
+    )
+    held, release = _hold_why(page)
+    page.fill(_param_value("count"), "4")
+
+    _save(page)
+
+    page.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+    said = page.inner_text("[data-testid='readonly-banner']")
+    assert "識別碼已失效" in said  # 後端的原因原樣在
+    for word in ("逾時", "重啟"):
+        assert word not in said
+    release()
+
+
+def test_a_late_answer_about_an_old_session_does_not_overwrite_a_new_one(open_page, listing):
+    # 原因查詢握住 → 重新進入（新世代）→ 放行舊查詢 → 新狀態不被蓋掉。
+    listing("a")
+    page = _holding_page(open_page, mode="development")
+    _renew_refused(page)
+    held, release = _hold_why(page)
+    token = page.evaluate("sessionToken")
+    page.evaluate("renewSession(sessionToken)")
+    page.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+    page.unroute("**/api/session/lock/renew")
+    # 410 是攔截出來的，後端其實還記著這個分頁持有：真的放掉，
+    # 退出才不會被當成「另一個分頁正在編輯」而要確認。
+    page.evaluate("""token => apiFetch(`${API_BASE}/api/session/lock`, {
+      method: "DELETE", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token }),
+    })""", token)
+
+    page.click(_EXIT)
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    late, held[:] = list(held), []
+    release()  # 之後的查詢照常；剛才握住的那幾個現在才回
+    _enter_identity(page)
+    page.wait_for_function("() => Boolean(sessionToken)")
+    for route in late:
+        route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({"held": True, "holder": {"name": "舊", "email": "old@x"},
+                             "started_at": "2026-01-01T00:00:00+00:00", "timeout_seconds": 150}),
+        )
+    page.wait_for_timeout(500)
+
+    assert page.is_hidden("[data-testid='readonly-banner']")
+    assert page.get_attribute("body", "data-readonly") == "false"
+
+
 def test_the_exit_button_is_in_the_header_even_while_read_only(open_page, listing):
     listing("a")
     holder = _holding_page(open_page)

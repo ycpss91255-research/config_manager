@@ -470,6 +470,12 @@
        紀錄（例如服務重新啟動過）而回到這一頁時出現，說是哪一種——不說成閒置逾時。 -->
   <p class="notice" data-testid="session-left" role="status" hidden></p>
   <p class="error" data-testid="identity-error" hidden></p>
+  <!-- 問不到後端（F25）：頁面載入時問模式或身分失敗才出現，字依原因分、不寫「離線」；「重試」只重問那兩個
+       請求，不重送表單、不清掉已輸入的欄位。 -->
+  <p class="notice error" data-testid="backend-unreachable" role="status" hidden>
+    <span data-testid="backend-unreachable-text"></span>
+    <button type="button" data-testid="backend-retry">重試</button>
+  </p>
 
   <label>
     <span>姓名</span>
@@ -3122,11 +3128,10 @@ function setReadonly(holder, startedAt, reason) {
   const who = holder
     ? `目前由 ${holder.name}（${holder.email}）自 ${formatTime(startedAt)} 起編輯中。`
     : "";
+  const standard = `${who}一次只允許一個編輯階段；等對方離開或逾時釋放後重新整理即可取得。不提供強制接管。`;
   readonlyBanner.replaceChildren(
     element("strong", { text: "唯讀模式。" }),
-    element("p", {
-      text: reason || `${who}一次只允許一個編輯階段；等對方離開或逾時釋放後重新整理即可取得。不提供強制接管。`,
-    }),
+    element("p", { text: reason ? (who ? `${reason}${who}` : reason) : standard }),
   );
   readonlyBanner.hidden = false;
   if (renewTimer) { clearInterval(renewTimer); renewTimer = null; }
@@ -3135,19 +3140,56 @@ function setReadonly(holder, startedAt, reason) {
 // 這個分頁在不知情時失去了編輯權（被釋放後別人接手、逾時被收回…，F23）：轉唯讀，唯讀橫幅原樣
 // 寫出後端的原因（含下一步：重新整理）。可能是這個瀏覽器退出了、或閒置逾時被退出了：馬上問後端。
 function loseEditing(reason) {
-  rememberToken(null);
-  setReadonly(null, null, reason);
-  askWhyEditingEnded(true);
+  endEditing(reason, true);
 }
 
-// 編輯權在這個分頁不知情時沒了（或收到另一個分頁的退出通知）：問後端這個瀏覽器怎麼了。同一個瀏覽器的
-// 另一個分頁按了「退出」（F3）
-// → 回身分輸入頁、說是退出（開發模式也問；`refusedWrite`＝是寫入被擋才發現的，另說剛才的改動沒有
-// 寫進去）；部署模式下閒置逾時、或後端已沒有這個瀏覽器的紀錄（#48）→ 照閒置狀態處理。
-async function askWhyEditingEnded(refusedWrite = false) {
+// 編輯階段在這個分頁不知情時沒了（續期被拒、寫入被擋，F28）：**先**立刻轉唯讀——橫幅寫 `reason`（寫入
+// 被擋是後端的原因原樣；續期被拒是中性的一句，不猜逾時、釋放或重啟）——**再**去問原因；問到才換字。
+const EDITING_ENDED_TEXT = "編輯階段已失效，這個分頁現在是唯讀。重新整理頁面以重新取得。";
+
+function endEditing(reason, refusedWrite = false) {
+  rememberToken(null);
+  setReadonly(null, null, reason);
+  askWhyEditingEnded(refusedWrite, reason);
+}
+
+// 編輯權在這個分頁不知情時沒了（或收到另一個分頁的退出通知）：依序問既有端點，依答案顯示（F28）：
+// 1. `idle` 說已退出（同一個瀏覽器的另一個分頁按了「退出」，F3）→ 回身分輸入頁、說是退出（`refusedWrite`
+//    ＝是寫入被擋才發現的，另說剛才的改動沒有寫進去）；說閒置逾時 → 照閒置逾時說（部署模式，#48）。
+// 2. `GET /api/session` 回 null（後端沒有這個瀏覽器的紀錄，例如服務重新啟動過）→ 回身分輸入頁說身分已失效
+//    ——不分模式。
+// 3. `GET /api/session/lock` 說別人持有 → 唯讀橫幅指名持有者與開始時間。
+// 4. 都不是、或問不到 → 維持原本的字與唯讀。
+// 查詢帶世代號：這段期間人重新進入了（離開主畫面會加 workspaceEpoch），晚到的答案不覆蓋新狀態。
+let whyGeneration = 0;
+
+async function askWhyEditingEnded(refusedWrite = false, reason = null) {
+  const generation = ++whyGeneration;
+  const epoch = workspaceEpoch;
+  const stale = () => generation !== whyGeneration || epoch !== workspaceEpoch
+    || document.body.dataset.readonly !== "true";
   const view = await idleRequest(false);
-  if (view && view.left) leaveForExit(null, refusedWrite);
-  else if (idleTimer) applyIdle(view);
+  if (stale()) return;
+  if (view && view.left) { leaveForExit(null, refusedWrite); return; }
+  if (view && view.timed_out) { leaveForIdle(view.timeout_seconds); return; }
+  const identity = await askJson(`${API_BASE}/api/session`);
+  if (stale()) return;
+  if (identity === null) { leaveForGone(); return; }
+  if (identity === undefined) return;  // 問不到：原因不明，維持原本的字
+  const lock = await askJson(`${API_BASE}/api/session/lock`);
+  if (stale()) return;
+  if (lock && lock.held && lock.holder) setReadonly(lock.holder, lock.started_at, reason);
+  else if (idleTimer && view) applyIdle(view);  // 部署模式：閒置倒數照後端說的（身分還在時）
+}
+
+// 問一個只讀端點：回 JSON；後端有回但不是 200、或連不上 → undefined（和「回 null」分開）。
+async function askJson(url) {
+  try {
+    const response = await apiFetch(url);
+    return response.ok ? await response.json() : undefined;
+  } catch (_error) {
+    return undefined;
+  }
 }
 
 function setEditing() {
@@ -3224,12 +3266,9 @@ async function renewSession(token, resuming = false) {
       // 晚到的舊續期或舊接續（這段時間已經換了識別碼）：它失效不代表現在的這一個失效，不清掉。
       if (resuming ? sessionToken && token !== sessionToken : token !== sessionToken) return false;
       rememberToken(null);
-      // 使用中的階段失效（逾時被回收或已釋放）：明確轉唯讀並說明，不替使用者悄悄重新取得。
-      if (!resuming) {
-        setReadonly(null, null, "編輯階段已失效（逾時被回收或已釋放），這個分頁現在是唯讀。重新整理頁面以重新取得。");
-        // 階段失效可能是因為這個瀏覽器退出了（F3）或閒置逾時被退出了（#48）：馬上問後端。
-        askWhyEditingEnded(false);
-      }
+      // 使用中的階段失效：先明確轉唯讀（中性的一句，不猜原因），再問後端是退出、沒有紀錄、還是別人
+      // 持有（F28）；不替使用者悄悄重新取得。
+      if (!resuming) endEditing(EDITING_ENDED_TEXT, false);
     }
     return false;
   } catch (_error) {
@@ -3291,10 +3330,13 @@ function exitLosses(detail) {
   return losses;
 }
 
+// 進行中分兩段（F24）：先問後端要不要確認那一發寫「確認退出條件中…」；確認框開著、人還沒選時
+// 退出鈕還原成「退出」（不是進行中——那看起來像已經在退出）；按「退出並丟掉」真正送出才「退出中…」。
 async function exitBrowser() {
+  if (isBusy(exitButton)) return;
   exitErrorEl.hidden = true;
   try {
-    let { response, payload } = await sendExit(false);
+    let { response, payload } = await whileBusy(exitButton, "確認退出條件中…", () => sendExit(false));
     const detail = payload && payload.detail;
     if (response.status === 409 && detail && detail.kind === "confirm_required") {
       const ok = await confirmAction(
@@ -3303,7 +3345,7 @@ async function exitBrowser() {
         "退出並丟掉",
       );
       if (!ok || !identityForm.hidden) return;  // 取消了，或確認框開著時已經回到身分輸入頁
-      ({ response, payload } = await sendExit(true));
+      ({ response, payload } = await whileBusy(exitButton, "退出中…", () => sendExit(true)));
     }
     if (!response.ok) {
       const why = payload && payload.detail ? detailText(payload.detail) : `${response.status} ${response.statusText}`;
@@ -3349,7 +3391,7 @@ function exitedText(result) {
   return `已退出：${released}${cleared}。下一步：重新輸入身分以繼續（可以換人、換角色）。`;
 }
 
-exitButton.addEventListener("click", () => whileBusy(exitButton, "退出中…", exitBrowser));
+exitButton.addEventListener("click", exitBrowser);
 
 // 退出後通知這個瀏覽器的其他分頁，讓它們立刻一起回身分輸入頁（使用者 10/21 選定）——唯讀分頁沒有續期、
 // 開發模式沒有閒置輪詢，不通知的話它們要到重新整理才知道。同一個來源的分頁共用 localStorage：寫一筆，
@@ -4362,29 +4404,68 @@ async function loadMode() {
   const badge = document.querySelector("[data-testid='current-mode']");
   try {
     const response = await apiFetch(`${API_BASE}/api/mode`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const { mode } = await response.json();
     document.body.dataset.mode = mode;
     badge.textContent = MODE_TEXT[mode] || mode;
+    backendProblems.mode = null;
   } catch (error) {
     delete document.body.dataset.mode;
     badge.textContent = "模式未知";
+    backendProblems.mode = backendProblemText("詢問後端模式", error);
+  }
+  showBackendProblems();
+}
+
+// 身分輸入頁問不到後端（F25）：模式與身分兩個請求各記各的結果——只有一項失敗就只寫那一項；字依原因分：
+// 連不上（fetch 丟例外）用「送不出去」那套句型，後端有回但不是 200 用「後端回了 N」那套；兩種都只說
+// 觀察到的事，不寫「離線」。
+const unreachableEl = document.querySelector("[data-testid='backend-unreachable']");
+const unreachableText = document.querySelector("[data-testid='backend-unreachable-text']");
+const retryButton = document.querySelector("[data-testid='backend-retry']");
+const backendProblems = { mode: null, identity: null };
+
+function backendProblemText(action, error) {
+  return `問不到後端：${failureText(action, error)}`;
+}
+
+function showBackendProblems() {
+  const parts = [backendProblems.mode, backendProblems.identity].filter(Boolean);
+  unreachableText.textContent = parts.join(" ");
+  unreachableEl.hidden = parts.length === 0;
+}
+
+// 這個瀏覽器宣告過的身分（#288）：有就回它，沒有回 null；問不到回 null 並記下原因。
+async function probeIdentity() {
+  try {
+    const response = await apiFetch(`${API_BASE}/api/session`);
+    if (!response.ok) throw new Refused(await loadErrorText(response));
+    backendProblems.identity = null;
+    return await response.json();
+  } catch (error) {
+    // backend 連不上時仍顯示身分輸入頁：那是使用者唯一能操作的東西；原因寫在提示裡、可重試。
+    backendProblems.identity = backendProblemText("詢問這個瀏覽器的身分", error);
+    return null;
+  } finally {
+    showBackendProblems();
   }
 }
 
+// 重試只重問模式與身分：不重送表單、不清掉已輸入的姓名、Email、角色；有記住的身分才進清單。
+retryButton.addEventListener("click", () => whileBusy(retryButton, "重試中…", async () => {
+  await loadMode();
+  const identity = await probeIdentity();
+  rememberLabel.hidden = document.body.dataset.mode !== "development";
+  if (identity && !identityForm.hidden) showList(identity);
+}));
+
 (async function start() {
   await loadMode();
-  try {
-    const response = await apiFetch(`${API_BASE}/api/session`);
-    // 身分屬於這個瀏覽器（#288）：後端只回這個瀏覽器自己宣告過的身分，有就直接進清單。
-    const identity = response.ok ? await response.json() : null;
-    if (identity) {
-      showList(identity);
-      return;
-    }
-  } catch (error) {
-    // backend 連不上時仍顯示身分輸入頁：那是使用者唯一能操作的東西，
-    // 而送出時的錯誤會說明真正的問題。
+  // 身分屬於這個瀏覽器（#288）：後端只回這個瀏覽器自己宣告過的身分，有就直接進清單。
+  const identity = await probeIdentity();
+  if (identity) {
+    showList(identity);
+    return;
   }
   // 沒有身分：先把身分輸入頁顯示出來（那是使用者唯一能操作的東西，不等任何請求），再問是不是
   // 因閒置被退出的——是的話補上說明（重新整理後也一樣，#48）。
