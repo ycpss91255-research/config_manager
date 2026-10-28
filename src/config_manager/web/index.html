@@ -758,6 +758,8 @@ const searchScope = document.querySelector("[data-testid='search-scope']");
 let searchHits = null;  // null＝沒有查詢（全部顯示）；否則是命中的 uid 集合
 let hitParams = new Map();  // uid → 命中的參數路徑
 let searchError = null;
+// 上一次搜尋失敗過（F26）：清空搜尋框時不拿記憶體裡停機前的清單充數，重新讀一次——讀得到才是現況。
+let searchFailed = false;
 let searchGeneration = 0;
 let searchTimer = null;
 
@@ -773,6 +775,12 @@ async function runSearch() {
     searchHits = null;
     hitParams = new Map();
     searchError = null;
+    if (searchFailed) {
+      // 失敗過的那段期間清單可能已經不是現況（後端停過）：重新讀，讀不到就是黏性的「讀不到」。
+      searchFailed = false;
+      await load();
+      return;
+    }
     render();
     return;
   }
@@ -785,10 +793,13 @@ async function runSearch() {
     searchHits = new Set(payload.hits.map((hit) => hit.uid));
     hitParams = new Map(payload.hits.map((hit) => [hit.uid, hit.params.map((param) => param.path)]));
     searchError = null;
+    searchFailed = false;
   } catch (error) {
     if (generation !== searchGeneration) return;
     // 搜尋失敗不能靜默顯示成「沒有符合的項目」——那會讓人以為參數不存在（不變式 2、T14）。
     searchError = failureText("搜尋", error);
+    searchFailed = true;
+    markSummaryUnconfirmed();
   }
   render();
 }
@@ -1074,7 +1085,16 @@ function refreshScanSummary() {
   }
   const found = SCAN_PARTS.filter(([key]) => counts[key]).map(([key, text]) => `${counts[key]} ${text}`);
   const at = new Date().toLocaleTimeString("zh-TW", { hour12: false });
+  scanStatus.dataset.at = at;
   setScanStatus("done", `${at} 檢查完成，共 ${rows.length} 份：${found.length ? found.join("、") : "全部一致"}。`);
+}
+
+// 搜尋失敗（F26）：摘要列不能和紅框並排寫著「檢查完成」——那一次的結果已經無法確認是不是現況。
+// 原因原樣帶進來（後端或瀏覽器給的），不寫死「後端沒有回應」。
+function markSummaryUnconfirmed() {
+  if (scanStatus.hidden || scanStatus.dataset.state !== "done") return;
+  setScanStatus("failed",
+    `${scanStatus.dataset.at} 的檢查結果尚未重新確認：搜尋失敗（${searchError}）。修正後再按一次「檢查差異」。`);
 }
 
 async function rescan() {
