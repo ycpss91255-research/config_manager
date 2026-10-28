@@ -470,6 +470,12 @@
        紀錄（例如服務重新啟動過）而回到這一頁時出現，說是哪一種——不說成閒置逾時。 -->
   <p class="notice" data-testid="session-left" role="status" hidden></p>
   <p class="error" data-testid="identity-error" hidden></p>
+  <!-- 問不到後端（F25）：頁面載入時問模式或身分失敗才出現，字依原因分、不寫「離線」；「重試」只重問那兩個
+       請求，不重送表單、不清掉已輸入的欄位。 -->
+  <p class="notice error" data-testid="backend-unreachable" role="status" hidden>
+    <span data-testid="backend-unreachable-text"></span>
+    <button type="button" data-testid="backend-retry">重試</button>
+  </p>
 
   <label>
     <span>姓名</span>
@@ -4365,29 +4371,69 @@ async function loadMode() {
   const badge = document.querySelector("[data-testid='current-mode']");
   try {
     const response = await apiFetch(`${API_BASE}/api/mode`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) throw new Refused(await loadErrorText(response));
     const { mode } = await response.json();
     document.body.dataset.mode = mode;
     badge.textContent = MODE_TEXT[mode] || mode;
+    backendProblems.mode = null;
   } catch (error) {
     delete document.body.dataset.mode;
     badge.textContent = "模式未知";
+    backendProblems.mode = backendProblemText("詢問後端模式", error);
+  }
+  showBackendProblems();
+}
+
+// 身分輸入頁問不到後端（F25）：模式與身分兩個請求各記各的結果——只有一項失敗就只寫那一項；字依原因分：
+// 連不上（fetch 丟例外）用「送不出去」那套句型，後端有回但不是 200 用「後端回了 N」那套；兩種都只說
+// 觀察到的事，不寫「離線」。
+const unreachableEl = document.querySelector("[data-testid='backend-unreachable']");
+const unreachableText = document.querySelector("[data-testid='backend-unreachable-text']");
+const retryButton = document.querySelector("[data-testid='backend-retry']");
+const backendProblems = { mode: null, identity: null };
+
+function backendProblemText(action, error) {
+  if (error instanceof Refused) return `問不到後端：${error.message}然後按「重試」。`;
+  return `問不到後端：${failureText(action, error)}或按「重試」。`;
+}
+
+function showBackendProblems() {
+  const parts = [backendProblems.mode, backendProblems.identity].filter(Boolean);
+  unreachableText.textContent = parts.join(" ");
+  unreachableEl.hidden = parts.length === 0;
+}
+
+// 這個瀏覽器宣告過的身分（#288）：有就回它，沒有回 null；問不到回 null 並記下原因。
+async function probeIdentity() {
+  try {
+    const response = await apiFetch(`${API_BASE}/api/session`);
+    if (!response.ok) throw new Refused(await loadErrorText(response));
+    backendProblems.identity = null;
+    return await response.json();
+  } catch (error) {
+    // backend 連不上時仍顯示身分輸入頁：那是使用者唯一能操作的東西；原因寫在提示裡、可重試。
+    backendProblems.identity = backendProblemText("詢問這個瀏覽器的身分", error);
+    return null;
+  } finally {
+    showBackendProblems();
   }
 }
 
+// 重試只重問模式與身分：不重送表單、不清掉已輸入的姓名、Email、角色；有記住的身分才進清單。
+retryButton.addEventListener("click", () => whileBusy(retryButton, "重試中…", async () => {
+  await loadMode();
+  const identity = await probeIdentity();
+  rememberLabel.hidden = document.body.dataset.mode !== "development";
+  if (identity && !identityForm.hidden) showList(identity);
+}));
+
 (async function start() {
   await loadMode();
-  try {
-    const response = await apiFetch(`${API_BASE}/api/session`);
-    // 身分屬於這個瀏覽器（#288）：後端只回這個瀏覽器自己宣告過的身分，有就直接進清單。
-    const identity = response.ok ? await response.json() : null;
-    if (identity) {
-      showList(identity);
-      return;
-    }
-  } catch (error) {
-    // backend 連不上時仍顯示身分輸入頁：那是使用者唯一能操作的東西，
-    // 而送出時的錯誤會說明真正的問題。
+  // 身分屬於這個瀏覽器（#288）：後端只回這個瀏覽器自己宣告過的身分，有就直接進清單。
+  const identity = await probeIdentity();
+  if (identity) {
+    showList(identity);
+    return;
   }
   // 沒有身分：先把身分輸入頁顯示出來（那是使用者唯一能操作的東西，不等任何請求），再問是不是
   // 因閒置被退出的——是的話補上說明（重新整理後也一樣，#48）。
