@@ -4808,3 +4808,25 @@ def test_an_ini_draft_with_a_newline_is_refused_and_the_other_drafts_stay(api, s
     assert (exc.value.code, after, value) == (_UNPROCESSABLE, before, "v")
     problem = _detail(exc.value)["problems"][0]
     assert (problem["path"], "多行" in problem["message"]) == ("s.name", True)
+
+
+# ── F19：白名單維護拒絕解析不出唯一位置的前綴 ───────────────────────────────────────────
+
+
+def test_adding_a_prefix_hidden_behind_a_symlink_loop_is_refused(api, tmp_path):
+    # F19-3：開發者送 `<inside>/loop/../link_out` → 422（不是 200 把外面的目錄放進白名單）；
+    # prefixes 不變。
+    _set_session(api)  # developer
+    inside = tmp_path / "f19_inside"
+    outside = tmp_path / "f19_outside"
+    inside.mkdir()
+    outside.mkdir()
+    (inside / "loop").symlink_to(inside / "loop")
+    (inside / "link_out").symlink_to(outside)
+    before = _get(api, "/api/allowed-roots")["prefixes"]
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/allowed-roots", {"prefix": f"{inside}/loop/../link_out"})
+
+    after = _get(api, "/api/allowed-roots")["prefixes"]
+    assert (exc.value.code, after) == (_UNPROCESSABLE, before)

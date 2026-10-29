@@ -22,6 +22,7 @@ from config_manager.io.errors import (
     TargetNotWritable,
     TargetOutsideRoots,
     TemporaryLeftBehind,
+    WriterError,
 )
 from config_manager.io.writer import write
 
@@ -289,3 +290,70 @@ def test_the_ordinary_write_still_overwrites(tmp_path):
 
     assert target.read_text() == "new\n"
 
+
+
+# ── F20：寫出不得在白名單外產生一般檔 ────────────────────────────────────────────────────
+# `write` 先 realpath 檢查、再用**原字串**寫：目標 `<allowed>/d/f`，`d` 指向外面、外面的 `f`
+# 又指回裡面時，realpath 落回裡面、檢查通過，暫存檔卻開在外面、rename 把外面的連結換成一般檔
+# ——寫到外面，還像成功。
+# 紅燈測試只斷言修法 A／B 都要成立的共同不變式；落點（更新真檔還是拒絕）定案後另補。
+
+
+def _link_back_layout(tmp_path):
+    allowed = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    allowed.mkdir()
+    outside.mkdir()
+    real = allowed / "real.yaml"
+    real.write_text("old\n")
+    (allowed / "d").symlink_to(outside)
+    (outside / "f").symlink_to(real)
+    return allowed, outside, real
+
+
+def _regular_files_in(directory):
+    return sorted(p.name for p in directory.iterdir() if p.is_file() and not p.is_symlink())
+
+
+def test_a_link_back_into_the_whitelist_does_not_let_the_write_land_outside(tmp_path):
+    # F20-1：外面的 `f` 仍是連結、外面沒有新的一般檔——不論寫出被拒還是落到裡面的真檔。
+    allowed, outside, _ = _link_back_layout(tmp_path)
+
+    try:
+        write(f"{allowed}/d/f", "new\n", _own_permissions(), [str(allowed)])
+    except WriterError:
+        pass  # 拒絕也符合不變式；落點見定案後補的那則
+
+    assert ((outside / "f").is_symlink(), _regular_files_in(outside)) == (True, [])
+
+
+def test_a_link_to_a_plain_file_outside_is_still_refused(tmp_path):
+    # F20-2（守門）：`d` 指向外面、外面的 `f` 是一般檔 → realpath 在外面 → 既有的拒絕；
+    # 外面的檔不變。
+    allowed = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    allowed.mkdir()
+    outside.mkdir()
+    (outside / "f").write_text("secret\n")
+    (allowed / "d").symlink_to(outside)
+
+    with pytest.raises(TargetOutsideRoots):
+        write(f"{allowed}/d/f", "new\n", _own_permissions(), [str(allowed)])
+
+    assert (outside / "f").read_text() == "secret\n"
+
+
+def test_a_target_hidden_behind_a_symlink_loop_and_an_outside_link_is_refused(tmp_path):
+    # F20-3（F18 在寫出側的翻版）：`loop/..` 讓字串看似回到裡面，`link_out` 卻沒被解析
+    # ——不可以寫到外面。
+    allowed = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    allowed.mkdir()
+    outside.mkdir()
+    (allowed / "loop").symlink_to(allowed / "loop")
+    (allowed / "link_out").symlink_to(outside)
+
+    with pytest.raises(WriterError):
+        write(f"{allowed}/loop/../link_out/x.yaml", "new\n", _own_permissions(), [str(allowed)])
+
+    assert not (outside / "x.yaml").exists()
