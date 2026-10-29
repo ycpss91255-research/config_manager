@@ -10,6 +10,7 @@ owner/group 用「目前這個行程自己的 id」：本服務跑在容器裡�
 唯一能成功的所有權設定。設定成別人的所有權需要提權，那條路屬於 #19。
 """
 
+import contextlib
 import os
 import stat
 
@@ -319,10 +320,8 @@ def test_a_link_back_into_the_whitelist_does_not_let_the_write_land_outside(tmp_
     # F20-1：外面的 `f` 仍是連結、外面沒有新的一般檔——不論寫出被拒還是落到裡面的真檔。
     allowed, outside, _ = _link_back_layout(tmp_path)
 
-    try:
+    with contextlib.suppress(WriterError):  # 拒絕也符合不變式；落點見定案後補的那則
         write(f"{allowed}/d/f", "new\n", _own_permissions(), [str(allowed)])
-    except WriterError:
-        pass  # 拒絕也符合不變式；落點見定案後補的那則
 
     assert ((outside / "f").is_symlink(), _regular_files_in(outside)) == (True, [])
 
