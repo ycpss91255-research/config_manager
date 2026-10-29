@@ -26,6 +26,15 @@ class TargetOutsideRoots(WriterError):
     """目標路徑（或其父目錄）解析後落在允許的根目錄之外。"""
 
 
+class TargetPathUnstable(TargetOutsideRoots):
+    """目標路徑解析不出唯一的真正位置（連結迴圈，F20／F18 的寫出側）。
+
+    realpath 給出的字串看似在白名單內、其實沒解析完——不拿它判定、更不拿它寫。歸在
+    `TargetOutsideRoots` 底下：呼叫端既有的 except 都接得住；訊息說的是「解析不出位置」，
+    不說成「已確認越界」。
+    """
+
+
 class OwnershipRefused(WriterError):
     """要求的 owner/group 設不上去：名字查不到，或沒有權限。"""
 
@@ -150,6 +159,17 @@ class PathUnreachable(Exception):
     若照此判為「未部署」，UI 就提供一鍵寫出——一個修不好權限問題的動作，操作者還不知
     道為什麼。要看 `open` 的 errno（EACCES／EPERM）而非 lexists 才分得出「看不到」與
     「不存在」。中性命名，理由同 `NotARegularFile`。"""
+
+
+class AllowedRootUnstable(AllowedRootUnreachable):
+    """要加入白名單的前綴解析不出唯一的真正位置（F19）。
+
+    Python 3.11 的 realpath 遇到連結迴圈就不再解析後面幾段、依字面收掉 `..`：
+    `<inside>/esc → loop/../link_out` 會被「解析」成看似在裡面的 `<inside>/link_out`，
+    實際生效的卻是外面那個目錄。存進去等於白名單檔、畫面、commit 都寫假路徑。歸在
+    「到不了」那一族：端點既有的 422 映射與呼叫端的 except 都接得住。訊息說的是
+    「解析不出位置」，不說成「越界」——那是沒確認的事。
+    """
 
 
 class SourceError(Exception):

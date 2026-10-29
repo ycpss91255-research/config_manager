@@ -341,7 +341,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 加入白名單 | `data-testid="whitelist-add"` | 先比對目前的白名單——已經在裡面的直接在 `whitelist-error` 說已存在、不開確認框；再數候選檔、經 W6 確認框（寫明即將開放的目錄含子目錄、底下有幾個可納管檔）；確認才 `POST /api/allowed-roots`（prefix 取自輸入），成功後重載清單、清空輸入；取消什麼都不變、輸入還在 |
 | 新增錯誤 | `data-testid="whitelist-error"` | 新增失敗原樣顯示（`..`／symlink 逃逸 422、指向到不了的目錄、重複前綴 409）；空時隱藏 |
 | 根清單 | `data-testid="whitelist-roots"` | 目前允許的根（`GET /api/allowed-roots` 的 `roots[]`）；空時顯示「白名單目前是空的」 |
-| 根項目 | `data-testid="whitelist-root-<原樣前綴>"` | 顯示原樣 prefix、resolved（realpath）、`由 <added_by> 於 <added_at>`（誰／何時，AC2） |
+| 根項目 | `data-testid="whitelist-root-<原樣前綴>"` | 顯示原樣 prefix、resolved（realpath）、`由 <added_by> 於 <added_at>`（誰／何時，AC2）。**解析不出唯一位置的根（F19）**：resolved 處改顯示 `whitelist-problem`（後端 `problem` 的字，紅色），其餘欄位與「移除」照舊 |
 | 移除 | 根項目內 `data-testid="whitelist-remove"` | 文字「移除」；先以 `confirmed=false` `DELETE`，回受影響清單＋要求確認（AC3） |
 | 移除確認 | 共用的 W6 確認對話框 | 標題指名要移除的前綴；內文說移除後那個路徑不能再瀏覽或納管、之後可以再加回來、已納管的不受影響；受影響的納管項目（target 落在被移除前綴底下）列在 `confirm-items`，資訊性、不連動解除納管（AC3）。確認鈕「從白名單移除」以 `confirmed=true` `DELETE`，成功後重載清單。文字由介面自己寫，不出現 API 參數名（#50 起不再是頁面內的一塊） |
 | 取消移除 | `data-testid="whitelist-cancel-remove"` | 收起確認、不移除 |

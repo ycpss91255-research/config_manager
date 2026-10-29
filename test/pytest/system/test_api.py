@@ -4808,3 +4808,55 @@ def test_an_ini_draft_with_a_newline_is_refused_and_the_other_drafts_stay(api, s
     assert (exc.value.code, after, value) == (_UNPROCESSABLE, before, "v")
     problem = _detail(exc.value)["problems"][0]
     assert (problem["path"], "多行" in problem["message"]) == ("s.name", True)
+
+
+# ── F19：白名單維護拒絕解析不出唯一位置的前綴 ───────────────────────────────────────────
+
+
+def test_adding_a_prefix_hidden_behind_a_symlink_loop_is_refused(api, tmp_path):
+    # F19-3：前綴字串乾淨（沒有 `..`），`..` 藏在連結 `esc → loop/../link_out` 的內容裡 → 要 422，
+    # 不是 200 把外面的目錄放進白名單；prefixes 不變。
+    _set_session(api)  # developer
+    inside = tmp_path / "f19_inside"
+    outside = tmp_path / "f19_outside"
+    inside.mkdir()
+    outside.mkdir()
+    (inside / "loop").symlink_to(inside / "loop")
+    (inside / "link_out").symlink_to(outside)
+    (inside / "esc").symlink_to("loop/../link_out")
+    before = _get(api, "/api/allowed-roots")["prefixes"]
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/allowed-roots", {"prefix": str(inside / "esc")})
+
+    after = _get(api, "/api/allowed-roots")["prefixes"]
+    assert (exc.value.code, after) == (_UNPROCESSABLE, before)
+
+
+def test_get_roots_marks_a_root_that_cannot_be_resolved_instead_of_showing_a_fake_path(
+    api, repo, tmp_path
+):
+    # F19-5：手寫一筆經過連結迴圈的根 → `resolved` 為 null、`problem` 說原因；
+    # 正常的根照舊、problem 為 null。
+    inside = tmp_path / "f19v_inside"
+    outside = tmp_path / "f19v_outside"
+    inside.mkdir()
+    outside.mkdir()
+    (inside / "loop").symlink_to(inside / "loop")
+    (inside / "link_out").symlink_to(outside)
+    (inside / "esc").symlink_to("loop/../link_out")
+    roots_path = pathlib.Path(repo, "allowed-roots.toml")
+    original = roots_path.read_text(encoding="utf-8")
+    roots_path.write_text(
+        original + f'\n[[roots]]\nprefix = "{inside / "esc"}"\n'
+        'added_by = "seed"\nadded_at = "2026-01-01T00:00:00Z"\n',
+        encoding="utf-8",
+    )
+    try:
+        roots = _get(api, "/api/allowed-roots")["roots"]
+        unstable = next(r for r in roots if r["prefix"] == str(inside / "esc"))
+        normal = next(r for r in roots if r["prefix"] != str(inside / "esc"))
+        assert (unstable["resolved"], "解析不出唯一" in unstable["problem"]) == (None, True)
+        assert (normal["problem"], normal["resolved"] is not None) == (None, True)
+    finally:
+        roots_path.write_text(original, encoding="utf-8")

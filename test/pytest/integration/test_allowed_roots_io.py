@@ -6,12 +6,14 @@ preflight 的缺失／不可解析屬 T15。新增當下的 realpath 正規化�
 （比照 io/onboard 對 #172／#173 的處理）。用 tmp_path。
 """
 
+import contextlib
 import subprocess
 
 import pytest
 
 from config_manager.core.errors import InvalidPrefix, PrefixNotFound
 from config_manager.io import allowed_roots as allowed_roots_module
+from config_manager.io import errors as io_errors
 from config_manager.io.allowed_roots import (
     add_allowed_root,
     read_allowed_roots,
@@ -362,3 +364,69 @@ def test_a_commit_field_error_still_rolls_back_the_whitelist(tmp_path):
         add_allowed_root(str(repo), str(weird), AUTHOR, "2026-01-01T00:00:00Z")
 
     assert (repo / "allowed-roots.toml").read_text(encoding="utf-8") == original
+
+
+# ── F19：前綴經過連結迴圈＋指向白名單外的連結 ────────────────────────────────────────────
+# Python 3.11 的 realpath 遇到迴圈就不再解析後面幾段、依字面收掉 `..`。前綴字串裡的 `..` 早被
+# `check_prefix` 字面擋下，但 `..` 可以藏在**連結的內容**裡：`<inside>/esc → loop/../link_out`，
+# realpath 把它「解析」成 `<inside>/link_out`（字串在裡面），存進白名單檔、寫進 commit 的是它，
+# `root_prefixes()` 再 realpath 一次卻得到 `<outside>`——實際生效的範圍是另一個目錄。
+# 要具名拒絕，設定檔與 git 都不動。
+
+
+def _loop_and_outside_link(tmp_path):
+    inside = tmp_path / "inside"
+    outside = tmp_path / "outside"
+    inside.mkdir()
+    outside.mkdir()
+    (inside / "loop").symlink_to(inside / "loop")
+    (inside / "link_out").symlink_to(outside)
+    (inside / "esc").symlink_to("loop/../link_out")  # `..` 在連結內容裡，不在前綴字串裡
+    return inside, outside
+
+
+def _file_and_commits(repo):
+    text = (repo / "allowed-roots.toml").read_text(encoding="utf-8")
+    return text, _git(repo, "rev-list", "--count", "HEAD")
+
+
+def _unstable_root_error():
+    found = getattr(io_errors, "AllowedRootUnstable", None)
+    assert found is not None, "io.errors 還沒有 AllowedRootUnstable（前綴解析不出唯一位置）"
+    return found
+
+
+def test_a_prefix_hidden_behind_a_symlink_loop_writes_nothing(tmp_path):
+    # F19-1：不論以哪個「到不了」的具名例外拒絕，設定檔逐位元組不變、commit 數不變——紅燈時
+    # 比對結果會直接印出被存進去的那一筆（看似在裡面的字串）。
+    repo = _repo(tmp_path)
+    inside, _ = _loop_and_outside_link(tmp_path)
+    before = _file_and_commits(repo)
+
+    with contextlib.suppress(AllowedRootUnreachable):
+        add_allowed_root(str(repo), str(inside / "esc"), AUTHOR, "2026-10-29T00:00:00Z")
+
+    assert _file_and_commits(repo) == before
+
+
+def test_a_prefix_hidden_behind_a_symlink_loop_is_refused_by_name(tmp_path):
+    # F19-1b：拒絕的理由有名字（`AllowedRootUnstable`，「到不了」那一族），端點映 422 不是裸 500。
+    repo = _repo(tmp_path)
+    inside, _ = _loop_and_outside_link(tmp_path)
+
+    with pytest.raises(_unstable_root_error()):
+        add_allowed_root(str(repo), str(inside / "esc"), AUTHOR, "2026-10-29T00:00:00Z")
+
+
+def test_a_looped_prefix_is_not_a_second_way_to_add_a_root_already_in_the_whitelist(tmp_path):
+    # F19-2：外面那個目錄已經在白名單裡，經迴圈路徑再加一次——不是「成功」也不是「重複」，
+    # 是拒絕；外面那個目錄在清單裡仍只一筆。
+    repo = _repo(tmp_path)
+    inside, outside = _loop_and_outside_link(tmp_path)
+    add_allowed_root(str(repo), str(outside), AUTHOR, "2026-10-29T00:00:00Z")
+
+    with contextlib.suppress(AllowedRootUnreachable):
+        add_allowed_root(str(repo), str(inside / "esc"), AUTHOR, "2026-10-29T00:00:01Z")
+
+    prefixes = [root.prefix for root in read_allowed_roots(str(repo)).roots]
+    assert (prefixes.count(str(outside)), len(prefixes)) == (1, 2)

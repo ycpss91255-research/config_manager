@@ -6918,3 +6918,34 @@ def test_an_ini_string_row_has_no_multiline_toggle_and_stays_a_single_line_input
         page.query_selector(_multiline_toggle("s.name")),
         page.get_attribute(_param_value("s.name"), "type"),
     ) == (None, "text")
+
+
+# ── F19：白名單維護頁對解析不出唯一位置的根顯示原因 ──────────────────────────────────
+
+
+def test_the_whitelist_shows_why_a_root_cannot_be_resolved_instead_of_a_fake_path(
+    open_page, repo, browse_root, tmp_path
+):
+    # 手寫一筆經過連結迴圈的根：那一列顯示 problem 的字（不是看似在裡面的假路徑）；正常的根照舊。
+    inside = tmp_path / "inside"
+    outside = tmp_path / "outside"
+    inside.mkdir()
+    outside.mkdir()
+    (inside / "loop").symlink_to(inside / "loop")
+    (inside / "link_out").symlink_to(outside)
+    (inside / "esc").symlink_to("loop/../link_out")
+    roots_path = repo / "allowed-roots.toml"
+    roots_path.write_text(
+        roots_path.read_text(encoding="utf-8")
+        + f'\n[[roots]]\nprefix = "{inside / "esc"}"\n'
+        'added_by = "seed"\nadded_at = "2026-01-01T00:00:00Z"\n',
+        encoding="utf-8",
+    )
+    page = _open_whitelist_as_developer(open_page())
+
+    esc = inside / "esc"
+    unstable = f"[data-testid='whitelist-root-{esc}']"
+    page.wait_for_selector(unstable)
+    assert "解析不出唯一" in page.text_content(f"{unstable} [data-testid='whitelist-problem']")
+    normal = page.text_content(f"[data-testid='whitelist-root-{browse_root}']")
+    assert (str(browse_root) in normal, "解析不出唯一" in normal) == (True, False)
