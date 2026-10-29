@@ -236,12 +236,14 @@ def test_setting_a_json_value_keeps_the_original_indent_and_key_order():
 
 def test_setting_an_ini_value_splices_in_place_keeping_comment_and_spacing():
     # configobj 寫回會毀格式（#217），所以 ini 走原地文字替換（#17 的 D2）。
-    text = "[main]\nspeed = 1  ; fast\nname = x\n"
+    # 行內註解是「空白後的 #」：configobj 只認 #，值後面的 `;` 是值的一部分（F16；
+    # 這則原本寫 `; fast`，那其實會被讀成值「1  ; fast」，改成 2.0 就該整個換掉）。
+    text = "[main]\nspeed = 1  # fast\nname = x\n"
     parsed = parse(text, "ini")
 
     set_value(parsed, "main.speed", 2.0)
 
-    assert dump(parsed) == "[main]\nspeed = 2.0  ; fast\nname = x\n"
+    assert dump(parsed) == "[main]\nspeed = 2.0  # fast\nname = x\n"
 
 
 def test_setting_an_unknown_path_raises_a_named_error_naming_the_path():
