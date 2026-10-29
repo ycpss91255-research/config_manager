@@ -152,6 +152,16 @@ class PathUnreachable(Exception):
     「不存在」。中性命名，理由同 `NotARegularFile`。"""
 
 
+class AllowedRootUnstable(AllowedRootUnreachable):
+    """要加入白名單的前綴解析不出唯一的真正位置（F19）。
+
+    Python 3.11 的 realpath 遇到連結迴圈就不再解析後面幾段、依字面收掉 `..`——`<inside>/esc → loop/../link_out`
+    會被「解析」成看似在裡面的 `<inside>/link_out`，實際生效的卻是外面那個目錄。存進去等於白名單檔、畫面、
+    commit 都寫假路徑。歸在「到不了」那一族：端點既有的 422 映射與呼叫端的 except 都接得住。訊息說的是
+    「解析不出位置」，不說成「越界」——那是沒確認的事。
+    """
+
+
 class SourceError(Exception):
     """匯入時刻讀取來源失敗的基底（T22）。
 

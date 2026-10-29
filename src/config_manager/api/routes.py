@@ -51,7 +51,7 @@ from config_manager.core.errors import (
     UidHorizonReached,
 )
 from config_manager.core.inference import Ambiguity, find_ambiguous, infer_types
-from config_manager.core.models import FileEntry, Permissions
+from config_manager.core.models import AllowedRoot, FileEntry, Permissions
 from config_manager.core.problem import WARNING
 from config_manager.core.roles import DEPLOYMENT, MAINTAIN_ROOTS, MODES
 from config_manager.core.parse import Parsed, parse, values
@@ -65,6 +65,7 @@ from config_manager.io.allowed_roots import (
     root_prefixes,
 )
 from config_manager.io.browse import Entry, Listing, browse
+from config_manager.io.paths import stable_realpath
 from config_manager.io.candidate import count_candidates
 from config_manager.io.errors import (
     AllowedRootLeftBehind,
@@ -602,18 +603,30 @@ def _affected_by_removing(repo: str, prefix: str) -> list[dict[str, str]]:
 
 def _allowed_roots_view(repo: str) -> dict[str, object]:
     """白名單的檢視表示：`prefixes`（realpath 後，#13 的 browse 消費）＋`roots`（每筆帶原樣
-    prefix〔移除識別碼〕、resolved〔顯示〕、added_by、added_at，#15 的檢視面板消費）。"""
+    prefix〔移除識別碙〕、resolved〔顯示〕、added_by、added_at、problem，#15 的檢視面板消費）。
+
+    `resolved` 用 `stable_realpath`（F19）：解析不出唯一位置的根（連結迴圈）回 null，`problem` 說明原因——
+    那種根瀏覽與納管都會拒絕（F1／F18），畫面不能顯示一個看似在裡面的假路徑。正常的根 `problem` 為 null。"""
     return {
         "prefixes": list(root_prefixes(repo)),
-        "roots": [
-            {
-                "prefix": root.prefix,
-                "resolved": os.path.realpath(root.prefix),
-                "added_by": root.added_by,
-                "added_at": root.added_at,
-            }
-            for root in read_allowed_roots(repo).roots
-        ],
+        "roots": [_root_view(root) for root in read_allowed_roots(repo).roots],
+    }
+
+
+_UNSTABLE_ROOT = (
+    "這個前綴解析不出唯一的真正位置（路上有連結迴圈，或解析後仍經過連結）；瀏覽與納管都會拒絕它。"
+    "下一步：移除它，改加那個目錄真正的路徑"
+)
+
+
+def _root_view(root: AllowedRoot) -> dict[str, object]:
+    resolved = stable_realpath(root.prefix)
+    return {
+        "prefix": root.prefix,
+        "resolved": resolved,
+        "added_by": root.added_by,
+        "added_at": root.added_at,
+        "problem": None if resolved is not None else _UNSTABLE_ROOT,
     }
 
 

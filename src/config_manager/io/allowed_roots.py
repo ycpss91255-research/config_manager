@@ -25,9 +25,11 @@ from config_manager.io.errors import (
     AllowedRootsMissing,
     AllowedRootsUnparsable,
     AllowedRootUnreachable,
+    AllowedRootUnstable,
     WriterError,
 )
 from config_manager.io.git import commit, stage, unstage
+from config_manager.io.paths import stable_realpath
 
 ALLOWED_ROOTS_NAME = "allowed-roots.toml"
 
@@ -89,12 +91,17 @@ def root_prefixes(repo: str) -> tuple[str, ...]:
 def add_allowed_root(repo: str, prefix: str, added_by: str, added_at: str) -> None:
     """把 `prefix` 加進白名單設定檔並提交。`added_by` 是 `姓名 <email>`（同時作為 commit 署名）。
 
-    先做字面檢查（core.check_prefix：絕對、無 ..）再 realpath 正規化，存的是解析後的目錄；
-    指向到不了的目錄時大聲失敗、指名（不變式 2）。追加以 core.dump 保留原樣，原子寫回後
-    以一筆一般 commit 記下（不是 T7 的變更紀錄——白名單根沒有 uid）。
+    先做字面檢查（core.check_prefix：絕對、無 ..）再 `stable_realpath` 正規化，存的是解析後的目錄；
+    解析不出唯一位置（連結迴圈，F19）或指向到不了的目錄時大聲失敗、指名（不變式 2）。追加以
+    core.dump 保留原樣，原子寫回後以一筆一般 commit 記下（不是 T7 的變更紀錄——白名單根沒有 uid）。
     """
     check_prefix(prefix)
-    resolved = os.path.realpath(prefix)
+    resolved = stable_realpath(prefix)
+    if resolved is None:
+        raise AllowedRootUnstable(
+            f"要加入白名單的前綴解析不出唯一的真正位置：{prefix}（路上有連結迴圈，或解析後仍經過"
+            "連結）。下一步：直接填那個目錄真正的路徑，不要經過迴圈或多層連結"
+        )
     if not os.path.isdir(resolved):
         raise AllowedRootUnreachable(
             f"要加入白名單的前綴指向到不了的目錄：{prefix}"
@@ -104,7 +111,7 @@ def add_allowed_root(repo: str, prefix: str, added_by: str, added_at: str) -> No
     path = os.path.join(repo, ALLOWED_ROOTS_NAME)
     current = read_allowed_roots(repo)
     original = _read(path)
-    if any(os.path.realpath(root.prefix) == resolved for root in current.roots):
+    if any(stable_realpath(root.prefix) == resolved for root in current.roots):
         # 這次沒有加入、清單也沒有多一筆。dump 的完整性檢查也擋得住重複，但那邊的訊息是寫給
         # 「設定檔裡兩筆重複」的，叫人刪掉其中一筆——而這裡沒有東西要刪（人工驗證 U13）。
         raise DuplicatePrefix(

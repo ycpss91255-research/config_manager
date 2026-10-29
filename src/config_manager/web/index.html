@@ -411,6 +411,7 @@
   .whitelist-roots li + li { border-top: 1px solid var(--line); }
   .whitelist-prefix { font-family: ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 600; }
   .whitelist-resolved { color: var(--muted); font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
+  .whitelist-problem { color: var(--drift); font-size: 12px; }
   .whitelist-who { color: var(--muted); font-size: 12px; margin-left: auto; }
   .whitelist-empty { color: var(--muted); font-size: 13px; }
 
@@ -4084,9 +4085,13 @@ function whitelistRootRow(root) {
     type: "button", "data-testid": "whitelist-remove", text: "移除",
   });
   remove.addEventListener("click", () => beginRemoveRoot(root.prefix, remove));
+  // 解析不出唯一位置的根（F19）：後端 resolved 為 null、problem 說原因——顯示原因，不顯示假路徑。
+  const where = root.problem
+    ? element("span", { class: "whitelist-problem", "data-testid": "whitelist-problem", text: root.problem })
+    : element("span", { class: "whitelist-resolved", text: root.resolved });
   return element("li", { "data-testid": `whitelist-root-${root.prefix}`, "data-prefix": root.prefix }, [
     element("span", { class: "whitelist-prefix", text: root.prefix }),
-    element("span", { class: "whitelist-resolved", text: root.resolved }),
+    where,
     element("span", { class: "whitelist-who", text: `由 ${root.added_by} 於 ${root.added_at}` }),
     remove,
   ]);
