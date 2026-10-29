@@ -366,8 +366,9 @@ def test_a_commit_field_error_still_rolls_back_the_whitelist(tmp_path):
 
 
 # ── F19：前綴經過連結迴圈＋指向白名單外的連結 ────────────────────────────────────────────
-# Python 3.11 的 realpath 遇到迴圈就不再解析後面幾段、依字面收掉 `..`：`<inside>/loop/../link_out`
-# 被「解析」成 `<inside>/link_out`（字串在裡面），存進白名單檔、寫進 commit 的是它，
+# Python 3.11 的 realpath 遇到迴圈就不再解析後面幾段、依字面收掉 `..`。前綴字串裡的 `..` 早被
+# `check_prefix` 字面擋下，但 `..` 可以藏在**連結的內容**裡：`<inside>/esc → loop/../link_out`，
+# realpath 把它「解析」成 `<inside>/link_out`（字串在裡面），存進白名單檔、寫進 commit 的是它，
 # `root_prefixes()` 再 realpath 一次卻得到 `<outside>`——實際生效的範圍是另一個目錄。
 # 要具名拒絕，設定檔與 git 都不動。
 
@@ -379,6 +380,7 @@ def _loop_and_outside_link(tmp_path):
     outside.mkdir()
     (inside / "loop").symlink_to(inside / "loop")
     (inside / "link_out").symlink_to(outside)
+    (inside / "esc").symlink_to("loop/../link_out")  # `..` 在連結內容裡，不在前綴字串裡
     return inside, outside
 
 
@@ -400,7 +402,7 @@ def test_a_prefix_hidden_behind_a_symlink_loop_is_refused_and_nothing_is_written
     before = _file_and_commits(repo)
 
     with pytest.raises(_unstable_root_error()):
-        add_allowed_root(str(repo), f"{inside}/loop/../link_out", AUTHOR, "2026-10-29T00:00:00Z")
+        add_allowed_root(str(repo), str(inside / "esc"), AUTHOR, "2026-10-29T00:00:00Z")
 
     assert _file_and_commits(repo) == before
 
@@ -413,7 +415,7 @@ def test_a_looped_prefix_is_not_a_second_way_to_add_a_root_already_in_the_whitel
     add_allowed_root(str(repo), str(outside), AUTHOR, "2026-10-29T00:00:00Z")
 
     with pytest.raises(_unstable_root_error()):
-        add_allowed_root(str(repo), f"{inside}/loop/../link_out", AUTHOR, "2026-10-29T00:00:01Z")
+        add_allowed_root(str(repo), str(inside / "esc"), AUTHOR, "2026-10-29T00:00:01Z")
 
     prefixes = [root.prefix for root in read_allowed_roots(str(repo)).roots]
     assert (prefixes.count(str(outside)), len(prefixes)) == (1, 2)

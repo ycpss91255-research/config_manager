@@ -4814,8 +4814,8 @@ def test_an_ini_draft_with_a_newline_is_refused_and_the_other_drafts_stay(api, s
 
 
 def test_adding_a_prefix_hidden_behind_a_symlink_loop_is_refused(api, tmp_path):
-    # F19-3：開發者送 `<inside>/loop/../link_out` → 422（不是 200 把外面的目錄放進白名單）；
-    # prefixes 不變。
+    # F19-3：前綴字串乾淨（沒有 `..`），`..` 藏在連結 `esc → loop/../link_out` 的內容裡 → 要 422，
+    # 不是 200 把外面的目錄放進白名單；prefixes 不變。
     _set_session(api)  # developer
     inside = tmp_path / "f19_inside"
     outside = tmp_path / "f19_outside"
@@ -4823,10 +4823,11 @@ def test_adding_a_prefix_hidden_behind_a_symlink_loop_is_refused(api, tmp_path):
     outside.mkdir()
     (inside / "loop").symlink_to(inside / "loop")
     (inside / "link_out").symlink_to(outside)
+    (inside / "esc").symlink_to("loop/../link_out")
     before = _get(api, "/api/allowed-roots")["prefixes"]
 
     with pytest.raises(urllib.error.HTTPError) as exc:
-        _post(api, "/api/allowed-roots", {"prefix": f"{inside}/loop/../link_out"})
+        _post(api, "/api/allowed-roots", {"prefix": str(inside / "esc")})
 
     after = _get(api, "/api/allowed-roots")["prefixes"]
     assert (exc.value.code, after) == (_UNPROCESSABLE, before)
