@@ -740,27 +740,30 @@ def _ini_with(text: str, segments: list[str | int], value: object, path: str) ->
     section, key = _ini_target(segments, path)
     plain = _ini_text(value, path)
     rendered = _ini_quoted(plain, path)
-    pattern = re.compile(rf"^(\s*{re.escape(key)}\s*[=:]\s*)" + _INI_VALUE_AND_COMMENT)
     lines = text.split("\n")
     current: str | None = None
     for index, line in enumerate(lines):
         header = _INI_HEADER.match(line)
         if header:
             current = header.group(1).strip()
-            continue
-        if current != section:
-            continue
-        match = pattern.match(line.rstrip("\r"))
-        if match:
-            tail = "\r" if line.endswith("\r") else ""
-            lines[index] = f"{match.group(1)}{rendered}{match.group(3) or ''}{tail}"
-            edited = "\n".join(lines)
-            _ini_reads_back(text, edited, (section, key), plain, path)
-            return edited
+        elif current == section and (edited := _ini_line_with(line, key, rendered)) is not None:
+            lines[index] = edited
+            _ini_reads_back(text, "\n".join(lines), (section, key), plain, path)
+            return "\n".join(lines)
     raise UnknownPath(
         f"路徑「{path}」在這份 ini 裡找不到對應的鍵。"
         "下一步：確認區段名與鍵名，或先在該區段加上這個鍵"
     )
+
+
+def _ini_line_with(line: str, key: str, rendered: str) -> str | None:
+    """這一行是 `key = 值` 就把值換成 `rendered`（行內註解、CR 原樣留著），不是就回 None。"""
+    pattern = re.compile(rf"^(\s*{re.escape(key)}\s*[=:]\s*)" + _INI_VALUE_AND_COMMENT)
+    match = pattern.match(line.rstrip("\r"))
+    if match is None:
+        return None
+    tail = "\r" if line.endswith("\r") else ""
+    return f"{match.group(1)}{rendered}{match.group(3) or ''}{tail}"
 
 
 # 值與行內註解：加了引號的值（三引號、單、雙）整個是值；其餘到「空白後的 #」為止。`;` 不是行內註解。
