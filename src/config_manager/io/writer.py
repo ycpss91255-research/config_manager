@@ -109,9 +109,10 @@ def write(
             ) from error
         os.chmod(temporary, int(permissions.mode, 8))
 
-    # 覆蓋時寫到**解析後的真檔**（F20，A1）：暫存檔開在真檔的目錄、rename 到真檔——白名單內的連結保留、
-    # 真檔更新；目標路徑上指向外面的連結再怎麼接回來，都寫不到白名單外。`only_if_missing` 照舊以原字串
-    # 放檔（那條路靠 hard link 在「那個名字還不存在」時才成功，懸空連結也算已存在，T8）。
+    # 覆蓋時寫到**解析後的真檔**（F20，A1）：暫存檔開在真檔的目錄、rename 到真檔——
+    # 白名單內的連結保留、真檔更新；目標路徑上指向外面的連結再怎麼接回來，都寫不到
+    # 白名單外。`only_if_missing` 照舊以原字串放檔（那條路靠 hard link 在「那個名字還
+    # 不存在」時才成功，懸空連結也算已存在，T8）。
     destination = target if only_if_missing else resolved
     replace_atomically(
         destination, as_bytes(content), finalize=_apply_ownership, only_if_missing=only_if_missing

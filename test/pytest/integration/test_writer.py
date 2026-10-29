@@ -23,7 +23,6 @@ from config_manager.io.errors import (
     TargetOutsideRoots,
     TargetPathUnstable,
     TemporaryLeftBehind,
-    WriterError,
 )
 from config_manager.io.writer import write
 
