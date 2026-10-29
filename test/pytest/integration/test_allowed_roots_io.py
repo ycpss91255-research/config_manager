@@ -6,6 +6,7 @@ preflight 的缺失／不可解析屬 T15。新增當下的 realpath 正規化�
 （比照 io/onboard 對 #172／#173 的處理）。用 tmp_path。
 """
 
+import contextlib
 import subprocess
 
 import pytest
@@ -395,16 +396,26 @@ def _unstable_root_error():
     return found
 
 
-def test_a_prefix_hidden_behind_a_symlink_loop_is_refused_and_nothing_is_written(tmp_path):
-    # F19-1：拒絕、設定檔逐位元組不變、commit 數不變。
+def test_a_prefix_hidden_behind_a_symlink_loop_writes_nothing(tmp_path):
+    # F19-1：不論以哪個「到不了」的具名例外拒絕，設定檔逐位元組不變、commit 數不變——紅燈時
+    # 比對結果會直接印出被存進去的那一筆（看似在裡面的字串）。
     repo = _repo(tmp_path)
     inside, _ = _loop_and_outside_link(tmp_path)
     before = _file_and_commits(repo)
 
-    with pytest.raises(_unstable_root_error()):
+    with contextlib.suppress(AllowedRootUnreachable):
         add_allowed_root(str(repo), str(inside / "esc"), AUTHOR, "2026-10-29T00:00:00Z")
 
     assert _file_and_commits(repo) == before
+
+
+def test_a_prefix_hidden_behind_a_symlink_loop_is_refused_by_name(tmp_path):
+    # F19-1b：拒絕的理由有名字（`AllowedRootUnstable`，「到不了」那一族），端點映 422 不是裸 500。
+    repo = _repo(tmp_path)
+    inside, _ = _loop_and_outside_link(tmp_path)
+
+    with pytest.raises(_unstable_root_error()):
+        add_allowed_root(str(repo), str(inside / "esc"), AUTHOR, "2026-10-29T00:00:00Z")
 
 
 def test_a_looped_prefix_is_not_a_second_way_to_add_a_root_already_in_the_whitelist(tmp_path):
@@ -414,7 +425,7 @@ def test_a_looped_prefix_is_not_a_second_way_to_add_a_root_already_in_the_whitel
     inside, outside = _loop_and_outside_link(tmp_path)
     add_allowed_root(str(repo), str(outside), AUTHOR, "2026-10-29T00:00:00Z")
 
-    with pytest.raises(_unstable_root_error()):
+    with contextlib.suppress(AllowedRootUnreachable):
         add_allowed_root(str(repo), str(inside / "esc"), AUTHOR, "2026-10-29T00:00:01Z")
 
     prefixes = [root.prefix for root in read_allowed_roots(str(repo)).roots]
