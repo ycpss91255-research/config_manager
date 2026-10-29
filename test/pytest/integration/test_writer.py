@@ -10,7 +10,6 @@ owner/group 用「目前這個行程自己的 id」：本服務跑在容器裡�
 唯一能成功的所有權設定。設定成別人的所有權需要提權，那條路屬於 #19。
 """
 
-import contextlib
 import os
 import stat
 
@@ -22,6 +21,7 @@ from config_manager.io.errors import (
     OwnershipRefused,
     TargetNotWritable,
     TargetOutsideRoots,
+    TargetPathUnstable,
     TemporaryLeftBehind,
     WriterError,
 )
@@ -317,13 +317,15 @@ def _regular_files_in(directory):
 
 
 def test_a_link_back_into_the_whitelist_does_not_let_the_write_land_outside(tmp_path):
-    # F20-1：外面的 `f` 仍是連結、外面沒有新的一般檔——不論寫出被拒還是落到裡面的真檔。
-    allowed, outside, _ = _link_back_layout(tmp_path)
+    # F20-1（A1）：寫到解析後的真檔——裡面的 real.yaml 更新；外面的 `f` 仍是連結、
+    # 外面沒有新的一般檔。
+    allowed, outside, real = _link_back_layout(tmp_path)
 
-    with contextlib.suppress(WriterError):  # 拒絕也符合不變式；落點見定案後補的那則
-        write(f"{allowed}/d/f", "new\n", _own_permissions(), [str(allowed)])
+    write(f"{allowed}/d/f", "new\n", _own_permissions(), [str(allowed)])
 
-    assert ((outside / "f").is_symlink(), _regular_files_in(outside)) == (True, [])
+    assert (real.read_text(), (outside / "f").is_symlink(), _regular_files_in(outside)) == (
+        "new\n", True, []
+    )
 
 
 def test_a_link_to_a_plain_file_outside_is_still_refused(tmp_path):
@@ -352,7 +354,32 @@ def test_a_target_hidden_behind_a_symlink_loop_and_an_outside_link_is_refused(tm
     (allowed / "loop").symlink_to(allowed / "loop")
     (allowed / "link_out").symlink_to(outside)
 
-    with pytest.raises(WriterError):
+    with pytest.raises(TargetPathUnstable) as exc:
         write(f"{allowed}/loop/../link_out/x.yaml", "new\n", _own_permissions(), [str(allowed)])
 
-    assert not (outside / "x.yaml").exists()
+    # 具名、歸在 TargetOutsideRoots 底下（既有 except 接得住）、訊息說「解析不出」不說「越界」；
+    # 外面沒有 x.yaml、兩邊都沒有暫存檔殘留（這條路以前會先在外面開暫存檔）。
+    assert isinstance(exc.value, TargetOutsideRoots)
+    assert ("解析不出唯一" in str(exc.value), "落在允許範圍之外" in str(exc.value)) == (True, False)
+    assert ((outside / "x.yaml").exists(), _temporaries_in(outside), _temporaries_in(allowed)) == (
+        False, [], []
+    )
+
+
+def _temporaries_in(directory):
+    return sorted(p.name for p in directory.iterdir() if p.name.startswith(".config_manager-"))
+
+
+def test_a_link_inside_the_whitelist_is_kept_and_its_real_file_is_updated(tmp_path):
+    # F20-4（A1）：白名單內指向真檔的連結——以前 rename 會把連結換成一般檔（ADR-00000003 警告的靜默
+    # 失效），現在連結保留、真檔更新。
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    real = allowed / "real.yaml"
+    real.write_text("old\n")
+    link = allowed / "link.yaml"
+    link.symlink_to(real)
+
+    write(str(link), "new\n", _own_permissions(), [str(allowed)])
+
+    assert (link.is_symlink(), real.read_text(), link.read_text()) == (True, "new\n", "new\n")

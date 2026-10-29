@@ -4836,7 +4836,8 @@ def test_adding_a_prefix_hidden_behind_a_symlink_loop_is_refused(api, tmp_path):
 def test_get_roots_marks_a_root_that_cannot_be_resolved_instead_of_showing_a_fake_path(
     api, repo, tmp_path
 ):
-    # F19-5：手寫一筆經過連結迴圈的根 → `resolved` 為 null、`problem` 說原因；正常的根照舊、problem 為 null。
+    # F19-5：手寫一筆經過連結迴圈的根 → `resolved` 為 null、`problem` 說原因；
+    # 正常的根照舊、problem 為 null。
     inside = tmp_path / "f19v_inside"
     outside = tmp_path / "f19v_outside"
     inside.mkdir()
