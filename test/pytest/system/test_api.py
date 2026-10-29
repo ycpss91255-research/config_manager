@@ -4806,4 +4806,5 @@ def test_an_ini_draft_with_a_newline_is_refused_and_the_other_drafts_stay(api, s
     after = _get(api, "/api/drafts")
     value = _get(api, f"/api/configs/{entry['uid']}")["values"]["s"]["name"]
     assert (exc.value.code, after, value) == (_UNPROCESSABLE, before, "v")
-    assert "s.name" in _detail(exc.value)
+    problem = _detail(exc.value)["problems"][0]
+    assert (problem["path"], "多行" in problem["message"]) == ("s.name", True)
