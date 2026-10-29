@@ -546,6 +546,7 @@ write(目標路徑, 內容, 權限) -> 成功 | 例外
 | **目標路徑（或其父目錄）經 realpath 解析後逃出白名單 → 具名例外，且寫出不發生**；不靜默跟隨或改寫連結所指的檔案 |
 | 目標目錄不可寫 → 具名例外（訊息含路徑＋原因＋下一步，不只說「操作失敗」） |
 | **失敗後暫存檔也清不掉 → 具名例外，訊息同時帶原本的失敗與該暫存檔的路徑** |
+| **（F20）寫出不得在白名單外產生任何一般檔**：目標路徑含指向白名單外的連結、而外面又有指回白名單內的連結時，realpath 看似在裡面——不可以把外面那個連結換成一般檔；目標路徑解析不出唯一位置（連結迴圈之後接 `..` 再經過指向外面的連結，F18 在寫出側的翻版）→ 具名拒絕、一個位元組都不寫。寫出落在哪裡（解析後的真實檔，或拒絕任何經過連結的路徑）由修法定案後補寫 |
 
 「中斷」以在改名前注入失敗來模擬。
 
@@ -1023,7 +1024,7 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **偵測（`POST /api/inspect`）：收候選 `{source_path, format}`，回 format／欄位數／歧義（行號／值／讀法，yaml 才非空）／型別／原始權限／**納管當下會用的 hostname**（供確認畫面在納管前核對機器身分，#14）；語法錯誤→結構化 422（含 file、line），歧義不拒絕而是列出；白名單外／不是檔案／讀不到／format 非允許值→422；`CM_HOSTNAME` 不安全→帶訊息的 500（inspect 與 onboard 皆然，不再漏接成裸 500）** |
 | **（F18，安全）偵測與納管的來源路徑若解析不出唯一的真正位置（連結迴圈之後接 `..` 再經過指向白名單外的連結）→422 拒絕、回應不含任何外面檔案的內容或欄位（納管走同一個 `read_source`，由 T22 那一列保證）** |
 | **`raw` 不解碼也不解析**：偵測回 `field_count` 0、沒有歧義與型別；內容是二進位（不是 UTF-8）也納管得了，來源複本逐位元組相同。選了要解析的格式而內容不是文字→422、下一步指去 raw。二進位的 `raw` 經以來源覆蓋、納入現況、寫出修復、退版，位元組都不走樣。**INI 以 `;` 開頭的整行註解是合法的**：偵測與納管都過、原文保留（人工驗證 U06／U07） |
-| **白名單維護（`POST /api/allowed-roots`）：僅開發者可加一個前綴，`added_by` 取自 session、`added_at` 由伺服器蓋時間，回更新後的前綴清單、含剛加的；未設身分→409、一般使用者→403；相對／含 `..` 前綴或指向到不了的目錄→422；新增後同一個服務即刻生效、不必重啟（#202）**；**已在白名單**→409，訊息說這次沒有加入、既有的不用動（人工驗證 U13） |
+| **白名單維護（`POST /api/allowed-roots`）：僅開發者可加一個前綴，`added_by` 取自 session、`added_at` 由伺服器蓋時間，回更新後的前綴清單、含剛加的；未設身分→409、一般使用者→403；相對／含 `..` 前綴或指向到不了的目錄→422；新增後同一個服務即刻生效、不必重啟（#202）**；**已在白名單**→409，訊息說這次沒有加入、既有的不用動（人工驗證 U13）；**（F19）前綴解析不出唯一的真正位置（連結迴圈之後接 `..` 再經過指向白名單外的連結——Python 3.11 的 realpath 給出看似在裡面的字串）→ 422、不寫檔、不 commit、`GET` 的 `prefixes` 不變** |
 | **白名單維護（`DELETE /api/allowed-roots`，body `{prefix, confirmed}`）：僅開發者（403）、需身分（409）；以檔案原樣 prefix 定位、定位不到→404；未帶 confirmed 先回受影響納管項目清單（`{kind:"confirm_required", affected:[{ref, target}], message}`）＋409，帶 confirmed 才真刪、回更新後的清單；受影響＝清單檔中 target（realpath）落在被移除前綴（realpath）底下的條目，資訊性、不連動解除納管（#15）**；未確認時的 `message` 是寫給人看的操作說明（按「確認移除」或「取消」），不出現 API 的參數名（人工驗證 U15） |
 | **候選數預覽（`GET /api/candidate-count?prefix=`）：僅開發者（403，角色不足）；數一個**白名單外**前綴底下的一般檔數（遞迴、不讀內容、不跟隨連結、觸及深度／項目上限回 `capped`），回 `{count, capped}`；字面 `..`／不存在／不是目錄→422，detail 為結構化 `{kind, message}`（比照 browse）。走白名單外故套白名單維護的開發者門檻（#206、T24）** |
 | **單筆內容（`GET /api/configs/{uid}`，§3.5.3 表上既有）：回 metadata（name／hostname／ref／target／source／format／groups／permissions〔條目自己的、沒寫回 defaults〕）＋`types`（欄位路徑→型別，與 inspect 同形）＋`values`（來源複本解析後的值樹），供 W3 欄位表渲染（#20）；有未進版草稿時另回 `draft_values`（草稿文字解析後的值樹，介面以它當「目前值」、`values` 當「來源值」並列，#21）；另回 `target_values`（target 磁碟現況解析後的值樹，差異檢視據此並排，#30；target 不存在→null、讀不到／非 UTF-8／解析不了→null 並在 `target_error` 說原因——現況壞掉是要呈現的事實、不是 500）；`raw`→`types` 空、`values` 為 null（不假裝 0 個欄位，§7.5.4）；uid 不在清單→404；來源複本讀不到／解析不了→帶檔名與下一步的 500** |
@@ -1597,7 +1598,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `io/drift` | 效果透過 T9 觀察：`overwrite`（寫出＋空 `cfg` 紀錄，紀錄沒成把目標還原）、`adopt`（走 `io/promote.apply`，kind `adopt`）——編排層，同 `io/onboard`／`io/promote` 的處理（#29） | 已落地（`overwrite`／`adopt`） |
 | `io/browse` | 效果透過 T9 觀察：`GET /api/browse` 回傳目錄列舉；白名單判定沿用 T4（`core/whitelist.decide`），這一層只做 realpath、列目錄，與指向檔案時改列上層目錄並選它（上層重跑一次判定，F1）——薄 adapter，同 `io/repo`／`io/onboard` 的處理（#185）。兩次開檔之間被抽換的競速分支 T9 走不到，與 `io/source` 的同類限制相同 | 已落地（`browse`） |
 | `io/candidate` | T24（候選檔案數預覽，介面議定於 #206）：不以白名單為閘門、遞迴數一般檔（不讀內容）、每層 O_NOFOLLOW 不跟隨連結、深度／項目上限觸及回部分計數＋capped | 已落地（`count_candidates`） |
-| `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202）；移除以檔案原樣 prefix 定位、找不到丟 `PrefixNotFound`、commit 失敗回滾同樣以真實 fs＋git 斷言（#15） | 已落地（`read_allowed_roots`／`add_allowed_root`／`remove_allowed_root`） |
+| `io/allowed_roots` | 效果透過既有介面觀察：檔案內容→T23（`read_allowed_roots` 後 `core.load` 回來）、preflight→T15（缺失／不可解析）；新增當下的 realpath 正規化、到不了目錄的拒絕、追加後的 commit 以真實檔案系統與 git 在整合層直接斷言（比照 `io/onboard` 對 #172／#173 的處理，#202）；移除以檔案原樣 prefix 定位、找不到丟 `PrefixNotFound`、commit 失敗回滾同樣以真實 fs＋git 斷言（#15）；**（F19）加入時以 `io/paths.stable_realpath` 正規化與比重複：解析不出唯一位置 → `AllowedRootUnstable`，設定檔與 git 都不動**（存成看似在裡面的字串會讓實際生效的範圍是另一個目錄、重複也比不出） | 已落地（`read_allowed_roots`／`add_allowed_root`／`remove_allowed_root`） |
 | `api/routes` | T9 | 已落地（`GET /api/configs`、`POST /api/configs`、`GET /api/configs/{uid}`、`DELETE /api/configs/{uid}`、`GET /api/configs/{uid}/history`、`POST /api/configs/{uid}/revert`、`GET /api/browse`、`POST /api/inspect`、`POST /api/session`、`GET /api/session`、`GET /api/allowed-roots`、`POST /api/allowed-roots`、`DELETE /api/allowed-roots`、`GET`／`POST`／`DELETE /api/drafts[/{uid}]`、`POST /api/promote` 與 CORS 中介層——放行編輯階段識別碼的標頭 `X-CM-Editing-Token`，F23） |
 | `api/drift` | T9 | 已落地（`POST /api/configs/{uid}/resolve`、`POST /api/configs/{uid}/apply`——偏離處置與寫出修復，#29；寫出修復只補回不存在的目標，已存在→409；偏離處置與寫出修復都只接受持有編輯權的分頁，F23） |
 | `api/drafts` | T9 | 已落地（`GET`／`POST`／`DELETE /api/drafts`、`DELETE /api/drafts/{uid}`、`POST /api/promote`——草稿與進版的端點，自 `api/routes` 拆出以免該模組超過千行；儲存與進版接上 schema、規則與略過的理由，#41／#42；寫入只接受持有編輯權的分頁，F23） |
