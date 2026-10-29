@@ -27,9 +27,10 @@ from config_manager.core.errors import (
     ReasonInvalid,
     SyntaxParse,
     UnknownPath,
+    UnrepresentableValue,
 )
-from config_manager.core.parse import dump, parse, set_value
-from config_manager.core.problem import WARNING
+from config_manager.core.parse import Parsed, dump, parse, set_value
+from config_manager.core.problem import WARNING, Problem
 from config_manager.core.validate import check
 from config_manager.io.allowed_roots import root_prefixes
 from config_manager.io.errors import PromoteLeftBehind, WriterError
@@ -93,6 +94,27 @@ def register_drafts(app: FastAPI, repo: str, editing: Editing) -> None:
             return _promote_all(repo, root_prefixes(repo), identity, stage_box)
 
 
+def _apply_edits(parsed: Parsed, edits: dict[str, object], uid: str, source: str) -> None:
+    """把每一筆改動套到來源複本上。值寫不出「讀回還是同一個值」的樣子（F15／F16：ini 的多行、
+    兩種三引號、或寫完讀回不一樣）→ 422，detail 與第 1 層驗證同形、`problems` 指名那個欄位
+    （`path`），介面據此標在那一列；草稿不存、來源複本不動。"""
+    for path, value in edits.items():
+        try:
+            set_value(parsed, path, value)
+        except UnrepresentableValue as error:
+            message, _, suggestion = str(error).partition("下一步：")
+            problem = Problem(None, message.rstrip("。"), suggestion, path=path)
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": f"草稿「{uid}」沒有存下：{error}",
+                    "uid": uid,
+                    "file": source,
+                    "problems": [as_problem(problem)],
+                },
+            ) from error
+
+
 def _save_draft(repo: str, stage_box: dict[str, Stage], payload: DraftInput) -> dict[str, object]:
     """儲存草稿的邏輯（#18／#21）：以來源複本為底套上改動、跑驗證、存進階段。不記錄、不寫目標
     ——那是進版的事。
@@ -106,8 +128,7 @@ def _save_draft(repo: str, stage_box: dict[str, Stage], payload: DraftInput) -> 
     checks = checks_for(repo, entry, payload.overrides)
     try:
         parsed = parse(read_source_copy(repo, entry.source), entry.format)
-        for path, value in as_specified(checks.schema, payload.edits).items():
-            set_value(parsed, path, value)
+        _apply_edits(parsed, as_specified(checks.schema, payload.edits), payload.uid, entry.source)
         text = dump(parsed)
     except UnknownPath as error:
         # 路徑指不到值：送錯的請求 → 422，訊息已含路徑與下一步。

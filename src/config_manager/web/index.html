@@ -118,12 +118,15 @@
   .readonly-only { display: none; }
   body[data-readonly="true"] .readonly-only { display: inline; }
   .param-row .param-value-wrap { flex: 1; }
-  .param-row .param-value-wrap input, .param-row .param-value-wrap select {
+  .param-row .param-value-wrap input, .param-row .param-value-wrap select,
+  .param-row .param-value-wrap textarea {
     font: inherit; font-size: 13px; width: 100%; padding: 4px 8px;
     border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg);
   }
   .param-row .param-value-wrap input[type="checkbox"] { width: auto; }
   .param-row .param-value-wrap input[readonly] { color: var(--muted); }
+  .param-row .param-value-wrap textarea { resize: vertical; min-height: 3.6em; line-height: 1.4; }
+  .param-row .param-multiline { font: inherit; font-size: 11px; margin-top: 2px; padding: 1px 6px; }
   .param-row .param-source { flex: 1; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
   .param-row .param-source[data-changed="true"] { color: var(--drift); text-decoration: line-through; }
   .param-row .param-validation { flex: 1; font-size: 12px; color: var(--drift); }
@@ -1795,18 +1798,27 @@ function markedInvalid(entries) {
 }
 
 // 送出的是相對**來源**的全部改動（後端以來源複本為底重建草稿文字），不是相對上一份草稿的差量。
+// 哪些欄位送（F15）：人動過的（touched）送現值；沒碰的欄位若已有草稿值（已存的草稿≠來源）就原樣送那個
+// 草稿值——不拿控制項裡的現值，瀏覽器對它做的任何正規化（例如 input 拿掉換行）才不會變成改動；
+// 改回來源值的欄位不送（草稿裡那一欄就回到來源）。
 // `overrides`：規則代號 → 略過的理由（#42／#45）。違反第 3 層規則而沒帶理由時後端回 409
 // override_required——不是錯誤，是還缺使用者的一個決定：列出警告與理由欄，填了再送一次。
 async function saveDraft(detail, entries, ui, overrides = {}) {
   const edits = {};
-  for (const { row, control } of entries) {
+  for (const entry of entries) {
+    const { row } = entry;
     if (row.owner) continue;  // 清單底下的列由擁有者整個清單一起送
     if (row.working) {
       if (!same(row.working, row.value)) edits[row.path] = row.working;  // 整個清單替換（#46）
       continue;
     }
-    const current = currentValue(control, row);
-    if (displayValue(current, row.type) !== displayValue(row.value, row.type)) edits[row.path] = current;
+    const sourceText = displayValue(row.value, row.type);
+    if (entry.touched) {
+      const current = currentValue(entry.control, row);
+      if (displayValue(current, row.type) !== sourceText) edits[row.path] = current;
+    } else if (displayValue(row.baseline, row.type) !== sourceText) {
+      edits[row.path] = row.baseline;  // 沒碰、但已有草稿值：原樣保留
+    }
   }
   ui.error.hidden = true;
   ui.save.disabled = true;
@@ -1832,6 +1844,7 @@ async function saveDraft(detail, entries, ui, overrides = {}) {
     for (const entry of entries) {
       if (entry.row.working) entry.row.listBaseline = clone(entry.row.working);
       else entry.row.baseline = currentValue(entry.control, entry.row);
+      entry.touched = false;  // 存好了：之後沒再碰就送已存的草稿值
     }
     for (const entry of entries) entry.refresh();  // 畫面＝已存的草稿：不再 dirty、儲存回到停用
     ui.draft.hidden = !draftUids.has(detail.uid);
@@ -1988,6 +2001,45 @@ function applyRange(control, hint) {
   if (hint.multipleOf !== undefined) control.step = String(hint.multipleOf);
 }
 
+// 字串的控制項（F15）：值含換行就用 textarea——`<input type=text>` 會把換行拿掉，多行的值一打開
+// 就變了、而且被當成已改。單行維持 input。兩種都掛同一個 data-testid（param-value）。
+function stringControl(value, multiline = /[\r\n]/.test(String(value))) {
+  const text = String(value);
+  const control = multiline
+    ? element("textarea", { rows: String(Math.min(8, text.split("\n").length + 1)) })
+    : element("input", { type: "text" });
+  control.value = text;
+  return control;
+}
+
+// 「多行」切換（F15 的 D1）：只換控制項、值照搬——不算人動過、不標已改、不送出。值已含換行時不能切回
+// 單行（input 會把換行拿掉，那正是 F15）。ini 的字串列沒有這個鈕：ini 的值只能一行（B1），後端會拒絕。
+function multilineToggle(entry, listen) {
+  const button = element("button", {
+    type: "button", class: "param-multiline", "data-testid": "param-multiline",
+  });
+  const relabel = () => {
+    const multiline = entry.control.tagName === "TEXTAREA";
+    button.textContent = multiline ? "單行" : "多行";
+    button.disabled = multiline && /[\r\n]/.test(entry.control.value);
+    button.title = button.disabled
+      ? "值裡有換行，先改成一行才能切回單行輸入"
+      : "切換單行／多行輸入；不會改值";
+  };
+  button.addEventListener("click", () => {
+    const next = stringControl(entry.control.value, entry.control.tagName !== "TEXTAREA");
+    next.setAttribute("data-testid", "param-value");
+    entry.control.replaceWith(next);
+    entry.control = next;
+    listen(next);
+    relabel();
+    next.focus();
+  });
+  entry.relabel = relabel;
+  relabel();
+  return button;
+}
+
 function valueControl(row) {
   let control;
   const hasChoices = row.hint && Array.isArray(row.hint.enum) && row.type !== "bool";
@@ -2008,7 +2060,7 @@ function valueControl(row) {
       control = enumControl(row);
       break;
     case "string":
-      control = element("input", { type: "text", value: row.baseline });  // 引號由系統處理
+      control = stringControl(row.baseline);  // 引號由系統處理；含換行用 textarea 保留換行（F15）
       break;
     default:
       // 型別未知（null、空陣列的元素…）：退回文字編輯，列上明確標示「未結構化編輯」——使用者看得到
@@ -2114,25 +2166,40 @@ function paramRow(row, table) {
     text: row.value === undefined ? "—" : displayValue(row.value, row.type),
   });
   const validation = element("span", { class: "param-validation", "data-testid": "param-validation" });
-  node.append(element("span", { class: "param-value-wrap" }, [control]), source, validation);
+  const wrap = element("span", { class: "param-value-wrap" }, [control]);
+  node.append(wrap, source, validation);
+  // entry.control 可能被「多行」切換換掉，所以一律從 entry 拿；touched＝人真的輸入過（input 事件），
+  // 取得焦點、切換控制項都不算（F15：沒碰的欄位不送出，瀏覽器的正規化才不會變成假改動）。
+  const entry = { row, control, node, touched: false, refresh: null, relabel: null };
   const refresh = () => {
-    refreshParamRow(node, control, row, source, validation);
+    refreshParamRow(node, entry.control, row, source, validation);
     if (row.owner) {
       // 清單底下的列：把值寫回擁有者的工作副本，整個清單的變動與否由擁有者那一列說。
-      setAt(row.owner.working, row.segments, currentValue(control, row));
+      setAt(row.owner.working, row.segments, currentValue(entry.control, row));
       updateOwner(row.owner, null);
     }
+    if (entry.relabel) entry.relabel();
     if (onChange) onChange();
   };
-  entries.push({ row, control, node, refresh });
-  control.addEventListener("input", refresh);
-  control.addEventListener("change", () => {
-    // double：離開欄位時把整數樣子的輸入正規化成帶小數點（打字中不動，否則沒法打出 52）。
-    if (row.type === "float" && control.value !== "" && !control.validity.badInput) {
-      control.value = formatDouble(Number(control.value));
-    }
-    refresh();
-  });
+  entry.refresh = refresh;
+  const listen = (target) => {
+    target.addEventListener("input", () => {
+      entry.touched = true;
+      refresh();
+    });
+    target.addEventListener("change", () => {
+      // double：離開欄位時把整數樣子的輸入正規化成帶小數點（打字中不動，否則沒法打出 52）。
+      if (row.type === "float" && target.value !== "" && !target.validity.badInput) {
+        target.value = formatDouble(Number(target.value));
+      }
+      refresh();
+    });
+  };
+  listen(control);
+  if (row.type === "string" && table.detail && table.detail.format !== "ini") {
+    wrap.appendChild(multilineToggle(entry, listen));
+  }
+  entries.push(entry);
   refresh();  // 一開始就標好 data-valid／data-changed，讓「尚未改動」與「改成一樣的值」是同一個狀態
   return node;
 }

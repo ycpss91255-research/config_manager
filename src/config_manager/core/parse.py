@@ -36,7 +36,12 @@ from ruamel.yaml.scalarstring import ScalarString
 from ruamel.yaml.nodes import MappingNode, SequenceNode
 from ruamel.yaml.representer import RoundTripRepresenter
 
-from config_manager.core.errors import SyntaxParse, UnknownPath, UnsupportedFormat
+from config_manager.core.errors import (
+    SyntaxParse,
+    UnknownPath,
+    UnrepresentableValue,
+    UnsupportedFormat,
+)
 
 
 @dataclass
@@ -328,10 +333,14 @@ def _ini_document(text: str) -> object:
     交給 configobj 之前，把 `;` 開頭的整行註解換成它認得的 `#`。**只換給解析器看的那一份**：
     `document` 存的仍是原文（`_parse_ini`），`;` 不會被改寫；一行換一行，行號不變。寫在值後面的
     `;` 不動——那可能是值的一部分（例如以分號分隔的清單）。
+
+    不做 `%(name)s` 插值（F16，ADR-00000029）：這裡要的是字面值——型別推斷、欄位表顯示、改值後
+    讀回比對，都要「寫進去什麼就讀回什麼」；插值開著時 `%(x)s` 會讀成另一個鍵的值。
     """
     readable = _INI_SEMICOLON_COMMENT.sub(r"\1#", text)
     try:
-        return ConfigObj(io.BytesIO(readable.encode("utf-8")), encoding="utf-8")
+        payload = io.BytesIO(readable.encode("utf-8"))
+        return ConfigObj(payload, encoding="utf-8", interpolation=False)
     except ConfigObjError as exc:
         line = getattr(exc, "line_number", None)
         loc = f"（第 {line} 行）" if line else ""
@@ -721,33 +730,106 @@ def _json_indent(text: str) -> str | None:
 
 
 def _ini_with(text: str, segments: list[str | int], value: object, path: str) -> str:
-    """原地替換：只改那一行 `鍵 = 值` 的值文字，區段／註解／其餘行逐位元組不動。"""
-    names = [segment for segment in segments if isinstance(segment, str)]
-    if len(names) != len(segments) or not 0 < len(names) <= _INI_MAX_DEPTH:
-        raise UnknownPath(
-            f"ini 的路徑只能是「區段.鍵」或「鍵」，「{path}」不合。下一步：改成那兩種形式之一"
-        )
-    section = names[0] if len(names) == _INI_MAX_DEPTH else None
-    key = names[-1]
-    pattern = re.compile(rf"^(\s*{re.escape(key)}\s*[=:]\s*)(.*?)(\s*[;#].*)?$")
+    """原地替換：只改那一行 `鍵 = 值` 的值文字，區段／註解／其餘行逐位元組不動。
+
+    值的寫法照 configobj 讀的規則（F16）：含 `#`、`,`、`;`、兩端空白、引號或空字串就加引號
+    （`_ini_quoted`）；行內註解只認「空白後的 `#`」——`a;b` 整個是值，不是 `a` 加註解；原本
+    加了引號的值整個算值（引號裡的 ` #` 不是註解）。寫完立刻用 configobj 讀回：這個鍵的值與
+    型別、以及**其他所有鍵**都要和預期一樣，不一樣就丟 `UnrepresentableValue`、文件不變。
+    """
+    section, key = _ini_target(segments, path)
+    plain = _ini_text(value, path)
+    rendered = _ini_quoted(plain, path)
     lines = text.split("\n")
     current: str | None = None
     for index, line in enumerate(lines):
         header = _INI_HEADER.match(line)
         if header:
             current = header.group(1).strip()
-            continue
-        if current != section:
-            continue
-        match = pattern.match(line.rstrip("\r"))
-        if match:
-            tail = "\r" if line.endswith("\r") else ""
-            lines[index] = f"{match.group(1)}{value}{match.group(3) or ''}{tail}"
+        elif current == section and (edited := _ini_line_with(line, key, rendered)) is not None:
+            lines[index] = edited
+            _ini_reads_back(text, "\n".join(lines), (section, key), plain, path)
             return "\n".join(lines)
     raise UnknownPath(
         f"路徑「{path}」在這份 ini 裡找不到對應的鍵。"
         "下一步：確認區段名與鍵名，或先在該區段加上這個鍵"
     )
+
+
+def _ini_line_with(line: str, key: str, rendered: str) -> str | None:
+    """這一行是 `key = 值` 就把值換成 `rendered`（行內註解、CR 原樣留著），不是就回 None。"""
+    pattern = re.compile(rf"^(\s*{re.escape(key)}\s*[=:]\s*)" + _INI_VALUE_AND_COMMENT)
+    match = pattern.match(line.rstrip("\r"))
+    if match is None:
+        return None
+    tail = "\r" if line.endswith("\r") else ""
+    return f"{match.group(1)}{rendered}{match.group(3) or ''}{tail}"
+
+
+# 值與行內註解：加了引號的值（三引號、單、雙）整個是值；其餘到「空白後的 #」為止。`;` 不是行內註解。
+_INI_VALUE_AND_COMMENT = (
+    "('''.*?'''|" + '"""' + ".*?" + '"""' + "|'[^']*'|\"[^\"]*\"|.*?)" + r"(\s+#.*)?$"
+)
+# 需要加引號的值：含 `#`、`,`、`;`、任一種引號、兩端有空白、或是空字串。
+_INI_NEEDS_QUOTES = re.compile(r"""[#,;'"]|^\s|\s$|^$""")
+_INI_QUOTES = ("'", '"', "'''", '"""')
+
+
+def _ini_target(segments: list[str | int], path: str) -> tuple[str | None, str]:
+    """ini 的路徑只能是「區段.鍵」或「鍵」→ (區段或 None, 鍵)。"""
+    names = [segment for segment in segments if isinstance(segment, str)]
+    if len(names) != len(segments) or not 0 < len(names) <= _INI_MAX_DEPTH:
+        raise UnknownPath(
+            f"ini 的路徑只能是「區段.鍵」或「鍵」，「{path}」不合。下一步：改成那兩種形式之一"
+        )
+    return (names[0] if len(names) == _INI_MAX_DEPTH else None), names[-1]
+
+
+def _ini_text(value: object, path: str) -> str:
+    """ini 的值都是字串；含換行寫不出來（B1：三引號是 configobj 的擴充，不寫）→ 具名拒絕。"""
+    text = value if isinstance(value, str) else str(value)
+    if "\n" in text or "\r" in text:
+        raise UnrepresentableValue(
+            f"「{path}」這個欄位不支援寫入多行值（ini 的值只能一行）。"
+            "下一步：把值改成一行；真的需要多行就改用 yaml／toml 納管這份設定"
+        )
+    return text
+
+
+def _ini_quoted(text: str, path: str) -> str:
+    """照 configobj 的規則給值加引號：沒有單引號用單引號、沒有雙引號用雙引號、兩種都有用三引號；
+    兩種三引號都有 → 寫不出來（configobj 文件：沒有安全的引號寫法）。"""
+    if not _INI_NEEDS_QUOTES.search(text):
+        return text
+    for quote in _INI_QUOTES:
+        if quote not in text:
+            return f"{quote}{text}{quote}"
+    raise UnrepresentableValue(
+        f"「{path}」的值同時含有兩種三引號，ini 沒有能原樣讀回的寫法。"
+        "下一步：改掉其中一種三引號，或改用 yaml／toml 納管這份設定"
+    )
+
+
+def _ini_reads_back(
+    before: str, after: str, target: tuple[str | None, str], expected: str, path: str
+) -> None:
+    """寫完就讀回比對（F16 的防守線）：改的那個鍵要是 `expected`、型別是字串；其他鍵一個都
+    不能變。不一樣就是「寫得出、讀不回」，丟 `UnrepresentableValue`，呼叫端不會把 `after` 存下。
+    """
+    try:
+        document = cast(Any, _ini_document(after)).dict()
+    except SyntaxParse as error:
+        raise UnrepresentableValue(
+            f"「{path}」的新值寫進 ini 之後整份解析不了（{error}）。下一步：改用別的寫法或格式"
+        ) from error
+    wanted = cast(Any, _ini_document(before)).dict()
+    section, key = target
+    (wanted[section] if section is not None else wanted)[key] = expected
+    if document != wanted:
+        raise UnrepresentableValue(
+            f"「{path}」的新值寫進 ini 之後讀回來不一樣（寫入「{expected}」）。"
+            "下一步：避免 ini 讀取器會另解讀的寫法，或改用 yaml／toml 納管這份設定"
+        )
 
 
 def _unsupported(fmt: str) -> str:

@@ -4753,3 +4753,58 @@ def test_a_draft_can_replace_a_whole_list_and_keeps_the_rest_byte_for_byte(api, 
         b"# nav\nrecovery:  # order matters\n  - wait\n  - spin\n  - pause\n"
         b"gains: [0.5, 1.0]\nspeed: 1\n"
     )
+
+
+# ── F15／F16：送進來的字串值進版後讀回相同；無法無損表示 → 422、草稿與來源不動 ──────────
+
+
+def _onboard_ini(api, sources_root, name, content):
+    _set_session(api)
+    source = _write_source(sources_root, name, content)
+    payload = {"source_path": source, "format": "ini", "ambiguity_note": ""}
+    return _post(api, "/api/configs", payload)
+
+
+def test_a_multiline_string_saved_as_a_draft_is_read_back_unchanged_after_promote(
+    api, sources_root
+):
+    # F15：含換行的字串從 API 進去、進版、再讀回來要一字不差；目標檔裡兩行都在。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f15_multiline.yaml", b"notes: v\ncount: 1\n")
+
+    _promote_value(api, entry["uid"], "notes", "第一行\n第二行")
+
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+    target = pathlib.Path(entry["target"]).read_text(encoding="utf-8")
+    assert (detail["values"]["notes"], "第二行" in target) == ("第一行\n第二行", True)
+
+
+def test_an_ini_string_with_a_hash_and_a_comma_is_read_back_unchanged_after_promote(
+    api, sources_root
+):
+    # F16：`#` 不是註解、逗號不是清單——讀回的值與型別都要是寫進去的那個字串。
+    _clear_drafts(api)
+    entry = _onboard_ini(api, sources_root, "f16_hash_comma.ini", b"[s]\nname = v\n")
+
+    _promote_value(api, entry["uid"], "s.name", "a, b #c")
+
+    read = _get(api, f"/api/configs/{entry['uid']}")["values"]["s"]["name"]
+    assert (read, isinstance(read, str)) == ("a, b #c", True)
+
+
+def test_an_ini_draft_with_a_newline_is_refused_and_the_other_drafts_stay(api, sources_root):
+    # B1：ini 不支援多行值 → 422 說明欄位與下一步；既有草稿原樣、來源複本不變。
+    _clear_drafts(api)
+    other = _onboard(api, sources_root, "f16_other.yaml")
+    _post(api, "/api/drafts", {"uid": other["uid"], "edits": {"max_vel": 1.2}})
+    entry = _onboard_ini(api, sources_root, "f16_newline.ini", b"[s]\nname = v\n")
+    before = _get(api, "/api/drafts")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"s.name": "a\nb"}})
+
+    after = _get(api, "/api/drafts")
+    value = _get(api, f"/api/configs/{entry['uid']}")["values"]["s"]["name"]
+    assert (exc.value.code, after, value) == (_UNPROCESSABLE, before, "v")
+    problem = _detail(exc.value)["problems"][0]
+    assert (problem["path"], "多行" in problem["message"]) == ("s.name", True)

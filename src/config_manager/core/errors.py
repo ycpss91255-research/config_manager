@@ -235,6 +235,15 @@ class UnknownPath(ParseError):
     """
 
 
+class UnrepresentableValue(ParseError):
+    """`set_value` 拿到的值在這個格式裡寫不出「讀回來還是同一個值」的樣子（F15／F16）。
+
+    ini（configobj）寫不了多行值——三引號是 configobj 自己的擴充、別的 INI 讀取器不認，所以
+    不寫；也包不住同時含兩種三引號的字串。其他任何「寫得出、讀不回」（值或型別變了、連別的
+    鍵都變了）的情況也走這裡：具名拒絕、文件一個位元組都不動——不靜默轉換、不丟字元、不換型別。
+    """
+
+
 class DraftError(Exception):
     """T18 草稿層的錯誤基底（#18）。與 ParseError／ConfigListError 分族：講的是編輯階段裡的
     草稿操作，處置是改草稿內容或指對 uid，不是改檔案或清單檔。"""
