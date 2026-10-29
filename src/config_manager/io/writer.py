@@ -14,7 +14,9 @@ from config_manager.io.parsers import as_bytes
 from config_manager.io.errors import (
     OwnershipRefused,
     TargetOutsideRoots,
+    TargetPathUnstable,
 )
+from config_manager.io.paths import stable_realpath
 
 
 def _within_roots(resolved: str, allowed_roots: Iterable[str]) -> bool:
@@ -75,7 +77,13 @@ def write(
     """
     # 逃逸檢查在任何寫入動作之前。符號連結必須先解析：ADR-00000003 指出
     # 「寫暫存檔再改名」會把連結替換成一般檔案而靜默失效，等發現時連結已經沒了。
-    resolved = os.path.realpath(target)
+    # 解析用 `stable_realpath`（F20／F18）：解析不出唯一位置就拒絕，不拿看似在裡面的字串判定。
+    resolved = stable_realpath(target)
+    if resolved is None:
+        raise TargetPathUnstable(
+            f"目標路徑解析不出唯一的真正位置：{target}（路上有連結迴圈，或解析後仍經過連結）。"
+            f"沒有寫出。下一步：修好或移除那條路上的連結，再試一次。"
+        )
     if not _within_roots(resolved, allowed_roots):
         raise TargetOutsideRoots(
             f"目標解析後落在允許範圍之外：{target} → {resolved}。"
@@ -101,6 +109,10 @@ def write(
             ) from error
         os.chmod(temporary, int(permissions.mode, 8))
 
+    # 覆蓋時寫到**解析後的真檔**（F20，A1）：暫存檔開在真檔的目錄、rename 到真檔——白名單內的連結保留、
+    # 真檔更新；目標路徑上指向外面的連結再怎麼接回來，都寫不到白名單外。`only_if_missing` 照舊以原字串
+    # 放檔（那條路靠 hard link 在「那個名字還不存在」時才成功，懸空連結也算已存在，T8）。
+    destination = target if only_if_missing else resolved
     replace_atomically(
-        target, as_bytes(content), finalize=_apply_ownership, only_if_missing=only_if_missing
+        destination, as_bytes(content), finalize=_apply_ownership, only_if_missing=only_if_missing
     )

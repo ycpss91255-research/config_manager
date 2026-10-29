@@ -26,6 +26,14 @@ class TargetOutsideRoots(WriterError):
     """目標路徑（或其父目錄）解析後落在允許的根目錄之外。"""
 
 
+class TargetPathUnstable(TargetOutsideRoots):
+    """目標路徑解析不出唯一的真正位置（連結迴圈，F20／F18 的寫出側）。
+
+    realpath 給出的字串看似在白名單內、其實沒解析完——不拿它判定、更不拿它寫。歸在 `TargetOutsideRoots`
+    底下：呼叫端既有的 except 都接得住；訊息說的是「解析不出位置」，不說成「已確認越界」。
+    """
+
+
 class OwnershipRefused(WriterError):
     """要求的 owner/group 設不上去：名字查不到，或沒有權限。"""
 
