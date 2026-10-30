@@ -622,6 +622,7 @@ digest(path) -> 內容雜湊 | None（檔案不存在）| 具名例外（存在�
 | 內容相同的兩個檔案 → 相同雜湊 |
 | **只差一個位元組（結尾換行）→ 不同雜湊** |
 | 路徑存在但讀不出來（是目錄、無讀取權限）→ **具名例外**，不可回 `None` |
+| **（F14）同一套守門也提供位元組讀取 `read_target(path)`**：不存在回 `None`；具名管道、裝置、目錄、符號連結 → `NotARegularFile`（`O_NONBLOCK`，不會卡住）；超過上限 → `ContentTooLarge`，不把內容讀進記憶體；權限 → `ContentUnreadable`／`PathUnreachable`。欄位表的目標現況、採納現場、以來源覆蓋與進版前的現場快照都走它，不再用一般開檔（`io/repo.read_or_none` 只給 repo 內自己的檔） |
 
 T2 刻意不讀檔，雜湊由呼叫者算好傳入。這裡就是那個呼叫者所需的那一半，
 `decide(target_hash is not None, target_hash, source_hash)` 把兩者接起來。
@@ -1028,9 +1029,11 @@ owner 補上這一列**；那份 PDF 是設計權威，這份追加不取代它�
 | **白名單維護（`DELETE /api/allowed-roots`，body `{prefix, confirmed}`）：僅開發者（403）、需身分（409）；以檔案原樣 prefix 定位、定位不到→404；未帶 confirmed 先回受影響納管項目清單（`{kind:"confirm_required", affected:[{ref, target}], message}`）＋409，帶 confirmed 才真刪、回更新後的清單；受影響＝清單檔中 target（realpath）落在被移除前綴（realpath）底下的條目，資訊性、不連動解除納管（#15）**；未確認時的 `message` 是寫給人看的操作說明（按「確認移除」或「取消」），不出現 API 的參數名（人工驗證 U15） |
 | **候選數預覽（`GET /api/candidate-count?prefix=`）：僅開發者（403，角色不足）；數一個**白名單外**前綴底下的一般檔數（遞迴、不讀內容、不跟隨連結、觸及深度／項目上限回 `capped`），回 `{count, capped}`；字面 `..`／不存在／不是目錄→422，detail 為結構化 `{kind, message}`（比照 browse）。走白名單外故套白名單維護的開發者門檻（#206、T24）** |
 | **單筆內容（`GET /api/configs/{uid}`，§3.5.3 表上既有）：回 metadata（name／hostname／ref／target／source／format／groups／permissions〔條目自己的、沒寫回 defaults〕）＋`types`（欄位路徑→型別，與 inspect 同形）＋`values`（來源複本解析後的值樹），供 W3 欄位表渲染（#20）；有未進版草稿時另回 `draft_values`（草稿文字解析後的值樹，介面以它當「目前值」、`values` 當「來源值」並列，#21）；另回 `target_values`（target 磁碟現況解析後的值樹，差異檢視據此並排，#30；target 不存在→null、讀不到／非 UTF-8／解析不了→null 並在 `target_error` 說原因——現況壞掉是要呈現的事實、不是 500）；`raw`→`types` 空、`values` 為 null（不假裝 0 個欄位，§7.5.4）；uid 不在清單→404；來源複本讀不到／解析不了→帶檔名與下一步的 500** |
+| **（F14）單筆內容對病態目標不卡、不吃記憶體、不矛盾**：目標是具名管道 → 在時限內回應、`target_values` 為 null、`target_error` 指名「不是一般檔案（具名管道）」；超過上限 → `target_error` 指名太大、內容不讀進解析器；目標是符號連結 → `target_error` 與清單那列的 `error` 一致（都說是連結，不跟著讀）；目標不存在仍是兩個 null；無讀取權限 → 指名權限，不是不存在 |
 | **變更歷史（`GET /api/configs/{uid}/history?prefix=…`，§3.5.3 表上既有）：回該 uid 的紀錄、最新在前，每筆 `{sha, kind, summary, author, at, body}`；`prefix` 逗號分隔的類型清單，不給就只看內容變更（`cfg`＋`adopt`，§7.6.1／圖 7——`import`／`revert`／`meta`／`unmanage` 要明點）；含未知類型→422 列出允許值（不靜默當成沒過濾）；uid 不在清單→404（#23）** |
 | **解除納管（`DELETE /api/configs/{uid}`，§3.5.3 表上既有）：從清單檔移除條目、來源複本自 repo 拿掉、記一筆 `unmanage`；**不刪 target**（§5.5：解除管理不改變系統當前行為）；回被解除的條目、清單不再列它；有未進版草稿→409、未設身分→409、uid 不在→404；寫入失敗整批回滾、帶訊息的 500（#28）** |
 | **偏離處置（`POST /api/configs/{uid}/resolve`，body `{action}`，§3.5.3 的 resolve 動作）：`overwrite`→來源寫回目標、記一筆空 `cfg`（以來源覆蓋目標）；`adopt`→目標現況走第 1 層驗證，過→一筆 `adopt` 進版資料走 apply（來源＝現場、寫出、狀態回一致），含非法值→422 列問題、來源不動；`adopt_draft`→現況載入草稿並回 `warnings`（不擋、不碰 repo 與目標）。目標與來源一致→409（沒有偏離）、目標不存在→409 指去寫出修復、未設身分→409、uid 不在→404、目標白名單外／非 UTF-8→422。**寫出修復（`POST /api/configs/{uid}/apply`，§3.5.3 的 apply 動作）**：目標**不存在**時來源寫到目標、不留紀錄（#29）；**目標已存在→409、檔案不動（內容、inode、mtime）、狀態與歷史不變**——與來源不同或相同都一樣；要蓋過既有的檔案走 `resolve` 的 `overwrite`（留一筆有作者的紀錄）。寫出修復不留紀錄，但同樣只接受持有編輯權的分頁（要身分、要識別碼，F23）** |
+| **（F14）`resolve adopt`／`overwrite` 與 `POST /api/promote` 遇到不是一般檔案的目標（具名管道、裝置、連結、太大）→ 具名拒絕（422／帶訊息的 500）、不卡住、不寫出、草稿保留**——拍不到現場就不動手（不變式 2） |
 | **搜尋（`GET /api/search?q=&scope=`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：五檔範圍、預設「全部」；回以 config 為單位的命中 `{uid, name, target, matched:[範圍…], params:[{path, value}]}` 與 `unindexed`（來源複本壞掉、參數沒進索引的那幾份）；索引每次請求從真實來源重建，所以修改後舊值不再命中、解除納管後索引移除；未知範圍→422 列五個允許值、`q` 空→422（#32） |
 | **產生 schema 骨架（`POST /api/configs/{uid}/schema`）是本 repo 對 §3.5.3 的追加**（PDF 待 owner 補列，比照 inspect／#122）：僅開發者（403）、需身分（409）；骨架存進 config-repo 的 `.schemas/<uid>.json`、條目記下 `schema`、記一筆 `meta`，回 `{uid, schema}`；`GET /api/configs/{uid}` 另回 `schema`（路徑或 null）；已有 schema→409（不覆寫）、`raw`／頂層不是物件→422 說原因、uid 不在→404（#38） |
 | **第 2 層接在三個寫入點上（#39）**：儲存草稿（`POST /api/drafts`）、進版（`POST /api/promote`，依**此刻**的 schema 重驗）、將現況納入來源（`resolve` 的 `adopt`）——不符 schema→422，detail 另帶 `file`（驗的是哪一份：存草稿與進版是 repo 內的來源複本，納入現況是目標路徑），`problems` 每筆另帶 `path`（欄位路徑；第 1 層為 null）；`adopt_draft` 照載、schema 的問題列成警告；清單檔指到的 schema 讀不出來（不在、不是 JSON、不是合法 schema、指到 `.schemas/` 外）→結構化的 500 `{message, file}`，**不當成沒有 schema 放行** |
@@ -1577,7 +1580,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `core/drafts` | T18 | 已落地：草稿（`save_draft`／`adopt_draft`／`discard`，不可變 `Stage`，#18）；`promote` 全部驗證才回 `[Promotion]`、任一沒過丟 `PromoteInvalid`（#19）；儲存、納入、進版以 `Checks` 帶 schema 與規則跑第 2、3 層（#39／#41）；違反規則要理由才存得成（`OverrideRequired`）、理由跟著草稿、進版時寫進紀錄內文（#42） |
 | `io/writer` | T8 | 已落地 |
 | `io/atomic` | T8——原子替換的共用核心，行為由 `io/writer` 的 T8 規格擋著（#186） | 已落地；`only_if_missing`：以 hard link 原子地「只在不存在時放上去」，已有東西丟 `TargetExists`（寫出修復不覆蓋） |
-| `io/repo` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔可讀→T1（`load`）（#186） | 已落地（`place_source`／`write_config_list`／`load_list`——會改寫清單檔的編排共用的讀＋載入，失敗映成 `ConfigListUnparsable`，#257） |
+| `io/repo` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔可讀→T1（`load`）（#186）；**`read_or_none` 只給 repo 內自己的檔用，目標現況一律走 T20 的 `read_target`（F14）** | 已落地（`place_source`／`write_config_list`／`load_list`——會改寫清單檔的編排共用的讀＋載入，失敗映成 `ConfigListUnparsable`，#257） |
 | `io/backup` | T26（設定庫層）；CLI 的 `backup`／`restore` 子指令把它接到 `CM_CONFIG_REPO`，接線在 T10 的單元層 | 已落地（#52）：先 `git clone --no-local --bare` 拍快照再打包（直接對活著的 repo 打包會撞上進版）；驗證＝真的 clone＋fsck＋有清單檔 |
 | `io/git` | T7 | 已落地（`head`／`reset_hard` 於 #19 加入，只給進版回滾用；`show` 於 #24 加入、checkout 式 `revert` 移除；`show_or_none` 於 #39 加入——那一版還沒有該檔時回 None） |
 | `io/preflight` | T15 | 已落地 |
