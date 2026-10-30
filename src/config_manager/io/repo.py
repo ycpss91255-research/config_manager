@@ -99,7 +99,9 @@ def _encode(target: str) -> str:
 
 
 def read_or_none(path: str) -> bytes | None:
-    """`path` 的位元組；檔案不存在回 None。進版與解除納管在動手前拍現場用（回滾據以還原）。"""
+    """`path` 的位元組；檔案不存在回 None。**只給 repo 內自己的檔**（規則檔、schema、解除納管前的
+    複本快照）——目標現況一律走 `io/digest.read_target`：那裡有不跟連結、不卡在具名管道、大小上限的
+    守門（F14）；這裡是一般開檔，沒有。"""
     try:
         with open(path, "rb") as handle:
             return handle.read()

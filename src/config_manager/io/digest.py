@@ -48,6 +48,46 @@ def digest(path: str, max_bytes: int = _MAX_BYTES) -> str | None:
     權限壞掉或被換成 FIFO 的目標會被判成「未部署」，UI 於是提供一鍵寫出，而那個動作修不好
     真正的問題，操作者也不會知道為什麼（不變式 2）。`max_bytes` 是大小上限（#214）。
     """
+    descriptor = _open_regular(path, max_bytes)
+    if descriptor is None:
+        return None
+    try:
+        return _hash(descriptor, path, max_bytes)
+    finally:
+        os.close(descriptor)
+
+
+def read_target(path: str, max_bytes: int = _MAX_BYTES) -> bytes | None:
+    """目標現況的位元組——和 `digest` 同一套守門（F14）：不存在回 None；不是一般檔案（具名管道、
+    裝置、目錄、符號連結）→ `NotARegularFile`，`O_NONBLOCK` 讓管道不卡；超過上限 → `ContentTooLarge`，
+    `st_size` 先擋、讀取途中再擋（`read_capped`），不會整份讀完才判斷；權限 → `ContentUnreadable`／
+    `PathUnreachable`。欄位表的目標現況、採納、以來源覆蓋與進版前的現場快照都走這裡；一般開檔
+    （`io/repo.read_or_none`）只給 repo 內自己的檔。
+    """
+    descriptor = _open_regular(path, max_bytes)
+    if descriptor is None:
+        return None
+
+    def _too_large(total: int) -> Exception:
+        return ContentTooLarge(
+            f"目標邊讀邊被撐大（已讀 {total} 位元組，上限 {max_bytes}）：{path}。"
+            f"下一步：確認沒有其他程序正在寫入它，然後重試"
+        )
+
+    try:
+        return b"".join(read_capped(descriptor, _CHUNK, max_bytes, _too_large))
+    except OSError as error:
+        raise ContentUnreadable(
+            f"內容讀不出來：{path}（{error.strerror}）。"
+            f"下一步：確認它是一般檔案、且執行身分有讀取權限"
+        ) from error
+    finally:
+        os.close(descriptor)
+
+
+def _open_regular(path: str, max_bytes: int) -> int | None:
+    """以 `O_NOFOLLOW | O_NONBLOCK` 開檔並確認是一般檔案、不超過上限；不存在回 None，其餘失敗丟
+    具名例外（`digest` 與 `read_target` 共用這一道門，守門只寫一次）。回傳的 fd 由呼叫端關。"""
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as error:
@@ -55,7 +95,6 @@ def digest(path: str, max_bytes: int = _MAX_BYTES) -> str | None:
         if classified is None:
             return None
         raise classified from error
-
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
@@ -68,9 +107,10 @@ def digest(path: str, max_bytes: int = _MAX_BYTES) -> str | None:
                 f"目標太大（{info.st_size} 位元組，上限 {max_bytes}）：{path}。"
                 f"下一步：確認它是一份 config 檔案，不是被誤指到的大檔"
             )
-        return _hash(descriptor, path, max_bytes)
-    finally:
+    except BaseException:
         os.close(descriptor)
+        raise
+    return descriptor
 
 
 def _hash(descriptor: int, path: str, max_bytes: int) -> str:
