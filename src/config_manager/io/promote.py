@@ -27,7 +27,7 @@ from config_manager.io.atomic import replace_atomically
 from config_manager.io.errors import PromoteLeftBehind, WriterError
 from config_manager.io.git import head, record, reset_hard, stage
 from config_manager.io.parsers import as_bytes
-from config_manager.io.repo import read_or_none
+from config_manager.io.digest import read_target
 from config_manager.io.writer import write
 
 
@@ -99,7 +99,9 @@ class _Snapshot:
 
 
 def _snapshot(path: str) -> _Snapshot:
-    content = read_or_none(path)
+    # 守門的讀取（F14）：目標是具名管道、裝置、連結或太大 → 具名例外，整批在寫出之前停下；
+    # `apply` 的回滾把前面已寫的還原，不留半批。
+    content = read_target(path)
     if content is None:
         return _Snapshot(path, None)
     info = os.stat(path)

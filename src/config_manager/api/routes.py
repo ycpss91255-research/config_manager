@@ -76,6 +76,7 @@ from config_manager.io.errors import (
     BrowseOutsideRoots,
     BrowseUnreadable,
     CandidateError,
+    TargetReadError,
     CandidateNotADirectory,
     CandidatePrefixEscape,
     CandidateUnreadable,
@@ -92,7 +93,7 @@ from config_manager.io.errors import (
 )
 from config_manager.io.onboard import OnboardRequest, onboard
 from config_manager.io.parsers import read_source as read_source_copy
-from config_manager.io.repo import read_or_none
+from config_manager.io.digest import read_target
 from config_manager.io.preflight import read_config_list
 from config_manager.io.scan import ScanFailure, scan
 from config_manager.io.source import Source, local_hostname, read_source
@@ -504,11 +505,11 @@ def _target_values(entry: FileEntry) -> tuple[object, str | None]:
     白名單管的是納管與瀏覽可以碰哪些目錄，不是已納管目標在哪。
     """
     try:
-        content = read_or_none(entry.target)
+        content = read_target(entry.target)  # 守門的讀取（F14）：不卡、不跟連結、有上限
         if content is None:
             return None, None
         return values(parse(content.decode("utf-8"), entry.format)), None
-    except (OSError, UnicodeDecodeError, SyntaxParse, RecursionError) as error:
+    except (TargetReadError, OSError, UnicodeDecodeError, SyntaxParse, RecursionError) as error:
         return None, f"目標現況讀不到或解析不了：{error}"
 
 

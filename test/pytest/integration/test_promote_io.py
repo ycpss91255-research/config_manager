@@ -6,17 +6,19 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import pathlib
 import stat
 import subprocess
+import threading
 
 import pytest
 
 from config_manager.core.drafts import Promotion
 from config_manager.core.models import Permissions
 from config_manager.io import promote as promote_io
-from config_manager.io.errors import PromoteLeftBehind, TargetNotWritable
+from config_manager.io.errors import NotARegularFile, PromoteLeftBehind, TargetNotWritable
 from config_manager.io.git import head
 from config_manager.io.preflight import CONFIG_LIST_NAME
 from config_manager.io.promote import apply
@@ -125,3 +127,85 @@ def test_a_rollback_that_cannot_finish_names_the_leftover_and_keeps_the_cause(
     assert pathlib.Path(first.target).read_bytes() == b"max_vel: 1.2\n"
     assert pathlib.Path(second.target).read_bytes() == b"speed: 1\n"
     assert head(str(repo)) == before_head
+
+
+# ── F14：進版前拍現場的那一次讀取也要守門（具名管道不卡住、不是一般檔案就拒絕）────────────────
+
+
+def _run_with_fifo_release(action, fifo, seconds=10):
+    """在執行緒跑 `action`；超過 `seconds` 還沒回來就開 FIFO 的寫端放掉它（修正前的卡住），
+    記下 hung。回 (hung, raised)。"""
+    outcome = {"raised": None}
+
+    def runner():
+        try:
+            action()
+        except (NotARegularFile, OSError) as error:
+            outcome["raised"] = error
+
+    worker = threading.Thread(target=runner, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    hung = worker.is_alive()
+    if hung:
+        with contextlib.suppress(OSError):
+            os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        worker.join(5)
+    return hung, outcome["raised"]
+
+
+def test_a_fifo_target_makes_promote_refuse_by_name_instead_of_hanging(tmp_path):
+    # F14-5：目標被換成具名管道 → 進版前拍現場不可以卡住；具名拒絕、沒有寫出、目標仍是那條管道。
+    repo = _repo(tmp_path)
+    plan = _plan(tmp_path, repo, "p", "max_vel: 1.2\n", "max_vel: 0.8\n")
+    target = pathlib.Path(plan.target)
+    target.unlink()
+    os.mkfifo(target)
+
+    hung, raised = _run_with_fifo_release(
+        lambda: apply(str(repo), [plan], _AUTHOR, [str(tmp_path / "targets")]), str(target)
+    )
+
+    assert (hung, isinstance(raised, NotARegularFile), stat.S_ISFIFO(os.lstat(target).st_mode)) == (
+        False, True, True
+    )
+
+
+def test_a_fifo_target_on_the_second_plan_leaves_no_half_batch(tmp_path):
+    # 定案 1：多份進版，第 2 份目標是具名管道 → 整批停下，第 1 份還原、HEAD 不變、管道還是管道。
+    repo = _repo(tmp_path)
+    first = _plan(tmp_path, repo, "a", "max_vel: 1.2\n", "max_vel: 0.8\n")
+    second = _plan(tmp_path, repo, "b", "speed: 2\n", "speed: 1\n")
+    fifo = pathlib.Path(second.target)
+    fifo.unlink()
+    os.mkfifo(fifo)
+    before_head = head(str(repo))
+
+    with pytest.raises(NotARegularFile):
+        apply(str(repo), [first, second], _AUTHOR, [str(tmp_path / "targets")])
+
+    assert (
+        pathlib.Path(first.target).read_bytes(),
+        head(str(repo)),
+        stat.S_ISFIFO(os.lstat(fifo).st_mode),
+    ) == (b"max_vel: 0.8\n", before_head, True)
+
+
+def test_a_symlinked_target_is_refused_at_the_snapshot_before_anything_is_written(tmp_path):
+    # 定案 2（B1，對 F20 進版行為的政策調整）：目標是連結 → 進版在拍現場那一步拒絕；
+    # 連結與真檔都不變。
+    repo = _repo(tmp_path)
+    plan = _plan(tmp_path, repo, "l", "max_vel: 1.2\n", "max_vel: 0.8\n")
+    link = pathlib.Path(plan.target)
+    real = link.with_name("real.yaml")
+    real.write_text("max_vel: 0.8\n", encoding="utf-8")
+    link.unlink()
+    link.symlink_to(real)
+    before_head = head(str(repo))
+
+    with pytest.raises(NotARegularFile):
+        apply(str(repo), [plan], _AUTHOR, [str(tmp_path / "targets")])
+
+    assert (link.is_symlink(), real.read_text(), head(str(repo))) == (
+        True, "max_vel: 0.8\n", before_head
+    )

@@ -131,11 +131,19 @@ class AllowedRootUnreachable(Exception):
     """
 
 
-class ContentUnreadable(Exception):
+class TargetReadError(Exception):
+    """讀目標現況時的守門失敗的基底（F14）：不是一般檔案、太大、讀不出來、去不到。
+
+    四種各自具名（下面四個），這個基底給呼叫端一次接住——欄位表轉成 `target_error`、採納與進版
+    轉成 422。「不存在」不在這一族：那是未部署，合法狀態，回 None。
+    """
+
+
+class ContentUnreadable(TargetReadError):
     """路徑存在但內容讀不出來。與「不存在」分開：後者是未部署，是合法狀態。"""
 
 
-class NotARegularFile(Exception):
+class NotARegularFile(TargetReadError):
     """路徑存在但不是可讀的一般檔案：目錄、裝置、具名管道（FIFO）、socket 或符號連結。
 
     偏離偵測要雜湊的是一份 config 檔案本身。目標若被換成 FIFO，跟隨式 `open` 會**永久
@@ -144,7 +152,7 @@ class NotARegularFile(Exception):
     拒絕。中性命名（非 `Source*`）：`digest` 同時服務 repo 內來源與部署目標兩邊（`io/scan`）。"""
 
 
-class ContentTooLarge(Exception):
+class ContentTooLarge(TargetReadError):
     """目標是一般檔案，但大到超過雜湊上限。
 
     偏離偵測要雜湊整份內容；一個異常巨大的目標（`S_ISREG` 過關但 GB 級）會讓每次掃描
@@ -152,7 +160,7 @@ class ContentTooLarge(Exception):
     `read_source` 的 `SourceTooLarge`，#200）。中性命名，理由同 `NotARegularFile`。"""
 
 
-class PathUnreachable(Exception):
+class PathUnreachable(TargetReadError):
     """去不到那個路徑：某一層祖先目錄少了 traverse（+x）權限。
 
     與「不存在」分開至關重要（不變式 2）：祖先缺 +x 時 `os.path.lexists` 會回 False，

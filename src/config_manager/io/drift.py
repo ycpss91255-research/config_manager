@@ -23,7 +23,7 @@ from config_manager.core.models import FileEntry, Permissions
 from config_manager.io.atomic import replace_atomically
 from config_manager.io.git import record_empty
 from config_manager.io.parsers import read_source as read_source_copy
-from config_manager.io.repo import read_or_none
+from config_manager.io.digest import read_target
 from config_manager.io.writer import write
 
 OVERWRITE_SUMMARY = "以來源覆蓋目標（捨棄現場修改）"
@@ -35,7 +35,7 @@ def overwrite(
 ) -> None:
     """來源複本寫回 target，並記一筆空的 cfg 紀錄。紀錄沒成就把 target 還原。"""
     text = read_source_copy(repo, entry.source, entry.format)
-    before = read_or_none(entry.target)
+    before = read_target(entry.target)  # 不是一般檔案就在這裡具名拒絕，不會把它換掉（F14）
     write(entry.target, text, permissions, roots)
     try:
         record_empty(repo, entry.uid, "cfg", OVERWRITE_SUMMARY, author)

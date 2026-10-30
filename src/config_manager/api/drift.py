@@ -24,13 +24,13 @@ from config_manager.core.models import FileEntry, Permissions
 from config_manager.core.validate import ERROR, check
 from config_manager.io.allowed_roots import root_prefixes
 from config_manager.io.drift import adoption, overwrite
-from config_manager.io.errors import PromoteLeftBehind, TargetExists, WriterError
+from config_manager.io.digest import read_target
+from config_manager.io.errors import PromoteLeftBehind, TargetExists, TargetReadError, WriterError
 from config_manager.io.git import history
 from config_manager.io.parsers import as_text
 from config_manager.io.parsers import read_source as read_source_copy
 from config_manager.io.preflight import read_config_list
 from config_manager.io.promote import apply as apply_promotions
-from config_manager.io.repo import read_or_none
 from config_manager.io.writer import write
 
 
@@ -71,10 +71,13 @@ def _target_text(entry: FileEntry) -> str | None:
     白名單管的是納管與瀏覽可以碰哪些目錄，不是已納管目標在哪。讀不到（權限等）→422 原樣訊息。
     """
     try:
-        content = read_or_none(entry.target)
+        content = read_target(entry.target)  # 守門的讀取（F14）：具名管道不卡、連結不跟、有上限
         if content is None:
             return None
         return as_text(content, entry.format)
+    except TargetReadError as error:
+        # 目標不是一般檔案／太大／讀不出來：具名、帶下一步的 422，什麼都沒動（F14）。
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except OSError as error:
         raise HTTPException(
             status_code=422,
@@ -117,6 +120,9 @@ def _resolve(
             plan = adoption(entry, permissions, target_text)
             apply_promotions(repo, [plan], identity.git_author, roots)
             return {"uid": uid, "action": action, "record": _latest(repo, uid)}
+    except TargetReadError as error:
+        # 以來源覆蓋／採納前拍現場就發現目標不是一般檔案：拒絕整個動作、目標與 repo 都沒動（F14）。
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except (PromoteLeftBehind, WriterError, CalledProcessError, OSError) as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
     # adopt_draft：內容照載，每個問題當警告回去；進版前須改正（T18）。不碰 repo、不碰 target。
