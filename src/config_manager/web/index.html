@@ -212,6 +212,8 @@
   .confirm::backdrop { background: rgba(0, 0, 0, .35); }
   .confirm h3 { margin: 0 0 8px; font-size: 16px; }
   .confirm p { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
+  /* 警告段用偏離的紅（和清單上「偏離」同一個紅），與內文的灰分得開（F21 第 4 批重驗：接在內文裡看不出是警告）。 */
+  .confirm .confirm-warning { margin: -8px 0 18px; color: var(--drift); font-weight: 600; }
   .confirm ul { margin: -8px 0 18px; padding-left: 20px; color: var(--muted); font-size: 13px; max-height: 30vh; overflow: auto; }
   .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
   .group { margin-bottom: 22px; }
@@ -544,6 +546,8 @@
 <dialog data-testid="confirm-dialog" class="confirm">
   <h3 data-testid="confirm-title"></h3>
   <p data-testid="confirm-body"></p>
+  <!-- 要特別警告的一段（目前只有退回此版本：現場修改會被蓋掉／無法確認現況）：獨立段落、偏離的紅；沒有就隱藏。 -->
+  <p data-testid="confirm-warning" class="confirm-warning" hidden></p>
   <ul data-testid="confirm-items" hidden></ul>
   <div class="confirm-actions">
     <button type="button" data-testid="confirm-cancel">取消</button>
@@ -2648,21 +2652,26 @@ const SCHEMA_DONE_TEXT = {
 // 退版確認框先看機器上的現況（F21，10/31 定案 C1）：按下當下重讀單筆內容，不信清單列的狀態。
 // 目標與來源不同 → 紅字提醒現場修改會被蓋掉、項目多一欄「現況」；讀不到／解析不了／太大 → 明說無法確認，
 // 不當成沒有偏離；不存在 → 說會寫出。一律註明是當下快照：確認到執行之間若有人改動，這裡看不到。
+// 回 { warning, note, drift }：warning 是要標紅的獨立段落（前兩種），note 接在內文裡（未部署）。
 async function describeTargetBeforeRevert(detail) {
   const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`);
   if (!response.ok) throw new Refused(await loadErrorText(response));
   const fresh = await response.json();
   if (fresh.target_error) {
-    return { note: `⚠ 無法確認機器上的現況（${fresh.target_error}）。退版會照樣寫出，可能蓋掉看不到的現場修改。`, drift: new Map() };
+    return {
+      warning: `⚠ 無法確認機器上的現況（${fresh.target_error}）。退版會照樣寫出，可能蓋掉看不到的現場修改。`,
+      note: "", drift: new Map(),
+    };
   }
   if (fresh.target_values === null || fresh.target_values === undefined) {
-    return { note: "目標目前不存在（未部署），退版會把它寫出。", drift: new Map() };
+    return { warning: "", note: "目標目前不存在（未部署），退版會把它寫出。", drift: new Map() };
   }
   const rows = paramDiff(fresh, { types: infer(fresh.target_values), values: fresh.target_values })
     .filter((row) => row.change !== "same");
-  if (!rows.length) return { note: "", drift: new Map() };
+  if (!rows.length) return { warning: "", note: "", drift: new Map() };
   return {
-    note: `⚠ 機器上這份檔目前和來源不同（有 ${rows.length} 個參數的現場修改），退版會把它一起蓋掉；要保留請先走偏離處置。`,
+    warning: `⚠ 機器上這份檔目前和來源不同（有 ${rows.length} 個參數的現場修改），退版會把它一起蓋掉；要保留請先走偏離處置。`,
+    note: "",
     drift: new Map(rows.map((row) => [row.path, row.to === undefined ? "（無）" : row.to])),
   };
 }
@@ -2694,6 +2703,7 @@ async function revertTo(view, detail, version, changes, button) {
       const live = target.drift.has(row.path) ? ` ／ 現況 ${target.drift.get(row.path)}` : "";
       return `${path}：目前 ${now}${live} → 退回後 ${row.to === undefined ? "（無）" : row.to}`;
     }),
+    target.warning,
   );
   if (!ok) return;
   await whileBusy(button, "退版中…", async () => {
@@ -3062,9 +3072,12 @@ const confirmDialog = document.querySelector("[data-testid='confirm-dialog']");
 // 身分做事（F3）。沒開著是 null。
 let cancelOpenConfirm = null;
 
-function confirmAction(title, body, okLabel = "確認", items = []) {
+function confirmAction(title, body, okLabel = "確認", items = [], warning = "") {
   confirmDialog.querySelector("[data-testid='confirm-title']").textContent = title;
   confirmDialog.querySelector("[data-testid='confirm-body']").textContent = body;
+  const warningLine = confirmDialog.querySelector("[data-testid='confirm-warning']");
+  warningLine.textContent = warning;
+  warningLine.hidden = !warning;
   const list = confirmDialog.querySelector("[data-testid='confirm-items']");
   list.replaceChildren(...items.map((text) => element("li", { text })));
   list.hidden = items.length === 0;

@@ -7031,8 +7031,35 @@ def _open_first_version_revert(page):
     _select_first_version(page)
     page.click("[data-testid='history-revert']")
     page.wait_for_selector("[data-testid='confirm-dialog'][open]")
-    body = page.inner_text("[data-testid='confirm-body']")
-    return body, page.inner_text("[data-testid='confirm-items']")
+    return _revert_confirmation(page)
+
+
+def _revert_confirmation(page) -> dict:
+    """開著的退版確認框：內文、項目、警告段（`confirm-warning`）的文字與可見性，
+    以及警告與內文的顏色。警告的紅用 `--drift`（和清單上「偏離」同一個紅），
+    拿一個暫時元素把那個變數算成實際顏色來比。"""
+    return page.evaluate(
+        """() => {
+          const text = (sel) => document.querySelector(sel)?.innerText ?? null;
+          const warning = document.querySelector("[data-testid='confirm-warning']");
+          const probe = document.createElement("span");
+          probe.style.color = "var(--drift)";
+          document.body.appendChild(probe);
+          const drift = getComputedStyle(probe).color;
+          probe.remove();
+          return {
+            body: text("[data-testid='confirm-body']"),
+            items: text("[data-testid='confirm-items']"),
+            warning: warning ? warning.innerText : null,
+            warning_visible: !!warning && !warning.hidden
+              && getComputedStyle(warning).display !== "none",
+            warning_color: warning ? getComputedStyle(warning).color : null,
+            body_color: getComputedStyle(
+              document.querySelector("[data-testid='confirm-body']")).color,
+            drift_color: drift,
+          };
+        }"""
+    )
 
 
 def test_revert_confirmation_warns_when_the_target_was_changed_on_the_machine(
@@ -7044,12 +7071,35 @@ def test_revert_confirmation_warns_when_the_target_was_changed_on_the_machine(
     target.write_text("count: 9\n", encoding="utf-8")
     page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
 
-    body, items = _open_first_version_revert(page)
+    asked = _open_first_version_revert(page)
     page.click("[data-testid='confirm-cancel']")
 
-    said = ("機器上這份檔目前和來源不同" in body, "現況 9" in items, "當下的快照" in body)
+    said = (
+        "機器上這份檔目前和來源不同" in asked["warning"],
+        "現況 9" in asked["items"],
+        "當下的快照" in asked["body"],
+    )
     assert said == (True, True, True)
     assert target.read_text(encoding="utf-8") == "count: 9\n"
+
+
+def test_the_drift_warning_is_a_separate_red_paragraph(open_page, browse_root, api):
+    # 第 4 批重驗（10/31）：警告接在內文裡、灰白字，看不出是警告。
+    # 改成獨立段落、用偏離的紅、和內文不同色。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 3\n"])
+    pathlib.Path(entry["target"]).write_text("count: 9\n", encoding="utf-8")
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    asked = _open_first_version_revert(page)
+    page.click("[data-testid='confirm-cancel']")
+
+    looks = (
+        asked["warning_visible"],
+        asked["warning_color"] == asked["drift_color"],
+        asked["warning_color"] != asked["body_color"],
+        "機器上這份檔目前和來源不同" in asked["body"],
+    )
+    assert looks == (True, True, True, False)
 
 
 def test_revert_confirmation_says_it_cannot_tell_when_the_target_is_unreadable(
@@ -7062,10 +7112,34 @@ def test_revert_confirmation_says_it_cannot_tell_when_the_target_is_unreadable(
     os.mkfifo(target)
     page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
 
-    body, _ = _open_first_version_revert(page)
+    asked = _open_first_version_revert(page)
     page.click("[data-testid='confirm-cancel']")
 
-    assert ("無法確認機器上的現況" in body, "機器上這份檔目前和來源不同" in body) == (True, False)
+    said = (
+        "無法確認機器上的現況" in asked["warning"],
+        "機器上這份檔目前和來源不同" in asked["warning"],
+    )
+    assert said == (True, False)
+
+
+def test_the_cannot_tell_warning_is_the_same_red_paragraph(open_page, browse_root, api):
+    # 第 4 批重驗（10/31）：「無法確認機器上的現況」也要是那個獨立的紅色段落，不只是內文裡的一句。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 3\n"])
+    target = pathlib.Path(entry["target"])
+    target.unlink()
+    os.mkfifo(target)
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    asked = _open_first_version_revert(page)
+    page.click("[data-testid='confirm-cancel']")
+
+    looks = (
+        asked["warning_visible"],
+        asked["warning_color"] == asked["drift_color"],
+        asked["warning_color"] != asked["body_color"],
+        "無法確認" in asked["body"],
+    )
+    assert looks == (True, True, True, False)
 
 
 def test_revert_confirmation_says_the_target_is_missing(open_page, browse_root, api):
@@ -7074,10 +7148,11 @@ def test_revert_confirmation_says_the_target_is_missing(open_page, browse_root, 
     pathlib.Path(entry["target"]).unlink()
     page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
 
-    body, _ = _open_first_version_revert(page)
+    asked = _open_first_version_revert(page)
     page.click("[data-testid='confirm-cancel']")
 
-    assert "未部署" in body
+    # 未部署不是警告：留在內文、紅色段落不出現。
+    assert ("未部署" in asked["body"], asked["warning_visible"]) == (True, False)
 
 
 def test_revert_confirmation_has_no_drift_warning_when_in_sync(open_page, browse_root, api):
@@ -7085,10 +7160,11 @@ def test_revert_confirmation_has_no_drift_warning_when_in_sync(open_page, browse
     entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 3\n"])
     page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
 
-    body, _ = _open_first_version_revert(page)
+    asked = _open_first_version_revert(page)
     page.click("[data-testid='confirm-cancel']")
 
-    assert ("現場修改" in body, "無法確認" in body, "當下的快照" in body) == (False, False, True)
+    said = ("現場修改" in asked["body"], "無法確認" in asked["body"], "當下的快照" in asked["body"])
+    assert (said, asked["warning_visible"]) == ((False, False, True), False)
 
 
 def test_revert_confirmation_rereads_the_target_when_opened(open_page, browse_root, api):
@@ -7100,11 +7176,11 @@ def test_revert_confirmation_rereads_the_target_when_opened(open_page, browse_ro
 
     page.click("[data-testid='history-revert']")
     page.wait_for_selector("[data-testid='confirm-dialog'][open]")
-    body = page.inner_text("[data-testid='confirm-body']")
-    items = page.inner_text("[data-testid='confirm-items']")
+    asked = _revert_confirmation(page)
     page.click("[data-testid='confirm-cancel']")
 
-    assert ("機器上這份檔目前和來源不同" in body, "現況 7" in items) == (True, True)
+    seen = ("機器上這份檔目前和來源不同" in asked["warning"], "現況 7" in asked["items"])
+    assert seen == (True, True)
 
 
 # ── F11：退版算內容變更 ───────────────────────────────────────────────────────────
