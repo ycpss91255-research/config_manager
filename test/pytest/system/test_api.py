@@ -4868,10 +4868,8 @@ def test_get_roots_marks_a_root_that_cannot_be_resolved_instead_of_showing_a_fak
 def _release_fifo_reader(fifo):
     """修正前 server 的 open(FIFO) 會卡住等寫端：以非阻塞方式開寫端再關，讓讀端拿到 EOF 回來
     （收尾用，免得一個 worker 永遠卡著）。修正後沒有讀端在等，開寫端會 ENXIO，忽略。"""
-    try:
+    with contextlib.suppress(OSError):
         os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
-    except OSError:
-        pass
 
 
 def _onboarded_with_fifo_target(api, sources_root, name):
@@ -4892,7 +4890,7 @@ def test_a_fifo_target_does_not_hang_the_detail_endpoint_and_is_named(api, sourc
     finally:
         _release_fifo_reader(str(target))
 
-    assert (detail["target_values"], "具名管道" in detail["target_error"]) == (None, True)
+    assert (detail["target_values"], "具名管道" in (detail["target_error"] or "")) == (None, True)
 
 
 def test_an_oversized_target_is_named_not_parsed(api, sources_root):
@@ -4903,7 +4901,7 @@ def test_an_oversized_target_is_named_not_parsed(api, sources_root):
 
     detail = _get(api, f"/api/configs/{entry['uid']}")
 
-    assert (detail["target_values"], "太大" in detail["target_error"]) == (None, True)
+    assert (detail["target_values"], "太大" in (detail["target_error"] or "")) == (None, True)
 
 
 def test_a_symlinked_target_is_reported_the_same_way_in_the_detail_and_the_list(api, sources_root):
