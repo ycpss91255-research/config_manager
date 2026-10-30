@@ -58,10 +58,10 @@ def digest(path: str, max_bytes: int = _MAX_BYTES) -> str | None:
 
 
 def read_target(path: str, max_bytes: int = _MAX_BYTES) -> bytes | None:
-    """目標現況的位元組——和 `digest` 同一套守門（F14）：不存在回 None；不是一般檔案（具名管道、
-    裝置、目錄、符號連結）→ `NotARegularFile`，`O_NONBLOCK` 讓管道不卡；超過上限 → `ContentTooLarge`，
-    `st_size` 先擋、讀取途中再擋（`read_capped`），不會整份讀完才判斷；權限 → `ContentUnreadable`／
-    `PathUnreachable`。欄位表的目標現況、採納、以來源覆蓋與進版前的現場快照都走這裡；一般開檔
+    """目標現況的位元組——和 `digest` 同一套守門（F14）：不存在回 None；不是一般檔案
+    （具名管道、裝置、目錄、符號連結）→ `NotARegularFile`，`O_NONBLOCK` 讓管道不卡；超過上限
+    → `ContentTooLarge`，`st_size` 先擋、讀取途中再擋（`read_capped`），不會整份讀完才判斷；
+    權限 → `ContentUnreadable`／`PathUnreachable`。欄位表的目標現況、採納、以來源覆蓋與進版前的現場快照都走這裡；一般開檔
     （`io/repo.read_or_none`）只給 repo 內自己的檔。
     """
     descriptor = _open_regular(path, max_bytes)

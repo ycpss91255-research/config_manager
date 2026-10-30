@@ -169,3 +169,43 @@ def test_a_fifo_target_makes_promote_refuse_by_name_instead_of_hanging(tmp_path)
     assert (hung, isinstance(raised, NotARegularFile), stat.S_ISFIFO(os.lstat(target).st_mode)) == (
         False, True, True
     )
+
+
+def test_a_fifo_target_on_the_second_plan_leaves_no_half_batch(tmp_path):
+    # 定案 1：多份進版，第 2 份目標是具名管道 → 整批停下，第 1 份還原、HEAD 不變、管道還是管道。
+    repo = _repo(tmp_path)
+    first = _plan(tmp_path, repo, "a", "max_vel: 1.2\n", "max_vel: 0.8\n")
+    second = _plan(tmp_path, repo, "b", "speed: 2\n", "speed: 1\n")
+    fifo = pathlib.Path(second.target)
+    fifo.unlink()
+    os.mkfifo(fifo)
+    before_head = head(str(repo))
+
+    with pytest.raises(NotARegularFile):
+        apply(str(repo), [first, second], _AUTHOR, [str(tmp_path / "targets")])
+
+    assert (
+        pathlib.Path(first.target).read_bytes(),
+        head(str(repo)),
+        stat.S_ISFIFO(os.lstat(fifo).st_mode),
+    ) == (b"max_vel: 0.8\n", before_head, True)
+
+
+def test_a_symlinked_target_is_refused_at_the_snapshot_before_anything_is_written(tmp_path):
+    # 定案 2（B1，對 F20 進版行為的政策調整）：目標是連結 → 進版在拍現場那一步拒絕；
+    # 連結與真檔都不變。
+    repo = _repo(tmp_path)
+    plan = _plan(tmp_path, repo, "l", "max_vel: 1.2\n", "max_vel: 0.8\n")
+    link = pathlib.Path(plan.target)
+    real = link.with_name("real.yaml")
+    real.write_text("max_vel: 0.8\n", encoding="utf-8")
+    link.unlink()
+    link.symlink_to(real)
+    before_head = head(str(repo))
+
+    with pytest.raises(NotARegularFile):
+        apply(str(repo), [plan], _AUTHOR, [str(tmp_path / "targets")])
+
+    assert (link.is_symlink(), real.read_text(), head(str(repo))) == (
+        True, "max_vel: 0.8\n", before_head
+    )

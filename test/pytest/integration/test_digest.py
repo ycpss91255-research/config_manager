@@ -144,3 +144,18 @@ def test_read_target_refuses_a_file_over_the_cap_without_reading_it_in(tmp_path)
 
     with pytest.raises(ContentTooLarge):
         _read_target()(str(big), 32)
+
+
+def test_read_target_reads_a_file_exactly_at_the_cap(tmp_path):
+    # 定案 3：正好上限可讀，上限＋1 拒絕（那一則在上面）。
+    exact = tmp_path / "exact.yaml"
+    exact.write_bytes(b"a" * 32)
+
+    assert _read_target()(str(exact), 32) == b"a" * 32
+
+
+def test_read_target_refuses_a_character_device(tmp_path):
+    # 修正後才補（修正前讀 /dev/zero 會吃光記憶體；/dev/null 讀立刻 EOF、安全）：
+    # S_ISREG 擋得住裝置。
+    with pytest.raises(NotARegularFile):
+        _read_target()("/dev/null")

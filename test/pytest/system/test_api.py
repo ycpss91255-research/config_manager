@@ -4942,3 +4942,33 @@ def test_a_missing_target_still_gives_two_nulls(api, sources_root):
     detail = _get(api, f"/api/configs/{entry['uid']}")
 
     assert (detail["target_values"], detail["target_error"]) == (None, None)
+
+
+def test_overwriting_a_fifo_target_is_refused_by_name_and_the_fifo_stays(api, sources_root):
+    # 定案 1：以來源覆蓋遇到具名管道 → 422 指名、管道沒被換掉、不卡住。
+    entry, target = _onboarded_with_fifo_target(api, sources_root, "f14_overwrite.yaml")
+
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "overwrite"})
+    finally:
+        _release_fifo_reader(str(target))
+
+    still_fifo = stat.S_ISFIFO(os.lstat(target).st_mode)
+    assert (exc.value.code, "具名管道" in _detail(exc.value), still_fifo) == (_UNPROCESSABLE, True, True)
+
+
+def test_an_unreadable_target_is_named_as_unreadable_not_missing(api, sources_root):
+    # 定案 4：權限不足不能混成「不存在」——target_error 指名讀不出來、target_values 為 null。
+    if os.geteuid() == 0:
+        pytest.skip("root 不受權限限制，驗不到")
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f14_unreadable.yaml", b"count: 1\n")
+    target = pathlib.Path(entry["target"])
+    target.chmod(0)
+    try:
+        detail = _get(api, f"/api/configs/{entry['uid']}")
+    finally:
+        target.chmod(0o644)
+
+    assert (detail["target_values"], "讀不出來" in (detail["target_error"] or "")) == (None, True)
