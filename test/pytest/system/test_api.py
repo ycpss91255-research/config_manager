@@ -2078,7 +2078,7 @@ def test_revert_writes_the_old_content_back_as_a_new_record_without_rewriting_hi
     api, sources_root
 ):
     # ADR-00000005：退版是反向變更——目標內容回到那一版、歷史多一筆 revert（rollback to <sha>），
-    # 先前的紀錄全部都在（未截斷）；預設的「只看內容變更」不顯示這筆 revert。
+    # 先前的紀錄全部都在（未截斷）；預設的「只看內容變更」也列出這筆 revert（F11，10/31 定案 E1）。
     _clear_drafts(api)
     entry = _onboard(api, sources_root, "revert.yaml", b"count: 1\n")
     _promote_value(api, entry["uid"], "count", 2)
@@ -2091,7 +2091,7 @@ def test_revert_writes_the_old_content_back_as_a_new_record_without_rewriting_hi
     assert result["record"]["summary"] == f"rollback to {first_cfg[:7]}"
     everything = _history(api, entry["uid"], "import,cfg,revert,adopt,meta,unmanage")
     assert [c["kind"] for c in everything] == ["revert", "cfg", "cfg", "import"]
-    assert [c["kind"] for c in _history(api, entry["uid"])] == ["cfg", "cfg"]
+    assert [c["kind"] for c in _history(api, entry["uid"])] == ["revert", "cfg", "cfg"]
 
 
 def test_revert_to_a_version_outside_this_configs_history_is_refused(api, sources_root):

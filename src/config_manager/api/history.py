@@ -57,9 +57,11 @@ def register_history(app: FastAPI, repo: str, editing: Editing) -> None:
             return _revert_config(repo, identity, editing.stage_box, uid, payload)
 
 
-# 歷史預設只看內容變更（§7.6.1、圖 7）：cfg 與 adopt 才真的改了內容；revert／meta 會干擾判讀，
-# import 是起點、unmanage 是終點——都可用 ?prefix= 明點要看的類型（「全部」就六種都給）。
-_CONTENT_KINDS = ("cfg", "adopt")
+# 歷史預設只看內容變更（§7.6.1、圖 7）：cfg、adopt、revert 都真的改了來源與目標的內容
+# （F11，10/31 定案 E1——先前把 revert 當成會干擾判讀而藏起來，但它改了內容、F10 之後也有
+# 「這一筆改了什麼」）；meta 不改參數、import 是起點、unmanage 是終點——都可用 ?prefix=
+# 明點要看的類型（「全部」就六種都給）。
+_CONTENT_KINDS = ("cfg", "adopt", "revert")
 
 
 def _config_history(repo: str, uid: str, prefix: str | None) -> list[dict[str, object]]:
