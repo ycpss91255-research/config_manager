@@ -181,7 +181,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 元素 | 選取器 | 行為 |
 |---|---|---|
 | 歷史檢視 | `data-testid="history-<uid>"` | 容器；標頭有名稱、目標路徑與「返回欄位表」（`history-back`） |
-| 篩選 | `data-testid="history-filter"` | 兩個並排選項按鈕（`aria-pressed`）：「只看內容變更」（預設，`cfg`＋`adopt`）／「全部」（六種都列） |
+| 篩選 | `data-testid="history-filter"` | 兩個並排選項按鈕（`aria-pressed`）：「只看內容變更」（預設，`cfg`＋`adopt`＋`revert`，F11）／「全部」（六種都列） |
 | 列表 | `data-testid="history-list"` | 最新在前；空時顯示 `history-empty`、讀不到顯示 `history-error` |
 | 變更列 | `data-testid="history-entry-<sha>"` | 顯示**行為描述**（內部類型→介面顯示對照表 §7.6.1），不顯示內部代號；退回舊版本附「退回到版本 <sha7>」；點選→`aria-selected="true"` 並載入差異 |
 | 作者／時間 | 列內 `data-testid="history-author"`／`"history-time"` | 姓名（email 在 title）；`<time datetime=ISO>` 顯示本地時間 |
@@ -191,7 +191,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 說明 | `data-testid="history-diff-note"` | 沒有「這一筆改了 N 個」可說時取代摘要：納入管理那筆＝沒有更早的版本可比；參數值沒變的紀錄（調整設定＝改的是屬性或 schema；以來源覆蓋目標＝設定庫沒變、目標被改回來源、被蓋掉的現場值沒有紀錄）；前一版讀不到＝原樣顯示原因與下一步（不說成第一筆） |
 | 前一筆被篩掉 | `data-testid="history-hidden-preceding"` | 緊鄰的前一筆紀錄不在目前的篩選裡（例如退回舊版本）：說前一筆是什麼、這裡的「改之前」是那一筆之後的內容、切到「全部」看得到。切換篩選時差異區回到初始說明（列表重畫後沒有選取的那一筆），不留著照舊篩選寫的提示 |
 | 退回會改什麼 | `data-testid="history-revert-effect"` | 一行看得到的字（**唯讀也有**，不只放在滑鼠停留的提示）：退回這一版會改變幾個參數，或「這一版的參數就是目前的內容，沒有東西可退」 |
-| 退回此版本 | 文字「退回此版本」（`data-testid="history-revert"`） | 選定一版後出現在差異區下方（只在編輯中）；旁邊寫明退回＝內容回到這一筆完成後的樣子（不是撤銷這一筆）；沒有東西可退時停用。點擊→W6 確認對話框（標題「退回此版本？」、後果：產生新紀錄並寫出、歷史不改寫；`confirm-items` 逐項列「<參數>：目前 X → 退回後 Y」，沒有的一邊寫「（無）」；**退版會動到 schema 時另寫明**——回到那一版當時的 schema，或那一版還沒有 schema 所以拿掉，#39）→ `POST /api/configs/{uid}/revert`；成功→重開歷史並顯示 `history-notice`（已退回到版本 X）、左側樹重掃；被擋（有草稿 409 等）→ `history-revert-error` 原樣顯示原因與下一步（#27） |
+| 退回此版本 | 文字「退回此版本」（`data-testid="history-revert"`） | 選定一版後出現在差異區下方（只在編輯中）；旁邊寫明退回＝內容回到這一筆完成後的樣子（不是撤銷這一筆）；沒有東西可退時停用。點擊→**先重讀 `GET /api/configs/{uid}`**（F21）→W6 確認對話框（標題「退回此版本？」、後果：產生新紀錄並寫出、歷史不改寫；依現況加段：目標與來源不同 → 紅字提醒現場修改會被蓋掉，項目多一欄「現況」；目標讀不到 → 紅字「無法確認機器上的現況」；不存在 → 「未部署，退版會寫出」；一律註明是當下快照；`confirm-items` 逐項列「<參數>：目前 X → 退回後 Y」，沒有的一邊寫「（無）」；**退版會動到 schema 時另寫明**——回到那一版當時的 schema，或那一版還沒有 schema 所以拿掉，#39）→ `POST /api/configs/{uid}/revert`；成功→重開歷史並顯示 `history-notice`（已退回到版本 X）、左側樹重掃；被擋（有草稿 409 等）→ `history-revert-error` 原樣顯示原因與下一步（#27） |
 | 通知 | `data-testid="history-notice"` | 退版成功等訊息；空時隱藏 |
 
 **測試須斷言**：列表中**不出現** `cfg`、`revert`、`import` 等字串。
@@ -213,7 +213,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 差異列 | `data-testid="diff-row-<參數路徑>"` | 每參數一列，帶 `data-change`（`same`／`changed`／`added`〔目標多出〕／`removed`〔目標缺少〕）；列內 `diff-source-value`／`diff-target-value`。與 W4 同一套列與顏色語言；**比對方式不同**：W4 兩邊都用後端從內容推斷、每個值各自的型別，也比型別（F10）；W5 左邊套人工指定的型別、右邊由頁面從值推斷，只比顯示出來的字。已知限制：人工指定成 double 的參數，W5 可能顯示 `720.0｜720` 這種假差異 |
 | 處置區 | `.resolve-actions`（差異檢視底部） | 三個出口並排，每個按鈕下方一行**後果說明**（A3：按下之前就說清楚）；失敗原樣顯示於 `resolve-error` |
 | 以來源覆蓋 | 文字「以來源覆蓋目標」（`resolve-overwrite`） | W6 二次確認 → `resolve {action: overwrite}`；成功→`promote-done` 橫幅、重掃、回欄位表 |
-| 納入來源 | 文字「將目標現況納入來源」（`resolve-adopt`） | 走完整驗證，不另確認；**含非法值則被拒**（`resolve-error` 列行號／原因／建議並指去先納入待修正）；成功→`promote-done`、重掃、回欄位表 |
+| 納入來源 | 文字「將目標現況納入來源」（`resolve-adopt`） | **W6 二次確認（F13）**：內文「設定庫的來源會被改成目標現況…記一筆「採納現場調整」紀錄、作者是你；目標檔本身不變」＋草稿影響，`confirm-items` 逐項「<路徑>：來源 X → 現況 Y」；取消不送請求 → 確認後走完整驗證；**含非法值則被拒**（`resolve-error` 列行號／原因／建議並指去先納入待修正）；成功→`promote-done`、重掃、回欄位表 |
 | 先納入、待修正 | 文字「先納入、待修正」（`resolve-adopt-draft`） | W6 二次確認 → 目標現況載入草稿；回欄位表並在上方顯示 `adopt-draft-notice`（**含非法值則列出警告、進版前須改正**，見 TEST-PLAN T18／A3） |
 
 ---
