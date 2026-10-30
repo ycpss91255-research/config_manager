@@ -4955,7 +4955,8 @@ def test_overwriting_a_fifo_target_is_refused_by_name_and_the_fifo_stays(api, so
         _release_fifo_reader(str(target))
 
     still_fifo = stat.S_ISFIFO(os.lstat(target).st_mode)
-    assert (exc.value.code, "具名管道" in _detail(exc.value), still_fifo) == (_UNPROCESSABLE, True, True)
+    named = "具名管道" in _detail(exc.value)
+    assert (exc.value.code, named, still_fifo) == (_UNPROCESSABLE, True, True)
 
 
 def test_an_unreadable_target_is_named_as_unreadable_not_missing(api, sources_root):
