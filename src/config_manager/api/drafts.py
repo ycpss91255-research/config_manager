@@ -33,7 +33,7 @@ from config_manager.core.parse import Parsed, dump, parse, set_value
 from config_manager.core.problem import WARNING, Problem
 from config_manager.core.validate import check
 from config_manager.io.allowed_roots import root_prefixes
-from config_manager.io.errors import PromoteLeftBehind, WriterError
+from config_manager.io.errors import PromoteLeftBehind, TargetReadError, WriterError
 from config_manager.io.parsers import read_source as read_source_copy
 from config_manager.io.preflight import read_config_list
 from config_manager.io.promote import apply as apply_promotions
@@ -211,6 +211,9 @@ def _promote_all(
         ) from error
     try:
         promoted = apply_promotions(repo, plans, identity.git_author, roots)
+    except TargetReadError as error:
+        # 某份目標不是一般檔案／太大／讀不出來：拍現場時就停、整批不進版、草稿保留（F14）。
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except (PromoteLeftBehind, WriterError, CalledProcessError, OSError) as error:
         # 寫出／記錄／回滾失敗：伺服器側的錯，帶訊息的 500（PromoteLeftBehind 指名殘留）。
         raise HTTPException(status_code=500, detail=str(error)) from error
