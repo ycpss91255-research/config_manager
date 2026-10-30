@@ -7200,3 +7200,158 @@ def test_a_revert_is_listed_as_a_content_change_with_its_behaviour_name(
     newest = page.inner_text(f"[data-testid='{_entries(page)[0]}']")
 
     assert ("退回舊版本" in newest, "修改參數" in newest, _NAME in newest) == (True, False, True)
+
+
+# ── 草稿有主人（ADR-00000032，第 5 批 F22／F7）──────────────────────────────────
+
+
+def _handed_over_draft(open_page, api, repo):
+    """甲存了一份草稿後釋放編輯權；回 (乙的頁面, 甲的名字)。
+    乙是另一個瀏覽器（新 context＝新票）。"""
+    _listing_many(repo, {"a": "count: 3\n"})
+    first = open_page(identity=None)
+    _fill_identity(first, "甲編輯")
+    first.wait_for_selector("[data-testid='config-tree']", state="visible")
+    _save_draft_for(first, _PARAM_UID, "count", "4")
+    token = first.evaluate("sessionToken")
+    first.context.request.delete(f"{api}/api/session/lock", data={"token": token})
+    first.close()
+    second = open_page(identity={"name": "乙進版", "email": "yi@example.com", "role": "user"})
+    second.wait_for_selector("[data-testid='config-tree']", state="visible")
+    return second, "甲編輯"
+
+
+def test_the_draft_marks_say_who_saved_it_and_the_full_list_opens_by_keyboard(open_page, api, repo):
+    # 草稿點的 title 與區塊的草稿指示寫最後儲存者；完整參與者名單用可聚焦的按鈕開，不只靠 title。
+    page, drafter = _handed_over_draft(open_page, api, repo)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-draft-{_PARAM_UID}']", state="visible")
+
+    page.focus(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='draft-owners']")
+    page.keyboard.press("Enter")
+    page.wait_for_selector("[data-testid='draft-owners-list']", state="visible")
+
+    marks = (
+        page.get_attribute(_draft_dot(_PARAM_UID), "title"),
+        page.inner_text(f"[data-testid='panel-draft-{_PARAM_UID}']"),
+        page.inner_text("[data-testid='draft-owners-list']"),
+    )
+    assert all(drafter in mark for mark in marks)
+
+
+def test_taking_over_someone_elses_drafts_is_announced_and_promoting_asks_first(
+    open_page, api, repo
+):
+    # 接手橫幅說接手了誰的幾份；這批含別人的草稿 → 進版先經確認：取消不送請求、歷史不變；
+    # 確認後 author 是進版者、歷史列另寫「含〈甲〉存的草稿」。
+    page, drafter = _handed_over_draft(open_page, api, repo)
+    page.wait_for_selector("[data-testid='promote-done']:not([hidden])", state="attached")
+    announced = page.inner_text("[data-testid='promote-done']")
+    before = _api_json(api, "GET", f"/api/configs/{_PARAM_UID}/history")
+
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    asked = (page.inner_text("[data-testid='confirm-title']"),
+             page.inner_text("[data-testid='confirm-items']"))
+    page.click("[data-testid='confirm-cancel']")
+    unchanged = _api_json(api, "GET", f"/api/configs/{_PARAM_UID}/history") == before
+
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_selector("[data-testid='promote-done']:has-text('已進版')")
+    page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    page.get_by_role("button", name="歷史").click()
+    newest = _entries(page)[0]
+    row = page.inner_text(f"[data-testid='{newest}']")
+
+    assert f"接手了{drafter}" in announced.replace("〈", "").replace("〉", "")
+    said = ("別人存的草稿" in asked[0], drafter in asked[1], "不重複" in asked[1])
+    assert said == (True, True, True)
+    assert unchanged
+    assert ("乙進版" in row, drafter in page.inner_text(
+        f"[data-testid='{newest}'] [data-testid='history-drafted-by']"
+    )) == (True, True)
+
+
+def test_promoting_only_your_own_drafts_does_not_ask(open_page, repo):
+    # 全是自己存的：維持直接進版，沒有確認框。
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector("[data-testid='promote-done']:has-text('已進版')")
+
+    assert page.query_selector("[data-testid='confirm-dialog'][open]") is None
+
+
+def test_after_a_renew_timeout_the_banner_says_whether_the_drafts_are_still_there(
+    open_page, api, repo
+):
+    # F7：續期逾時轉唯讀時，橫幅依實際狀態說草稿還在不在——還在：「會接回」；被別人清掉：「已不在」。
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    (ticket,) = [c["value"] for c in page.context.cookies() if c["name"] == "cm_browser"]
+    (box,) = [
+        found for found in gc.get_objects()
+        if isinstance(found, LockBox) and found.holder_ticket == ticket
+    ]
+    real_clock, real_timeout = box.clock, box.lock.timeout
+    try:
+        box.lock.timeout = datetime.timedelta(minutes=10)
+        box.clock = lambda: real_clock() + datetime.timedelta(minutes=11)
+        page.evaluate("renewSession(sessionToken)")
+        page.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+        still_there = page.inner_text("[data-testid='readonly-banner']")
+
+        _api_json(api, "POST", "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
+        _api_json(api, "DELETE", "/api/drafts", {})  # 別人取得後清掉
+        page.evaluate("askWhyEditingEnded(false, EDITING_ENDED_TEXT)")
+        page.wait_for_selector("[data-testid='readonly-banner']:has-text('已不在')")
+        gone = page.inner_text("[data-testid='readonly-banner']")
+    finally:
+        box.clock, box.lock.timeout = real_clock, real_timeout
+
+    assert ("草稿（1 份）還在" in still_there, "會接回" in still_there) == (True, True)
+    assert "已不在" in gone and "會接回" not in gone
+
+
+def test_the_exit_confirmation_lists_drafts_per_participant(open_page, api, repo):
+    # 退出確認框逐人列參與份數、另給不重複總數；確認後 session-left 同樣逐人。
+    page, drafter = _handed_over_draft(open_page, api, repo)
+    _save_draft_for(page, _PARAM_UID, "count", "5")  # 同一份：甲與我都參與
+
+    page.click("[data-testid='exit']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    asked = page.inner_text("[data-testid='confirm-body']")
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_selector("[data-testid='session-left']", state="visible")
+    left = page.inner_text("[data-testid='session-left']")
+
+    listed = (drafter in asked, "你參與 1 份" in asked, "不重複的草稿共 1 份" in asked)
+    assert listed == (True, True, True)
+    assert drafter in left
+
+
+def test_a_draft_changed_while_the_promote_confirmation_was_open_is_refused(open_page, api, repo):
+    # 確認期間草稿變了（這裡以頁面自己的識別碣再存一份模擬）→ 確認後被拒、沒有新紀錄、重開確認。
+    page, _drafter = _handed_over_draft(open_page, api, repo)
+    before = _api_json(api, "GET", f"/api/configs/{_PARAM_UID}/history")
+
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.evaluate(
+        """uid => editFetch(`${API_BASE}/api/drafts`, {method: "POST",
+             headers: {"content-type": "application/json"},
+             body: JSON.stringify({uid, edits: {count: 9}})})""",
+        _PARAM_UID,
+    )
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open] :text('草稿已變')")
+    page.click("[data-testid='confirm-cancel']")
+
+    assert _api_json(api, "GET", f"/api/configs/{_PARAM_UID}/history") == before

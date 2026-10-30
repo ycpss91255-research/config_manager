@@ -2860,31 +2860,47 @@ def test_renewing_with_a_stale_token_is_gone_not_a_silent_reacquire(api):
     assert _lock(api, "GET")["held"] is False
 
 
-def test_an_expired_session_is_swept_and_its_drafts_are_reported_as_cleared(api, sources_root):
-    # 部署模式：閒置達逾時後回收，草稿一併清除，下一個取得者被告知清了 N 份。時鐘與逾時就地
-    # 注入（T13：讀真實時間的實作測不了逾時）。
+def test_a_renew_timeout_recycles_the_session_but_keeps_the_drafts_for_the_next_holder(
+    api, sources_root
+):
+    # ADR-00000032（F7）：續期逾時只回收階段，草稿保留；另一個瀏覽器身分取得時被告知接手了誰的幾份
+    # （cleared_drafts 是 0），同一個身分重新取得則 kept_drafts 為空。回應不含票值。時鐘與逾時就地
+    # 注入（T13）。
     if os.environ.get("CM_SYSTEM_BASE_URL"):
         pytest.skip("需就地注入時鐘與逾時，外部映像控不了 server 端模組")
-    entry = _onboard(api, sources_root, "lock_drafts.yaml", b"count: 1\n")
+    entry = _onboard(api, sources_root, "lock_drafts_kept.yaml", b"count: 1\n")
     _clear_drafts(api)
-    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
     session = _lock(api)
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"])
     box = _find_lock_box()
     real_clock, real_timeout = box.clock, box.lock.timeout
+    other = _another_browser()
     try:
         box.lock.timeout = datetime.timedelta(minutes=10)
         box.clock = lambda: real_clock() + datetime.timedelta(minutes=11)
         with pytest.raises(urllib.error.HTTPError) as exc:
             _lock(api, path="/api/session/lock/renew", payload={"token": session["token"]})
         assert exc.value.code == _GONE
-        assert _get(api, "/api/drafts")["count"] == 0  # 逾時釋放時草稿一併清除
-        _set_session(api)
-        acquired = _lock(api)
-        assert acquired["cleared_drafts"] == 1  # 回報「有 N 份草稿被清除」，不靜默丟棄
-        _lock(api, "DELETE", payload={"token": acquired["token"]})
+        assert _get(api, "/api/drafts")["count"] == 1  # 草稿留著
+
+        _request_as(other, api, "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
+        theirs, _ = _open_json(other, f"{api}/api/session/lock", "POST", None)
+        kept = theirs["kept_drafts"]
+        _open_json(other, f"{api}/api/session/lock", "DELETE", {"token": theirs["token"]})
+
+        mine = _lock(api)
+        _lock(api, "DELETE", payload={"token": mine["token"]})
     finally:
         box.clock, box.lock.timeout = real_clock, real_timeout
+        _clear_drafts(api)
         _set_session(api)
+
+    assert theirs["cleared_drafts"] == 0
+    assert [(k["uid"], k["saved_by"]["name"], k["saved_by"]["mine"]) for k in kept] == [
+        (entry["uid"], "陳小明", False)
+    ]
+    assert "ticket" not in json.dumps(theirs) and "cm_browser" not in json.dumps(theirs)
+    assert (mine["cleared_drafts"], mine["kept_drafts"]) == (0, [])
 
 
 def _find_lock_box():
@@ -4973,3 +4989,109 @@ def test_an_unreadable_target_is_named_as_unreadable_not_missing(api, sources_ro
         target.chmod(0o644)
 
     assert (detail["target_values"], "讀不出來" in (detail["target_error"] or "")) == (None, True)
+
+
+# ── 草稿有主人（ADR-00000032，第 5 批 F22）────────────────────────────────────────
+
+
+def test_drafts_say_who_saved_them_and_whether_that_is_this_browser(api, sources_root):
+    # saved_by／touched_by 跟著每份草稿回來；mine 依送請求的瀏覽器身分判；同名同 email 的另一罐
+    # cookie 是另一個瀏覽器身分（another_browser），票值不出現在回應裡。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "owners.yaml", b"count: 1\n")
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
+    twin = _another_browser()
+    _request_as(twin, api, "/api/session", {"name": "陳小明", "email": "ming@example.com"})
+    _request_as(twin, api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 3}})
+
+    seen_by_me = _get(api, "/api/drafts")["drafts"][0]
+    seen_by_twin, _ = _open_json(twin, f"{api}/api/drafts", "GET", None)
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+    _clear_drafts(api)
+
+    assert (seen_by_me["saved_by"]["name"], seen_by_me["saved_by"]["mine"],
+            seen_by_me["saved_by"]["another_browser"]) == ("陳小明", False, True)
+    assert [(p["mine"], p["another_browser"]) for p in seen_by_me["touched_by"]] == [
+        (True, False), (False, True)
+    ]
+    assert seen_by_twin["drafts"][0]["saved_by"]["mine"] is True
+    assert detail["draft_saved_by"]["name"] == "陳小明"
+    assert [p["name"] for p in detail["draft_touched_by"]] == ["陳小明", "陳小明"]
+    assert "ticket" not in json.dumps(seen_by_me) and "cm_browser" not in json.dumps(detail)
+
+
+def test_exiting_lists_the_drafts_per_participant_and_still_clears_them_all(api, sources_root):
+    # 退出仍清掉目前全部共用草稿（含別人參與的）；未確認的 409 逐人列（同一份多人參與各計一次），
+    # 另給不重複總數。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "exit_owners.yaml", b"count: 1\n")
+    other = _another_browser()
+    _request_as(other, api, "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
+    _request_as(other, api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
+    session = _lock(api)
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 3}}, session["token"])
+    try:
+        code, detail = _exit(api, token=session["token"])
+        confirmed_code, left = _exit(api, confirmed=True, token=session["token"])
+        remaining = _get(api, "/api/drafts")["count"]
+    finally:
+        if _lock(api, "GET")["held"]:
+            _lock(api, "DELETE", payload={"token": session["token"]})
+        _set_session(api)
+        _clear_drafts(api)
+
+    by_owner = [(o["name"], o["mine"], o["count"]) for o in detail["by_owner"]]
+    assert (code, detail["kind"], detail["drafts"], detail["distinct"]) == (
+        _CONFLICT, "confirm_required", 1, 1
+    )
+    assert by_owner == [("林巡檢", False, 1), ("陳小明", True, 1)]
+    assert (confirmed_code, left["cleared_drafts"], remaining) == (200, 1, 0)
+
+
+def test_promoting_with_a_stale_signature_is_refused_and_changes_nothing(api, sources_root, repo):
+    # 確認期間草稿變了：帶著確認當下的簽章進版 → 409 drafts_changed，HEAD、目標、草稿都不變；
+    # 簽章相符 → 200；不帶 expected 照舊。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "signature.yaml", b"count: 1\n")
+    session = _lock(api)
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"])
+    stale = [{"uid": entry["uid"], "sha": "0" * 64}]
+    head_before = _head(repo)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(api, "/api/promote", {"expected": stale}, session["token"])
+        refused = (exc.value.code, _detail(exc.value)["kind"], _head(repo) == head_before,
+                   pathlib.Path(entry["target"]).read_bytes(), _get(api, "/api/drafts")["count"])
+        current = _get(api, "/api/drafts")["drafts"][0]["sha"]
+        promoted = _post(api, "/api/promote",
+                         {"expected": [{"uid": entry["uid"], "sha": current}]}, session["token"])
+    finally:
+        _lock(api, "DELETE", payload={"token": session["token"]})
+        _set_session(api)
+        _clear_drafts(api)
+
+    assert refused == (_CONFLICT, "drafts_changed", True, b"count: 1\n", 1)
+    assert promoted["promoted"] == [entry["uid"]]
+
+
+def test_history_shows_the_promoter_as_author_and_the_drafters_in_the_body(api, sources_root):
+    # 別人存的草稿由我進版：紀錄 author 是我，drafted_by 列出那個人；同名另一個瀏覽器身分標出來，
+    # 票值不出現。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "drafted_by.yaml", b"count: 1\n")
+    other = _another_browser()
+    _request_as(other, api, "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
+    _request_as(other, api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
+    twin = _another_browser()
+    _request_as(twin, api, "/api/session", {"name": "陳小明", "email": "ming@example.com"})
+    _request_as(twin, api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 3}})
+
+    _post(api, "/api/promote", {})
+    newest = _get(api, f"/api/configs/{entry['uid']}/history")[0]
+
+    assert newest["author"] == "陳小明 <ming@example.com>"
+    assert [(d["name"], d["another_browser"]) for d in newest["drafted_by"]] == [
+        ("林巡檢", False), ("陳小明", True)
+    ]
+    assert "drafted-by: 林巡檢 <lin@example.com>" in newest["body"]
+    assert "ticket" not in json.dumps(newest) and "cm_browser" not in newest["body"]
