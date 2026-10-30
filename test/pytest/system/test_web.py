@@ -4290,11 +4290,12 @@ def test_an_overwrite_record_says_the_source_did_not_change(open_page, browse_ro
     assert "設定庫的內容沒變" in note and "沒有紀錄" in note
 
 
-def test_a_record_hidden_by_the_filter_just_before_this_one_is_pointed_out(
+def test_a_revert_is_listed_under_content_changes_so_the_values_chain_up(
     open_page, browse_root, api
 ):
-    # 1 → 2 → 3 → 退回到 2 → 4：只看內容變更時退版那筆不列，→4 那一筆的「改之前」（2）和列表上
-    # 下一筆的「改之後」（3）接不起來——說明前一筆是退回舊版本、切到「全部」看得到。
+    # F11（10/31 定案 E1）：1 → 2 → 3 → 退回到 2 → 4。退版確實改了內容，所以「只看內容變更」也列它
+    # （顯示為「退回舊版本」）；→4 那一筆的「改之前」（2）和列表上下一筆（退回舊版本）的
+    # 「改之後」（2）接得起來，不需要「前一筆被藏」的提示。
     entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n", "count: 3\n"])
     content = _api_json(api, "GET", f"/api/configs/{entry['uid']}/history")
     _api_json(api, "POST", f"/api/configs/{entry['uid']}/revert", {"version": content[-1]["sha"]})
@@ -4302,10 +4303,12 @@ def test_a_record_hidden_by_the_filter_just_before_this_one_is_pointed_out(
     _api_json(api, "POST", "/api/promote", {})
     page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
 
-    _select(page, _entries(page)[0], "[data-testid='history-hidden-preceding']")
+    entries = _entries(page)
+    _select(page, entries[0])
 
-    hint = page.inner_text("[data-testid='history-hidden-preceding']")
-    assert "退回舊版本" in hint and "全部" in hint
+    second = page.inner_text(f"[data-testid='{entries[1]}']")
+    hidden = page.query_selector("[data-testid='history-hidden-preceding']")
+    assert ("退回舊版本" in second, hidden) == (True, None)
 
 
 def test_only_a_manual_type_is_not_a_change_and_leaves_nothing_to_revert(
@@ -4818,6 +4821,13 @@ def _drift_in_root(repo, source: str, target_text: str):
     return targets["a"]
 
 
+def _adopt_and_confirm(page):
+    """按「將目標現況納入來源」→ 等 W6 確認框 → 按確認（F13，10/31 定案 D1）。"""
+    page.click("[data-testid='resolve-adopt']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+
+
 def _open_diff(page):
     _open_panel(page)
     page.click("[data-testid='panel-diff']")
@@ -4855,7 +4865,7 @@ def test_adopt_from_the_diff_view_updates_the_source_and_records_an_adoption(ope
     _drift_in_root(repo, "count: 3\n", "count: 9\n")
     page = _open_diff(open_page())
 
-    page.click("[data-testid='resolve-adopt']")
+    _adopt_and_confirm(page)
 
     page.wait_for_selector("[data-testid='promote-done']", state="visible")
     assert (repo / "files" / "a.yaml").read_text(encoding="utf-8") == "count: 9\n"
@@ -4870,7 +4880,7 @@ def test_adopting_an_invalid_target_is_refused_with_the_reason(open_page, repo):
     _drift_in_root(repo, "count: 3\n", "enabled: yes\ncount: 9\n")
     page = _open_diff(open_page())
 
-    page.click("[data-testid='resolve-adopt']")
+    _adopt_and_confirm(page)
 
     page.wait_for_selector("[data-testid='resolve-error']", state="visible")
     text = page.inner_text("[data-testid='resolve-error']")
@@ -4973,13 +4983,13 @@ def test_overwrite_returns_the_open_panel_to_in_sync_even_when_the_list_answers_
 
 
 def test_adopt_returns_the_open_panel_to_in_sync_even_when_the_list_answers_last(open_page, repo):
-    # U28：同上，處置換成「將目標現況納入來源」（不另確認）。
+    # U28：同上，處置換成「將目標現況納入來源」（先 W6 確認，F13）。
     _drift_in_root(repo, "count: 3\n", "count: 9\n")
     page = _open_diff(open_page())
     _track_requests(page)
     held, release = _hold(page, "**/api/configs", method="GET")
 
-    page.click("[data-testid='resolve-adopt']")
+    _adopt_and_confirm(page)
     _list_answers_last(page, held, release)
 
     _wait_for_the_panel_to_say_in_sync(page)
@@ -6949,3 +6959,163 @@ def test_the_whitelist_shows_why_a_root_cannot_be_resolved_instead_of_a_fake_pat
     assert "解析不出唯一" in page.text_content(f"{unstable} [data-testid='whitelist-problem']")
     normal = page.text_content(f"[data-testid='whitelist-root-{browse_root}']")
     assert (str(browse_root) in normal, "解析不出唯一" in normal) == (True, False)
+
+
+# ── F13：採納先 W6 確認 ───────────────────────────────────────────────────────────
+
+
+def test_adopt_asks_first_and_says_what_changes_in_the_repo(open_page, repo):
+    # D1：按下先開確認框——內文說設定庫來源會改、記採納紀錄；項目列「來源 → 現況」；
+    # 沒草稿時說沒有草稿。
+    _drift_in_root(repo, "count: 3\n", "count: 9\n")
+    page = _open_diff(open_page())
+
+    page.click("[data-testid='resolve-adopt']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+
+    body = page.inner_text("[data-testid='confirm-body']")
+    items = page.inner_text("[data-testid='confirm-items']")
+    said = ("設定庫" in body, "採納現場調整" in body, "沒有未進版草稿" in body)
+    assert said == (True, True, True)
+    assert "count" in items and "來源 3" in items and "現況 9" in items
+    page.click("[data-testid='confirm-cancel']")
+
+
+def test_cancelling_the_adopt_confirmation_changes_nothing(open_page, repo):
+    # D1：取消 → 不送請求、來源不變、歷史沒有新紀錄、沒有 promote-done。
+    _drift_in_root(repo, "count: 3\n", "count: 9\n")
+    page = _open_diff(open_page())
+    posted = []
+
+    def note(request):
+        if request.url.endswith("/resolve"):
+            posted.append(request.url)
+
+    page.on("request", note)
+
+    page.click("[data-testid='resolve-adopt']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-cancel']")
+    page.wait_for_selector("[data-testid='confirm-dialog']:not([open])", state="attached")
+
+    assert ((repo / "files" / "a.yaml").read_text(encoding="utf-8"), posted) == ("count: 3\n", [])
+    assert page.query_selector("[data-testid='promote-done']:not([hidden])") is None
+
+
+def test_adopt_confirmation_mentions_a_pending_draft(open_page, repo):
+    # D1：這份有未進版草稿 → 確認框說草稿留著、比對的來源值會換成現況。
+    _drift_in_root(repo, "count: 3\n", "count: 9\n")
+    page = _open_panel(open_page())
+    page.fill(_param_value("count"), "5")
+    page.click(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save']")
+    page.wait_for_selector(
+        f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save-note']", state="visible"
+    )
+    page.click("[data-testid='panel-diff']")
+    page.wait_for_selector(f"[data-testid='diff-{_PARAM_UID}']", state="visible")
+
+    page.click("[data-testid='resolve-adopt']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+
+    assert "1 份未進版草稿" in page.inner_text("[data-testid='confirm-body']")
+    page.click("[data-testid='confirm-cancel']")
+
+
+# ── F21：退版確認框看目標現況 ──────────────────────────────────────────────────────
+
+
+def _open_first_version_revert(page):
+    _select_first_version(page)
+    page.click("[data-testid='history-revert']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    body = page.inner_text("[data-testid='confirm-body']")
+    return body, page.inner_text("[data-testid='confirm-items']")
+
+
+def test_revert_confirmation_warns_when_the_target_was_changed_on_the_machine(
+    open_page, browse_root, api
+):
+    # C1：目標在介面外被改過 → 紅字提醒現場修改會被蓋掉，項目多一欄「現況」；取消 → 目標不變。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 3\n"])
+    target = pathlib.Path(entry["target"])
+    target.write_text("count: 9\n", encoding="utf-8")
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    body, items = _open_first_version_revert(page)
+    page.click("[data-testid='confirm-cancel']")
+
+    said = ("機器上這份檔目前和來源不同" in body, "現況 9" in items, "當下的快照" in body)
+    assert said == (True, True, True)
+    assert target.read_text(encoding="utf-8") == "count: 9\n"
+
+
+def test_revert_confirmation_says_it_cannot_tell_when_the_target_is_unreadable(
+    open_page, browse_root, api
+):
+    # C1：目標讀不到（具名管道）→ 明說無法確認現況，不當成沒有偏離；F14 之後不會卡住。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 3\n"])
+    target = pathlib.Path(entry["target"])
+    target.unlink()
+    os.mkfifo(target)
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    body, _ = _open_first_version_revert(page)
+    page.click("[data-testid='confirm-cancel']")
+
+    assert ("無法確認機器上的現況" in body, "機器上這份檔目前和來源不同" in body) == (True, False)
+
+
+def test_revert_confirmation_says_the_target_is_missing(open_page, browse_root, api):
+    # C1：目標不存在（未部署）→ 說退版會把它寫出。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 3\n"])
+    pathlib.Path(entry["target"]).unlink()
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    body, _ = _open_first_version_revert(page)
+    page.click("[data-testid='confirm-cancel']")
+
+    assert "未部署" in body
+
+
+def test_revert_confirmation_has_no_drift_warning_when_in_sync(open_page, browse_root, api):
+    # C1：一致 → 沒有偏離／無法確認的段，但一律註明是當下快照。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 3\n"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    body, _ = _open_first_version_revert(page)
+    page.click("[data-testid='confirm-cancel']")
+
+    assert ("現場修改" in body, "無法確認" in body, "當下的快照" in body) == (False, False, True)
+
+
+def test_revert_confirmation_rereads_the_target_when_opened(open_page, browse_root, api):
+    # C1：判定用的是按下當下重讀的現況——歷史開著之後才在介面外改目標，確認框仍看得到。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 3\n"])
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+    _select_first_version(page)
+    pathlib.Path(entry["target"]).write_text("count: 7\n", encoding="utf-8")
+
+    page.click("[data-testid='history-revert']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    body = page.inner_text("[data-testid='confirm-body']")
+    items = page.inner_text("[data-testid='confirm-items']")
+    page.click("[data-testid='confirm-cancel']")
+
+    assert ("機器上這份檔目前和來源不同" in body, "現況 7" in items) == (True, True)
+
+
+# ── F11：退版算內容變更 ───────────────────────────────────────────────────────────
+
+
+def test_a_revert_is_listed_as_a_content_change_with_its_behaviour_name(
+    open_page, browse_root, api
+):
+    # E1：退版後「只看內容變更」（預設）列出那一筆，行為描述仍是「退回舊版本」、帶作者與時間。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
+    content = _api_json(api, "GET", f"/api/configs/{entry['uid']}/history")
+    _api_json(api, "POST", f"/api/configs/{entry['uid']}/revert", {"version": content[-1]["sha"]})
+    page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
+
+    newest = page.inner_text(f"[data-testid='{_entries(page)[0]}']")
+
+    assert ("退回舊版本" in newest, "修改參數" in newest, _NAME in newest) == (True, False, True)
