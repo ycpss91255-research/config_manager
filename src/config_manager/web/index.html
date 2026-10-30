@@ -2645,17 +2645,55 @@ const SCHEMA_DONE_TEXT = {
   remove: "這份現在沒有 schema。",
 };
 
+// 退版確認框先看機器上的現況（F21，10/31 定案 C1）：按下當下重讀單筆內容，不信清單列的狀態。
+// 目標與來源不同 → 紅字提醒現場修改會被蓋掉、項目多一欄「現況」；讀不到／解析不了／太大 → 明說無法確認，
+// 不當成沒有偏離；不存在 → 說會寫出。一律註明是當下快照：確認到執行之間若有人改動，這裡看不到。
+async function describeTargetBeforeRevert(detail) {
+  const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`);
+  if (!response.ok) throw new Refused(await loadErrorText(response));
+  const fresh = await response.json();
+  if (fresh.target_error) {
+    return { note: `⚠ 無法確認機器上的現況（${fresh.target_error}）。退版會照樣寫出，可能蓋掉看不到的現場修改。`, drift: new Map() };
+  }
+  if (fresh.target_values === null || fresh.target_values === undefined) {
+    return { note: "目標目前不存在（未部署），退版會把它寫出。", drift: new Map() };
+  }
+  const rows = paramDiff(fresh, { types: infer(fresh.target_values), values: fresh.target_values })
+    .filter((row) => row.change !== "same");
+  if (!rows.length) return { note: "", drift: new Map() };
+  return {
+    note: `⚠ 機器上這份檔目前和來源不同（有 ${rows.length} 個參數的現場修改），退版會把它一起蓋掉；要保留請先走偏離處置。`,
+    drift: new Map(rows.map((row) => [row.path, row.to === undefined ? "（無）" : row.to])),
+  };
+}
+
 async function revertTo(view, detail, version, changes, button) {
   if (isBusy(button)) return;
   const short = version.sha.slice(0, 7);
+  let target;
+  try {
+    target = await describeTargetBeforeRevert(detail);
+  } catch (error) {
+    view.querySelector("[data-testid='history-diff']").prepend(element("div", { class: "notice error", "data-testid": "history-revert-error" }, [
+      element("strong", { text: "沒有退版。" }),
+      element("pre", { text: failureText("重讀目標現況", error) }),
+    ]));
+    return;
+  }
   const ok = await confirmAction(
     "退回此版本？",
     `「${detail.name}」會回到版本 ${short} 完成後的內容：下面 ${changes.length} 個參數會從目前的值改成退回後的值，`
       + "並寫出到目標。這會產生一筆新的變更紀錄；歷史不會被改寫，之後仍可再退。"
-      + (SCHEMA_EFFECT_TEXT[version.schema_effect] || ""),
+      + (SCHEMA_EFFECT_TEXT[version.schema_effect] || "")
+      + (target.note ? ` ${target.note}` : "")
+      + " 以上是確認當下的快照，之後到執行之間若有人改動不在此列。",
     "退回此版本",
-    changes.map((row) => `${row.path.replace(/\\\./g, ".")}：目前 ${row.from === undefined ? "（無）" : row.from}`
-      + ` → 退回後 ${row.to === undefined ? "（無）" : row.to}`),
+    changes.map((row) => {
+      const path = row.path.replace(/\\\./g, ".");
+      const now = row.from === undefined ? "（無）" : row.from;
+      const live = target.drift.has(row.path) ? ` ／ 現況 ${target.drift.get(row.path)}` : "";
+      return `${path}：目前 ${now}${live} → 退回後 ${row.to === undefined ? "（無）" : row.to}`;
+    }),
   );
   if (!ok) return;
   await whileBusy(button, "退版中…", async () => {
@@ -2887,7 +2925,9 @@ const RESOLVE_OPTIONS = [
   {
     action: "adopt", label: "將目標現況納入來源", testid: "resolve-adopt",
     why: "現場改動是有效的調整：走完整驗證後成為來源、記一筆採納紀錄；含非法值會被拒。",
-    confirm: null,
+    // F13（10/31 定案 D1）：採納會改設定庫的來源，和覆蓋、先納入一樣先確認——內文說會改什麼、
+    // 這份有沒有草稿；項目逐項列「來源 → 現況」（和差異檢視同一套比對）。
+    confirm: (detail) => adoptConfirmation(detail),
   },
   {
     action: "adopt_draft", label: "先納入、待修正", testid: "resolve-adopt-draft",
@@ -2912,10 +2952,27 @@ function resolveActions(detail, view) {
   return element("div", {}, [error, element("div", { class: "resolve-actions editing-only" }, options)]);
 }
 
+// 採納的確認框內容（F13）：差異列和差異檢視同一套 `paramDiff`（來源 vs 磁碟現況）；草稿影響看樹上的草稿標記。
+function adoptConfirmation(detail) {
+  const target = { types: infer(detail.target_values), values: detail.target_values };
+  const rows = paramDiff(detail, target).filter((row) => row.change !== "same");
+  const drafts = draftUids.has(detail.uid)
+    ? "這份目前有 1 份未進版草稿：草稿留著，但它比對的來源值會換成現況。"
+    : "這份目前沒有未進版草稿。";
+  return [
+    "將目標現況納入來源？",
+    `設定庫的來源會被改成目標現況：repo 會多一筆「採納現場調整」紀錄、作者是你；目標檔本身不變。${drafts}`,
+    "納入來源",
+    rows.map((row) => `${row.path.replace(/\\\./g, ".")}：來源 ${row.from === undefined ? "（無）" : row.from}`
+      + ` → 現況 ${row.to === undefined ? "（無）" : row.to}`),
+  ];
+}
+
 async function resolveDrift(detail, option, view, errorEl, button) {
   if (isBusy(button)) return;
   if (option.confirm) {
-    const ok = await confirmAction(...option.confirm);
+    const spec = typeof option.confirm === "function" ? option.confirm(detail) : option.confirm;
+    const ok = await confirmAction(...spec);
     if (!ok) return;
   }
   await whileBusy(button, "處理中…", async () => {
