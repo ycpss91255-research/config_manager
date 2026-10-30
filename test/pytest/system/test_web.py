@@ -4459,16 +4459,19 @@ def test_an_unreadable_previous_version_shows_the_reason_and_is_not_called_the_f
 
 def test_switching_the_filter_clears_a_hint_written_for_the_old_filter(open_page, browse_root, api):
     # 「前一筆被篩掉」是照當時的篩選寫的：切到「全部」後那一筆就看得到了，差異區回到初始說明。
-    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n", "count: 3\n"])
-    content = _api_json(api, "GET", f"/api/configs/{entry['uid']}/history")
-    _api_json(api, "POST", f"/api/configs/{entry['uid']}/revert", {"version": content[-1]["sha"]})
-    _api_json(api, "POST", "/api/drafts", {"uid": entry["uid"], "edits": {"count": 4}})
+    # 被藏的那一筆用「調整設定」（meta）：10/31 定案 E1 之後退版算內容變更，不再是被藏的例子。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
+    _api_json(api, "POST", f"/api/configs/{entry['uid']}/attributes", {
+        "name": entry["name"], "hostname": entry["hostname"],
+        "groups": [], "description": "改過說明",
+    })
+    _api_json(api, "POST", "/api/drafts", {"uid": entry["uid"], "edits": {"count": 3}})
     _api_json(api, "POST", "/api/promote", {})
     page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])
     _select(page, _entries(page)[0], "[data-testid='history-hidden-preceding']")
 
     page.click("[data-testid='history-filter'] button[data-filter='all']")
-    page.wait_for_selector("[data-testid='history-list'] .history-kind:text-is('退回舊版本')")
+    page.wait_for_selector("[data-testid='history-list'] .history-kind:text-is('調整設定')")
 
     assert page.query_selector("[data-testid='history-hidden-preceding']") is None
 
@@ -4872,7 +4875,7 @@ def test_adopt_from_the_diff_view_updates_the_source_and_records_an_adoption(ope
     page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'] [data-state='in_sync']")
     page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
     page.get_by_role("button", name="歷史").click()
-    page.wait_for_selector("text=採納現場調整")
+    page.wait_for_selector("[data-testid^='history-entry-']:has-text('採納現場調整')")
 
 
 def test_adopting_an_invalid_target_is_refused_with_the_reason(open_page, repo):
@@ -7111,7 +7114,9 @@ def test_a_revert_is_listed_as_a_content_change_with_its_behaviour_name(
     open_page, browse_root, api
 ):
     # E1：退版後「只看內容變更」（預設）列出那一筆，行為描述仍是「退回舊版本」、帶作者與時間。
-    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
+    # 三版：預設的歷史不含匯入那筆，content[-1] 是 →2 那版
+    # （兩版時它會是現在這版，退回到自己不成立）。
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n", "count: 3\n"])
     content = _api_json(api, "GET", f"/api/configs/{entry['uid']}/history")
     _api_json(api, "POST", f"/api/configs/{entry['uid']}/revert", {"version": content[-1]["sha"]})
     page = _open_history(open_page(identity=_REMEMBERED), entry["uid"])

@@ -2488,7 +2488,7 @@ async function loadHistory(view, detail, filter, generation) {
         text: filter === "all"
           ? "這份 config 還沒有任何變更紀錄。"
           : "這份 config 納管後還沒有改過內容，所以沒有內容變更的紀錄。"
-            + "下一步：切到「全部」可看到其他類型（納入管理、退回舊版本…）。",
+            + "下一步：切到「全部」可看到其他類型（納入管理、調整設定…）。",
       }));
     } else if (filter === "all" && changes.length === 1) {
       // 只有一筆（通常就是納入管理那一筆）：說明為什麼沒有東西可比、可退，不讓人對著一筆紀錄找按鈕。
@@ -2598,7 +2598,7 @@ function unchangedText(change) {
   return "參數值沒變。";
 }
 
-// 緊鄰的前一筆紀錄不在目前的篩選裡（例如前一筆是退回舊版本）：可見的紀錄前後值會接不起來，說清楚。
+// 緊鄰的前一筆紀錄不在目前的篩選裡（例如前一筆是調整設定）：可見的紀錄前後值會接不起來，說清楚。
 function hiddenPreceding(view, preceding) {
   if (!preceding || view.querySelector(`[data-testid='history-entry-${preceding.sha}']`)) return null;
   return element("p", {
