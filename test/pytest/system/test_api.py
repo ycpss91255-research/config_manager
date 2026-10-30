@@ -4860,3 +4860,87 @@ def test_get_roots_marks_a_root_that_cannot_be_resolved_instead_of_showing_a_fak
         assert (normal["problem"], normal["resolved"] is not None) == (None, True)
     finally:
         roots_path.write_text(original, encoding="utf-8")
+
+
+# ── F14：讀目標現況要有和 digest 同一套守門（不卡、不吃記憶體、不跟連結）─────────────────────
+
+
+def _release_fifo_reader(fifo):
+    """修正前 server 的 open(FIFO) 會卡住等寫端：以非阻塞方式開寫端再關，讓讀端拿到 EOF 回來
+    （收尾用，免得一個 worker 永遠卡著）。修正後沒有讀端在等，開寫端會 ENXIO，忽略。"""
+    try:
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+    except OSError:
+        pass
+
+
+def _onboarded_with_fifo_target(api, sources_root, name):
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, name, b"count: 1\n")
+    target = pathlib.Path(entry["target"])
+    target.unlink()
+    os.mkfifo(target)
+    return entry, target
+
+
+def test_a_fifo_target_does_not_hang_the_detail_endpoint_and_is_named(api, sources_root):
+    # F14-1：目標被換成具名管道 → 時限內回應、target_values 為 null、target_error 指名具名管道。
+    entry, target = _onboarded_with_fifo_target(api, sources_root, "f14_fifo.yaml")
+
+    try:
+        detail = _get(api, f"/api/configs/{entry['uid']}")
+    finally:
+        _release_fifo_reader(str(target))
+
+    assert (detail["target_values"], "具名管道" in detail["target_error"]) == (None, True)
+
+
+def test_an_oversized_target_is_named_not_parsed(api, sources_root):
+    # F14-2：超過上限的目標不讀進解析器——target_error 指名太大、target_values 為 null。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f14_big.yaml", b"count: 1\n")
+    pathlib.Path(entry["target"]).write_bytes(b"a" * (10 * 1024 * 1024 + 1))
+
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+
+    assert (detail["target_values"], "太大" in detail["target_error"]) == (None, True)
+
+
+def test_a_symlinked_target_is_reported_the_same_way_in_the_detail_and_the_list(api, sources_root):
+    # F14-3：列上的掃描拒絕連結（digest）；欄位表不可以跟著連結把別的檔的值顯示出來——兩邊要一致。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f14_link.yaml", b"count: 1\n")
+    real = pathlib.Path(_write_source(sources_root, "f14_link_real.yaml", b"count: 7\n"))
+    target = pathlib.Path(entry["target"])
+    target.unlink()
+    target.symlink_to(real)
+
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+    row = next(r for r in _get(api, "/api/configs") if r["uid"] == entry["uid"])
+
+    assert (detail["target_values"], "符號連結" in (detail["target_error"] or "")) == (None, True)
+    assert row["state"] is None and "符號連結" in row["error"]
+
+
+def test_adopting_a_fifo_target_is_refused_by_name_and_does_not_hang(api, sources_root):
+    # F14-4：「將目標現況納入來源」遇到具名管道 → 422 指名，不卡住。
+    entry, target = _onboarded_with_fifo_target(api, sources_root, "f14_adopt.yaml")
+
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
+    finally:
+        _release_fifo_reader(str(target))
+
+    assert (exc.value.code, "具名管道" in _detail(exc.value)) == (_UNPROCESSABLE, True)
+
+
+def test_a_missing_target_still_gives_two_nulls(api, sources_root):
+    # F14-6（守門）：不存在是合法狀態（未部署），不是錯。
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f14_missing.yaml", b"count: 1\n")
+    pathlib.Path(entry["target"]).unlink()
+
+    detail = _get(api, f"/api/configs/{entry['uid']}")
+
+    assert (detail["target_values"], detail["target_error"]) == (None, None)

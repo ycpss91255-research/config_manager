@@ -11,6 +11,7 @@ import os
 
 import pytest
 
+from config_manager.io import digest as digest_module
 from config_manager.io.digest import digest
 from config_manager.io.errors import ContentTooLarge, NotARegularFile, PathUnreachable
 
@@ -107,3 +108,39 @@ def test_a_parent_without_traverse_permission_is_not_reported_as_missing(tmp_pat
             digest(str(target))
     finally:
         os.chmod(locked, 0o755)  # 讓 tmp_path 清理得掉
+
+
+# ── F14：同一套守門也提供位元組讀取 read_target ──────────────────────────────────────────
+
+
+def _read_target():
+    found = getattr(digest_module, "read_target", None)
+    assert found is not None, "io.digest 還沒有 read_target（守門的位元組讀取）"
+    return found
+
+
+def test_read_target_returns_the_bytes_of_a_regular_file(tmp_path):
+    target = tmp_path / "t.yaml"
+    target.write_bytes(b"a: 1\n")
+
+    assert _read_target()(str(target)) == b"a: 1\n"
+
+
+def test_read_target_returns_none_for_a_missing_file(tmp_path):
+    assert _read_target()(str(tmp_path / "nope.yaml")) is None
+
+
+def test_read_target_refuses_a_fifo_without_blocking(tmp_path):
+    fifo = tmp_path / "t.pipe"
+    os.mkfifo(fifo)
+
+    with pytest.raises(NotARegularFile):
+        _read_target()(str(fifo))
+
+
+def test_read_target_refuses_a_file_over_the_cap_without_reading_it_in(tmp_path):
+    big = tmp_path / "big.yaml"
+    big.write_bytes(b"a" * 64)
+
+    with pytest.raises(ContentTooLarge):
+        _read_target()(str(big), 32)
