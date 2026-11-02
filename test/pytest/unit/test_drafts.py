@@ -357,7 +357,8 @@ def test_a_rule_added_after_the_draft_was_saved_blocks_promotion_until_a_reason_
 
 # ── 草稿記主人（ADR-00000032，第 5 批 F22）─────────────────────────────────────
 # `Owner` 是姓名＋email＋瀏覽器票：系統沒有認證，同名同 email 票不同是另一個瀏覽器身分。
-# 這裡不直接 import：介面還沒落地時整個檔案不該因 ImportError 一起紅。
+# 這次儲存的人放在 `Checks.owner`（儲存的介面已有五個參數）。
+# 介面還沒落地時以 fail 而非 ImportError 紅。
 
 
 def _owner(name: str, ticket: str):
@@ -370,9 +371,11 @@ def _owner(name: str, ticket: str):
 def test_a_saved_draft_remembers_who_saved_it_and_everyone_before():
     # saved_by＝最後成功儲存者；touched_by＝所有成功儲存過的人，依首次順序、去重。
     first, second = _owner("甲", "t1"), _owner("乙", "t2")
-    stage = save_draft(Stage(), "mfz3k9q1", _GOOD, "yaml", owner=first)
-    stage = save_draft(stage, "mfz3k9q1", "speed: 2.5\nname: amr01\n", "yaml", owner=second)
-    stage = save_draft(stage, "mfz3k9q1", "speed: 3.5\nname: amr01\n", "yaml", owner=first)
+    stage = save_draft(Stage(), "mfz3k9q1", _GOOD, "yaml", Checks(owner=first))
+    stage = save_draft(
+        stage, "mfz3k9q1", "speed: 2.5\nname: amr01\n", "yaml", Checks(owner=second)
+    )
+    stage = save_draft(stage, "mfz3k9q1", "speed: 3.5\nname: amr01\n", "yaml", Checks(owner=first))
 
     draft = stage.drafts["mfz3k9q1"]
 
@@ -382,10 +385,10 @@ def test_a_saved_draft_remembers_who_saved_it_and_everyone_before():
 def test_a_refused_save_does_not_count_as_touching_the_draft():
     # 只有成功儲存算參與：第 1 層擋下的那一次不留名。
     first, second = _owner("甲", "t1"), _owner("乙", "t2")
-    stage = save_draft(Stage(), "mfz3k9q1", _GOOD, "yaml", owner=first)
+    stage = save_draft(Stage(), "mfz3k9q1", _GOOD, "yaml", Checks(owner=first))
 
     with pytest.raises(DraftInvalid):
-        save_draft(stage, "mfz3k9q1", _BAD, "yaml", owner=second)
+        save_draft(stage, "mfz3k9q1", _BAD, "yaml", Checks(owner=second))
 
     assert stage.drafts["mfz3k9q1"].touched_by == (first,)
 
@@ -393,7 +396,7 @@ def test_a_refused_save_does_not_count_as_touching_the_draft():
 def test_adopting_the_target_into_a_draft_records_who_loaded_it():
     owner = _owner("甲", "t1")
 
-    stage, _warnings = adopt_draft(Stage(), "mfz3k9q1", _BAD, "yaml", owner=owner)
+    stage, _warnings = adopt_draft(Stage(), "mfz3k9q1", _BAD, "yaml", Checks(owner=owner))
 
     assert stage.drafts["mfz3k9q1"].saved_by == owner
 
@@ -401,9 +404,11 @@ def test_adopting_the_target_into_a_draft_records_who_loaded_it():
 def test_same_name_on_another_browser_is_another_participant_but_role_is_not():
     # 同名同 email、票不同 → 兩個參與者；同票不同角色 → 同一個（角色不是鍵的一部分）。
     here, elsewhere = _owner("甲", "t1"), _owner("甲", "t2")
-    stage = save_draft(Stage(), "mfz3k9q1", _GOOD, "yaml", owner=here)
-    stage = save_draft(stage, "mfz3k9q1", "speed: 2.5\nname: amr01\n", "yaml", owner=elsewhere)
-    stage = save_draft(stage, "mfz3k9q1", "speed: 3.5\nname: amr01\n", "yaml", owner=here)
+    stage = save_draft(Stage(), "mfz3k9q1", _GOOD, "yaml", Checks(owner=here))
+    stage = save_draft(
+        stage, "mfz3k9q1", "speed: 2.5\nname: amr01\n", "yaml", Checks(owner=elsewhere)
+    )
+    stage = save_draft(stage, "mfz3k9q1", "speed: 3.5\nname: amr01\n", "yaml", Checks(owner=here))
 
     assert stage.drafts["mfz3k9q1"].touched_by == (here, elsewhere)
 
@@ -422,9 +427,11 @@ def test_promote_names_other_drafters_in_the_record_body_but_never_the_ticket():
     # 同名不同票的加「（另一個瀏覽器）」；票值絕不出現。
     promoter = _owner("乙", "t2")
     drafter, twin = _owner("甲", "t1"), _owner("乙", "t3")
-    stage = save_draft(Stage(), "mfz3k9q1", _GOOD, "yaml", owner=drafter)
-    stage = save_draft(stage, "mfz3k9q1", "speed: 2.5\nname: amr01\n", "yaml", owner=twin)
-    stage = save_draft(stage, "mfz3k9q1", "speed: 3.5\nname: amr01\n", "yaml", owner=promoter)
+    stage = save_draft(Stage(), "mfz3k9q1", _GOOD, "yaml", Checks(owner=drafter))
+    stage = save_draft(stage, "mfz3k9q1", "speed: 2.5\nname: amr01\n", "yaml", Checks(owner=twin))
+    stage = save_draft(
+        stage, "mfz3k9q1", "speed: 3.5\nname: amr01\n", "yaml", Checks(owner=promoter)
+    )
 
     (plan,) = promote(stage, _single_entry_list(), promoter=promoter)
 
@@ -438,7 +445,7 @@ def test_promote_names_other_drafters_in_the_record_body_but_never_the_ticket():
 
 def test_promote_writes_no_drafted_by_line_when_the_promoter_saved_everything():
     promoter = _owner("乙", "t2")
-    stage = save_draft(Stage(), "mfz3k9q1", _GOOD, "yaml", owner=promoter)
+    stage = save_draft(Stage(), "mfz3k9q1", _GOOD, "yaml", Checks(owner=promoter))
 
     (plan,) = promote(stage, _single_entry_list(), promoter=promoter)
 
