@@ -7308,6 +7308,8 @@ def test_after_a_renew_timeout_the_banner_says_whether_the_drafts_are_still_ther
         box.clock = lambda: real_clock() + datetime.timedelta(minutes=3)
         page.evaluate("renewSession(sessionToken)")
         page.wait_for_selector("[data-testid='readonly-banner']", state="visible")
+        # 草稿那句是問過後端才補上的（非同步）：等它出現再讀，不讀到半張橫幅。
+        page.wait_for_selector("[data-testid='readonly-drafts']", state="visible")
         still_there = page.inner_text("[data-testid='readonly-banner']")
 
         _api_json(api, "POST", "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
