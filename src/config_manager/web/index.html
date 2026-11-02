@@ -750,6 +750,11 @@ function ownerLabel(owner) {
   return owner.another_browser ? `${owner.name}（另一個瀏覽器身分）` : owner.name;
 }
 
+// 區塊標頭的草稿指示文字：寫最後儲存者（ADR-00000032）；開區塊時與儲存成功後都用這一個。
+function draftMarkText(detail) {
+  return detail.draft_saved_by ? `● 草稿（${ownerLabel(detail.draft_saved_by)}）` : "● 草稿";
+}
+
 // 逐人列參與份數（同一份多人參與會重複計入），另給不重複的草稿總數。
 function participantsText(byOwner, distinct) {
   const parts = byOwner.map((who) => `${ownerLabel(who)}參與 ${who.count} 份`);
@@ -1469,7 +1474,7 @@ function panelNode(detail) {
     element("span", { class: "state", "data-testid": `panel-status-${detail.uid}`, text: state }),
     element("span", {
       class: "panel-draft", "data-testid": `panel-draft-${detail.uid}`,
-      text: detail.draft_saved_by ? `● 草稿（${ownerLabel(detail.draft_saved_by)}）` : "● 草稿",
+      text: draftMarkText(detail),
     }),
     element("button", {
       type: "button", class: "draft-owners", "data-testid": "draft-owners",
@@ -1593,7 +1598,7 @@ function panelNode(detail) {
   const warningsSlot = element("div", { class: "rule-warnings-slot" });
   const ui = {
     save: saveButton, error: saveError, draft: draftMark, discard: discardButton,
-    warnings: warningsSlot, entries, note: saveNote,
+    owners: ownersButton, warnings: warningsSlot, entries, note: saveNote,
   };
   saveButton.addEventListener("click", () => whileBusy(saveButton, "儲存中…", () => saveDraft(detail, entries, ui)));
   if ((detail.draft_warnings || []).some((problem) => problem.rule)) {
@@ -1914,6 +1919,15 @@ async function saveDraft(detail, entries, ui, overrides = {}) {
     for (const entry of entries) entry.refresh();  // 畫面＝已存的草稿：不再 dirty、儲存回到停用
     ui.draft.hidden = !draftUids.has(detail.uid);
     ui.discard.hidden = !draftUids.has(detail.uid);
+    // 區塊在儲存前就開著：標頭的草稿指示與參與者按鈕也照回應更新，不是只取消隱藏（第 5 批重驗 A2）。
+    // 參與者名單是按下時依 detail 重畫的，所以先把 detail 換成剛存好的主人，再把舊名單收起來。
+    const saved = draftDetails.get(detail.uid);
+    detail.draft_saved_by = saved ? saved.saved_by : null;
+    detail.draft_touched_by = saved ? saved.touched_by : [];
+    ui.draft.textContent = draftMarkText(detail);
+    ui.owners.hidden = ui.draft.hidden || !detail.draft_touched_by.length;
+    const openList = ui.owners.closest(".panel").querySelector("[data-testid='draft-owners-list']");
+    if (openList) openList.remove();
     const skipped = (payload.warnings || []).filter((problem) => problem.rule);
     if (skipped.length) renderRuleWarnings(detail, ui, skipped, overrides, false, true);
     else if (ui.warnings) ui.warnings.replaceChildren();
