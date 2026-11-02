@@ -451,7 +451,7 @@ discard(階段, uid?) -> 階段
 | **adopt_draft 把目標現況載入草稿**：內容照載，回傳每個非法值的警告（檔案／欄位／原因／建議三要素），**不因非法而拒載** |
 | adopt_draft 與 save_draft 的分界：**save_draft 擋第 1 層、adopt_draft 不擋但警告**——前者是人正在編輯、後者要把壞內容撈進來修 |
 | adopt_draft 產生的草稿仍受進版約束：**含非法值時整批不進版**，改乾淨後正常進版，作者記為進版者（偏離內容因此被重新掛到真人身上） |
-| **（ADR-00000032，第 5 批 F22）草稿記主人**：`save_draft(..., owner)`／`adopt_draft(..., owner)` 成功才記——`saved_by`＝最後成功儲存者、`touched_by`＝所有成功儲存過的人依**首次**順序去重；`DraftInvalid`／`OverrideRequired`／`ReasonInvalid` 不記（`touched_by` 不變）。`Owner` 是姓名＋email＋瀏覽器票：同名同 email 票不同＝兩個參與者；同票不同角色＝同一個 |
+| **（ADR-00000032，第 5 批 F22）草稿記主人**：`save_draft`／`adopt_draft` 以 `Checks.owner` 收這次儲存的人（儲存介面已有五個參數），成功才記——`saved_by`＝最後成功儲存者、`touched_by`＝所有成功儲存過的人依**首次**順序去重；`DraftInvalid`／`OverrideRequired`／`ReasonInvalid` 不記（`touched_by` 不變）。`Owner` 是姓名＋email＋瀏覽器票：同名同 email 票不同＝兩個參與者；同票不同角色＝同一個 |
 | **（ADR-00000032）進版的紀錄內文註明草稿作者**：`promote(..., promoter)` 對 `touched_by` 裡**鍵 ≠ 進版者**的每一位加一行 `drafted-by: 姓名 <email>`（順序照 `touched_by`；同名不同票的在行尾加「（另一個瀏覽器）」），**不寫票值**；全是進版者自己存的不加；author 仍是進版者（由呼叫端傳） |
 
 **不測**：草稿在階段間共享——本系統一次只有一個編輯階段（ADR-00000014）。
