@@ -20,6 +20,7 @@ import pytest
 
 from config_manager.api.cli import main, serve_plan
 from config_manager.api import errors as api_errors
+from config_manager.api.access_log import access_logged
 from config_manager.api.errors import (
     ConfigRepoMissing,
     IdleTimeoutInvalid,
@@ -666,3 +667,24 @@ def test_serve_plan_refuses_any_other_access_log_value_by_name():
     # 寫錯的值不能靜默當成開或關。
     with pytest.raises(api_errors.AccessLogInvalid, match="CM_ACCESS_LOG"):
         serve_plan("0.0.0.0", 9000, {"CM_CONFIG_REPO": "/srv/r", "CM_ACCESS_LOG": "yes"})
+
+
+def _served_app(monkeypatch, environ: dict[str, str]):
+    started: dict[str, object] = {}
+    monkeypatch.setattr("uvicorn.run", lambda app, **options: started.update(app=app, **options))
+    for key, value in environ.items():
+        monkeypatch.setenv(key, value)
+    main(["config_manager", "serve", "--host", "127.0.0.1", "--port", "9000"])
+    return started["app"]
+
+
+def test_serve_mounts_the_access_log_when_the_plan_says_so(monkeypatch):
+    app = _served_app(monkeypatch, {"CM_CONFIG_REPO": "/srv/config-repo", "CM_ACCESS_LOG": "1"})
+
+    assert access_logged in [middleware.cls for middleware in app.user_middleware]
+
+
+def test_serve_leaves_the_access_log_out_by_default(monkeypatch):
+    app = _served_app(monkeypatch, {"CM_CONFIG_REPO": "/srv/config-repo"})
+
+    assert access_logged not in [middleware.cls for middleware in app.user_middleware]

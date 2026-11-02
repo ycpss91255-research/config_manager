@@ -30,6 +30,7 @@ import urllib.request
 import pytest
 import uvicorn
 
+from config_manager.api.access_log import access_logged
 from config_manager.api.lock import LockBox
 from config_manager.api.routes import create_app
 from config_manager.core.roles import DEVELOPMENT
@@ -250,13 +251,14 @@ def api_developing(repo, sources_root, api):
 
 @pytest.fixture
 def api_logging(repo, sources_root, api):
-    """一個**開著 access log** 的服務（F8 決定 C）：逐則起、逐則收，比照 `api_developing`。
+    """一個**掛了 access log** 的服務（F8 決定 C）：逐則起、逐則收，比照 `api_developing`。
 
     紀錄寫到 stderr，測試用 `capfd` 讀。預設的 `api` 沒開，對照用。
     """
     del sources_root, api  # 只為了排序：白名單已由 `api` 種好；外部服務時那份是 entrypoint 種的
     port = _free_port()
-    app = create_app(repo, access_log=True)
+    app = create_app(repo)
+    app.add_middleware(access_logged)
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
