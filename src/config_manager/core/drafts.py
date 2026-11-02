@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
+from typing import NamedTuple
 
 from config_manager.core.errors import (
     DraftInvalid,
@@ -38,18 +39,43 @@ _MAX_REASON = 200
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
+class Owner(NamedTuple):
+    """一個瀏覽器身分（ADR-00000032）：姓名＋email＋瀏覽器票。
+
+    系統沒有認證，同名同 email 但票不同是**另一個瀏覽器身分**，不等於證明是另一個人。
+    票只在這裡比對用——不回給頁面、不寫進紀錄。
+    """
+
+    name: str
+    email: str
+    ticket: str
+
+    @property
+    def label(self) -> str:
+        """紀錄裡的寫法（io/git.record 收的作者格式）：`姓名 <email>`，沒有票。"""
+        return f"{self.name} <{self.email}>"
+
+    def same_person_as(self, other: Owner) -> bool:
+        """姓名與 email 相同（票可能不同）。"""
+        return (self.name, self.email) == (other.name, other.email)
+
+
 @dataclass(frozen=True)
 class Draft:
     """一份草稿：哪個 config（uid）、改好的文字、它的 format，以及略過規則的理由。
 
     `reasons` 是規則代號 → 理由（#42）：只記這份內容真的違反、而使用者填了理由略過的那幾條。
     理由跟著草稿走，進版時寫進那一筆變更紀錄。
+    `saved_by`／`touched_by`（ADR-00000032）：最後成功儲存的人、所有成功儲存過的人（依首次順序、
+    去重）。只有成功儲存算——驗證失敗的那一次不留名。None／空＝沒記（只在直接操作核心層時）。
     """
 
     uid: str
     text: str
     fmt: str
     reasons: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    saved_by: Owner | None = None
+    touched_by: tuple[Owner, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -65,6 +91,9 @@ class Checks:
     rules: Rules | None = None
     reasons: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     lintrc: FormatRules | None = None  # 第 1 層的設定（#43）；None＝預設值
+    # 這次儲存的人（ADR-00000032）：成功才記進草稿的 saved_by／touched_by。放在這裡而不是另一個
+    # 參數——儲存的介面已經五個參數，而「這次儲存帶來的東西」本來就在這個物件裡。
+    owner: Owner | None = None
 
 
 @dataclass(frozen=True)
@@ -107,7 +136,7 @@ def save_draft(
             pending,
         )
     kept = {str(p.rule): reasons[str(p.rule)] for p in broken}
-    return _with(stage, Draft(uid, text, fmt, MappingProxyType(kept)))
+    return _with(stage, Draft(uid, text, fmt, MappingProxyType(kept)), checks.owner)
 
 
 def _reason(rule: str, text: str) -> str:
@@ -133,7 +162,7 @@ def adopt_draft(
     found = check(
         target_text, fmt, rules=checks.rules, schema=checks.schema, lintrc=checks.lintrc
     )
-    return _with(stage, Draft(uid, target_text, fmt)), found
+    return _with(stage, Draft(uid, target_text, fmt), checks.owner), found
 
 
 def discard(stage: Stage, uid: str | None = None) -> Stage:
@@ -148,8 +177,27 @@ def discard(stage: Stage, uid: str | None = None) -> Stage:
     return Stage(MappingProxyType({k: v for k, v in stage.drafts.items() if k != uid}))
 
 
-def _with(stage: Stage, draft: Draft) -> Stage:
-    return Stage(MappingProxyType({**stage.drafts, draft.uid: draft}))
+def _with(stage: Stage, draft: Draft, owner: Owner | None) -> Stage:
+    """把這份草稿放進階段，並記下這次成功儲存的人：`saved_by`＝這次的人、`touched_by` 接在同一份
+    先前的參與者後面（首次順序、去重；同名同 email 票不同是另一個參與者）。"""
+    before = stage.drafts.get(draft.uid)
+    touched = before.touched_by if before is not None else ()
+    if owner is not None and owner not in touched:
+        touched = (*touched, owner)
+    stamped = replace(draft, saved_by=owner, touched_by=touched)
+    return Stage(MappingProxyType({**stage.drafts, draft.uid: stamped}))
+
+
+def drafted_by_lines(draft: Draft, promoter: Owner | None) -> list[str]:
+    """進版紀錄內文裡的草稿作者行（ADR-00000032）：`drafted-by: 姓名 <email>`，只寫**不是進版者**的
+    參與者，照首次順序；同名同 email 但票不同的加「（另一個瀏覽器）」。不寫票。進版者不明時不寫。"""
+    if promoter is None:
+        return []
+    return [
+        f"drafted-by: {who.label}" + ("（另一個瀏覽器）" if who.same_person_as(promoter) else "")
+        for who in draft.touched_by
+        if who != promoter
+    ]
 
 
 # ── 進版（promote，#19）──────────────────────────────────────────────────────
@@ -178,6 +226,7 @@ def promote(
     stage: Stage,
     config_list: ConfigList,
     checks: Mapping[str, Checks] | None = None,
+    promoter: Owner | None = None,
 ) -> list[Promotion]:
     """把階段裡**全部**草稿一次驗證，回傳每份的進版資料；任一份沒過就丟 `PromoteInvalid`。
 
@@ -202,7 +251,9 @@ def promote(
                 "下一步：捨棄這份草稿，或確認該 config 是否已被解除管理",
                 uid,
             )
-        overrides = _cleared(draft, entry, checks.get(uid, Checks()))
+        # 內文（ADR-00000032）：先列草稿由誰存（只有不是進版者的；author 是進版者，由呼叫端
+        # 傳給 io），再列略過的規則與理由。誰編輯、誰進版都留得下來。
+        body = drafted_by_lines(draft, promoter) + _cleared(draft, entry, checks.get(uid, Checks()))
         summary = f"修改參數（{entry.name}@{entry.hostname}）"
         plans.append(
             Promotion(
@@ -211,7 +262,7 @@ def promote(
                 target=entry.target,
                 text=draft.text,
                 permissions=entry.permissions or config_list.defaults.permissions,
-                summary="\n\n".join([summary, "\n".join(overrides)]) if overrides else summary,
+                summary="\n\n".join([summary, "\n".join(body)]) if body else summary,
             )
         )
     return plans
