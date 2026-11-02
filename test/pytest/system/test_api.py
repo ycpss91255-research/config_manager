@@ -2876,8 +2876,9 @@ def test_a_renew_timeout_recycles_the_session_but_keeps_the_drafts_for_the_next_
     real_clock, real_timeout = box.clock, box.lock.timeout
     other = _another_browser()
     try:
-        box.lock.timeout = datetime.timedelta(minutes=10)
-        box.clock = lambda: real_clock() + datetime.timedelta(minutes=11)
+        # 過了續期逾時、還沒到閒置逾時（部署模式 10 分鐘）——後者會清草稿，這裡要看的是前者。
+        box.lock.timeout = datetime.timedelta(minutes=2)
+        box.clock = lambda: real_clock() + datetime.timedelta(minutes=3)
         with pytest.raises(urllib.error.HTTPError) as exc:
             _lock(api, path="/api/session/lock/renew", payload={"token": session["token"]})
         assert exc.value.code == _GONE
@@ -3227,7 +3228,15 @@ def test_exiting_while_holding_releases_and_clears_the_drafts_without_telling_th
         _clear_drafts(api)
 
     assert (code, left, state, taken["cleared_drafts"]) == (
-        200, {"left": True, "released": True, "cleared_drafts": 1}, (False, 0), 0,
+        200,
+        {
+            "left": True, "released": True, "cleared_drafts": 1, "distinct": 1,
+            "by_owner": [{
+                "name": "陳小明", "email": "ming@example.com",
+                "mine": True, "another_browser": False, "count": 1,
+            }],
+        },
+        (False, 0), 0,
     )
 
 
@@ -3296,7 +3305,9 @@ def test_exiting_without_an_identity_still_succeeds(api):
 
     code, left = _exit(api, fresh)
 
-    assert (code, left) == (200, {"left": True, "released": False, "cleared_drafts": 0})
+    assert (code, left) == (
+        200, {"left": True, "released": False, "cleared_drafts": 0, "distinct": 0, "by_owner": []}
+    )
 
 
 def test_after_exiting_another_identity_takes_the_session_at_once(api):
@@ -3406,7 +3417,9 @@ def test_exiting_while_nobody_holds_the_session_leaves_the_drafts_alone(api, sou
         _clear_drafts(api)
 
     assert (code, left, drafts) == (
-        200, {"left": True, "released": False, "cleared_drafts": 0}, 1,
+        200,
+        {"left": True, "released": False, "cleared_drafts": 0, "distinct": 0, "by_owner": []},
+        1,
     )
 
 
@@ -3570,8 +3583,9 @@ def test_a_release_that_arrives_during_a_write_waits_for_it(api_alone, sources_r
 def test_a_takeover_that_arrives_during_a_write_waits_and_is_told_of_the_draft(
     api_alone, sources_root, monkeypatch
 ):
-    # ③寫入先到、逾時接手排隊：時鐘撥過續期逾時、另一個瀏覽器取得要排隊 → 放行後寫入 200，接手者
-    # 被告知清了 1 份、他的階段裡 0 份（那份草稿不會悄悄進到接手者的階段）。
+    # ③寫入先到、逾時接手排隊：時鐘撥過續期逾時、另一個瀏覽器取得要排隊 → 放行後寫入 200。
+    # ADR-00000032 之後續期逾時不清草稿：接手者被告知接手了那 1 份（kept_drafts 標示是前一位存的）、
+    # cleared_drafts 是 0、階段裡 1 份——草稿不是悄悄進到接手者的階段，是帶著主人進去。
     base, box = api_alone
     other = _another_browser()
     _request_as(other, base, "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
@@ -3599,8 +3613,11 @@ def test_a_takeover_that_arrives_during_a_write_waits_and_is_told_of_the_draft(
         box.clock = real_clock
 
     drafts = _get(base, "/api/drafts")["count"]
-    assert (_outcome(wrote), taken.get("value", {}).get("cleared_drafts"), drafts) == (
-        (200, None), 1, 0,
+    kept = [
+        (k["uid"], k["saved_by"]["mine"]) for k in taken.get("value", {}).get("kept_drafts", [])
+    ]
+    assert (_outcome(wrote), taken.get("value", {}).get("cleared_drafts"), drafts, kept) == (
+        (200, None), 0, 1, [(entry["uid"], False)],
     )
 
 

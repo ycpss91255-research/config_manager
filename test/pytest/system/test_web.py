@@ -7264,6 +7264,7 @@ def test_taking_over_someone_elses_drafts_is_announced_and_promoting_asks_first(
     page.dblclick(f"[data-testid='tree-item-{_PARAM_UID}']")
     page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
     page.get_by_role("button", name="歷史").click()
+    page.wait_for_selector("[data-testid^='history-entry-']", state="visible")
     newest = _entries(page)[0]
     row = page.inner_text(f"[data-testid='{newest}']")
 
@@ -7302,8 +7303,9 @@ def test_after_a_renew_timeout_the_banner_says_whether_the_drafts_are_still_ther
     ]
     real_clock, real_timeout = box.clock, box.lock.timeout
     try:
-        box.lock.timeout = datetime.timedelta(minutes=10)
-        box.clock = lambda: real_clock() + datetime.timedelta(minutes=11)
+        # 過續期逾時、不到閒置逾時（部署模式 10 分鐘，會把人退出並清草稿）——看的是前者。
+        box.lock.timeout = datetime.timedelta(minutes=2)
+        box.clock = lambda: real_clock() + datetime.timedelta(minutes=3)
         page.evaluate("renewSession(sessionToken)")
         page.wait_for_selector("[data-testid='readonly-banner']", state="visible")
         still_there = page.inner_text("[data-testid='readonly-banner']")
