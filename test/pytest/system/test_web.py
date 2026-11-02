@@ -7240,6 +7240,22 @@ def test_the_draft_marks_say_who_saved_it_and_the_full_list_opens_by_keyboard(op
     assert all(drafter in mark for mark in marks)
 
 
+def test_saving_in_a_panel_opened_before_the_draft_shows_who_saved_it(open_page, repo):
+    # 區塊在儲存前就開著（還沒有草稿）：儲存成功後草稿指示要寫「你」、參與者按鈕要出現
+    # ——不是只把「● 草稿」取消隱藏（第 5 批重驗 A2：開著的區塊只見「● 草稿」、沒有按鈕）。
+    _listing_with(repo, "count: 3\n")
+    page = _open_panel(open_page())
+    page.fill(_param_value("count"), "4")
+
+    _save(page)
+
+    page.wait_for_selector(f"[data-testid='panel-draft-{_PARAM_UID}']", state="visible")
+    assert (
+        page.inner_text(f"[data-testid='panel-draft-{_PARAM_UID}']"),
+        page.is_visible(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='draft-owners']"),
+    ) == ("● 草稿（你）", True)
+
+
 def test_taking_over_someone_elses_drafts_is_announced_and_promoting_asks_first(
     open_page, api, repo
 ):
