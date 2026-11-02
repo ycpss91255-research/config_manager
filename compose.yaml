@@ -67,6 +67,9 @@ services:
       # 部署模式的閒置逾時（秒，#48）：一個瀏覽器的人這麼久沒操作就自動退出並釋放編輯階段。
       # 沒設＝10 分鐘；開發模式不逾時，設了也不生效。
       CM_IDLE_TIMEOUT: ${CM_IDLE_TIMEOUT:-}
+      # 可選的 access log（F8 決定 C）：1 開、0 或沒設關。每個請求在後端 stderr（docker logs）記一行：
+      # 時刻、方法、路徑（去掉 query string）、狀態碼、毫秒數；不記 cookie、token、header、body。
+      CM_ACCESS_LOG: ${CM_ACCESS_LOG:-}
     # 是 config_manager.api.cli，不是 api.cli——見 Dockerfile 的 CMD（#90）。
     # 只聽 127.0.0.1（#51 定案 3）：身分是自己填的、沒有密碼，聽在區網上等於區網上任何人都能改
     # 這台機器的 config。

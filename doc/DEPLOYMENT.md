@@ -57,6 +57,8 @@ CM_HOSTNAME=<這台機器的名稱> docker compose -f compose.yaml -f compose.br
   沒給的話 compose 在啟動前就停下，訊息會指名這個變數。
 - 埠號對應的主機端一樣只綁 `127.0.0.1`，所以「只有本機連得到」不變，遠端操作同樣走 SSH 通道。
 - 同一台機器上其他掛在 docker 預設網路的容器連得到這兩個服務。
+- 要查「請求到底有沒有到後端」時，設 `CM_ACCESS_LOG=1` 再起：後端每個請求在 `docker logs` 記一行
+  （時刻、方法、路徑去掉 query string、狀態碼、毫秒數），不記 cookie、token、header、body。平常不設（關）。
 
 ## 開發
 

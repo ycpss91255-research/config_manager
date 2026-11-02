@@ -39,6 +39,10 @@ class IdleTimeoutInvalid(Exception):
     """`CM_IDLE_TIMEOUT` 不是正數（秒）（#48）。寫錯的值不能靜默當成不逾時。"""
 
 
+class AccessLogInvalid(Exception):
+    """`CM_ACCESS_LOG` 不是 0 或 1（F8 決定 C）。寫錯的值不能靜默當成開或關。"""
+
+
 class ModeInvalid(Exception):
     """`CM_MODE` 不是 development 或 deployment（#47）。
 
