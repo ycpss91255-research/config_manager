@@ -5,8 +5,9 @@
 強制接管——持有者逾時後自然釋放（部署模式 `CM_SESSION_TIMEOUT` 秒；開發模式不逾時，模式判定是 #47）。
 
 這四支是本 repo 對 §3.5.3 的追加（比照 GET /api/session／#122）。時鐘由 `clock` 注入（T13：讀系統
-時間的實作測不了逾時）；預設 UTC 現在。**階段逾時釋放時草稿一併清除**，並在下一次取得的回應裡
-回報「有 N 份草稿被清除」，不靜默丟棄。
+時間的實作測不了逾時）；預設 UTC 現在。**閒置逾時釋放階段時草稿一併清除**，並在下一次取得的回應裡
+回報「有 N 份草稿被清除」，不靜默丟棄；**續期逾時只回收階段、草稿保留**（ADR-00000032：分頁斷了，
+人不一定走了），下一個取得者的回應列出接手到的草稿是誰存的。
 """
 
 from __future__ import annotations
@@ -34,8 +35,8 @@ from config_manager.api.session import (
     session_gone,
 )
 from config_manager.core.roles import USER, permits
-from config_manager.api.shapes import drafts_view
-from config_manager.core.drafts import Stage, discard
+from config_manager.api.shapes import drafts_view, owner_view
+from config_manager.core.drafts import Draft, Owner, Stage, discard
 
 Clock = Callable[[], datetime]
 
@@ -46,6 +47,11 @@ EDITING_HEADER = "x-cm-editing-token"
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def owner_of(identity: Identity, ticket: str | None) -> Owner:
+    """這個請求的瀏覽器身分（ADR-00000032）：身分的姓名、email 加上瀏覽器票。票只在後端比對用。"""
+    return Owner(identity.name, identity.email, ticket or "")
 
 
 class TokenInput(BaseModel):
@@ -224,7 +230,7 @@ def register_session(
         """
         # 「別人有沒有持有」和「記下身分」是一段：中間不讓別人插進來取得（F23）。
         with box.locked():
-            identity = _checked_identity(browsers, box, stage_box, payload)
+            identity = _checked_identity(browsers, box, payload)
             browsers.declare(request, response, identity)
         return _as_session(identity)
 
@@ -273,7 +279,7 @@ def register_lock(
     def lock_status() -> dict[str, object]:
         """誰在編輯（無人→`held: false`）。不回識別碼。"""
         with box.locked():
-            sweep(browsers, stage_box, box)
+            sweep(browsers, box)
             return _status(box)
 
     @app.post("/api/session/lock")
@@ -281,7 +287,7 @@ def register_lock(
         """以這個瀏覽器的身分取得編輯階段；已被占用→409（持有者姓名、email、開始時間）。回收、
         查身分、取得在同一段鎖裡（F23）。"""
         with box.locked() as now:
-            sweep(browsers, stage_box, box)
+            sweep(browsers, box)
             identity = browsers.current(request)
             if identity is None:
                 raise HTTPException(
@@ -294,7 +300,17 @@ def register_lock(
             except SessionHeld as error:
                 raise HTTPException(status_code=409, detail=_held_detail(error)) from error
             cleared, box.cleared_drafts = box.cleared_drafts, 0
-        return {**_session_view(session), "token": session.token, "cleared_drafts": cleared}
+            # 接手到的草稿（ADR-00000032）：留在階段裡、而且這個人沒參與過的那幾份——說是誰存的。
+            me = owner_of(identity, ticket_of(request))
+            kept = [
+                {"uid": draft.uid, "saved_by": _saved_by_view(draft, me)}
+                for draft in stage_box["stage"].drafts.values()
+                if me not in draft.touched_by
+            ]
+        return {
+            **_session_view(session), "token": session.token,
+            "cleared_drafts": cleared, "kept_drafts": kept,
+        }
 
     @app.post("/api/session/lock/renew")
     def renew_lock(payload: TokenInput, request: Request) -> dict[str, object]:
@@ -302,7 +318,7 @@ def register_lock(
         的識別碼（`token`）：一般續期不變，`resume`（重新整理後接續）會換新的。只對取得這個階段的
         瀏覽器有效（F23）：別的瀏覽器拿著識別碼來續期、接續，和識別碼失效一樣是 410。"""
         with box.locked():
-            return _renew(browsers, stage_box, box, payload, ticket_of(request))
+            return _renew(browsers, box, payload, ticket_of(request))
 
     @app.post("/api/session/lock/release")
     def release_lock_beacon(
@@ -345,15 +361,11 @@ def _no_earlier_than_last_renewal(box: LockBox) -> datetime:
 
 
 def _renew(
-    browsers: Browsers,
-    stage_box: dict[str, Stage],
-    box: LockBox,
-    payload: TokenInput,
-    ticket: str | None,
+    browsers: Browsers, box: LockBox, payload: TokenInput, ticket: str | None
 ) -> dict[str, object]:
     # 先在 API 層 sweep：逾時的階段要在這裡清草稿、清身分並記下數量——SessionLock 自己的
     # sweep 只會把階段丟掉，之後就沒人知道有東西該清。
-    sweep(browsers, stage_box, box)
+    sweep(browsers, box)
     try:
         if not box.holds(payload.token, ticket):
             raise session_gone(payload.token)
@@ -371,7 +383,7 @@ def _leave(
     payload: ExitInput,
     request: Request,
 ) -> dict[str, object]:
-    sweep(browsers, stage_box, box)
+    sweep(browsers, box)
     if browsers.timed_out(request):
         # 其實已經閒置逾時（頁面還沒問到）：逾時那一刻已照逾時的規則釋放、清草稿。照實說，不記成
         # 已退出（閒置狀態仍說逾時）；也不必確認——身分已經沒了，沒有東西留得住。
@@ -379,13 +391,19 @@ def _leave(
     ticket = ticket_of(request)
     current = box.lock.current
     held = current if ticket is not None and box.holder_ticket == ticket else None
-    drafts = len(stage_box["stage"].drafts) if held is not None else 0
+    stage = stage_box["stage"]
+    drafts = len(stage.drafts) if held is not None else 0
+    # 逐人列（ADR-00000032）：每份草稿的每個參與者各計一次，所以同一份多人參與會重複計入；
+    # `drafts` 仍是不重複的份數。退出清的是**全部**共用草稿（含別人存的），這裡只是把它說清楚。
+    me = owner_of(held.holder, ticket) if held is not None else None
+    by_owner = _by_owner(stage, me) if held is not None else []
     other_tab = held is not None and payload.token != held.token
     if not payload.confirmed and (drafts or other_tab or payload.unsaved):
         raise HTTPException(
             status_code=409,
             detail={
-                "kind": "confirm_required", "drafts": drafts, "other_tab": other_tab,
+                "kind": "confirm_required", "drafts": drafts, "distinct": drafts,
+                "by_owner": by_owner, "other_tab": other_tab,
                 "unsaved": payload.unsaved, "message": _CONFIRM_EXIT,
             },
         )
@@ -393,7 +411,23 @@ def _leave(
         box.give_up(held.token, ticket)
         stage_box["stage"] = discard(stage_box["stage"])
     browsers.leave(request)
-    return {"left": True, "released": held is not None, "cleared_drafts": drafts}
+    return {
+        "left": True, "released": held is not None,
+        "cleared_drafts": drafts, "distinct": drafts, "by_owner": by_owner,
+    }
+
+
+def _saved_by_view(draft: Draft, viewer: Owner) -> dict[str, object] | None:
+    return None if draft.saved_by is None else owner_view(draft.saved_by, viewer)
+
+
+def _by_owner(stage: Stage, viewer: Owner | None) -> list[dict[str, object]]:
+    """階段裡每個參與者各參與了幾份（依首次出現順序）。"""
+    counts: dict[Owner, int] = {}
+    for draft in stage.drafts.values():
+        for who in draft.touched_by:
+            counts[who] = counts.get(who, 0) + 1
+    return [{**owner_view(who, viewer), "count": count} for who, count in counts.items()]
 
 
 _CONFIRM_EXIT = (
@@ -402,15 +436,14 @@ _CONFIRM_EXIT = (
 )
 
 
-def sweep(browsers: Browsers, stage_box: dict[str, Stage], box: LockBox) -> None:
-    """回收逾時的階段：草稿一併清除並記下數量（下次取得時回報）。先讓閒置逾時的瀏覽器退出（#48，
-    它持有的階段在那裡釋放），再回收續期逾時的。續期逾時不清身分（分頁斷了，人不一定走了）。"""
+def sweep(browsers: Browsers, box: LockBox) -> None:
+    """回收逾時的階段。先讓閒置逾時的瀏覽器退出（#48，它持有的階段在那裡釋放、草稿清除並記數），
+    再回收續期逾時的——**只回收階段、草稿保留**（ADR-00000032）：續期逾時是分頁斷了（睡眠、斷網），
+    人不一定走了；草稿記著是誰存的，留給下一個取得者（多半是同一個人醒來重新整理）。"""
     with box.locked() as now:
         browsers.sweep()
         for _expired in box.lock.sweep(now):
             box.holder_ticket = None
-            box.cleared_drafts += len(stage_box["stage"].drafts)
-            stage_box["stage"] = discard(stage_box["stage"])
 
 
 @dataclass
@@ -434,7 +467,7 @@ class Editing:
         # 「檢查＋寫入」整段拿著鎖（F23 條件 2）：和釋放、回收、接手排隊，檢查通過之後不會有人在
         # 寫入之前把編輯權拿走。
         with self.box.locked():
-            sweep(self.browsers, self.stage_box, self.box)
+            sweep(self.browsers, self.box)
             identity = self.browsers.current(request)
             token = request.headers.get(EDITING_HEADER, "")
             if token and not self.box.holds(token, ticket_of(request)):
@@ -468,9 +501,7 @@ def _refused(kind: str, message: str) -> HTTPException:
     return HTTPException(status_code=410, detail={"kind": kind, "message": message})
 
 
-def _checked_identity(
-    browsers: Browsers, lock_box: LockBox, stage_box: dict[str, Stage], payload: SessionInput
-) -> Identity:
+def _checked_identity(browsers: Browsers, lock_box: LockBox, payload: SessionInput) -> Identity:
     """設定身分的檢查。422：值不合法（訊息已是可行動的樣子，原樣傳）；409：別人正持有編輯階段
     ——後來者此時進不了編輯，帶持有者資訊讓前端以唯讀進清單並說明是誰（#33、#288 的條件 7）；
     持有者本人再設一次不擋（他的另一個分頁、或重新選角色）。"""
@@ -478,7 +509,7 @@ def _checked_identity(
         identity = author(payload.name, payload.email, payload.role)
     except InvalidAuthor as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    occupied = held_by_other(browsers, lock_box, identity, stage_box)
+    occupied = held_by_other(browsers, lock_box, identity)
     if occupied is not None:
         raise HTTPException(
             status_code=409,
@@ -501,12 +532,10 @@ def _as_session(identity: Identity) -> dict[str, str]:
     }
 
 
-def held_by_other(
-    browsers: Browsers, box: LockBox, identity: Identity, stage_box: dict[str, Stage]
-) -> SessionHeld | None:
+def held_by_other(browsers: Browsers, box: LockBox, identity: Identity) -> SessionHeld | None:
     """別人正持有編輯階段時，換身分會把持有者的變更紀錄掛到別人頭上——擋在設定身分這一步。
     同一個人（姓名＋email 相同）再設一次不擋（第二個分頁：之後取得階段會被 409、轉唯讀）。"""
-    sweep(browsers, stage_box, box)
+    sweep(browsers, box)
     current = box.lock.current
     if current is None:
         return None
@@ -565,6 +594,6 @@ def _timeout_seconds(box: LockBox) -> float:
 
 
 __all__ = [
-    "LockBox", "SessionInput", "drafts_view", "register_lock", "register_session",
+    "LockBox", "SessionInput", "drafts_view", "owner_of", "register_lock", "register_session",
     "require_permission", "seat_browsers", "sweep", "utc_now",
 ]

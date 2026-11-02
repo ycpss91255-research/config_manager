@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from subprocess import CalledProcessError
 from typing import Literal
 
@@ -16,10 +17,10 @@ from pydantic import BaseModel
 
 from config_manager.api.history import require_entry
 from config_manager.api.checks import checks_for
-from config_manager.api.lock import Editing
-from config_manager.api.session import Identity
+from config_manager.api.browser import ticket_of
+from config_manager.api.lock import Editing, owner_of
 from config_manager.api.shapes import as_problem, drafts_view
-from config_manager.core.drafts import Stage, adopt_draft
+from config_manager.core.drafts import Owner, Stage, adopt_draft
 from config_manager.core.models import FileEntry, Permissions
 from config_manager.core.validate import ERROR, check
 from config_manager.io.allowed_roots import root_prefixes
@@ -48,7 +49,8 @@ def register_drift(app: FastAPI, repo: str, editing: Editing) -> None:
     def resolve_drift(uid: str, payload: ResolveInput, request: Request) -> dict[str, object]:
         """處置一份偏離的 config（設計文件 §3.5.3、§5.4）。三個出口都由人選、都留下痕跡。"""
         with editing.write(request, "處置偏離") as identity:
-            return _resolve(repo, identity, editing.stage_box, uid, payload.action)
+            me = owner_of(identity, ticket_of(request))
+            return _resolve(repo, me, editing.stage_box, uid, payload.action)
 
     @app.post("/api/configs/{uid}/apply")
     def apply_missing(uid: str, request: Request) -> dict[str, object]:
@@ -93,7 +95,7 @@ def _target_text(entry: FileEntry) -> str | None:
 
 
 def _resolve(
-    repo: str, identity: Identity, stage_box: dict[str, Stage], uid: str, action: str
+    repo: str, me: Owner, stage_box: dict[str, Stage], uid: str, action: str
 ) -> dict[str, object]:
     entry, permissions = _permissions_of(repo, uid)
     roots = root_prefixes(repo)
@@ -113,12 +115,12 @@ def _resolve(
         )
     try:
         if action == "overwrite":
-            overwrite(repo, entry, permissions, identity.git_author, roots)
+            overwrite(repo, entry, permissions, me.label, roots)
             return {"uid": uid, "action": action, "record": _latest(repo, uid)}
         if action == "adopt":
             _reject_invalid(repo, entry, target_text)
             plan = adoption(entry, permissions, target_text)
-            apply_promotions(repo, [plan], identity.git_author, roots)
+            apply_promotions(repo, [plan], me.label, roots)
             return {"uid": uid, "action": action, "record": _latest(repo, uid)}
     except TargetReadError as error:
         # 以來源覆蓋／採納前拍現場就發現目標不是一般檔案：拒絕整個動作、目標與 repo 都沒動（F14）。
@@ -127,14 +129,15 @@ def _resolve(
         raise HTTPException(status_code=500, detail=str(error)) from error
     # adopt_draft：內容照載，每個問題當警告回去；進版前須改正（T18）。不碰 repo、不碰 target。
     stage, warnings = adopt_draft(
-        stage_box["stage"], uid, target_text, entry.format, checks_for(repo, entry)
+        stage_box["stage"], uid, target_text, entry.format,
+        replace(checks_for(repo, entry), owner=me),
     )
     stage_box["stage"] = stage
     return {
         "uid": uid,
         "action": action,
         "warnings": [as_problem(problem) for problem in warnings],
-        **drafts_view(stage),
+        **drafts_view(stage, me),
     }
 
 
