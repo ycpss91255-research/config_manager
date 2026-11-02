@@ -7215,7 +7215,7 @@ def _handed_over_draft(open_page, api, repo):
     _save_draft_for(first, _PARAM_UID, "count", "4")
     token = first.evaluate("sessionToken")
     first.context.request.delete(f"{api}/api/session/lock", data={"token": token})
-    first.close()
+    # 不關這個頁面：覆蓋率收尾要透過 CDP 讀它（關掉會在 teardown 失敗）。它會在下一次續期時轉唯讀。
     second = open_page(identity={"name": "乙進版", "email": "yi@example.com", "role": "user"})
     second.wait_for_selector("[data-testid='config-tree']", state="visible")
     return second, "甲編輯"
