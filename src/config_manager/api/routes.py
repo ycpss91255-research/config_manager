@@ -26,19 +26,21 @@ from config_manager.api.drafts import register_drafts
 from config_manager.api.drift import register_drift
 from config_manager.api.history import register_history, require_entry, source_unreadable
 from config_manager.api.schema import register_schema, schema_view
-from config_manager.api.shapes import as_problem
+from config_manager.api.browser import ticket_of
+from config_manager.api.shapes import as_problem, owner_view
 from config_manager.api.search import register_search
 from config_manager.api.lock import (
     EDITING_HEADER,
     Editing,
     LockBox,
+    owner_of,
     register_session,
     require_permission,
     seat_browsers,
     utc_now,
 )
 from config_manager.api.session import Identity, SessionLock, Timeouts
-from config_manager.core.drafts import Stage
+from config_manager.core.drafts import Owner, Stage
 from config_manager.core.errors import (
     ConfigListError,
     DuplicatePrefix,
@@ -235,10 +237,12 @@ def create_app(
             return _onboard_config(repo, root_prefixes(repo), identity, payload)
 
     @app.get("/api/configs/{uid}")
-    def config_detail(uid: str) -> dict[str, object]:
+    def config_detail(uid: str, request: Request) -> dict[str, object]:
         """單筆的 metadata 與內容（設計文件 §3.5.3）。欄位表（W3，#20）據 `types`＋`values`
-        渲染。"""
-        return _config_detail(repo, stage_box, uid)
+        渲染。有草稿時另說是誰存的（相對於看的人，ADR-00000032）。"""
+        identity = editing.browsers.current(request)
+        viewer = None if identity is None else owner_of(identity, ticket_of(request))
+        return _config_detail(repo, stage_box, uid, viewer)
 
     @app.get("/api/browse")
     def browse_filesystem(path: str) -> dict[str, object]:
@@ -427,7 +431,9 @@ def _clean_note(note: str) -> str:
     )
 
 
-def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str, object]:
+def _config_detail(
+    repo: str, stage_box: dict[str, Stage], uid: str, viewer: Owner | None = None
+) -> dict[str, object]:
     """單筆條目的 metadata 與內容（#20）：欄位表以 `types`（欄位路徑→型別，與 inspect 同形）＋
     `values`（來源複本解析後的值樹）渲染，型別與值都來自來源複本、不由前端猜（不變式 6）。
 
@@ -486,6 +492,11 @@ def _config_detail(repo: str, stage_box: dict[str, Stage], uid: str) -> dict[str
         if draft is not None:
             detail["draft_values"] = values(parse(draft.text, draft.fmt))
             detail["draft_overrides"] = dict(draft.reasons)
+            # 誰存的（ADR-00000032）：最後儲存者與全部參與者，相對於看的人標 mine／another_browser。
+            detail["draft_saved_by"] = (
+                None if draft.saved_by is None else owner_view(draft.saved_by, viewer)
+            )
+            detail["draft_touched_by"] = [owner_view(who, viewer) for who in draft.touched_by]
             # 這份草稿此刻的警告（第 3 層的規則等，#44）：重開面板要看得到還有哪些要填理由。
             gate = checks_for(repo, entry)
             found = check(

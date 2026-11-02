@@ -12,7 +12,7 @@ from subprocess import CalledProcessError
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from config_manager.api.checks import overrides_in
+from config_manager.api.checks import drafted_by_in, overrides_in
 from config_manager.api.lock import Editing
 from config_manager.api.session import Identity
 from config_manager.core.drafts import Promotion, Stage
@@ -89,6 +89,8 @@ def _config_history(repo: str, uid: str, prefix: str | None) -> list[dict[str, o
             "body": change.body,
             # 這一筆略過了哪些規則、理由是什麼（#42）；沒有就是空清單。
             "overrides": overrides_in(change.body),
+            # 這一筆的草稿由誰存（ADR-00000032）；author 是進版者。沒有就是空清單。
+            "drafted_by": drafted_by_in(change.body),
         }
         for change in history(repo, uid)
         if change.kind in kinds

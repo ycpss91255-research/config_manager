@@ -18,6 +18,10 @@ from config_manager.io.schema import read_schema
 
 # 進版把略過的規則與理由寫進紀錄內文，一行一條（`core/drafts.promote`）。
 _OVERRIDE = re.compile(r"^override\((?P<rule>[^)]+)\): (?P<reason>.*)$", re.MULTILINE)
+# 進版把別人存的草稿的作者寫進紀錄內文，一行一人（`core/drafts.drafted_by_lines`，ADR-00000032）。
+_DRAFTED_BY = re.compile(
+    r"^drafted-by: (?P<name>.+?) <(?P<email>[^>]*)>(?P<another>（另一個瀏覽器）)?$", re.MULTILINE
+)
 
 
 def checks_for(
@@ -43,3 +47,16 @@ def overrides_in(body: str) -> list[dict[str, str]]:
     略過的紀錄本身有價值：同一條規則被反覆略過，代表規則需要修正（設計 §6.2）。
     """
     return [match.groupdict() for match in _OVERRIDE.finditer(body)]
+
+
+def drafted_by_in(body: str) -> list[dict[str, object]]:
+    """一筆變更紀錄的內文裡，草稿由誰存（ADR-00000032）：`[{name, email, another_browser}]`；
+    沒有就是空清單。author 仍是進版者——這裡列的是「誰編輯了草稿」。"""
+    return [
+        {
+            "name": match.group("name"),
+            "email": match.group("email"),
+            "another_browser": match.group("another") is not None,
+        }
+        for match in _DRAFTED_BY.finditer(body)
+    ]

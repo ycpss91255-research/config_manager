@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from subprocess import CalledProcessError
 
 from fastapi import FastAPI, HTTPException, Request
@@ -14,11 +15,11 @@ from pydantic import BaseModel
 
 from config_manager.api.checks import checks_for
 from config_manager.api.history import require_entry, source_unreadable
-from config_manager.api.lock import Editing
+from config_manager.api.browser import ticket_of
+from config_manager.api.lock import Editing, owner_of
 from config_manager.api.schema import as_specified
-from config_manager.api.session import Identity
-from config_manager.api.shapes import as_problem, drafts_view
-from config_manager.core.drafts import Stage, discard, promote, save_draft
+from config_manager.api.shapes import as_problem, draft_sha, drafts_view
+from config_manager.core.drafts import Owner, Stage, discard, promote, save_draft
 from config_manager.core.errors import (
     DraftInvalid,
     DraftNotFound,
@@ -37,6 +38,20 @@ from config_manager.io.errors import PromoteLeftBehind, TargetReadError, WriterE
 from config_manager.io.parsers import read_source as read_source_copy
 from config_manager.io.preflight import read_config_list
 from config_manager.io.promote import apply as apply_promotions
+
+
+class ExpectedDraft(BaseModel):
+    """進版確認當下看到的一份草稿：uid 與文字的 sha256（`GET /api/drafts` 的 `sha`）。"""
+
+    uid: str
+    sha: str
+
+
+class PromoteInput(BaseModel):
+    """進版的請求主體（可省略）。`expected`：確認框開著時頁面看到的草稿簽章——此刻的草稿和它不同
+    （多了、少了、內容變了）就不進版，回 409 `drafts_changed` 讓人重新確認（ADR-00000032）。"""
+
+    expected: list[ExpectedDraft] | None = None
 
 
 class DraftInput(BaseModel):
@@ -63,35 +78,45 @@ def register_drafts(app: FastAPI, repo: str, editing: Editing) -> None:
     """
     stage_box = editing.stage_box
 
+    def viewer(request: Request) -> Owner | None:
+        """看的人：這個瀏覽器的身分＋票；沒身分就 None（mine 一律 false）。"""
+        identity = editing.browsers.current(request)
+        return None if identity is None else owner_of(identity, ticket_of(request))
+
     @app.get("/api/drafts")
-    def list_drafts() -> dict[str, object]:
-        """目前階段裡的草稿（uid 與 format），供工具列顯示「進版 (N)」（#22）。"""
-        return drafts_view(stage_box["stage"])
+    def list_drafts(request: Request) -> dict[str, object]:
+        """目前階段裡的草稿（uid、format、sha、誰存的），供工具列顯示「進版 (N)」（#22）。"""
+        return drafts_view(stage_box["stage"], viewer(request))
 
     @app.post("/api/drafts")
     def save_one_draft(payload: DraftInput, request: Request) -> dict[str, object]:
         """儲存草稿：把欄位表送來的改動套到來源複本上、跑三層驗證、存進編輯階段（#18／#21）。
-        不產生變更紀錄、不寫到目標——那是進版的事。"""
-        with editing.write(request, "儲存草稿"):
-            return _save_draft(repo, stage_box, payload)
+        不產生變更紀錄、不寫到目標——那是進版的事。成功才記下是誰存的（ADR-00000032）。"""
+        with editing.write(request, "儲存草稿") as identity:
+            return _save_draft(repo, stage_box, payload, owner_of(identity, ticket_of(request)))
 
     @app.delete("/api/drafts")
     def discard_all_drafts(request: Request) -> dict[str, object]:
         """捨棄變更（全域）：清空全部草稿，來源與目標皆不動。"""
-        with editing.write(request, "捨棄變更"):
-            return _discard_drafts(stage_box, None)
+        with editing.write(request, "捨棄變更") as identity:
+            return _discard_drafts(stage_box, None, owner_of(identity, ticket_of(request)))
 
     @app.delete("/api/drafts/{uid}")
     def discard_one_draft(uid: str, request: Request) -> dict[str, object]:
         """捨棄變更（單一 config）。"""
-        with editing.write(request, "捨棄變更"):
-            return _discard_drafts(stage_box, uid)
+        with editing.write(request, "捨棄變更") as identity:
+            return _discard_drafts(stage_box, uid, owner_of(identity, ticket_of(request)))
 
     @app.post("/api/promote")
-    def promote_all_drafts(request: Request) -> dict[str, object]:
-        """進版（全域動作）：全部草稿一次驗證、記錄、寫出，整批原子（#19、ADR-00000022）。"""
+    def promote_all_drafts(
+        request: Request, payload: PromoteInput | None = None
+    ) -> dict[str, object]:
+        """進版（全域動作）：全部草稿一次驗證、記錄、寫出，整批原子（#19、ADR-00000022）。
+        body 可帶確認當下的草稿簽章（`expected`），不符就 409 不進版。"""
         with editing.write(request, "進版") as identity:
-            return _promote_all(repo, root_prefixes(repo), identity, stage_box)
+            me = owner_of(identity, ticket_of(request))
+            expected = None if payload is None else payload.expected
+            return _promote_all(repo, root_prefixes(repo), me, stage_box, expected)
 
 
 def _apply_edits(parsed: Parsed, edits: dict[str, object], uid: str, source: str) -> None:
@@ -115,7 +140,9 @@ def _apply_edits(parsed: Parsed, edits: dict[str, object], uid: str, source: str
             ) from error
 
 
-def _save_draft(repo: str, stage_box: dict[str, Stage], payload: DraftInput) -> dict[str, object]:
+def _save_draft(
+    repo: str, stage_box: dict[str, Stage], payload: DraftInput, owner: Owner
+) -> dict[str, object]:
     """儲存草稿的邏輯（#18／#21）：以來源複本為底套上改動、跑驗證、存進階段。不記錄、不寫目標
     ——那是進版的事。
 
@@ -125,7 +152,7 @@ def _save_draft(repo: str, stage_box: dict[str, Stage], payload: DraftInput) -> 
     清單，另帶這份內容的全部警告（`warnings`，含已填理由略過的）。
     """
     entry = require_entry(read_config_list(repo), payload.uid)
-    checks = checks_for(repo, entry, payload.overrides)
+    checks = replace(checks_for(repo, entry, payload.overrides), owner=owner)
     try:
         parsed = parse(read_source_copy(repo, entry.source), entry.format)
         _apply_edits(parsed, as_specified(checks.schema, payload.edits), payload.uid, entry.source)
@@ -167,27 +194,45 @@ def _save_draft(repo: str, stage_box: dict[str, Stage], payload: DraftInput) -> 
         text, entry.format, rules=checks.rules, schema=checks.schema, lintrc=checks.lintrc
     )
     warnings = [as_problem(problem) for problem in found if problem.severity == WARNING]
-    return {**drafts_view(stage_box["stage"]), "warnings": warnings}
+    return {**drafts_view(stage_box["stage"], owner), "warnings": warnings}
 
 
-def _discard_drafts(stage_box: dict[str, Stage], uid: str | None) -> dict[str, object]:
+def _discard_drafts(
+    stage_box: dict[str, Stage], uid: str | None, viewer: Owner
+) -> dict[str, object]:
     try:
         stage_box["stage"] = discard(stage_box["stage"], uid)
     except DraftNotFound as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-    return drafts_view(stage_box["stage"])
+    return drafts_view(stage_box["stage"], viewer)
 
 
 def _promote_all(
-    repo: str, roots: tuple[str, ...], identity: Identity, stage_box: dict[str, Stage]
+    repo: str,
+    roots: tuple[str, ...],
+    promoter: Owner,
+    stage_box: dict[str, Stage],
+    expected: list[ExpectedDraft] | None,
 ) -> dict[str, object]:
-    """進版的邏輯（#19）：core promote 全部驗證 → io apply 寫出＋記錄（失敗整批回滾）→ 清空草稿。"""
+    """進版的邏輯（#19）：core promote 全部驗證 → io apply 寫出＋記錄（失敗整批回滾）→ 清空草稿。
+    `expected` 不是 None 時先比簽章（ADR-00000032）：確認框開著時草稿變了就不進版。"""
     stage = stage_box["stage"]
     if not stage.drafts:
         raise HTTPException(
             status_code=409,
             detail="沒有草稿可進版。下一步：先儲存至少一份草稿（POST /api/drafts）",
         )
+    if expected is not None:
+        now = {(draft.uid, draft_sha(draft)) for draft in stage.drafts.values()}
+        if {(item.uid, item.sha) for item in expected} != now:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "kind": "drafts_changed",
+                    "message": "確認之後草稿變了（多了、少了或內容不同），這次沒有進版。"
+                    "下一步：重新看一次要進版的草稿，再按一次進版",
+                },
+            )
     config_list = read_config_list(repo)
     # 進版時依**此刻**的 schema 與規則重驗（#39／#41）：草稿存下之後 schema 被收緊、或規則才
     # 加上而草稿沒有略過它的理由，都在這裡被擋。
@@ -197,7 +242,7 @@ def _promote_all(
         if entry.uid in stage.drafts
     }
     try:
-        plans = promote(stage, config_list, checks)
+        plans = promote(stage, config_list, checks, promoter)
     except PromoteInvalid as error:
         # 任一份沒過整批不進版；指出哪一份（uid）的哪些參數。
         raise HTTPException(
@@ -210,7 +255,7 @@ def _promote_all(
             },
         ) from error
     try:
-        promoted = apply_promotions(repo, plans, identity.git_author, roots)
+        promoted = apply_promotions(repo, plans, promoter.label, roots)
     except TargetReadError as error:
         # 某份目標不是一般檔案／太大／讀不出來：拍現場時就停、整批不進版、草稿保留（F14）。
         raise HTTPException(status_code=422, detail=str(error)) from error
