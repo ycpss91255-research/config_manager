@@ -249,6 +249,29 @@ def api_developing(repo, sources_root, api):
 
 
 @pytest.fixture
+def api_logging(repo, sources_root, api):
+    """一個**開著 access log** 的服務（F8 決定 C）：逐則起、逐則收，比照 `api_developing`。
+
+    紀錄寫到 stderr，測試用 `capfd` 讀。預設的 `api` 沒開，對照用。
+    """
+    del sources_root, api  # 只為了排序：白名單已由 `api` 種好；外部服務時那份是 entrypoint 種的
+    port = _free_port()
+    app = create_app(repo, access_log=True)
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    base = f"http://127.0.0.1:{port}"
+    try:
+        _wait_until_answering(base)
+        yield base
+    finally:
+        server.should_exit = True
+        thread.join(timeout=_STARTUP_TIMEOUT)
+
+
+@pytest.fixture
 def api_alone(repo, sources_root, api):
     """這一則自己起的一個**部署模式**服務，回 (位址, 它的 LockBox)（F23 的排隊規格用）。
 
