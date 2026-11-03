@@ -27,7 +27,9 @@ from dataclasses import dataclass
 
 import uvicorn
 
+from config_manager.api.access_log import access_logged
 from config_manager.api.errors import (
+    AccessLogInvalid,
     ConfigRepoMissing,
     IdleTimeoutInvalid,
     ModeInvalid,
@@ -71,8 +73,7 @@ class ServePlan:
     """
 
     repo: str
-    host: str
-    port: int
+    listen: tuple[str, int]  # (host, port)；`host`／`port` 兩個屬性讀它
     allowed_origins: tuple[str, ...]
     # 編輯階段的續期逾時（秒）；None＝用預設值（#33）。部署模式的閒置逾時是 #48。
     session_timeout: float | None = None
@@ -80,6 +81,16 @@ class ServePlan:
     mode: str = DEPLOYMENT
     # 部署模式的閒置逾時（秒）；None＝用預設值（10 分鐘，#48）。開發模式不逾時，設了也不生效。
     idle_timeout: float | None = None
+    # 可選的 access log（F8 決定 C）：平常關著、要查時打開；每請求一行、不記敏感值。
+    access_log: bool = False
+
+    @property
+    def host(self) -> str:
+        return self.listen[0]
+
+    @property
+    def port(self) -> int:
+        return self.listen[1]
 
     @property
     def timeouts(self) -> Timeouts:
@@ -113,12 +124,25 @@ def serve_plan(host: str, port: int, environ: Mapping[str, str]) -> ServePlan:
 
     return ServePlan(
         repo=repo,
-        host=host,
-        port=port,
+        listen=(host, port),
         allowed_origins=_allowed_origins(environ),
         session_timeout=_session_timeout(environ),
         mode=_mode(environ),
         idle_timeout=_idle_timeout(environ),
+        access_log=_access_log(environ),
+    )
+
+
+def _access_log(environ: Mapping[str, str]) -> bool:
+    """`CM_ACCESS_LOG`：未設或 `0` 關（預設）、`1` 開；其他值具名拒絕——診斷開關寫錯了不能
+    靜默當成開或關（F8 決定 C）。紀錄本身在 `api/access_log`，由 `serve` 掛上。"""
+    raw = environ.get("CM_ACCESS_LOG", "").strip()
+    if raw in ("", "0"):
+        return False
+    if raw == "1":
+        return True
+    raise AccessLogInvalid(
+        f"CM_ACCESS_LOG 必須是 0 或 1，現在是 {raw!r}。下一步：改成 1（開）或 0／取消設定（關）"
     )
 
 
@@ -588,6 +612,7 @@ def _serve(host: str, port: int) -> int:
     try:
         plan = serve_plan(host, port, os.environ)
     except (
+        AccessLogInvalid,
         ConfigRepoMissing,
         IdleTimeoutInvalid,
         ModeInvalid,
@@ -597,8 +622,11 @@ def _serve(host: str, port: int) -> int:
         print(f"config_manager: {error}", file=sys.stderr)
         return 2
 
+    app = create_app(plan.repo, plan.allowed_origins, plan.timeouts, mode=plan.mode)
+    if plan.access_log:
+        app.add_middleware(access_logged)  # 診斷用的請求紀錄（F8 決定 C）；預設不掛
     uvicorn.run(
-        create_app(plan.repo, plan.allowed_origins, plan.timeouts, mode=plan.mode),
+        app,
         host=plan.host,
         port=plan.port,
         log_level="warning",

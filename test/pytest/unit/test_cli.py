@@ -19,6 +19,8 @@ import urllib.parse
 import pytest
 
 from config_manager.api.cli import main, serve_plan
+from config_manager.api import errors as api_errors
+from config_manager.api.access_log import access_logged
 from config_manager.api.errors import (
     ConfigRepoMissing,
     IdleTimeoutInvalid,
@@ -637,3 +639,52 @@ def test_a_refused_restore_is_a_failure_with_the_reason_on_stderr(monkeypatch, c
 
     err = capsys.readouterr().err
     assert (status, "/srv/config-repo" in err, "不是空目錄" in err) == (1, True, True)
+
+
+# ── CM_ACCESS_LOG（F8 決定 C）────────────────────────────────────────────────
+# 可選的請求紀錄：平常關著、要查時打開。未設或 0 關、1 開；其他值具名拒絕，不靜默當成開或關。
+
+
+def test_serve_plan_leaves_the_access_log_off_when_unset():
+    plan = serve_plan("0.0.0.0", 9000, {"CM_CONFIG_REPO": "/srv/r"})
+
+    assert plan.access_log is False
+
+
+def test_serve_plan_keeps_the_access_log_off_for_zero():
+    plan = serve_plan("0.0.0.0", 9000, {"CM_CONFIG_REPO": "/srv/r", "CM_ACCESS_LOG": "0"})
+
+    assert plan.access_log is False
+
+
+def test_serve_plan_turns_the_access_log_on_for_one():
+    plan = serve_plan("0.0.0.0", 9000, {"CM_CONFIG_REPO": "/srv/r", "CM_ACCESS_LOG": "1"})
+
+    assert plan.access_log is True
+
+
+def test_serve_plan_refuses_any_other_access_log_value_by_name():
+    # 寫錯的值不能靜默當成開或關。
+    with pytest.raises(api_errors.AccessLogInvalid, match="CM_ACCESS_LOG"):
+        serve_plan("0.0.0.0", 9000, {"CM_CONFIG_REPO": "/srv/r", "CM_ACCESS_LOG": "yes"})
+
+
+def _served_app(monkeypatch, environ: dict[str, str]):
+    started: dict[str, object] = {}
+    monkeypatch.setattr("uvicorn.run", lambda app, **options: started.update(app=app, **options))
+    for key, value in environ.items():
+        monkeypatch.setenv(key, value)
+    main(["config_manager", "serve", "--host", "127.0.0.1", "--port", "9000"])
+    return started["app"]
+
+
+def test_serve_mounts_the_access_log_when_the_plan_says_so(monkeypatch):
+    app = _served_app(monkeypatch, {"CM_CONFIG_REPO": "/srv/config-repo", "CM_ACCESS_LOG": "1"})
+
+    assert access_logged in [middleware.cls for middleware in app.user_middleware]
+
+
+def test_serve_leaves_the_access_log_out_by_default(monkeypatch):
+    app = _served_app(monkeypatch, {"CM_CONFIG_REPO": "/srv/config-repo"})
+
+    assert access_logged not in [middleware.cls for middleware in app.user_middleware]
