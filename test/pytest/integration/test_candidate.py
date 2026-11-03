@@ -132,7 +132,8 @@ def test_an_unstable_prefix_is_refused_naming_only_the_input(tmp_path):
     (inside / "esc").symlink_to("loop/../link_out")
     with pytest.raises(CandidatePrefixUnstable) as exc:
         count_candidates(str(inside / "esc"))
-    assert (str(inside / "esc") in str(exc.value), "link_out" in str(exc.value)) == (True, False)
+    message = str(exc.value)
+    assert (str(inside / "esc") in message, "link_out" in message) == (True, False)
 
 
 def test_a_prefix_that_is_a_symlink_to_a_directory_is_counted(tmp_path):
