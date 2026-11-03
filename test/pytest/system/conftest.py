@@ -24,6 +24,7 @@ import socket
 import subprocess
 import threading
 import time
+from typing import NamedTuple
 import urllib.error
 import urllib.request
 
@@ -34,6 +35,14 @@ from config_manager.api.access_log import access_logged
 from config_manager.api.lock import LockBox
 from config_manager.api.routes import create_app
 from config_manager.core.roles import DEVELOPMENT
+
+
+class LoggingApi(NamedTuple):
+    """開著 access log 的服務：位址與收到的紀錄行。"""
+
+    url: str
+    lines: list[str]
+
 
 _MINIMAL_LIST = """\
 list_version = 1
@@ -253,12 +262,13 @@ def api_developing(repo, sources_root, api):
 def api_logging(repo, sources_root, api):
     """一個**掛了 access log** 的服務（F8 決定 C）：逐則起、逐則收，比照 `api_developing`。
 
-    紀錄寫到 stderr，測試用 `capfd` 讀。預設的 `api` 沒開，對照用。
+    紀錄收進 `lines`（`sink`），測試直接讀；預設的 `api` 沒開，對照用。
     """
     del sources_root, api  # 只為了排序：白名單已由 `api` 種好；外部服務時那份是 entrypoint 種的
     port = _free_port()
     app = create_app(repo)
-    app.add_middleware(access_logged)
+    lines: list[str] = []
+    app.add_middleware(access_logged, sink=lines.append)
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
@@ -267,7 +277,12 @@ def api_logging(repo, sources_root, api):
     base = f"http://127.0.0.1:{port}"
     try:
         _wait_until_answering(base)
-        yield base
+        # 探路那一筆的紀錄在回應之後才寫：等它進來再清，免得它稍後混進測試的紀錄裡。
+        until = time.monotonic() + 2
+        while not lines and time.monotonic() < until:
+            time.sleep(0.02)
+        lines.clear()
+        yield LoggingApi(base, lines)
     finally:
         server.should_exit = True
         thread.join(timeout=_STARTUP_TIMEOUT)

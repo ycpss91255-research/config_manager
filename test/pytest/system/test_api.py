@@ -5126,15 +5126,12 @@ def _access_lines(err: str) -> list[str]:
     return [line for line in err.splitlines() if line.startswith("access ")]
 
 
-def _access_output(capfd, deadline_s: float = 3.0) -> str:
-    """紀錄是在回應送出**之後**才寫的：客戶端收到回應時那一行可能還沒落到 stderr，等它出現。"""
-    collected = ""
+def _wait_lines(lines: list[str], deadline_s: float = 3.0) -> list[str]:
+    """紀錄是在回應送出**之後**才寫的：客戶端收到回應時那一行可能還沒進來，等它出現。"""
     end = time.monotonic() + deadline_s
-    while True:
-        collected += capfd.readouterr().err
-        if _access_lines(collected) or time.monotonic() >= end:
-            return collected
+    while not lines and time.monotonic() < end:
         time.sleep(0.05)
+    return list(lines)
 
 
 def _fields(line: str) -> tuple[str, str, str]:
@@ -5143,19 +5140,19 @@ def _fields(line: str) -> tuple[str, str, str]:
     return match.group(1), match.group(2), match.group(3)
 
 
-def test_the_access_log_writes_one_line_per_request_and_keeps_the_secrets_out(api_logging, capfd):
-    capfd.readouterr()  # 清掉起服務時的輸出
+def test_the_access_log_writes_one_line_per_request_and_keeps_the_secrets_out(api_logging):
     request = urllib.request.Request(
-        f"{api_logging}/api/session/lock?token=QUERY_SECRET",
+        f"{api_logging.url}/api/session/lock?token=QUERY_SECRET",
         headers={"Cookie": "cm_browser=COOKIE_SECRET", _EDITING_HEADER: "HEADER_SECRET"},
     )
     with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
         response.read()
 
-    err = _access_output(capfd)
+    lines = _wait_lines(api_logging.lines)
+    err = "\n".join(lines)
     secrets = ("QUERY_SECRET", "COOKIE_SECRET", "HEADER_SECRET", "token=", "cm_browser")
     leaked = [secret for secret in secrets if secret in err]
-    assert ([_fields(line) for line in _access_lines(err)], leaked) == (
+    assert ([_fields(line) for line in lines], leaked) == (
         [("GET", "/api/session/lock", "200")], []
     )
 
@@ -5168,30 +5165,119 @@ def test_without_the_access_log_no_request_is_recorded(api, capfd):
     assert _access_lines(capfd.readouterr().err) == []
 
 
-def test_the_access_log_escapes_control_characters_in_the_path(api_logging, capfd):
+def test_the_access_log_escapes_control_characters_in_the_path(api_logging):
     # 路徑裡的換行不能變成第二行（偽造紀錄）：跳脫成 \x0a，仍是一行。
-    capfd.readouterr()
     with pytest.raises(urllib.error.HTTPError) as exc:
-        _get(api_logging, "/api/configs/a%0Ab")
+        _get(api_logging.url, "/api/configs/a%0Ab")
 
-    err = _access_output(capfd)
-    lines = _access_lines(err)
+    lines = _wait_lines(api_logging.lines)
+    err = "\n".join(lines)
     assert (len(lines), "a\nb" in err) == (1, False)
     assert _fields(lines[0]) == ("GET", "/api/configs/a\\x0ab", str(exc.value.code))
 
 
-def test_the_access_log_records_a_structured_500_once(api_logging, repo, capfd):
+def test_the_access_log_records_a_structured_500_once(api_logging, repo):
     list_path = pathlib.Path(repo) / "config-list.toml"
     original = list_path.read_text(encoding="utf-8")
     list_path.write_text("this is not valid toml {[\n", encoding="utf-8")
-    capfd.readouterr()
     try:
         with pytest.raises(urllib.error.HTTPError) as exc:
-            _get(api_logging, "/api/configs")
+            _get(api_logging.url, "/api/configs")
     finally:
         list_path.write_text(original, encoding="utf-8")
 
-    lines = _access_lines(_access_output(capfd))
+    lines = _wait_lines(api_logging.lines)
     assert (exc.value.code, [_fields(line) for line in lines]) == (
         _SERVER_ERROR, [("GET", "/api/configs", "500")]
     )
+
+
+# ── T9：候選數預覽與加入同一判準（第 6 批 F30／F4）───────────────────────────
+# 預覽先過與加入同一條 check_prefix（相對路徑在任何解析之前就拒絕），再以 stable_realpath 解析；
+# 解析不出唯一位置只引用輸入的前綴，不印沒解析完的假路徑。
+
+
+def _candidate_refused(api, prefix) -> dict:
+    """候選數預覽 `prefix` 預期被拒，回結構化 detail。"""
+    query = urllib.parse.urlencode({"prefix": str(prefix)})
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(api, f"/api/candidate-count?{query}")
+    assert exc.value.code == _UNPROCESSABLE
+    return _detail(exc.value)
+
+
+def _unstable_prefix(tmp_path) -> pathlib.Path:
+    """F19-3 的樣板：`esc → loop/../link_out`，字面乾淨、解析不出唯一位置。"""
+    inside = tmp_path / "f30_inside"
+    outside = tmp_path / "f30_outside"
+    inside.mkdir()
+    outside.mkdir()
+    (inside / "loop").symlink_to(inside / "loop")
+    (inside / "link_out").symlink_to(outside)
+    (inside / "esc").symlink_to("loop/../link_out")
+    return inside / "esc"
+
+
+def test_a_candidate_count_for_an_unstable_prefix_names_only_what_was_typed(api, tmp_path):
+    _set_session(api)  # developer
+    prefix = _unstable_prefix(tmp_path)
+
+    detail = _candidate_refused(api, prefix)
+
+    message = detail["message"]
+    assert (detail["kind"], str(prefix) in message, "link_out" in message, "→" in message) == (
+        "unstable", True, False, False
+    )
+
+
+def test_preview_and_add_refuse_an_unstable_prefix_for_the_same_reason(api, tmp_path):
+    _set_session(api)  # developer
+    prefix = _unstable_prefix(tmp_path)
+    preview = _candidate_refused(api, prefix)["message"]
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/allowed-roots", {"prefix": str(prefix)})
+
+    added = _detail(exc.value)
+    reason = "解析不出唯一的真正位置"
+    assert (exc.value.code, reason in preview, reason in added) == (_UNPROCESSABLE, True, True)
+
+
+def test_a_relative_candidate_prefix_is_refused_before_any_resolving(api):
+    # F4：相對路徑不能先接上服務的工作目錄再說「不存在」——直接說要絕對路徑。
+    _set_session(api)  # developer
+
+    detail = _candidate_refused(api, "srv/cm")
+
+    message = detail["message"]
+    assert (
+        detail["kind"],
+        "以 / 開頭的絕對路徑" in message,
+        "/opt/config_manager" in message,
+        "→" in message,
+    ) == ("invalid_prefix", True, False, False)
+
+
+def test_a_candidate_prefix_with_nul_is_refused_with_a_readable_escape(api):
+    _set_session(api)  # developer
+
+    detail = _candidate_refused(api, "/srv/x\x00y")
+
+    assert (detail["kind"], "\\x00" in detail["message"], "\x00" in detail["message"]) == (
+        "invalid_prefix", True, False
+    )
+
+
+def test_a_candidate_prefix_that_is_a_symlink_to_a_real_directory_is_counted(api, tmp_path):
+    # 「正常絕對路徑不受影響」：前綴本身是指向真目錄的連結（解析穩定）照數。
+    _set_session(api)  # developer
+    real = tmp_path / "f4_real"
+    real.mkdir()
+    (real / "a.yaml").write_text("x", encoding="utf-8")
+    link = tmp_path / "f4_link"
+    link.symlink_to(real)
+
+    query = urllib.parse.urlencode({"prefix": str(link)})
+    result = _get(api, f"/api/candidate-count?{query}")
+
+    assert result == {"count": 1, "capped": False}

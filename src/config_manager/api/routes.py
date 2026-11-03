@@ -80,7 +80,7 @@ from config_manager.io.errors import (
     CandidateError,
     TargetReadError,
     CandidateNotADirectory,
-    CandidatePrefixEscape,
+    CandidatePrefixUnstable,
     CandidateUnreadable,
     ChangeError,
     ContentUnreadable,
@@ -659,14 +659,15 @@ def _browse_kind(error: BrowseError) -> str:
     return "browse_error"
 
 
-_CANDIDATE_KINDS: tuple[tuple[type[CandidateError], str], ...] = (
-    (CandidatePrefixEscape, "prefix_escape"),
+_CANDIDATE_KINDS: tuple[tuple[type[Exception], str], ...] = (
+    (InvalidPrefix, "invalid_prefix"),  # 與加入同一條字面檢查（第 6 批 F4）
+    (CandidatePrefixUnstable, "unstable"),  # 解析不出唯一位置（第 6 批 F30）
     (CandidateNotADirectory, "not_a_directory"),
     (CandidateUnreadable, "unreadable"),
 )
 
 
-def _candidate_kind(error: CandidateError) -> str:
+def _candidate_kind(error: Exception) -> str:
     """把候選數的具名例外對應成機器可讀的原因碼，供前端依原因分流（比照 _browse_kind）。"""
     for kind_type, kind in _CANDIDATE_KINDS:
         if isinstance(error, kind_type):
@@ -684,7 +685,7 @@ def _candidate_count(identity: Identity | None, prefix: str) -> dict[str, object
     require_permission(identity, MAINTAIN_ROOTS)
     try:
         result = count_candidates(prefix)
-    except CandidateError as error:
+    except (CandidateError, InvalidPrefix) as error:
         detail: dict[str, object] = {"kind": _candidate_kind(error), "message": str(error)}
         raise HTTPException(status_code=422, detail=detail) from error
     return {"count": result.count, "capped": result.capped}

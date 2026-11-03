@@ -86,9 +86,9 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 |---|---|---|
 | 工作區 | `data-testid="workspace"` | 右側容器；尚未點選時顯示 `workspace-empty` 提示 |
 | 展開區塊 | `data-testid="panel-<uid>"` | **可同時存在多個**（#36），新開的在最上面；工作區每份 config 一個槽（`data-uid`／`data-view`＝panel／history／diff），歷史與差異檢視只換自己那一槽。標頭（`panel-head`）單擊折疊／展開（`data-collapsed`），`panel-close` 關閉。讀不到內容時顯示 `panel-error-<uid>`（原樣錯誤，不留空表） |
-| 狀態標籤 | `data-testid="panel-status-<uid>"` | 文字為一致／偏離／未部署；判不出狀態時為「錯誤」 |
-| 判不出狀態橫幅 | `data-testid="error-banner"` | **只在判不出狀態時出現**。寫「判不出狀態」與清單給的原因、下一步（與那一列逐字相同，F5）。非 raw 的條目來源讀不到時，區塊整個換成 `panel-error-<uid>`（讀不到內容），不會有這條橫幅 |
-| 未部署橫幅 | `data-testid="missing-banner"` | **只在未部署時出現**（一致、偏離、判不出狀態都沒有）。說明目標檔案不存在、是哪個路徑，以及「寫出到目標」會把來源內容與記下的權限寫回去、設定庫不變所以不會多一筆變更紀錄。唯讀時說明仍在、入口不出現（#306） |
+| 狀態標籤 | `data-testid="panel-status-<uid>"` | 文字為一致／偏離／未部署；判不出狀態時為「錯誤」。**跟著清單走**（第 6 批 F31）：清單每次重新載入成功後依新列重算，與左側那一列逐字相同；欄位表不重畫 |
+| 判不出狀態橫幅 | `data-testid="error-banner"` | **只在判不出狀態時出現**（清單重載後列變判不出就掛上、恢復就移除，第 6 批 F31）。寫「判不出狀態」與清單給的原因、下一步（與那一列逐字相同，F5）。非 raw 的條目來源讀不到時，區塊整個換成 `panel-error-<uid>`（讀不到內容），不會有這條橫幅 |
+| 未部署橫幅 | `data-testid="missing-banner"` | **只在未部署時出現**（一致、偏離、判不出狀態都沒有；清單重載後列變未部署就掛上、寫回後移除，第 6 批 F31）。說明目標檔案不存在、是哪個路徑，以及「寫出到目標」會把來源內容與記下的權限寫回去、設定庫不變所以不會多一筆變更紀錄。唯讀時說明仍在、入口不出現（#306） |
 | 寫出到目標 | 文字「寫出到目標」（`data-testid="panel-apply"`） | 在未部署橫幅內（`.editing-only`）。按下先重新比對：仍是未部署才 `POST /api/configs/{uid}/apply`，成功→`promote-done`（寫到哪個路徑、沒有變更紀錄）、樹與區塊回到一致、橫幅消失。這段時間目標已經出現（偏離／一致）、判不出狀態或已不在清單→**不寫出**，樹與區塊換成現況並以 `apply-error` 說明原因與下一步。進行中文字「寫出中…」、`aria-busy`，不會送出第二次。不經確認對話框（只補回不存在的檔案，不覆蓋任何東西）（#306）。**不覆蓋由後端保證**：目標已存在時 `apply` 一律 409、檔案不動，頁面的重新比對只是讓人少碰一次壁；要蓋過既有的檔案走差異檢視的「以來源覆蓋目標」（先確認、留紀錄） |
 | 寫出錯誤 | `data-testid="apply-error"` | 後端拒絕（原因原樣顯示）、送不出去（指名「寫出到目標」與下一步），或狀態已不是未部署（見上）（#306） |
 | 草稿指示 | `data-testid="panel-draft-<uid>"` | 該區塊有草稿時出現（`GET /api/configs/{uid}` 回 `draft_values`）；文字含最後儲存者「● 草稿（甲）」；區塊開著時儲存成功，文字與旁邊的參與者按鈕依回應即時更新（不必重開區塊） |
@@ -339,9 +339,9 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 返回 | `data-testid="whitelist-back"` | 回 W2 清單 |
 | 新增前綴輸入 | `data-testid="whitelist-add-input"` | 要加入白名單的絕對路徑（與 W7 的 `whitelist-prefix-input` 不同元素） |
 | 預覽 | `data-testid="whitelist-preview-button"` | 對輸入的前綴 `GET /api/candidate-count`；不每字打就數（避免每字遞迴走訪主機目錄，§7.9／#206） |
-| 候選數預覽 | `data-testid="whitelist-preview"` | 「此路徑下有 N 個可納管檔」；觸上限顯示「N+」（`capped`）；前綴不合法（`..`／不存在／非目錄）顯示原樣錯誤訊息；空時隱藏；**輸入一改或按加入時清掉**，不留著舊路徑的數字 |
+| 候選數預覽 | `data-testid="whitelist-preview"` | 「此路徑下有 N 個可納管檔」；觸上限顯示「N+」（`capped`）；前綴不合法（相對路徑／`..`／NUL 與加入側同一句；解析不出唯一位置只引用輸入的前綴；不存在／非目錄）顯示原樣錯誤訊息（第 6 批 F30／F4）；空時隱藏；**輸入一改或按加入時清掉**，不留著舊路徑的數字 |
 | 加入白名單 | `data-testid="whitelist-add"` | 先比對目前的白名單——已經在裡面的直接在 `whitelist-error` 說已存在、不開確認框；再數候選檔、經 W6 確認框（寫明即將開放的目錄含子目錄、底下有幾個可納管檔）；確認才 `POST /api/allowed-roots`（prefix 取自輸入），成功後重載清單、清空輸入；取消什麼都不變、輸入還在 |
-| 新增錯誤 | `data-testid="whitelist-error"` | 新增失敗原樣顯示（`..`／symlink 逃逸 422、指向到不了的目錄、重複前綴 409）；空時隱藏 |
+| 新增錯誤 | `data-testid="whitelist-error"` | 新增失敗原樣顯示（相對路徑／`..`／NUL、解析不出唯一位置、指向到不了的目錄 422——與預覽同一判準同一句；重複前綴 409）；空時隱藏 |
 | 根清單 | `data-testid="whitelist-roots"` | 目前允許的根（`GET /api/allowed-roots` 的 `roots[]`）；空時顯示「白名單目前是空的」 |
 | 根項目 | `data-testid="whitelist-root-<原樣前綴>"` | 顯示原樣 prefix、resolved（realpath）、`由 <added_by> 於 <added_at>`（誰／何時，AC2）。**解析不出唯一位置的根（F19）**：resolved 處改顯示 `whitelist-problem`（後端 `problem` 的字，紅色），其餘欄位與「移除」照舊 |
 | 移除 | 根項目內 `data-testid="whitelist-remove"` | 文字「移除」；先以 `confirmed=false` `DELETE`，回受影響清單＋要求確認（AC3） |

@@ -7375,3 +7375,157 @@ def test_a_draft_changed_while_the_promote_confirmation_was_open_is_refused(open
     page.click("[data-testid='confirm-cancel']")
 
     assert _api_json(api, "GET", f"/api/configs/{_PARAM_UID}/history") == before
+
+
+# ── T11：開著的區塊跟著清單走（第 6 批 F31）──────────────────────────────────
+# 區塊標頭的狀態與橫幅原本只在開區塊那一刻算一次；「檢查差異」只重畫左側樹。清單重載後，
+# 開著的區塊要跟著變：標籤逐字同左側那一列，判不出／未部署橫幅掛上或移除，欄位表不重畫。
+_WAIT_SHORT = 5000
+
+
+def _rescan_done(page):
+    page.click("[data-testid='rescan']")
+    page.wait_for_selector("[data-testid='scan-status'][data-state='done']")
+
+
+def _swap_target_for_a_fifo(target) -> None:
+    target.unlink()
+    os.mkfifo(target)
+
+
+def _restore_target(target, content: str = "count: 3\n") -> None:
+    target.unlink()
+    target.write_text(content, encoding="utf-8")
+
+
+def test_an_open_panel_follows_the_list_into_cannot_tell_with_the_reason(open_page, repo):
+    # 區塊先開（一致）再檢查差異：標籤變「錯誤」，橫幅寫那一列的原因與下一步。
+    _listing_with(repo, "count: 3\n")
+    target = repo / "deployed" / "p.yaml"
+    page = _open_panel(open_page())
+    page.wait_for_selector(f"[data-testid='panel-status-{_PARAM_UID}']:has-text('一致')")
+    _swap_target_for_a_fifo(target)
+    try:
+        _rescan_done(page)
+        banner = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='error-banner']"
+        page.wait_for_selector(banner, timeout=_WAIT_SHORT)
+        reason = page.get_attribute("[data-testid='row-error']", "title")
+        shown = page.inner_text(banner)
+        status = page.inner_text(f"[data-testid='panel-status-{_PARAM_UID}']")
+    finally:
+        _restore_target(target)
+
+    assert (status, reason in shown) == ("錯誤", True)
+
+
+def test_an_open_panel_clears_the_old_error_after_the_target_is_restored(open_page, repo):
+    # 區塊在「錯誤」時開的：目標修好再檢查差異，標籤回「一致」、橫幅消失。
+    _listing_with(repo, "count: 3\n")
+    target = repo / "deployed" / "p.yaml"
+    _swap_target_for_a_fifo(target)
+    try:
+        page = _open_panel(open_page())
+        page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='error-banner']")
+    finally:
+        _restore_target(target)
+
+    _rescan_done(page)
+
+    page.wait_for_selector("[data-testid='status-dot'][data-state='in_sync']")
+    page.wait_for_selector(
+        f"[data-testid='panel-status-{_PARAM_UID}']:has-text('一致')", timeout=_WAIT_SHORT
+    )
+    banner = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='error-banner']"
+    assert page.query_selector(banner) is None
+
+
+def test_an_open_panels_status_label_follows_the_list_into_drift_and_keeps_typing(open_page, repo):
+    # 非錯誤的狀態也要同步；欄位表不重畫——還沒儲存的輸入留著。
+    _listing_with(repo, "count: 3\n")
+    target = repo / "deployed" / "p.yaml"
+    page = _open_panel(open_page())
+    page.fill(_param_value("count"), "7")
+    target.write_text("count: 99\n", encoding="utf-8")
+
+    _rescan_done(page)
+
+    page.wait_for_selector("[data-testid='status-dot'][data-state='drift']")
+    page.wait_for_selector(
+        f"[data-testid='panel-status-{_PARAM_UID}']:has-text('偏離')", timeout=_WAIT_SHORT
+    )
+    assert page.input_value(_param_value("count")) == "7"
+
+
+def test_an_open_panel_follows_the_list_into_missing_and_back_after_writing_out(open_page, repo):
+    # 目標被刪 → 檢查差異 → 開著的區塊出現未部署橫幅與「寫出到目標」；寫回後橫幅移除。
+    # 目標放在白名單內（寫出修復只寫白名單內的位置），比照 `_missing`。
+    target = _listing_many(repo, {"p": "count: 3\n"})["p"]
+    target.chmod(0o640)
+    _commit_listing(repo)
+    page = _open_panel(open_page())
+    target.unlink()
+
+    _rescan_done(page)
+
+    page.wait_for_selector("[data-testid='status-dot'][data-state='missing']")
+    page.wait_for_selector(_MISSING, timeout=_WAIT_SHORT)
+    page.click(_APPLY)
+    page.wait_for_selector("[data-testid='promote-done']:not([hidden])")
+    page.wait_for_selector(f"[data-testid='panel-status-{_PARAM_UID}']:has-text('一致')")
+    assert page.query_selector(_MISSING) is None
+
+
+# ── T11：白名單頁的預覽與加入同一判準（第 6 批 F30／F4）─────────────────────────
+
+
+def _unstable_prefix_on_disk(tmp_path):
+    inside = tmp_path / "f30_inside"
+    outside = tmp_path / "f30_outside"
+    inside.mkdir()
+    outside.mkdir()
+    (inside / "loop").symlink_to(inside / "loop")
+    (inside / "link_out").symlink_to(outside)
+    (inside / "esc").symlink_to("loop/../link_out")
+    return inside / "esc"
+
+
+def test_previewing_a_relative_prefix_says_to_use_an_absolute_path(open_page):
+    page = _open_whitelist_as_developer(open_page())
+
+    page.fill("[data-testid='whitelist-add-input']", "srv/cm")
+    page.get_by_role("button", name="預覽").click()
+
+    page.wait_for_selector("[data-testid='whitelist-error']", state="visible")
+    said = page.inner_text("[data-testid='whitelist-error']")
+    assert (
+        "以 / 開頭的絕對路徑" in said,
+        "/opt/config_manager" in said,
+        page.is_visible("[data-testid='whitelist-preview']"),
+    ) == (True, False, False)
+
+
+def test_previewing_an_unstable_prefix_names_only_what_was_typed(open_page, tmp_path):
+    prefix = _unstable_prefix_on_disk(tmp_path)
+    page = _open_whitelist_as_developer(open_page())
+
+    page.fill("[data-testid='whitelist-add-input']", str(prefix))
+    page.get_by_role("button", name="預覽").click()
+
+    page.wait_for_selector("[data-testid='whitelist-error']", state="visible")
+    said = page.inner_text("[data-testid='whitelist-error']")
+    assert (str(prefix) in said, "link_out" in said) == (True, False)
+
+
+def test_adding_a_relative_prefix_is_refused_with_the_same_sentence_and_no_confirmation(open_page):
+    page = _open_whitelist_as_developer(open_page())
+
+    page.fill("[data-testid='whitelist-add-input']", "srv/cm")
+    page.get_by_role("button", name="加入白名單").click()
+
+    page.wait_for_selector("[data-testid='whitelist-error']", state="visible")
+    said = page.inner_text("[data-testid='whitelist-error']")
+    assert (
+        "以 / 開頭的絕對路徑" in said,
+        page.query_selector("[data-testid='confirm-dialog'][open]") is None,
+        page.query_selector("[data-testid='whitelist-root-srv/cm']") is None,
+    ) == (True, True, True)

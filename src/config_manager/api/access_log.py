@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -29,11 +30,17 @@ def access_line(when: datetime, method: str, path: str, status: int, elapsed_ms:
     return f"access {stamp} {method} {escape_path(path)} {status} {elapsed_ms}ms"
 
 
-def access_logged(app: ASGIApp) -> ASGIApp:
+def _to_stderr(line: str) -> None:
+    print(line, file=sys.stderr, flush=True)
+
+
+def access_logged(app: ASGIApp, sink: Callable[[str], None] = _to_stderr) -> ASGIApp:
     """把 `app` 包成會記 access log 的 ASGI app（給 `FastAPI.add_middleware`）。
 
     只讀 scope 的 method 與 path、回應的 status；不碰 query string、headers、body。回應開始前就
     炸掉（沒有 `http.response.start`）記 500——外層的 ServerErrorMiddleware 會回 500，這裡不重複記。
+    `sink` 收每一行：預設寫 stderr；測試給一個 list 的 append，不必攔 fd（回應先到、紀錄後寫，
+    攔 fd 會偶爾讀到空）。
     """
 
     async def logged(scope: Scope, receive: Receive, send: Send) -> None:
@@ -54,7 +61,6 @@ def access_logged(app: ASGIApp) -> ASGIApp:
             await app(scope, receive, send_and_note)
         finally:
             elapsed_ms = round((time.monotonic() - started) * 1000)
-            line = access_line(when, str(scope["method"]), str(scope["path"]), status, elapsed_ms)
-            print(line, file=sys.stderr, flush=True)
+            sink(access_line(when, str(scope["method"]), str(scope["path"]), status, elapsed_ms))
 
     return logged
