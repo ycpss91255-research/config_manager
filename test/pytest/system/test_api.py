@@ -5195,3 +5195,94 @@ def test_the_access_log_records_a_structured_500_once(api_logging, repo, capfd):
     assert (exc.value.code, [_fields(line) for line in lines]) == (
         _SERVER_ERROR, [("GET", "/api/configs", "500")]
     )
+
+
+# ── T9：候選數預覽與加入同一判準（第 6 批 F30／F4）───────────────────────────
+# 預覽先過與加入同一條 check_prefix（相對路徑在任何解析之前就拒絕），再以 stable_realpath 解析；
+# 解析不出唯一位置只引用輸入的前綴，不印沒解析完的假路徑。
+
+
+def _candidate_refused(api, prefix) -> dict:
+    """候選數預覽 `prefix` 預期被拒，回結構化 detail。"""
+    query = urllib.parse.urlencode({"prefix": str(prefix)})
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(api, f"/api/candidate-count?{query}")
+    assert exc.value.code == _UNPROCESSABLE
+    return _detail(exc.value)
+
+
+def _unstable_prefix(tmp_path) -> pathlib.Path:
+    """F19-3 的樣板：`esc → loop/../link_out`，字面乾淨、解析不出唯一位置。"""
+    inside = tmp_path / "f30_inside"
+    outside = tmp_path / "f30_outside"
+    inside.mkdir()
+    outside.mkdir()
+    (inside / "loop").symlink_to(inside / "loop")
+    (inside / "link_out").symlink_to(outside)
+    (inside / "esc").symlink_to("loop/../link_out")
+    return inside / "esc"
+
+
+def test_a_candidate_count_for_an_unstable_prefix_names_only_what_was_typed(api, tmp_path):
+    _set_session(api)  # developer
+    prefix = _unstable_prefix(tmp_path)
+
+    detail = _candidate_refused(api, prefix)
+
+    message = detail["message"]
+    assert (detail["kind"], str(prefix) in message, "link_out" in message, "→" in message) == (
+        "unstable", True, False, False
+    )
+
+
+def test_preview_and_add_refuse_an_unstable_prefix_for_the_same_reason(api, tmp_path):
+    _set_session(api)  # developer
+    prefix = _unstable_prefix(tmp_path)
+    preview = _candidate_refused(api, prefix)["message"]
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/allowed-roots", {"prefix": str(prefix)})
+
+    added = _detail(exc.value)
+    reason = "解析不出唯一的真正位置"
+    assert (exc.value.code, reason in preview, reason in added) == (_UNPROCESSABLE, True, True)
+
+
+def test_a_relative_candidate_prefix_is_refused_before_any_resolving(api):
+    # F4：相對路徑不能先接上服務的工作目錄再說「不存在」——直接說要絕對路徑。
+    _set_session(api)  # developer
+
+    detail = _candidate_refused(api, "srv/cm")
+
+    message = detail["message"]
+    assert (
+        detail["kind"],
+        "以 / 開頭的絕對路徑" in message,
+        "/opt/config_manager" in message,
+        "→" in message,
+    ) == ("invalid_prefix", True, False, False)
+
+
+def test_a_candidate_prefix_with_nul_is_refused_with_a_readable_escape(api):
+    _set_session(api)  # developer
+
+    detail = _candidate_refused(api, "/srv/x\x00y")
+
+    assert (detail["kind"], "\\x00" in detail["message"], "\x00" in detail["message"]) == (
+        "invalid_prefix", True, False
+    )
+
+
+def test_a_candidate_prefix_that_is_a_symlink_to_a_real_directory_is_counted(api, tmp_path):
+    # 「正常絕對路徑不受影響」：前綴本身是指向真目錄的連結（解析穩定）照數。
+    _set_session(api)  # developer
+    real = tmp_path / "f4_real"
+    real.mkdir()
+    (real / "a.yaml").write_text("x", encoding="utf-8")
+    link = tmp_path / "f4_link"
+    link.symlink_to(real)
+
+    query = urllib.parse.urlencode({"prefix": str(link)})
+    result = _get(api, f"/api/candidate-count?{query}")
+
+    assert result == {"count": 1, "capped": False}
