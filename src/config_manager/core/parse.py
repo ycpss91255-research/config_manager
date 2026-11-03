@@ -150,10 +150,12 @@ _SUGGESTIONS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+# 控制字元：C0（U+0000–U+001F）與 DEL（U+007F）。
+_CONTROL_CHARS = frozenset(chr(code) for code in range(0x20)) | {"\x7f"}
+
+
 def _escape_reason(reason: str) -> str:
-    return "".join(
-        f"\\x{ord(char):02x}" if ord(char) < 0x20 or ord(char) == 0x7F else char for char in reason
-    )
+    return "".join(f"\\x{ord(char):02x}" if char in _CONTROL_CHARS else char for char in reason)
 
 
 def _syntax_error(fmt: str, reason: str, line: int | None) -> SyntaxParse:
