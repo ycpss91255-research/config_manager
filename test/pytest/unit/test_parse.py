@@ -881,7 +881,8 @@ def test_yaml_unclosed_flow_sequence_suggests_closing_it():
 
 
 def test_toml_with_a_colon_suggests_the_key_equals_value_form():
-    error = _syntax("a: 1\nb: 2\n", "toml")
+    # 內容要是別的格式也解析不過（`a: 1\nb: 2` 是合法 yaml，會改成候選句），才看得到分類建議。
+    error = _syntax("a: 1\nb\n", "toml")
 
     assert "key = value" in error.suggestion
 
