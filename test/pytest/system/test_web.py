@@ -7458,9 +7458,10 @@ def test_an_open_panels_status_label_follows_the_list_into_drift_and_keeps_typin
 
 def test_an_open_panel_follows_the_list_into_missing_and_back_after_writing_out(open_page, repo):
     # 目標被刪 → 檢查差異 → 開著的區塊出現未部署橫幅與「寫出到目標」；寫回後橫幅移除。
-    _listing_with(repo, "count: 3\n")
+    # 目標放在白名單內（寫出修復只寫白名單內的位置），比照 `_missing`。
+    target = _listing_many(repo, {"p": "count: 3\n"})["p"]
+    target.chmod(0o640)
     _commit_listing(repo)
-    target = repo / "deployed" / "p.yaml"
     page = _open_panel(open_page())
     target.unlink()
 
