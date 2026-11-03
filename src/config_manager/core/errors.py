@@ -220,11 +220,25 @@ class SyntaxParse(ParseError):
 
     訊息含行號（不變式 2：壞掉的檔案要大聲失敗、指得出位置），這樣呼叫端與使用者
     都知道去哪裡看，而不是收到一句「解析失敗」。
+
+    `message` 是「<fmt> 語法錯誤，解析不下去（第 N 行）：<reason>」；`reason` 是解析器自己的說法
+    （原文、可讀跳脫）；`suggestion` 是依說法分類的中文建議，或格式候選句（第 7 批 F2）。
+    `str()` 把兩者接成一句：「<message>。下一步：<suggestion>」。
     """
 
-    def __init__(self, message: str, line: int | None = None) -> None:
-        super().__init__(message)
+    GENERIC_SUGGESTION = "依上面解析器指出的位置修正該行"
+
+    def __init__(
+        self, message: str, line: int | None = None, reason: str = "", suggestion: str = ""
+    ) -> None:
+        self.message = message
         self.line = line
+        self.reason = reason
+        self.suggestion = suggestion or self.GENERIC_SUGGESTION
+        super().__init__(message)
+
+    def __str__(self) -> str:
+        return f"{self.message}。下一步：{self.suggestion}"
 
 
 class UnknownPath(ParseError):

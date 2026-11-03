@@ -20,7 +20,7 @@ from __future__ import annotations
 import io
 import json
 import re
-from collections.abc import Callable, Hashable, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -37,6 +37,7 @@ from ruamel.yaml.nodes import MappingNode, SequenceNode
 from ruamel.yaml.representer import RoundTripRepresenter
 
 from config_manager.core.errors import (
+    ParseError,
     SyntaxParse,
     UnknownPath,
     UnrepresentableValue,
@@ -71,6 +72,39 @@ class Parsed:
 
 
 def parse(text: str, fmt: str) -> Parsed:
+    """以 `fmt` 解析 `text`。解析不過時（`SyntaxParse`）順便看看其餘格式讀不讀得過：讀得過就把
+    建議改成候選句——格式選錯該改的是格式選擇，不是檔案（第 7 批 F2）。"""
+    try:
+        return _parse_as(text, fmt)
+    except SyntaxParse as error:
+        candidates = other_formats_that_parse(text, fmt)
+        if candidates:
+            error.suggestion = f"內容也可解析為 {'、'.join(candidates)}，請確認是否應改選"
+        raise
+
+
+def other_formats_that_parse(text: str, fmt: str) -> tuple[str, ...]:
+    """`fmt` 以外哪些格式解析得過**而且**頂層是對應表（依 json、toml、ini、yaml 的順序）。
+
+    只是候選、不挑一個：toml 的 `key = value` 行也是合法的 ini，兩個都列。json 解析得過就不列
+    yaml——JSON 是 YAML 的子集，列 yaml 只會誤導。不走 `parse`（它失敗時會再來問一次）。
+    """
+    found: list[str] = []
+    for other in ("json", "toml", "ini", "yaml"):
+        if other == fmt:
+            continue
+        try:
+            parsed = _parse_as(text, other)
+        except ParseError:
+            continue
+        if isinstance(values(parsed), Mapping):
+            found.append(other)
+    if "json" in found:
+        found = [other for other in found if other != "yaml"]
+    return tuple(found)
+
+
+def _parse_as(text: str, fmt: str) -> Parsed:
     match fmt:
         case "raw":
             return Parsed(fmt="raw", document=text)
@@ -89,6 +123,46 @@ def parse(text: str, fmt: str) -> Parsed:
             return Parsed(fmt="ini", document=_parse_ini(text))
         case _:
             raise UnsupportedFormat(_unsupported(fmt))
+
+
+# ── 語法錯誤怎麼說（第 7 批 F2）────────────────────────────────────────────────
+# 解析器自己說得出原因（少逗號、縮排、沒冒號…），留原文；再依說法分類給一句中文建議。認不出的
+# 說法用通用句。控制字元跳脫成 \xNN：解析器回顯壞掉那一行時，不讓它偽造換行。
+_SUGGESTIONS: tuple[tuple[str, str, str], ...] = (
+    ("json", "Expecting ',' delimiter", "前一個值後面少了逗號"),
+    ("json", "Expecting property name enclosed in double quotes",
+     "鍵名要用雙引號包起來（json 不接受單引號、沒有引號的鍵，也不接受尾隨逗號）"),
+    ("json", "Expecting ':' delimiter", "鍵名後面少了冒號"),
+    ("json", "Expecting value", "冒號或逗號後面少了值，或多了一個尾隨逗號"),
+    ("json", "Unterminated string", "字串少了結尾的雙引號"),
+    ("yaml", "mapping values are not allowed here",
+     "這一行的縮排或冒號位置不對（常見：上一行的值後面多了冒號，或這一行縮排比上一行深）"),
+    ("yaml", "could not find expected ':'", "這一行像是鍵卻沒有冒號"),
+    ("yaml", "expected ',' or ']'", "流式清單沒有閉合，或少了逗號"),
+    ("yaml", "expected ',' or '}'", "流式物件沒有閉合，或少了逗號"),
+    ("yaml", "found character '\\t'", "不能用 Tab 縮排，改用空白"),
+    ("yaml", "expected <block end>", "縮排不一致"),
+    ("toml", "Unexpected character", "這一行不是 toml 的 key = value 或 [table] 寫法"),
+    ("toml", "Empty key", "等號前沒有鍵名"),
+    ("toml", "Empty table name", "方括號裡沒有表名"),
+    ("ini", "Parse error in value", "值的寫法不對（引號沒閉合或多餘的引號）"),
+    ("ini", "matched as neither section nor keyword", "這一行既不是 [section] 也不是 key = value"),
+)
+
+
+def _escape_reason(reason: str) -> str:
+    return "".join(
+        f"\\x{ord(char):02x}" if ord(char) < 0x20 or ord(char) == 0x7F else char for char in reason
+    )
+
+
+def _syntax_error(fmt: str, reason: str, line: int | None) -> SyntaxParse:
+    reason = _escape_reason(reason.strip())
+    loc = f"（第 {line} 行）" if line is not None else ""
+    suggestion = next(
+        (hint for hint_fmt, said, hint in _SUGGESTIONS if hint_fmt == fmt and said in reason), ""
+    )
+    return SyntaxParse(f"{fmt} 語法錯誤，解析不下去{loc}：{reason}", line, reason, suggestion)
 
 
 def dump(parsed: Parsed) -> str:
@@ -129,11 +203,13 @@ def _parse_yaml(text: str) -> object:
     except YAMLError as exc:
         mark = getattr(exc, "problem_mark", None)
         line = mark.line + 1 if mark is not None else None
-        loc = f"（第 {line} 行）" if line is not None else ""
-        raise SyntaxParse(
-            f"yaml 語法錯誤，解析不下去{loc}。下一步：修正該行的語法後重試",
-            line,
-        ) from exc
+        problem = getattr(exc, "problem", None)
+        context = getattr(exc, "context", None)
+        # 只拿解析器那一句（problem＋context），不拿 str(exc)——那會回顯檔案內容的片段。
+        reason = str(problem) if problem else str(exc).splitlines()[0]
+        if context:
+            reason = f"{reason}（{context}）"
+        raise _syntax_error("yaml", reason, line) from exc
 
 
 def _dump_yaml(document: object, indent: tuple[int, int] | None = None, text: str = "") -> str:
@@ -281,10 +357,7 @@ def _parse_toml(text: str) -> object:
         return tomlkit.parse(text)
     except TOMLKitError as exc:
         line = getattr(exc, "line", None)
-        loc = f"（第 {line} 行）" if line is not None else ""
-        raise SyntaxParse(
-            f"toml 語法錯誤，解析不下去{loc}。下一步：修正該行的語法後重試", line
-        ) from exc
+        raise _syntax_error("toml", str(exc), line) from exc
 
 
 def _dump_toml(document: object) -> str:
@@ -299,10 +372,8 @@ def _parse_json(text: str) -> str:
     try:
         json.loads(text)
     except json.JSONDecodeError as exc:
-        raise SyntaxParse(
-            f"json 語法錯誤，解析不下去（第 {exc.lineno} 行）。下一步：修正該行的語法後重試",
-            exc.lineno,
-        ) from exc
+        # 欄位置另寫成「欄 N」：「（第」只能出現一次（行號那次），頁面與測試都靠它辨識行號。
+        raise _syntax_error("json", f"{exc.msg}（欄 {exc.colno}）", exc.lineno) from exc
     return text
 
 
@@ -343,10 +414,7 @@ def _ini_document(text: str) -> object:
         return ConfigObj(payload, encoding="utf-8", interpolation=False)
     except ConfigObjError as exc:
         line = getattr(exc, "line_number", None)
-        loc = f"（第 {line} 行）" if line else ""
-        raise SyntaxParse(
-            f"ini 語法錯誤，解析不下去{loc}。下一步：修正該行的語法後重試", line
-        ) from exc
+        raise _syntax_error("ini", str(exc), line or None) from exc
 
 
 def values(parsed: Parsed) -> object:

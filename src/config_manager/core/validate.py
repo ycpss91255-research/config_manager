@@ -60,7 +60,7 @@ def check(
     except SyntaxParse as error:
         # 解析不下去就沒有值可以驗。若原因正是重複 key，回掃描結果（全部行號）而非只指一行
         # 的解析錯誤；其餘語法錯誤照回，行號沿用解析器的。
-        return duplicates or [Problem(error.line, str(error), "修正該行的語法後重試")]
+        return duplicates or [Problem(error.line, error.message, error.suggestion)]
 
     problems = _trailing_whitespace(lines, settings.trailing_whitespace)
     problems += duplicates
