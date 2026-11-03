@@ -121,7 +121,7 @@ def test_a_relative_prefix_is_refused_before_any_resolving(monkeypatch, tmp_path
 
 
 def test_an_unstable_prefix_is_refused_naming_only_the_input(tmp_path):
-    # 第 6 批 F30：連結迴圈之後接 .. 再經過連結，一般 realpath 會接出沒解析完的假路徑——
+    # 第 6 批 F30：連結迴圈之後接 .. 再經過連結，一般 realpath 會接出沒解析完的假路徑；
     # 與加入白名單同一判準（stable_realpath）拒絕，訊息只引用輸入的前綴。
     inside = tmp_path / "inside"
     outside = tmp_path / "outside"
@@ -230,6 +230,6 @@ def test_a_subdirectory_that_cannot_be_opened_mid_walk_is_skipped(tmp_path, monk
 
 def test_a_prefix_with_a_nul_byte_is_named_not_a_bare_value_error(tmp_path):
     # #248：NUL 讓 os.path.realpath 拋 ValueError（非 OSError），未接住會裸 500。candidate-count
-    # 是唯一漏掉 #222 那道 NUL 守衛的 realpath 端點。具名成 InvalidPrefix（check_prefix，→ api 422）。
+    # 是唯一漏掉 #222 那道 NUL 守衛的 realpath 端點。具名成 InvalidPrefix（check_prefix→api 422）。
     with pytest.raises(InvalidPrefix):
         count_candidates("/tmp/a\x00b")

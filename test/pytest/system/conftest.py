@@ -33,6 +33,8 @@ import uvicorn
 
 from config_manager.api.access_log import access_logged
 from config_manager.api.lock import LockBox
+from config_manager.api.routes import create_app
+from config_manager.core.roles import DEVELOPMENT
 
 
 class LoggingApi(NamedTuple):
@@ -40,8 +42,7 @@ class LoggingApi(NamedTuple):
 
     url: str
     lines: list[str]
-from config_manager.api.routes import create_app
-from config_manager.core.roles import DEVELOPMENT
+
 
 _MINIMAL_LIST = """\
 list_version = 1
@@ -276,7 +277,11 @@ def api_logging(repo, sources_root, api):
     base = f"http://127.0.0.1:{port}"
     try:
         _wait_until_answering(base)
-        lines.clear()  # 起服務時探路的那幾筆不算
+        # 探路那一筆的紀錄在回應之後才寫：等它進來再清，免得它稍後混進測試的紀錄裡。
+        until = time.monotonic() + 2
+        while not lines and time.monotonic() < until:
+            time.sleep(0.02)
+        lines.clear()
         yield LoggingApi(base, lines)
     finally:
         server.should_exit = True
