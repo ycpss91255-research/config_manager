@@ -5281,3 +5281,35 @@ def test_a_candidate_prefix_that_is_a_symlink_to_a_real_directory_is_counted(api
     result = _get(api, f"/api/candidate-count?{query}")
 
     assert result == {"count": 1, "capped": False}
+
+
+# ── T9：偵測的語法錯誤說原因、格式選錯列候選（第 7 批 F2）────────────────────
+
+
+def test_inspect_with_the_wrong_format_lists_the_formats_that_parse(api, sources_root):
+    source = _write_source(sources_root, "f2_actually.toml", b'name = "x"\ncount = 3\n')
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/inspect", {"source_path": source, "format": "json"})
+
+    detail = _detail(exc.value)
+    message = detail["message"]
+    assert (
+        exc.value.code,
+        detail["line"],
+        "內容也可解析為 toml" in message,
+        "請確認是否應改選" in message,
+        message.count("（第"),
+    ) == (_UNPROCESSABLE, 1, True, True, 1)
+
+
+def test_inspect_a_broken_file_names_the_parser_reason_without_a_format_suggestion(
+    api, sources_root
+):
+    source = _write_source(sources_root, "f2_broken.yaml", b"a: [1, 2\nb: 3\n")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/inspect", {"source_path": source, "format": "yaml"})
+
+    message = _detail(exc.value)["message"]
+    assert ("expected ',' or ']'" in message, "改選" in message) == (True, False)

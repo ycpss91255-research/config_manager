@@ -7529,3 +7529,26 @@ def test_adding_a_relative_prefix_is_refused_with_the_same_sentence_and_no_confi
         page.query_selector("[data-testid='confirm-dialog'][open]") is None,
         page.query_selector("[data-testid='whitelist-root-srv/cm']") is None,
     ) == (True, True, True)
+
+
+# ── T11：確認畫面的語法錯誤說原因、格式選錯列候選（第 7 批 F2；U06 的 3b／3c 回歸）────
+
+
+def test_a_wrong_format_choice_suggests_the_formats_that_parse(open_page, browse_root):
+    (browse_root / "actually.toml").write_text('name = "x"\ncount = 3\n', encoding="utf-8")
+    page = _open_confirm(open_page(), browse_root, "actually.toml")  # 副檔名建議 toml，偵測成功
+
+    page.select_option("[data-testid='onboard-format']", "json")
+
+    page.wait_for_selector("[data-testid='onboard-error']:not([hidden])")
+    said = page.inner_text("[data-testid='onboard-error']")
+    assert (
+        "內容也可解析為 toml" in said,
+        said.count("（第"),
+        page.get_by_role("button", name="確認寫入").is_disabled(),
+    ) == (True, 1, True)
+
+    page.select_option("[data-testid='onboard-format']", "toml")  # 改回去：重新偵測、錯誤消失
+
+    page.wait_for_selector("text=將以 hostname")
+    assert page.is_hidden("[data-testid='onboard-error']")
