@@ -10,10 +10,11 @@ import os
 
 import pytest
 
+from config_manager.core.errors import InvalidPrefix
 from config_manager.io.candidate import CandidateCount, count_candidates
 from config_manager.io.errors import (
     CandidateNotADirectory,
-    CandidatePrefixEscape,
+    CandidatePrefixUnstable,
     CandidateUnreadable,
 )
 
@@ -105,9 +106,42 @@ def test_item_limit_caps_and_returns_a_partial_count(tmp_path):
 
 
 def test_a_literal_dotdot_in_the_prefix_is_refused_without_walking(tmp_path):
-    # realpath 會把 .. 正規化掉、遮蔽逃逸意圖，故在解析前以字面擋下（比照 T4／T8）。
-    with pytest.raises(CandidatePrefixEscape):
+    # realpath 會把 .. 正規化掉、遮蔽逃逸意圖，故在解析前以字面擋下——與加入白名單同一條
+    # check_prefix（第 6 批 F4；比照 T4／T8）。
+    with pytest.raises(InvalidPrefix):
         count_candidates(str(tmp_path / "sub" / ".." / "x"))
+
+
+def test_a_relative_prefix_is_refused_before_any_resolving(monkeypatch, tmp_path):
+    # 第 6 批 F4：相對路徑不能先接上工作目錄再說「不存在」——在任何解析之前就說要絕對路徑。
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "srv").mkdir()  # 就算工作目錄底下真的有，也一樣拒絕
+    with pytest.raises(InvalidPrefix, match="以 / 開頭的絕對路徑"):
+        count_candidates("srv")
+
+
+def test_an_unstable_prefix_is_refused_naming_only_the_input(tmp_path):
+    # 第 6 批 F30：連結迴圈之後接 .. 再經過連結，一般 realpath 會接出沒解析完的假路徑——
+    # 與加入白名單同一判準（stable_realpath）拒絕，訊息只引用輸入的前綴。
+    inside = tmp_path / "inside"
+    outside = tmp_path / "outside"
+    inside.mkdir()
+    outside.mkdir()
+    (inside / "loop").symlink_to(inside / "loop")
+    (inside / "link_out").symlink_to(outside)
+    (inside / "esc").symlink_to("loop/../link_out")
+    with pytest.raises(CandidatePrefixUnstable) as exc:
+        count_candidates(str(inside / "esc"))
+    assert (str(inside / "esc") in str(exc.value), "link_out" in str(exc.value)) == (True, False)
+
+
+def test_a_prefix_that_is_a_symlink_to_a_directory_is_counted(tmp_path):
+    # 「正常絕對路徑不受影響」：前綴本身是指向真目錄的連結（解析穩定）照數。
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "a.yaml").write_text("x", encoding="utf-8")
+    (tmp_path / "link").symlink_to(real)
+    assert count_candidates(str(tmp_path / "link")) == CandidateCount(count=1, capped=False)
 
 
 def test_a_nonexistent_prefix_is_a_named_error_not_zero(tmp_path):
@@ -195,6 +229,6 @@ def test_a_subdirectory_that_cannot_be_opened_mid_walk_is_skipped(tmp_path, monk
 
 def test_a_prefix_with_a_nul_byte_is_named_not_a_bare_value_error(tmp_path):
     # #248：NUL 讓 os.path.realpath 拋 ValueError（非 OSError），未接住會裸 500。candidate-count
-    # 是唯一漏掉 #222 那道 NUL 守衛的 realpath 端點。具名成 CandidatePrefixEscape（→ api 422）。
-    with pytest.raises(CandidatePrefixEscape):
+    # 是唯一漏掉 #222 那道 NUL 守衛的 realpath 端點。具名成 InvalidPrefix（check_prefix，→ api 422）。
+    with pytest.raises(InvalidPrefix):
         count_candidates("/tmp/a\x00b")

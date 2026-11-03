@@ -319,11 +319,11 @@ class CandidateError(Exception):
     """
 
 
-class CandidatePrefixEscape(CandidateError):
-    """候選數的前綴含字面 `..` 路徑段。
+class CandidatePrefixUnstable(CandidateError):
+    """候選數的前綴解析不出唯一的真正位置（連結迴圈之後接 `..` 再經過連結，F19／第 6 批 F30）。
 
-    `realpath` 會把 `..` 正規化掉、遮蔽「本來就想逃逸」的意圖，故在解析前以字面擋下（比照
-    core 的 T4／T8 字面逃逸檢查）。
+    與加入白名單同一判準（`io/paths.stable_realpath`）：一般 `realpath` 在這種路徑上會接出一個
+    沒解析完的假字串；訊息只引用輸入的前綴與原因，不印那個字串。
     """
 
 
