@@ -868,7 +868,9 @@ def test_yaml_bad_indent_names_the_reason_and_suggests_indentation():
     error = _syntax("key: value\n  bad: indent\n", "yaml")
 
     assert (
-        "mapping values are not allowed here" in error.reason, "縮排" in error.suggestion, error.line
+        "mapping values are not allowed here" in error.reason,
+        "縮排" in error.suggestion,
+        error.line,
     ) == (True, True, 2)
 
 
@@ -901,7 +903,8 @@ def test_other_formats_that_parse_lists_the_candidates_without_yaml_when_json_pa
     cases = {
         # toml 的 key = value 行也是合法的 ini：兩個候選都列、不挑
         ('name = "x"\ncount = 3\n', "json"): ("toml", "ini"),
-        ('{"a": 1}\n', "toml"): ("json",),  # yaml 也解析得過，但 JSON 是 YAML 子集，不列
+        # yaml 也解析得過，但 JSON 是 YAML 子集，不列
+        ('{"a": 1}\n', "toml"): ("json",),
         ("a: 1\nb: 2\n", "toml"): ("yaml",),
         ("a: [1, 2\nb: 3\n", "yaml"): (),  # 真的壞掉：沒有候選
     }
