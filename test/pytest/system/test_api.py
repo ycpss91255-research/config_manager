@@ -5126,6 +5126,17 @@ def _access_lines(err: str) -> list[str]:
     return [line for line in err.splitlines() if line.startswith("access ")]
 
 
+def _access_output(capfd, deadline_s: float = 3.0) -> str:
+    """紀錄是在回應送出**之後**才寫的：客戶端收到回應時那一行可能還沒落到 stderr，等它出現。"""
+    collected = ""
+    end = time.monotonic() + deadline_s
+    while True:
+        collected += capfd.readouterr().err
+        if _access_lines(collected) or time.monotonic() >= end:
+            return collected
+        time.sleep(0.05)
+
+
 def _fields(line: str) -> tuple[str, str, str]:
     match = _ACCESS_LINE.match(line)
     assert match, line
@@ -5141,7 +5152,7 @@ def test_the_access_log_writes_one_line_per_request_and_keeps_the_secrets_out(ap
     with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
         response.read()
 
-    err = capfd.readouterr().err
+    err = _access_output(capfd)
     secrets = ("QUERY_SECRET", "COOKIE_SECRET", "HEADER_SECRET", "token=", "cm_browser")
     leaked = [secret for secret in secrets if secret in err]
     assert ([_fields(line) for line in _access_lines(err)], leaked) == (
@@ -5152,6 +5163,7 @@ def test_the_access_log_writes_one_line_per_request_and_keeps_the_secrets_out(ap
 def test_without_the_access_log_no_request_is_recorded(api, capfd):
     capfd.readouterr()
     _get(api, "/api/session/lock")
+    time.sleep(0.3)  # 給「晚一點才寫」的紀錄機會出現——沒開就不該有
 
     assert _access_lines(capfd.readouterr().err) == []
 
@@ -5162,7 +5174,7 @@ def test_the_access_log_escapes_control_characters_in_the_path(api_logging, capf
     with pytest.raises(urllib.error.HTTPError) as exc:
         _get(api_logging, "/api/configs/a%0Ab")
 
-    err = capfd.readouterr().err
+    err = _access_output(capfd)
     lines = _access_lines(err)
     assert (len(lines), "a\nb" in err) == (1, False)
     assert _fields(lines[0]) == ("GET", "/api/configs/a\\x0ab", str(exc.value.code))
@@ -5179,7 +5191,7 @@ def test_the_access_log_records_a_structured_500_once(api_logging, repo, capfd):
     finally:
         list_path.write_text(original, encoding="utf-8")
 
-    lines = _access_lines(capfd.readouterr().err)
+    lines = _access_lines(_access_output(capfd))
     assert (exc.value.code, [_fields(line) for line in lines]) == (
         _SERVER_ERROR, [("GET", "/api/configs", "500")]
     )
