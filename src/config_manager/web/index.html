@@ -1109,6 +1109,7 @@ async function load() {
     if (search.value.trim()) await runSearch();
     else render();
     refreshScanSummary();
+    syncOpenPanels();  // 開著的區塊跟著清單走（第 6 批 F31）
     loadDrafts();
   } catch (error) {
     // 大聲失敗（不變式 2）：說出是什麼壞了，不是顯示一份空清單假裝沒事——空清單與「讀不到
@@ -1344,6 +1345,39 @@ function openUids() {
   return [...workspace.querySelectorAll("[data-uid][data-view='panel']")].map((node) => node.dataset.uid);
 }
 
+// ── 開著的區塊跟著清單走（第 6 批 F31）────────────────────────────────────────
+// 區塊標頭的狀態與橫幅原本只在開區塊那一刻依清單列算一次；「檢查差異」（或任何讓清單重載的動作）
+// 只重畫左側樹，清單列變了區塊卻留著舊狀態、沒有原因。清單每次重載成功後，對每個開著的區塊重算
+// 標籤（與那一列逐字相同）、掛上或拆掉判不出／未部署／偏離橫幅。只動標頭文字與橫幅——欄位表不
+// 重畫，還沒儲存的輸入、草稿、展開狀態都留著。
+const panelDetails = new Map();  // uid → 開區塊時拿到的單筆內容（未部署／偏離橫幅要 target 等欄位）
+
+function syncBanner(panel, selector, wanted, build, update) {
+  const existing = panel.querySelector(selector);
+  if (!wanted) { if (existing) existing.remove(); return; }
+  if (existing) { if (update) update(existing); return; }
+  const banner = build();
+  if (banner) panel.insertBefore(banner, panel.children[1] || null);  // 緊接在標頭下
+}
+
+function syncOpenPanels() {
+  for (const uid of openUids()) {
+    const panel = workspace.querySelector(`[data-testid='panel-${uid}']`);
+    const row = rows.find((item) => item.uid === uid);
+    if (!panel || !row) continue;
+    const detail = panelDetails.get(uid);
+    const label = panel.querySelector(`[data-testid='panel-status-${uid}']`);
+    if (label) label.textContent = row.error ? "錯誤" : STATE_TEXT[row.state] || row.state;
+    syncBanner(panel, "[data-testid='error-banner']", Boolean(row.error),
+      () => errorBanner(row.error),
+      (banner) => { banner.querySelector("pre").textContent = row.error; });
+    syncBanner(panel, "[data-testid='missing-banner']", !row.error && row.state === "missing",
+      () => (detail ? missingBanner(detail) : null));
+    syncBanner(panel, "[data-testid='drift-banner']", !row.error && row.state === "drift",
+      () => (detail ? driftBanner(detail, true) : null));
+  }
+}
+
 function refreshWorkspaceEmpty() {
   workspaceEmpty.hidden = workspace.querySelector("[data-uid]") !== null;
 }
@@ -1373,6 +1407,7 @@ async function openPanel(uid, notice) {
     if (!response.ok) throw new Refused(await loadErrorText(response));
     const detail = await response.json();
     if (stale()) return;
+    panelDetails.set(uid, detail);
     const panel = panelNode(detail);
     if (notice) panel.insertBefore(notice, panel.children[1] || null);  // 上一個動作的結果放在標頭下
     // 重畫一個已經開著的區塊（進版、捨棄、改屬性之後）：位置在換上去之前才量，換完還原。
