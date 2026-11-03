@@ -312,7 +312,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 歧義確認 | 項內 `data-testid="onboard-ambiguity-ack-<行號>"` | 勾選框；**全部歧義勾完前「確認納管」停用**（確認後才繼續，AC4） |
 | 確認納管 | 文字「確認寫入」（`data-testid="onboard-submit"`） | 有未勾的歧義時停用；`POST /api/configs`（source_path／format／ambiguity_note＝逐條確認的彙整），成功回 W2 清單、新條目出現在左側樹 |
 | 取消 | 文字「取消」 | 回到 W7 瀏覽（不寫入） |
-| 錯誤 | `data-testid="onboard-error"` | inspect／onboard 的錯誤**原樣**顯示（inspect 的語法錯誤帶行號就地標示；容忍結構化 `{message,file,line}`、純字串、與 FastAPI 驗證 list 三形狀） |
+| 錯誤 | `data-testid="onboard-error"` | inspect／onboard 的錯誤**原樣**顯示（inspect 的語法錯誤帶行號就地標示；容忍結構化 `{message,file,line}`、純字串、與 FastAPI 驗證 list 三形狀）。**（第 7 批 F2）語法錯誤訊息含解析器原文與中文建議；格式選錯時是「內容也可解析為 …，請確認是否應改選」，只是文字、不自動切換下拉** |
 
 **測試須斷言**：有歧義的 yaml → 「確認寫入」起始停用、逐條勾完才啟用（AC4）；json 的葉節點型別
 以 `data-type` 呈現（AC3）；納管成功後新條目出現在 W2 左側樹（名字由目標路徑推導）。

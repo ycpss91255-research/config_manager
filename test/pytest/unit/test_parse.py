@@ -8,6 +8,7 @@ import pytest
 
 from config_manager.core import errors as core_errors
 from config_manager.core.errors import SyntaxParse, UnknownPath, UnsupportedFormat
+from config_manager.core import parse as core_parse
 from config_manager.core.parse import Parsed, dump, parse, set_value, values
 
 
@@ -834,3 +835,79 @@ def test_a_string_with_newlines_quotes_hashes_and_commas_reads_back_the_same(fmt
     set_value(parsed, "name", _AWKWARD)
     out = dump(parsed)
     assert (values(parse(out, fmt))["name"], untouched in out) == (_AWKWARD, True)
+
+
+# ── T6：語法錯誤說原因與修法（第 7 批 F2）────────────────────────────────────
+# 解析器自己說得出原因（少逗號、縮排、沒冒號…），不能丟掉只剩「修正該行的語法後重試」；
+# 格式選錯時該改的是格式選擇，不是檔案——列出解析得過的候選、不挑一個。
+
+
+def _syntax(text: str, fmt: str) -> SyntaxParse:
+    with pytest.raises(SyntaxParse) as caught:
+        parse(text, fmt)
+    return caught.value
+
+
+def test_json_missing_comma_names_the_reason_and_suggests_the_comma():
+    error = _syntax('{"a": 1 "b": 2}\n', "json")
+
+    assert (
+        "Expecting ',' delimiter" in error.reason,
+        "少了逗號" in error.suggestion,
+        str(error).count("（第"),
+    ) == (True, True, 1)
+
+
+def test_json_unquoted_key_suggests_double_quotes():
+    error = _syntax("{not: valid\n", "json")
+
+    assert "雙引號" in error.suggestion
+
+
+def test_yaml_bad_indent_names_the_reason_and_suggests_indentation():
+    error = _syntax("key: value\n  bad: indent\n", "yaml")
+
+    assert (
+        "mapping values are not allowed here" in error.reason,
+        "縮排" in error.suggestion,
+        error.line,
+    ) == (True, True, 2)
+
+
+def test_yaml_unclosed_flow_sequence_suggests_closing_it():
+    error = _syntax("a: [1, 2\nb: 3\n", "yaml")
+
+    assert "沒有閉合" in error.suggestion
+
+
+def test_toml_with_a_colon_suggests_the_key_equals_value_form():
+    # 內容要是別的格式也解析不過（`a: 1\nb: 2` 是合法 yaml，會改成候選句），才看得到分類建議。
+    error = _syntax("a: 1\nb\n", "toml")
+
+    assert "key = value" in error.suggestion
+
+
+def test_ini_line_without_equals_suggests_the_key_equals_value_form():
+    error = _syntax("[s]\nkey\n", "ini")
+
+    assert "key = value" in error.suggestion
+
+
+def test_a_reason_with_control_characters_is_escaped_readably():
+    # 解析器把壞掉的那一行回顯時，控制字元不能原樣進訊息（偽造換行）。
+    error = _syntax("[s]\nke\x01y\n", "ini")
+
+    assert ("\x01" in error.reason, "\\x01" in error.reason) == (False, True)
+
+
+def test_other_formats_that_parse_lists_the_candidates_without_yaml_when_json_parses():
+    cases = {
+        # toml 的 key = value 行也是合法的 ini：兩個候選都列、不挑
+        ('name = "x"\ncount = 3\n', "json"): ("toml", "ini"),
+        # yaml 也解析得過，但 JSON 是 YAML 子集，不列
+        ('{"a": 1}\n', "toml"): ("json",),
+        ("a: 1\nb: 2\n", "toml"): ("yaml",),
+        ("a: [1, 2\nb: 3\n", "yaml"): (),  # 真的壞掉：沒有候選
+    }
+
+    assert {key: core_parse.other_formats_that_parse(*key) for key in cases} == cases

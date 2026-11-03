@@ -511,3 +511,63 @@ def test_required_is_not_turned_into_a_field_hint():
     }
 
     assert field_hints(schema) == {}
+
+
+# ── T3：語法問題帶原因與建議、格式候選（第 7 批 F2）；prefixItems 的提示（F17）──────────
+
+
+def test_a_wrong_format_choice_is_reported_with_the_parser_reason_and_the_candidates():
+    problems = check('name = "x"\ncount = 3\n', "json")
+
+    problem = problems[0]
+    assert (
+        len(problems),
+        "Expecting value" in problem.message,
+        "下一步" in problem.message,
+        "內容也可解析為 toml" in problem.suggestion,
+        "請確認是否應改選" in problem.suggestion,
+    ) == (1, True, False, True, True)
+
+
+def test_a_genuinely_broken_file_gets_a_syntax_suggestion_not_a_format_one():
+    problems = check("a: [1, 2\nb: 3\n", "yaml")
+
+    suggestion = problems[0].suggestion
+    assert ("沒有閉合" in suggestion, "改選" in suggestion) == (True, False)
+
+
+_PREFIXED = {
+    "type": "object",
+    "properties": {
+        "vals": {
+            "type": "array",
+            "prefixItems": [{"minimum": 0}, {"maximum": 9}],
+            "items": {"enum": ["x"]},
+        }
+    },
+}
+
+
+def test_hints_skip_the_generic_items_when_the_schema_has_prefix_items():
+    # items 只管前綴之後的元素；掛到 vals[] 會把前兩個元素標錯（F17）。
+    assert field_hints(_PREFIXED) == {}
+
+
+def test_hints_still_follow_items_without_prefix_items():
+    schema = {
+        "type": "object",
+        "properties": {"vals": {"type": "array", "items": {"enum": ["x"]}}},
+    }
+
+    assert field_hints(schema) == {"vals[]": {"enum": ["x"]}}
+
+
+def test_validation_still_checks_prefix_elements_and_the_rest_with_prefix_items():
+    # 提示不掛，驗證照舊：前綴元素違反 minimum、後續元素違反 enum 各一個問題；合法的照過。
+    bad = check("vals: [-1, 3, 'y']\n", "yaml", schema=_PREFIXED)
+    good = check("vals: [0, 3, 'x']\n", "yaml", schema=_PREFIXED)
+
+    assert (
+        sorted(problem.path for problem in bad if problem.path),
+        [problem.path for problem in good if problem.path],
+    ) == (["vals[0]", "vals[2]"], [])

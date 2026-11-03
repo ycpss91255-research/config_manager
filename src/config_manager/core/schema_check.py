@@ -84,7 +84,8 @@ def field_hints(schema: Mapping[str, object]) -> dict[str, dict[str, object]]:
 
     鍵是欄位路徑，與 `infer_types` 同一套文法（`.` 相接、`[]` 標清單元素、key 內的字面點跳脫成
     `\\.`），欄位表才對得到那一列。這只是**提示**：讓介面在輸入當下就說得出問題；保證在
-    `check_schema`，介面不擋的後端照擋（設計原則 N-3）。只跟著 `properties` 與 `items` 往下走。
+    `check_schema`，介面不擋的後端照擋（設計原則 N-3）。只跟著 `properties` 與 `items` 往下走；
+    有 `prefixItems` 的清單不掛 `items` 的提示（第 7 批 F17）。
     """
     found: dict[str, dict[str, object]] = {}
     _collect_hints(schema, "", found)
@@ -102,7 +103,10 @@ def _collect_hints(node: object, path: str, found: dict[str, dict[str, object]])
         for key, child in properties.items():
             escaped = str(key).replace(".", "\\.")
             _collect_hints(child, f"{path}.{escaped}" if path else escaped, found)
-    if "items" in node:
+    # `prefixItems`（2020-12）：前幾個元素各自的 schema，`items` 只管剩下的——掛到 `[]` 會套到
+    # 每個元素、把合法的前幾個標錯（第 7 批 F17）。逐索引提示沒有路徑文法，也不掛；驗證仍在
+    # check_schema。
+    if "items" in node and "prefixItems" not in node:
         _collect_hints(node["items"], f"{path}[]", found)
 
 
