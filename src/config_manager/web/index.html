@@ -2870,11 +2870,36 @@ function driftBanner(detail, withEntry) {
     }),
   ]);
   if (withEntry) {
-    const open = element("button", { type: "button", "data-testid": "panel-diff", text: "檢視差異" });
-    open.addEventListener("click", () => openDiffView(detail));
+    // 差異與處置確認比的要是**現在**的目標（F32）：區塊可能是在一致時打開、之後才在
+    // 清單重載時變偏離（F31 的同步只換標頭與橫幅），手上那份單筆內容是打開當時的。
+    // 按下先重讀再開差異檢視。
+    const error = element("div", {
+      class: "notice error", "data-testid": "panel-diff-error", hidden: "",
+    });
+    const open = element("button", {
+      type: "button", "data-testid": "panel-diff", text: "檢視差異",
+    });
+    open.addEventListener("click", () => whileBusy(
+      open, "讀取中…", () => openCurrentDiff(detail.uid, error),
+    ));
     banner.appendChild(element("div", { class: "actions" }, [open]));
+    banner.appendChild(error);
   }
   return banner;
+}
+
+async function openCurrentDiff(uid, errorEl) {
+  errorEl.hidden = true;
+  try {
+    const response = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(uid)}`);
+    if (!response.ok) throw new Refused(await loadErrorText(response));
+    const fresh = await response.json();
+    panelDetails.set(uid, fresh);
+    openDiffView(fresh);
+  } catch (error) {
+    renderSaveError(errorEl, failureText("讀取目標現況", error));
+    errorEl.hidden = false;
+  }
 }
 
 // 判不出狀態（F5、人工驗收 U18）：區塊裡也寫出原因與下一步。用的是清單給的那一句（帶下一步）；
