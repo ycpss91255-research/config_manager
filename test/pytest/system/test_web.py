@@ -7552,3 +7552,44 @@ def test_a_wrong_format_choice_suggests_the_formats_that_parse(open_page, browse
 
     page.wait_for_selector("text=將以 hostname")
     assert page.is_hidden("[data-testid='onboard-error']")
+
+
+# ── T11：區塊開著時變偏離，差異與採納確認比的是現在的目標（F32，11/4 整合走查）────────
+# 區塊在「一致」時打開，之後目標在介面外被改：清單重載後標頭會變偏離（F31），差異表與採納確認框
+# 也要是 5 → 9，不能只看偏離標籤。
+
+
+def _drift_while_the_panel_is_open(open_page, repo):
+    target = _listing_many(repo, {"a": "count: 5\n"})["a"]
+    page = _open_panel(open_page())
+    page.wait_for_selector(f"[data-testid='panel-status-{_PARAM_UID}']:has-text('一致')")
+    target.write_text("count: 9\n", encoding="utf-8")
+    page.click("[data-testid='rescan']")
+    page.wait_for_selector(f"[data-testid='panel-status-{_PARAM_UID}']:has-text('偏離')")
+    page.click(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-diff']")
+    page.wait_for_selector(f"[data-testid='diff-{_PARAM_UID}']", state="visible")
+    return page
+
+
+def test_a_drift_found_while_the_panel_is_open_shows_the_current_target_in_the_diff(
+    open_page, repo
+):
+    page = _drift_while_the_panel_is_open(open_page, repo)
+
+    count = "[data-testid='diff-row-count']"
+    assert (
+        page.inner_text(f"{count} [data-testid='diff-source-value']"),
+        page.inner_text(f"{count} [data-testid='diff-target-value']"),
+        "1 個參數不同" in page.inner_text("[data-testid='diff-summary']"),
+    ) == ("5", "9", True)
+
+
+def test_a_drift_found_while_the_panel_is_open_lists_the_current_change_before_adopting(
+    open_page, repo
+):
+    page = _drift_while_the_panel_is_open(open_page, repo)
+
+    page.click("[data-testid='resolve-adopt']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+
+    assert "count：來源 5 → 現況 9" in page.inner_text("[data-testid='confirm-items']")
