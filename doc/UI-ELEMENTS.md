@@ -209,7 +209,7 @@ figures/w*.svg   →   HTML 元素   →   測試選取器
 | 元素 | 選取器 | 行為 |
 |---|---|---|
 | 偏離橫幅 | `data-testid="drift-banner"` | 說明此修改未經介面進行、沒有對應的變更紀錄與作者資訊；欄位表與差異檢視都有 |
-| 檢視差異 | `data-testid="panel-diff"` | 欄位表橫幅內；開差異檢視 |
+| 檢視差異 | `data-testid="panel-diff"` | 欄位表橫幅內；**按下先重讀單筆內容**（`GET /api/configs/{uid}`）再開差異檢視——差異表與處置確認框比的是現在的目標，不是打開區塊當時的（F32）；重讀失敗在橫幅內的 `panel-diff-error` 原樣顯示、不開差異檢視 |
 | 差異檢視 | `data-testid="diff-<uid>"` | 容器；`diff-summary` 說幾個參數不同；目標現況壞掉時顯示 `diff-target-error` |
 | 來源側 / 目標側 | `data-testid="diff-source"` / `"diff-target"` | 欄首：左 repo（唯一真實來源）、右 target（磁碟現況）——並排而非合併，使用者要判斷哪一邊是對的 |
 | 差異列 | `data-testid="diff-row-<參數路徑>"` | 每參數一列，帶 `data-change`（`same`／`changed`／`added`〔目標多出〕／`removed`〔目標缺少〕）；列內 `diff-source-value`／`diff-target-value`。與 W4 同一套列與顏色語言；**比對方式不同**：W4 兩邊都用後端從內容推斷、每個值各自的型別，也比型別（F10）；W5 左邊套人工指定的型別、右邊由頁面從值推斷，只比顯示出來的字。已知限制：人工指定成 double 的參數，W5 可能顯示 `720.0｜720` 這種假差異 |
