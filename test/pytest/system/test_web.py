@@ -28,6 +28,7 @@ T11 先前**沒有執行通路**：頁面裡的 `data-testid` 是給未來的測
 輸入身分」這件事取決於執行順序。一則一個，順序就不是變數。
 """
 
+import contextlib
 import datetime
 import functools
 import gc
@@ -274,6 +275,7 @@ def open_page(browser, site, api, web_coverage):
         identity: dict | None = None,
         same_browser_as=None,
         mode: str | None = None,
+        prepare=None,
     ):
         """`unreachable` 是一個端點樣式，配到的請求一律失敗——連載入時那一發也算。
 
@@ -285,6 +287,7 @@ def open_page(browser, site, api, web_coverage):
         `identity` 在開頁前先以這個瀏覽器的 cookie 罐走端點記下身分——觀察「已經輸入過之後」的樣子。
         `mode` 把 `GET /api/mode` 的回應換成指定的模式（就地起的服務是部署模式；開發模式那一邊的
         介面行為以攔截回應驗）。
+        `prepare(page)` 在開頁之前跑：裝假時鐘、扣住載入時那幾發請求，都要在 `goto` 之前。
         """
         if same_browser_as is not None:
             context = same_browser_as.context
@@ -305,6 +308,8 @@ def open_page(browser, site, api, web_coverage):
                     status=200, content_type="application/json", body=json.dumps({"mode": mode})
                 ),
             )
+        if prepare is not None:
+            prepare(page)
 
         cdp = context.new_cdp_session(page)
         cdp.send("Debugger.enable")
@@ -7593,3 +7598,457 @@ def test_a_drift_found_while_the_panel_is_open_lists_the_current_change_before_a
     page.wait_for_selector("[data-testid='confirm-dialog'][open]")
 
     assert "count：來源 5 → 現況 9" in page.inner_text("[data-testid='confirm-items']")
+
+
+# ── T11：讀取卡住時 15 秒內停止等待並說明（F33、F34、F35；11/9 U04「卡住」補驗）────────
+# 後端卡住＝連線收下、不回應：這裡扣住請求不回來模擬（補驗那次是暫停後端容器）。
+# 時間用 Playwright 的假時鐘推進，量的是正式的 15 秒：期限前還在等、期限後已說明。
+# 期望值來自規格 fix-plan-F33-F35-20261109（使用者 11/9 定案），不是從頁面程式抄來的。
+# 寫入不套這個期限（規格第五節）：最後一則確認進版照舊等下去。
+
+_DEADLINE_TEXT = "等了 15 秒沒有收到回應"
+_BEFORE_DEADLINE_MS = 14_000
+_PAST_DEADLINE_MS = 15_500
+# 開頁時的期限從頁面開始載入起算，那一刻比 `_freeze` 早一點（不超過兩秒）：
+# 停住時鐘會先跳 1 秒，之後推 11 秒＝12 秒還在等，再推到 17.5 秒必須已說明。
+_STARTUP_BEFORE_MS = 11_000
+_STARTUP_PAST_MS = 16_500
+_SETTLE_MS = 5_000  # 時間推過期限後，畫面換成說明最多等多久（真實時間）
+_SEARCH_PENDING = "[data-testid='search-pending']"
+_SEARCH_RETRY = "[data-testid='search-retry']"
+_STARTUP_PENDING = "[data-testid='startup-pending']"
+_LOAD_ERROR = "[data-testid='load-error']"
+_RESCAN = "[data-testid='rescan']"
+_TREE = "[data-testid='config-tree']"
+_MODE_BADGE = "[data-testid='current-mode']"
+_IDENTITY_FORM = "[data-testid='identity-form']"
+
+
+def _with_clock(open_page):
+    """開頁之前裝上假時鐘的 open_page。裝上之後時間照常走，要量期限時再用 `_freeze` 停住。"""
+    return functools.partial(open_page, prepare=lambda page: page.clock.install())
+
+
+def _freeze(page) -> None:
+    """停住頁面的時鐘：之後只有 `run_for` 讓時間前進，期限前後的兩個時刻才量得準。"""
+    page.clock.pause_at(page.evaluate("() => Date.now()") + 1_000)
+
+
+class _Held:
+    """扣住符合的 GET 請求不回（後端卡住）；`holding` 關掉之後，新的請求照常放行。
+
+    放行或回應一個扣住的請求時，頁面可能已經因為逾時把它中止了——那就沒有東西可送，略過。
+    """
+
+    def __init__(self, page, pattern: str) -> None:
+        self.routes: list = []
+        self.holding = True
+        page.route(pattern, self._handle)
+
+    def _handle(self, route) -> None:
+        if route.request.method == "GET" and self.holding:
+            self.routes.append(route)
+        else:
+            route.continue_()
+
+    def wait_for(self, page, count: int) -> None:
+        """等到扣住第 `count` 個請求：確認測試真的走到「請求送出、沒有回應」那一步。"""
+        for _ in range(100):
+            if len(self.routes) >= count:
+                return
+            page.wait_for_timeout(50)
+        raise AssertionError(f"沒有扣到第 {count} 個請求：測試沒有走到卡住的情境")
+
+    def answer(self, index: int, **response) -> None:
+        with contextlib.suppress(BrowserError):
+            self.routes[index].fulfill(**response)
+
+    def let_through(self, index: int) -> None:
+        with contextlib.suppress(BrowserError):
+            self.routes[index].continue_()
+
+
+@pytest.fixture
+def stalled_body():
+    """回了標頭、內容送到一半就停住的服務：標頭到了，內容卻一直讀不完。
+
+    `page.route` 只能一次回完整個回應，做不出這種情況，所以另起一個；頁面的請求用
+    `route.continue_(url=…)` 轉過來，頁面看到的網址不變。跨來源照真的來，回 CORS 標頭。
+    """
+    release = threading.Event()
+    reached = threading.Event()
+
+    class _Stall(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            reached.set()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "4096")
+            self.send_header("Access-Control-Allow-Origin", self.headers.get("Origin", "*"))
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.end_headers()
+            self.wfile.write(b'{"query": ')
+            self.wfile.flush()
+            release.wait(timeout=60)
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Stall)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}", reached
+    release.set()
+    server.shutdown()
+    server.server_close()
+
+
+def _searched(open_page, repo):
+    """兩份 config、範圍「config 名稱」、已經搜過「a」（樹上只剩 a）；時鐘裝好、照常走。"""
+    page = _two_entries(_with_clock(open_page), repo)
+    page.fill(_SEARCH, "a")
+    page.wait_for_function(_ONE_DOT)
+    return page
+
+
+def _search_times_out(page) -> _Held:
+    """（時鐘已停）輸入「b」、搜尋扣住不回，時間推過期限，等到搜尋失敗出現。"""
+    held = _Held(page, _ANY_SEARCH)
+    page.fill(_SEARCH, "b")
+    page.clock.run_for(200)  # 打字後 150ms 才送出
+    held.wait_for(page, 1)
+    page.clock.run_for(_PAST_DEADLINE_MS)
+    page.wait_for_selector(_SEARCH_ERROR, timeout=_SETTLE_MS)
+    return held
+
+
+def test_a_waiting_search_says_the_tree_still_shows_the_previous_query(open_page, repo):
+    # F33：等待中的舊結果要標明是舊的——寫出這次的字與上一次的字，樹標成進行中。
+    page = _searched(open_page, repo)
+    held = _Held(page, _ANY_SEARCH)
+
+    page.fill(_SEARCH, "b")
+    held.wait_for(page, 1)
+
+    page.wait_for_selector(_SEARCH_PENDING, state="visible", timeout=_SETTLE_MS)
+    said = page.inner_text(_SEARCH_PENDING)
+    assert (
+        "正在搜尋「b」" in said,
+        "「a」的結果" in said,
+        "還不是這次" in said,
+        page.get_attribute(_TREE, "aria-busy"),
+    ) == (True, True, True, "true")
+
+
+def test_a_waiting_search_from_the_full_list_says_the_full_list_is_still_shown(open_page, repo):
+    page = _two_entries(open_page, repo)
+    held = _Held(page, _ANY_SEARCH)
+
+    page.fill(_SEARCH, "b")
+    held.wait_for(page, 1)
+
+    page.wait_for_selector(_SEARCH_PENDING, state="visible", timeout=_SETTLE_MS)
+    said = page.inner_text(_SEARCH_PENDING)
+    assert ("正在搜尋「b」" in said, "完整清單" in said) == (True, True)
+
+
+def test_a_search_with_no_answer_stops_waiting_after_15_seconds(open_page, repo):
+    # F33：期限前還在等；期限後是搜尋失敗、說等了 15 秒，舊結果不在樹上，摘要尚未重新確認。
+    page = _searched(open_page, repo)
+    page.click(_RESCAN)
+    _scan_says(page, "全部一致")
+    _freeze(page)
+    held = _Held(page, _ANY_SEARCH)
+    page.fill(_SEARCH, "b")
+    page.clock.run_for(200)
+    held.wait_for(page, 1)
+    page.clock.run_for(_BEFORE_DEADLINE_MS - 200)
+    page.wait_for_timeout(300)
+    waiting = page.query_selector(_SEARCH_ERROR) is None
+
+    page.clock.run_for(_PAST_DEADLINE_MS - _BEFORE_DEADLINE_MS)
+
+    page.wait_for_selector(_SEARCH_ERROR, timeout=_SETTLE_MS)
+    assert (
+        waiting,
+        _DEADLINE_TEXT in page.inner_text(_SEARCH_ERROR),
+        page.query_selector(f"[data-testid='tree-item-{_PARAM_UID}']") is None,
+        page.is_hidden(_SEARCH_PENDING),
+        "尚未重新確認" in page.inner_text(_SCAN),
+    ) == (True, True, True, True, True)
+
+
+def test_search_retry_after_a_timeout_shows_the_current_result(open_page, repo):
+    page = _searched(open_page, repo)
+    _freeze(page)
+    held = _search_times_out(page)
+    held.holding = False
+
+    page.click(_SEARCH_RETRY, timeout=_SETTLE_MS)
+    page.clock.run_for(200)
+
+    page.wait_for_selector(
+        f"[data-testid='tree-item-{_SECOND_UID}']", state="visible", timeout=_SETTLE_MS
+    )
+    assert (
+        page.query_selector(f"[data-testid='tree-item-{_PARAM_UID}']") is None,
+        page.query_selector(_SEARCH_ERROR) is None,
+    ) == (True, True)
+
+
+def test_a_search_answer_after_the_timeout_does_not_replace_the_explanation(open_page, repo):
+    # 逾時之後才到的成功：畫面仍是「等了 15 秒」，不自己跳成那一次的結果（要看現況就重試）。
+    page = _searched(open_page, repo)
+    _freeze(page)
+    held = _search_times_out(page)
+
+    held.answer(0, status=200, content_type="application/json", body=_hits(_SECOND_UID))
+    page.wait_for_timeout(500)
+
+    assert (
+        page.is_visible(_SEARCH_ERROR),
+        page.query_selector(f"[data-testid='tree-item-{_SECOND_UID}']") is None,
+    ) == (True, True)
+
+
+def test_late_answers_to_a_timed_out_search_do_not_overwrite_the_next_one(open_page, repo):
+    # 逾時的那一次晚到一個錯誤：不蓋掉之後那一次（還在等的「a」），也不顯示那個錯誤。
+    page = _searched(open_page, repo)
+    _freeze(page)
+    held = _search_times_out(page)
+    page.fill(_SEARCH, "a")
+    page.clock.run_for(200)
+    held.wait_for(page, 2)
+
+    held.answer(0, status=500, content_type="text/plain", body="late")
+    page.wait_for_timeout(500)
+    pending = page.inner_text(_SEARCH_PENDING)
+    late_error_shown = "後端回了 500" in page.inner_text(_TREE)
+    held.answer(1, status=200, content_type="application/json", body=_hits(_PARAM_UID))
+
+    page.wait_for_selector(
+        f"[data-testid='tree-item-{_PARAM_UID}']", state="visible", timeout=_SETTLE_MS
+    )
+    assert (
+        "正在搜尋「a」" in pending,
+        late_error_shown,
+        page.query_selector(_SEARCH_ERROR) is None,
+    ) == (True, False, True)
+
+
+def test_a_search_whose_answer_never_finishes_arriving_also_stops_at_15_seconds(
+    open_page, repo, api, stalled_body
+):
+    # 期限涵蓋讀完並解析回應，不只等到標頭：標頭到了、內容停住，15 秒後一樣說明。
+    stall, reached = stalled_body
+    page = _searched(open_page, repo)
+    page.route(
+        _ANY_SEARCH, lambda route: route.continue_(url=route.request.url.replace(api, stall))
+    )
+    _freeze(page)
+
+    page.fill(_SEARCH, "b")
+    page.clock.run_for(200)
+    for _ in range(100):
+        if reached.is_set():
+            break
+        page.wait_for_timeout(50)
+    page.clock.run_for(_PAST_DEADLINE_MS)
+
+    page.wait_for_selector(_SEARCH_ERROR, timeout=_SETTLE_MS)
+    assert (reached.is_set(), _DEADLINE_TEXT in page.inner_text(_SEARCH_ERROR)) == (True, True)
+
+
+def _listed(open_page, repo):
+    """兩份 config 都在樹上；時鐘裝好、照常走。"""
+    _listing_many(repo, {"a": "count: 3\n", "b": "speed: 1.5\n"})
+    page = _enter_identity(_with_clock(open_page)())
+    page.wait_for_selector(f"[data-testid='tree-item-{_SECOND_UID}']", state="visible")
+    return page
+
+
+def test_rescan_with_no_answer_ends_after_15_seconds_and_lets_you_act_again(open_page, repo):
+    # F34：期限前仍檢查中、退出停用（F3 照舊）；期限後按鈕可再按、讀不到清單、檢查失敗、退出恢復。
+    page = _listed(open_page, repo)
+    _freeze(page)
+    held = _Held(page, "**/api/configs")
+    page.click(_RESCAN)
+    held.wait_for(page, 1)
+    page.clock.run_for(_BEFORE_DEADLINE_MS)
+    page.wait_for_timeout(300)
+    still_checking = (_busy(page, _RESCAN), page.is_disabled(_EXIT))
+
+    page.clock.run_for(_PAST_DEADLINE_MS - _BEFORE_DEADLINE_MS)
+
+    page.wait_for_selector(f"{_RESCAN}:not([aria-busy='true'])", timeout=_SETTLE_MS)
+    assert (
+        still_checking,
+        page.inner_text(_RESCAN),
+        page.is_enabled(_RESCAN),
+        _DEADLINE_TEXT in page.inner_text(_LOAD_ERROR),
+        "檢查失敗" in page.inner_text(_SCAN),
+        page.is_enabled(_EXIT),
+    ) == ((True, True), "檢查差異", True, True, True, True)
+
+
+def test_rescan_and_its_search_rerun_share_one_15_second_deadline(open_page, repo):
+    # 搜尋框有字：清單第 10 秒才讀到、重跑的搜尋不回 → 從按下起第 15 秒就結束，不是第 25 秒。
+    page = _searched(open_page, repo)
+    _freeze(page)
+    configs = _Held(page, "**/api/configs")
+    searches = _Held(page, _ANY_SEARCH)
+    page.click(_RESCAN)
+    configs.wait_for(page, 1)
+    page.clock.run_for(10_000)
+    configs.let_through(0)
+    searches.wait_for(page, 1)  # 清單讀到了，接著重跑搜尋（F27）——這一發也扣住
+    page.clock.run_for(_BEFORE_DEADLINE_MS - 10_000)
+    page.wait_for_timeout(300)
+    still_checking = _busy(page, _RESCAN)
+
+    page.clock.run_for(_PAST_DEADLINE_MS - _BEFORE_DEADLINE_MS)
+
+    page.wait_for_selector(f"{_RESCAN}:not([aria-busy='true'])", timeout=_SETTLE_MS)
+    said = page.inner_text(_SCAN)
+    assert (still_checking, "清單已重新讀到" in said, _DEADLINE_TEXT in said) == (True, True, True)
+
+
+def test_a_late_answer_to_a_timed_out_rescan_does_not_overwrite_the_next_one(open_page, repo):
+    # 第一次逾時、第二次還在等時，第一次晚到一份空清單：不蓋掉畫面；第二次回來才是現況。
+    page = _listed(open_page, repo)
+    _freeze(page)
+    held = _Held(page, "**/api/configs")
+    page.click(_RESCAN)
+    held.wait_for(page, 1)
+    page.clock.run_for(_PAST_DEADLINE_MS)
+    page.wait_for_selector(_LOAD_ERROR, timeout=_SETTLE_MS)
+    page.click(_RESCAN)
+    held.wait_for(page, 2)
+
+    held.answer(0, status=200, content_type="application/json", body="[]")
+    page.wait_for_timeout(500)
+    meanwhile = (_busy(page, _RESCAN), page.query_selector("[data-testid='empty-state']") is None)
+    held.let_through(1)
+
+    page.wait_for_selector(
+        f"[data-testid='tree-item-{_SECOND_UID}']", state="visible", timeout=_SETTLE_MS
+    )
+    assert (meanwhile, "全部一致" in page.inner_text(_SCAN)) == ((True, True), True)
+
+
+def test_a_promote_with_no_answer_is_not_cut_off_by_the_read_deadline(open_page, repo):
+    # 寫入不套讀取期限：進版送出後 20 秒沒有回應，仍是進行中、「退出」仍停用（F3 照舊）。
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(_with_clock(open_page)())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    _freeze(page)
+    held, _release = _hold(page, "**/api/promote")
+    button = "[data-testid='promote-all']"
+
+    page.click(button)
+    page.wait_for_selector(f"{button}[aria-busy='true']")
+    page.clock.run_for(20_000)
+    page.wait_for_timeout(300)
+
+    assert (len(held), _busy(page, button), page.is_disabled(_EXIT)) == (1, True, True)
+
+
+def _startup_held(open_page, **options):
+    """開頁時問模式與身分的請求都扣住不回（後端卡住時重新載入）；時鐘在開頁前裝好。"""
+    holders = {}
+
+    def prepare(page):
+        page.clock.install()
+        holders["held"] = _Held(page, "**/api/{mode,session}")
+
+    page = open_page(prepare=prepare, **options)
+    holders["held"].wait_for(page, 1)
+    _freeze(page)
+    return page, holders["held"]
+
+
+def _startup_times_out(page) -> None:
+    page.clock.run_for(_STARTUP_PAST_MS)
+    page.wait_for_selector(f"{_UNREACHABLE_NOTICE}:not([hidden])", timeout=_SETTLE_MS)
+
+
+def test_the_page_says_it_is_asking_the_backend_while_mode_and_identity_are_pending(open_page):
+    # F35：後端卡住時重新載入，不是整頁空白——一打開就看得到正在詢問後端。
+    page, _held = _startup_held(open_page)
+
+    page.wait_for_selector(_STARTUP_PENDING, state="visible", timeout=_SETTLE_MS)
+    assert "正在向後端詢問模式與身分" in page.inner_text(_STARTUP_PENDING)
+
+
+def test_a_startup_with_no_answer_shows_an_unconfirmed_identity_page_within_15_seconds(
+    open_page,
+):
+    # F35：模式與身分同時問、共用 15 秒（先後問要 30 秒）；身分頁寫明兩項都尚未確認，
+    # 不讓人以為已確認沒有身分或可以編輯：徽章模式未知、不提供「記住我」。
+    page, _held = _startup_held(open_page)
+    page.clock.run_for(_STARTUP_BEFORE_MS)
+    page.wait_for_timeout(300)
+    waiting = page.is_hidden(_IDENTITY_FORM)
+
+    page.clock.run_for(_STARTUP_PAST_MS - _STARTUP_BEFORE_MS)
+
+    page.wait_for_selector(f"{_UNREACHABLE_NOTICE}:not([hidden])", timeout=_SETTLE_MS)
+    said = page.inner_text(_UNREACHABLE_NOTICE).strip()
+    assert (
+        waiting,
+        page.is_visible(_IDENTITY_FORM),
+        said.startswith("模式與身分尚未確認。"),
+        said.count(_DEADLINE_TEXT),
+        page.is_visible(_RETRY),
+        page.text_content(_MODE_BADGE),
+        page.is_hidden("[data-testid='remember-device']"),
+        page.is_hidden(_STARTUP_PENDING),
+    ) == (True, True, True, 2, True, "模式未知", True, True)
+
+
+def test_answers_after_a_startup_timeout_do_not_move_the_page_on_their_own(open_page):
+    # 逾時之後後端才回：頁面不自己跳到清單（有記住的身分也一樣），按「重試」才進清單。
+    page, held = _startup_held(open_page, identity=_REMEMBERED)
+    _startup_times_out(page)
+    held.holding = False
+    for index in range(len(held.routes)):
+        held.let_through(index)
+    page.wait_for_timeout(500)
+    stayed = (page.is_visible(_IDENTITY_FORM), page.is_visible(_UNREACHABLE_NOTICE))
+
+    page.click(_RETRY)
+
+    page.wait_for_selector(_TREE, state="visible", timeout=_SETTLE_MS)
+    assert stayed == (True, True)
+
+
+def test_retry_during_a_stuck_backend_also_stops_after_15_seconds(open_page):
+    page, _held = _startup_held(open_page)
+    _startup_times_out(page)
+    page.click(_RETRY)
+    page.wait_for_selector(f"{_RETRY}[aria-busy='true']")
+
+    page.clock.run_for(_PAST_DEADLINE_MS)
+
+    page.wait_for_selector(f"{_RETRY}:not([aria-busy])", timeout=_SETTLE_MS)
+    assert _DEADLINE_TEXT in page.inner_text(_UNREACHABLE_NOTICE)
+
+
+def test_late_startup_answers_do_not_overwrite_a_retry_in_progress(open_page):
+    # 重試還在等時，逾時那一次晚到的成功（模式＝開發）不改徽章、不結束重試；重試逾時後照樣說明。
+    page, held = _startup_held(open_page)
+    _startup_times_out(page)
+    first = len(held.routes)
+    page.click(_RETRY)
+    held.wait_for(page, first + 1)
+
+    for index in range(first):
+        body = '{"mode": "development"}' if held.routes[index].request.url.endswith(
+            "/api/mode") else "null"
+        held.answer(index, status=200, content_type="application/json", body=body)
+    page.wait_for_timeout(500)
+    meanwhile = (_busy(page, _RETRY), page.text_content(_MODE_BADGE))
+    page.clock.run_for(_PAST_DEADLINE_MS)
+
+    page.wait_for_selector(f"{_RETRY}:not([aria-busy])", timeout=_SETTLE_MS)
+    assert (meanwhile, _DEADLINE_TEXT in page.inner_text(_UNREACHABLE_NOTICE)) == (
+        (True, "模式未知"), True)
