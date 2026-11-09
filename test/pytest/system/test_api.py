@@ -2072,6 +2072,21 @@ def test_when_the_repo_is_fully_restored_the_message_offers_overwrite_or_adopt_t
     ) == (True, True, True, True, True, False, False)
 
 
+@contextlib.contextmanager
+def _restoring_shared_repo(repo):
+    """reset 被注入失敗時，共用的設定庫（整個測試階段只有一份）會留下一筆沒完成的紀錄。這裡在
+    結束時（斷言之後；斷言失敗也一樣）用真的 git 退回開始前的 HEAD，再核對 HEAD、筆數與工作區都和
+    開始前相同——各自比對 HEAD 不足以證明不影響後面的案例，要把現場清回來並驗過。"""
+    before = _repo_state(repo)
+    try:
+        yield
+    finally:
+        subprocess.run(["git", "-C", repo, "reset", "-q", "--hard", before[0]], check=True)
+        after = _repo_state(repo)
+        if after != before:
+            raise AssertionError(f"共用設定庫沒有清回開始前：{before} → {after}")
+
+
 def _write_and_reset_fail(monkeypatch):
     """目標寫出失敗、回滾時 reset 也失敗：設定庫沒能退回（單一份的操作只有這樣才會回滾未竟）。"""
 
@@ -2086,31 +2101,31 @@ def _write_and_reset_fail(monkeypatch):
 
 
 def test_a_left_behind_adopt_names_adopting_and_says_the_drafts_did_not_change(
-    api, sources_root, monkeypatch
+    api, sources_root, repo, monkeypatch
 ):
     # 將目標現況納入來源走同一套寫出與回滾：第一行寫這個操作，不寫「進版」；草稿說明是這個操作的；
     # 設定庫沒能退回 → 不提供覆蓋／納入，先由維護者確認設定庫。
     if os.environ.get("CM_SYSTEM_BASE_URL"):
         pytest.skip(_SKIP_EXTERNAL)
     entry = _drifted(api, sources_root, "f37_adopt.yaml")
-    _write_and_reset_fail(monkeypatch)
+    with _restoring_shared_repo(repo):
+        _write_and_reset_fail(monkeypatch)
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
+        message = _message_of(_detail(exc.value))
 
-    with pytest.raises(urllib.error.HTTPError) as exc:
-        _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
-
-    message = _message_of(_detail(exc.value))
-    assert (
-        message.startswith("將目標現況納入來源沒有完成"),
-        "設定庫：沒能完整退回" in message,
-        "先由維護者確認設定庫內容與歷史" in message,
-        "目前先不要進版、覆蓋或納入" in message,
-        "草稿沒有因為這次失敗而改變" in message,
-        "按「以來源覆蓋目標」" in message,
-    ) == (True, True, True, True, True, False)
+        assert (
+            message.startswith("將目標現況納入來源沒有完成"),
+            "設定庫：沒能完整退回" in message,
+            "先由維護者確認設定庫內容與歷史" in message,
+            "目前先不要進版、覆蓋或納入" in message,
+            "草稿沒有因為這次失敗而改變" in message,
+            "按「以來源覆蓋目標」" in message,
+        ) == (True, True, True, True, True, False)
 
 
 def test_a_left_behind_revert_names_reverting_and_says_there_were_no_drafts(
-    api, sources_root, monkeypatch
+    api, sources_root, repo, monkeypatch
 ):
     if os.environ.get("CM_SYSTEM_BASE_URL"):
         pytest.skip(_SKIP_EXTERNAL)
@@ -2119,17 +2134,17 @@ def test_a_left_behind_revert_names_reverting_and_says_there_were_no_drafts(
     _promote_value(api, entry["uid"], "count", 2)
     _promote_value(api, entry["uid"], "count", 3)
     first_cfg = _history(api, entry["uid"])[-1]["sha"]
-    _write_and_reset_fail(monkeypatch)
+    with _restoring_shared_repo(repo):
+        _write_and_reset_fail(monkeypatch)
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(api, f"/api/configs/{entry['uid']}/revert", {"version": first_cfg})
+        message = _message_of(_detail(exc.value))
 
-    with pytest.raises(urllib.error.HTTPError) as exc:
-        _post(api, f"/api/configs/{entry['uid']}/revert", {"version": first_cfg})
-
-    message = _message_of(_detail(exc.value))
-    assert (
-        message.startswith("退版沒有完成"),
-        "設定庫：沒能完整退回" in message,
-        "這一份在退版前本來就沒有草稿，這次失敗也沒有產生草稿" in message,
-    ) == (True, True, True)
+        assert (
+            message.startswith("退版沒有完成"),
+            "設定庫：沒能完整退回" in message,
+            "這一份在退版前本來就沒有草稿，這次失敗也沒有產生草稿" in message,
+        ) == (True, True, True)
 
 
 # ── T9：單筆內容（GET /api/configs/{uid}，#20）────────────────────────────────

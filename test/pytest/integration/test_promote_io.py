@@ -335,11 +335,12 @@ def test_when_the_head_cannot_be_read_after_the_reset_the_message_cannot_confirm
             _OVERWRITE in message) == (True, False, True, False)
 
 
-def test_targets_all_restored_but_an_unverifiable_repo_is_still_reported_as_left_behind(
+def test_targets_all_restored_but_an_unverifiable_repo_is_reported_as_unconfirmed_not_failed(
     tmp_path, monkeypatch
 ):
-    # 目標都還原了、設定庫卻核對不了：不能讓它看起來像整批乾淨回滾——照回滾未竟回報，
-    # 設定庫一行寫只核對到 HEAD。
+    # 目標都還原了、設定庫卻核對不了：要回報異常、不給直接繼續寫入的指引（先由維護者確認）；
+    # 但沒有已知的還原失敗，所以寫「回滾結果無法確認」，不把未確認寫成已確定失敗——
+    # 不寫回滾未竟、沒有完全還原，也沒有「未還原：」那一行（使用者 11/9）。
     repo = _repo(tmp_path)
     first = _plan(tmp_path, repo, "a", "max_vel: 1.2\n", "max_vel: 0.8\n")
     second = _plan(tmp_path, repo, "b", "speed: 2\n", "speed: 1\n")
@@ -350,6 +351,12 @@ def test_targets_all_restored_but_an_unverifiable_repo_is_still_reported_as_left
         apply(str(repo), [first, second], _AUTHOR, [str(tmp_path / "targets")])
 
     message = str(caught.value)
-    assert (pathlib.Path(first.target).read_bytes(), _HEAD_ONLY in message) == (
-        b"max_vel: 0.8\n", True,
-    )
+    assert (
+        pathlib.Path(first.target).read_bytes(),
+        "回滾結果無法確認" in message,
+        _HEAD_ONLY in message,
+        _HOLD_OFF in message,
+        "回滾未竟" in message,
+        "沒有完全還原" in message,
+        "未還原：" in message,
+    ) == (b"max_vel: 0.8\n", True, True, True, False, False, False)
