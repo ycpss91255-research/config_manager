@@ -4866,10 +4866,13 @@ const MODE_TEXT = { development: "開發模式", deployment: "部署模式" };
 // 不跳頁，也不蓋掉之後那一次重試的狀態。
 let backendAskGeneration = 0;
 
-async function loadMode(deadline, generation) {
+// 不帶期限單獨呼叫時（只重問模式）：自己起一個 15 秒期限、算是目前這一次，問完更新提示——和 F35 之前
+// 單獨呼叫的行為一樣。
+async function loadMode(deadline = null, generation = backendAskGeneration) {
   const badge = document.querySelector("[data-testid='current-mode']");
+  const own = deadline ? null : startDeadline();
   try {
-    const { mode } = await readJson(`${API_BASE}/api/mode`, deadline);
+    const { mode } = await readJson(`${API_BASE}/api/mode`, deadline || own);
     if (generation !== backendAskGeneration) return;
     document.body.dataset.mode = mode;
     badge.textContent = MODE_TEXT[mode] || mode;
@@ -4879,7 +4882,10 @@ async function loadMode(deadline, generation) {
     delete document.body.dataset.mode;
     badge.textContent = "模式未知";
     backendProblems.mode = backendProblemText("詢問後端模式", error);
+  } finally {
+    if (own) own.finish();
   }
+  if (own) showBackendProblems();
 }
 
 // 身分輸入頁問不到後端（F25）：模式與身分兩個請求各記各的結果——只有一項失敗就只寫那一項；字依原因分：
