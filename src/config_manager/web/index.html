@@ -1168,19 +1168,24 @@ function failureText(action, error) {
     + "下一步：確認後端服務在執行、這台電腦連得到它，再試一次。";
 }
 
-async function load() {
+// `deadline`：「檢查差異」傳進它那個動作的期限（讀清單與重跑搜尋共用，F34）；其他呼叫者不傳，這次
+// 載入自己起一個 15 秒的。
+async function load(deadline = null) {
   const generation = ++loadGeneration;
+  const own = deadline ? null : startDeadline();
   try {
-    const response = await apiFetch(`${API_BASE}/api/configs`);
-    if (!response.ok) throw new Refused(await loadErrorText(response));
-    const data = await response.json();
+    const data = await readJson(`${API_BASE}/api/configs`, deadline || own);
     if (generation !== loadGeneration) return;  // 有更新的載入開始了，這次過時、丟棄
     rows = data;
     loadError = null;
     // 搜尋框有字就重跑搜尋（F27）：清單是現在的，命中（或失敗的原因）也要是現在的——否則
     // 「檢查完成」和停機時留下的「搜尋失敗」紅框並排。重跑仍失敗時紅框留著、摘要另說。
-    if (search.value.trim()) await runSearch();
+    // 重跑沿用同一個期限：從按下「檢查差異」起合計 15 秒，不是各 15 秒（F34）。
+    if (search.value.trim()) await runSearch(deadline || own);
     else render();
+    // 重跑搜尋的那段等待裡可能已經有更新的載入開始了：摘要、開著的區塊、草稿數交給那一次寫，
+    // 這一次的收尾不蓋掉它（F34）。
+    if (generation !== loadGeneration) return;
     refreshScanSummary();
     syncOpenPanels();  // 開著的區塊跟著清單走（第 6 批 F31）
     loadDrafts();
@@ -1191,6 +1196,8 @@ async function load() {
     loadError = failureText("讀取 config 清單", error);
     render();
     refreshScanSummary();
+  } finally {
+    if (own) own.finish();  // 只收自己起的計時；共用的期限由起它的動作收
   }
 }
 
@@ -1244,12 +1251,17 @@ function markSummaryUnconfirmed() {
     `${scanStatus.dataset.at} 的檢查結果尚未重新確認：搜尋失敗（${searchError}）。修正後再按一次「檢查差異」。`);
 }
 
+// 一次「檢查差異」一個期限（F34）：讀清單與搜尋框有字時的重跑搜尋合計 15 秒。期限到了 load() 照讀不到
+// 清單處理（黏性的讀不到、摘要檢查失敗），這裡結束等待——按鈕可再按，忙碌標記拿掉後「退出」依 F3 的
+// 規則自己恢復（那條規則不改：寫入進行中照舊不能退出）。
 async function rescan() {
   rescanButton.disabled = true;
   setScanStatus("running", "檢查中…");  // 從這裡開始摘要是看得見的；結果由 load() 寫上去
+  const deadline = startDeadline();
   try {
-    await load();
+    await load(deadline);
   } finally {
+    deadline.finish();
     rescanButton.disabled = false;
   }
 }
