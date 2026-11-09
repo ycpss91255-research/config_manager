@@ -8134,20 +8134,74 @@ def _promoted_then_drifted(open_page, repo):
     return page
 
 
-def test_the_previous_result_stays_through_a_cancelled_confirmation_and_goes_once_sent(
-    open_page, repo
-):
-    # 取消確認框不收；確認後一送出就收——不是等成功才收：讓送出的處置回 500，修正前舊的「已進版…」
-    # 要等成功才收、所以會留著；修正後送出當下已收，失敗也不會再出現。另外記下頁面實際送出的處置
-    # 請求，沒送出時斷言訊息直接列出來（11/9 第一輪改用扣住請求，CI 上沒扣到，原因未定）。
-    page = _promoted_then_drifted(open_page, repo)
+def _resolve_requests(page):
+    """記下頁面實際送出的處置請求（方法＋網址）；沒走到預期路徑時放進斷言訊息，不必猜。"""
     seen = []
     page.on("request", lambda request: seen.append(f"{request.method} {request.url}")
             if "/resolve" in request.url else None)
+    return seen
+
+
+def _overwrite_confirmed(page):
+    page.click("[data-testid='resolve-overwrite']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+
+
+def test_cancelling_a_confirmation_keeps_the_previous_result(open_page, repo):
+    # 「取消不清除」：開確認框再取消，沒有送出任何寫入，上方「已進版…」照舊。現在就是這樣——
+    # 這則預期一開始就綠，是防止修過頭（確認框一開就收）的回歸測試。
+    page = _promoted_then_drifted(open_page, repo)
+    seen = _resolve_requests(page)
+
     page.click("[data-testid='resolve-overwrite']")
     page.wait_for_selector("[data-testid='confirm-dialog'][open]")
     page.click("[data-testid='confirm-cancel']")
-    kept = page.is_visible(_PROMOTE_DONE) and "已進版" in page.inner_text(_PROMOTE_DONE)
+
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]", state="detached")
+    assert (page.is_visible(_PROMOTE_DONE), "已進版" in page.inner_text(_PROMOTE_DONE), seen) == (
+        True, True, [],
+    )
+
+
+def test_the_previous_result_goes_as_soon_as_the_write_is_sent_before_the_answer(
+    open_page, repo
+):
+    # 「送出後、回應前清除」：確認送出後，回應還沒回來（請求扣住、處置鈕仍是進行中）時，上方的
+    # 「已進版…」已經收起——不是等成功才收。11/9 第一輪以「**/api/configs/*/resolve」扣住時 CI 上
+    # 扣到 0 次（原因未定），這裡改用「**/resolve」並把實際送出的處置請求放進斷言訊息。
+    page = _promoted_then_drifted(open_page, repo)
+    seen = _resolve_requests(page)
+    held = []
+
+    def _keep(route):
+        if route.request.method == "POST":
+            held.append(route)
+        else:
+            route.continue_()
+
+    page.route("**/resolve", _keep)
+
+    _overwrite_confirmed(page)
+    for _ in range(50):
+        if held:
+            break
+        page.wait_for_timeout(100)
+    pending = page.get_attribute("[data-testid='resolve-overwrite']", "aria-busy")
+    gone_before_answer = page.is_hidden(_PROMOTE_DONE)
+    for route in held:
+        route.continue_()
+    page.unroute("**/resolve")
+
+    assert (len(held), pending, gone_before_answer) == (1, "true", True), seen
+
+
+def test_a_failed_write_does_not_bring_the_previous_result_back(open_page, repo):
+    # 「500 後不殘留」：送出的處置回 500——修正前舊的「已進版…」要等成功才收，失敗時會留著；
+    # 修正後送出當下已收，失敗也不會再出現。只證明失敗之後沒有殘留，不證明送出當下的時機
+    # （那是上一則）。
+    page = _promoted_then_drifted(open_page, repo)
+    seen = _resolve_requests(page)
     refused = []
 
     def _refuse(route):
@@ -8160,12 +8214,10 @@ def test_the_previous_result_stays_through_a_cancelled_confirmation_and_goes_onc
 
     page.route("**/resolve", _refuse)
 
-    page.click("[data-testid='resolve-overwrite']")
-    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
-    page.click("[data-testid='confirm-ok']")
+    _overwrite_confirmed(page)
 
     page.wait_for_selector("[data-testid='resolve-error']", state="visible")
-    assert (kept, len(refused), page.is_hidden(_PROMOTE_DONE)) == (True, 1, True), seen
+    assert (len(refused), page.is_hidden(_PROMOTE_DONE)) == (1, True), seen
 
 
 def test_saving_a_draft_after_a_promote_removes_the_promote_message(open_page, repo):
