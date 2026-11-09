@@ -201,6 +201,7 @@
   /* 鍵盤焦點所在的樹節點（#50）：與選取分開畫，看得出方向鍵現在走到哪。 */
   #tree[aria-busy="true"] { opacity: .55; }  /* 搜尋等待中：內容還不是這次的（F33） */
   .search-pending { margin: 0 0 8px; }
+  .startup-pending { max-width: 640px; margin: 48px auto; }
   #tree li[data-uid]:focus-visible { outline: 2px dashed var(--fg); outline-offset: -2px; }
   /* 樹的排列（#34） */
   .tree-layout { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
@@ -468,6 +469,10 @@
 </style>
 </head>
 <body>
+
+<!-- 開頁時問後端模式與身分（F35）：一打開就看得到，不等程式跑；問到了（或 15 秒沒有回應）換頁時收起。
+     後端卡住時重新載入不再是整頁空白。 -->
+<p class="notice startup-pending" data-testid="startup-pending" role="status">正在向後端詢問模式與身分…</p>
 
 <form id="identity" data-testid="identity-form" hidden>
   <h2>請輸入身分資訊</h2>
@@ -3890,7 +3895,11 @@ roleToggle.addEventListener("click", (event) => {
 // showBrowse／showConfirm 全數漏掉，#252）就會兩個 view 疊著顯示，且殘留 view 裡的控制（如白名單的
 // 「確認移除」）還活著、可從不該出現它的畫面觸發不可逆刪除。browseView／confirmView／whitelistView
 // 在此函式之後才宣告，但本函式只在事件與啟動時被呼叫（那時整段 script 已初始化完畢），故安全。
+// 開頁時「正在向後端詢問模式與身分…」（F35）：換到任何一頁就收起。
+const startupPendingEl = document.querySelector("[data-testid='startup-pending']");
+
 function hideAllPageViews() {
+  startupPendingEl.hidden = true;
   identityForm.hidden = true;
   header.hidden = true;
   listView.hidden = true;
@@ -4852,21 +4861,25 @@ const MODE_TEXT = { development: "開發模式", deployment: "部署模式" };
 // 問後端現在是哪個模式（#47）。前端沒有決定權，也沒有端點可改——它只能問。問不到時徽章顯示
 // 「模式未知」而不是留白或假設某一種：假設成開發模式會讓之後依模式開關的行為（#48、#288）
 // 在部署機上開錯邊。之後的程式碼從 `document.body.dataset.mode` 讀。
-async function loadMode() {
+// 頁面啟動與「重試」問後端（F35）：模式與身分同時問、共用一個 15 秒期限（先後問最久要 30 秒）。每一次
+// 問帶一個世代號：成功、失敗都先核對自己還是最新的那一次——逾時那一次晚到的回應不改徽章、不改提示、
+// 不跳頁，也不蓋掉之後那一次重試的狀態。
+let backendAskGeneration = 0;
+
+async function loadMode(deadline, generation) {
   const badge = document.querySelector("[data-testid='current-mode']");
   try {
-    const response = await apiFetch(`${API_BASE}/api/mode`);
-    if (!response.ok) throw new Refused(await loadErrorText(response));
-    const { mode } = await response.json();
+    const { mode } = await readJson(`${API_BASE}/api/mode`, deadline);
+    if (generation !== backendAskGeneration) return;
     document.body.dataset.mode = mode;
     badge.textContent = MODE_TEXT[mode] || mode;
     backendProblems.mode = null;
   } catch (error) {
+    if (generation !== backendAskGeneration) return;
     delete document.body.dataset.mode;
     badge.textContent = "模式未知";
     backendProblems.mode = backendProblemText("詢問後端模式", error);
   }
-  showBackendProblems();
 }
 
 // 身分輸入頁問不到後端（F25）：模式與身分兩個請求各記各的結果——只有一項失敗就只寫那一項；字依原因分：
@@ -4883,38 +4896,64 @@ function backendProblemText(action, error) {
 
 function showBackendProblems() {
   const parts = [backendProblems.mode, backendProblems.identity].filter(Boolean);
-  unreachableText.textContent = parts.join(" ");
+  // 問不到的那幾項還沒確認（F35）：寫在最前面——身分頁出現不代表已確認這個瀏覽器沒有身分，模式未知
+  // 也不代表是哪一種模式。
+  const unconfirmed = [backendProblems.mode && "模式", backendProblems.identity && "身分"]
+    .filter(Boolean);
+  unreachableText.textContent = parts.length
+    ? `${unconfirmed.join("與")}尚未確認。${parts.join(" ")}`
+    : "";
   unreachableEl.hidden = parts.length === 0;
 }
 
 // 這個瀏覽器宣告過的身分（#288）：有就回它，沒有回 null；問不到回 null 並記下原因。
-async function probeIdentity() {
+async function probeIdentity(deadline, generation) {
   try {
-    const response = await apiFetch(`${API_BASE}/api/session`);
-    if (!response.ok) throw new Refused(await loadErrorText(response));
+    const identity = await readJson(`${API_BASE}/api/session`, deadline);
+    if (generation !== backendAskGeneration) return null;
     backendProblems.identity = null;
-    return await response.json();
+    return identity;
   } catch (error) {
+    if (generation !== backendAskGeneration) return null;
     // backend 連不上時仍顯示身分輸入頁：那是使用者唯一能操作的東西；原因寫在提示裡、可重試。
     backendProblems.identity = backendProblemText("詢問這個瀏覽器的身分", error);
     return null;
-  } finally {
+  }
+}
+
+// 問一次模式與身分。回 null＝這一次已經過時（有更新的一次開始了），呼叫端什麼都不做；否則回
+// { identity }（問不到或沒有身分時是 null，原因已寫進提示）。
+async function askBackend() {
+  const generation = ++backendAskGeneration;
+  const deadline = startDeadline();
+  try {
+    const [, identity] = await Promise.all([
+      loadMode(deadline, generation),
+      probeIdentity(deadline, generation),
+    ]);
+    if (generation !== backendAskGeneration) return null;
     showBackendProblems();
+    return { identity };
+  } finally {
+    deadline.finish();
   }
 }
 
 // 重試只重問模式與身分：不重送表單、不清掉已輸入的姓名、Email、角色；有記住的身分才進清單。
+// 也受同一個 15 秒期限（F35）。
 retryButton.addEventListener("click", () => whileBusy(retryButton, "重試中…", async () => {
-  await loadMode();
-  const identity = await probeIdentity();
+  const asked = await askBackend();
+  if (!asked) return;
   rememberLabel.hidden = document.body.dataset.mode !== "development";
-  if (identity && !identityForm.hidden) showList(identity);
+  if (asked.identity && !identityForm.hidden) showList(asked.identity);
 }));
 
 (async function start() {
-  await loadMode();
-  // 身分屬於這個瀏覽器（#288）：後端只回這個瀏覽器自己宣告過的身分，有就直接進清單。
-  const identity = await probeIdentity();
+  // 身分屬於這個瀏覽器（#288）：後端只回這個瀏覽器自己宣告過的身分，有就直接進清單。等待中頁面上是
+  // 「正在向後端詢問模式與身分…」（F35，寫在 HTML 裡、不等程式跑），換到任何一頁時收起。
+  const asked = await askBackend();
+  if (!asked) return;
+  const { identity } = asked;
   if (identity) {
     showList(identity);
     return;
