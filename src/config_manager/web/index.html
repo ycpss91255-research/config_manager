@@ -199,6 +199,8 @@
   .panel-close { margin-left: 4px; padding: 2px 8px; font-size: 13px; line-height: 1.2; }
   li[aria-selected="true"] { outline: 2px solid var(--fg); outline-offset: -2px; }
   /* 鍵盤焦點所在的樹節點（#50）：與選取分開畫，看得出方向鍵現在走到哪。 */
+  #tree[aria-busy="true"] { opacity: .55; }  /* 搜尋等待中：內容還不是這次的（F33） */
+  .search-pending { margin: 0 0 8px; }
   #tree li[data-uid]:focus-visible { outline: 2px dashed var(--fg); outline-offset: -2px; }
   /* 樹的排列（#34） */
   .tree-layout { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
@@ -585,6 +587,8 @@
         <option value="host">依主機</option>
       </select>
     </label>
+    <!-- 搜尋等待中（F33）：樹上還是上一次的畫面時，寫明那是哪一次的、還不是這次的。 -->
+    <p class="notice search-pending" data-testid="search-pending" role="status" hidden></p>
     <div id="tree" data-testid="config-tree"></div>
   </div>
   <!-- W2 右側工作區／W3 參數欄位表（#20）：單擊左側樹的 config → 這裡顯示它的欄位表，一次一份
@@ -857,16 +861,20 @@ let searchError = null;
 let searchFailed = false;
 let searchGeneration = 0;
 let searchTimer = null;
+let hitsQuery = "";  // 樹上現在的命中是哪一個搜尋字查到的（F33 的等待標示要說得出來）
+const searchPendingEl = document.querySelector("[data-testid='search-pending']");
 
 function scheduleSearch() {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(runSearch, 150);  // 打字中不每字打一次端點
 }
 
-async function runSearch() {
+// `deadline`：檢查差異重跑搜尋時沿用它的期限（一個動作共用一個，F34）；其他時候這次搜尋自己起一個。
+async function runSearch(deadline = null) {
   const generation = ++searchGeneration;
   const query = search.value.trim();
   if (!query) {
+    showSearchPending(null);
     searchHits = null;
     hitParams = new Map();
     searchError = null;
@@ -879,14 +887,17 @@ async function runSearch() {
     render();
     return;
   }
+  showSearchPending(query);
+  const own = deadline ? null : startDeadline();
   try {
     const params = new URLSearchParams({ q: query, scope: searchScope.value });
-    const response = await apiFetch(`${API_BASE}/api/search?${params}`);
-    if (!response.ok) throw new Refused(await loadErrorText(response));
-    const payload = await response.json();
+    const payload = await readJson(`${API_BASE}/api/search?${params}`, deadline || own);
+    // 成功、失敗都先核對自己還是最新的那一次：較新的搜尋（或清空）開始之後，這一次的結果、錯誤、
+    // 等待標示一律不碰（F33：逾時的那一次晚到也一樣）。
     if (generation !== searchGeneration) return;
     searchHits = new Set(payload.hits.map((hit) => hit.uid));
     hitParams = new Map(payload.hits.map((hit) => [hit.uid, hit.params.map((param) => param.path)]));
+    hitsQuery = query;
     searchError = null;
     searchFailed = false;
   } catch (error) {
@@ -895,8 +906,27 @@ async function runSearch() {
     searchError = failureText("搜尋", error);
     searchFailed = true;
     markSummaryUnconfirmed();
+  } finally {
+    if (own) own.finish();  // 只收自己起的計時；共用的期限由起它的動作收
   }
+  showSearchPending(null);
   render();
+}
+
+// 搜尋等待中（F33）：樹上還是上一次的畫面——寫明那是哪一次的、還不是這次的，樹標成進行中（淡化），
+// 不讓人把舊結果當成這次查到的。`query` 為 null＝收起來。
+function showSearchPending(query) {
+  if (query === null) {
+    searchPendingEl.hidden = true;
+    tree.removeAttribute("aria-busy");
+    return;
+  }
+  let shown = `下方仍是「${hitsQuery}」的結果，還不是這次的。`;
+  if (searchError !== null || loadError !== null) shown = "下方還不是這次的結果。";
+  else if (searchHits === null) shown = "下方仍是完整清單，還不是這次的結果。";
+  searchPendingEl.textContent = `正在搜尋「${query}」…${shown}`;
+  searchPendingEl.hidden = false;
+  tree.setAttribute("aria-busy", "true");
 }
 
 function matches(row) {
@@ -1012,9 +1042,13 @@ function renderTree() {
   const visible = rows.filter(matches);
   tree.replaceChildren();
   if (searchError !== null) {
+    // 重新搜尋（F33）：同一個字、同一個範圍再問一次，不清搜尋框。
+    const retry = element("button", { type: "button", "data-testid": "search-retry", text: "重新搜尋" });
+    retry.addEventListener("click", () => runSearch());
     tree.appendChild(element("div", { class: "notice error", "data-testid": "search-error" }, [
       element("strong", { text: "搜尋失敗。" }),
       element("pre", { text: searchError }),
+      retry,
     ]));
     return;
   }
@@ -3312,7 +3346,10 @@ async function whileBusy(button, label, work) {
 
 // 有動作正在跑（進版、寫出…）時不能退出（F3）：退出會釋放編輯權、清掉草稿，跑到一半的動作會被擋下。
 function refreshExitButton() {
-  exitButton.disabled = document.querySelector("[aria-busy='true']") !== null;
+  // 樹的 aria-busy（F33：搜尋等待中）標的是「畫面內容還不是這次的」，不是一個跑到一半的動作——
+  // 不算進來，否則搜尋卡住時會連帶擋住退出。
+  exitButton.disabled =
+    document.querySelector("[aria-busy='true']:not([data-testid='config-tree'])") !== null;
 }
 
 // 要先確認的動作在最前面問這個：已經在跑就不再開一次確認對話框。
