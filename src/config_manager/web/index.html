@@ -199,6 +199,9 @@
   .panel-close { margin-left: 4px; padding: 2px 8px; font-size: 13px; line-height: 1.2; }
   li[aria-selected="true"] { outline: 2px solid var(--fg); outline-offset: -2px; }
   /* 鍵盤焦點所在的樹節點（#50）：與選取分開畫，看得出方向鍵現在走到哪。 */
+  #tree[aria-busy="true"] { opacity: .55; }  /* 搜尋等待中：內容還不是這次的（F33） */
+  .search-pending { margin: 0 0 8px; }
+  .startup-pending { max-width: 640px; margin: 48px auto; }
   #tree li[data-uid]:focus-visible { outline: 2px dashed var(--fg); outline-offset: -2px; }
   /* 樹的排列（#34） */
   .tree-layout { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
@@ -467,6 +470,10 @@
 </head>
 <body>
 
+<!-- 開頁時問後端模式與身分（F35）：一打開就看得到，不等程式跑；問到了（或 15 秒沒有回應）換頁時收起。
+     後端卡住時重新載入不再是整頁空白。 -->
+<p class="notice startup-pending" data-testid="startup-pending" role="status">正在向後端詢問模式與身分…</p>
+
 <form id="identity" data-testid="identity-form" hidden>
   <h2>請輸入身分資訊</h2>
   <p class="why">
@@ -585,6 +592,8 @@
         <option value="host">依主機</option>
       </select>
     </label>
+    <!-- 搜尋等待中（F33）：樹上還是上一次的畫面時，寫明那是哪一次的、還不是這次的。 -->
+    <p class="notice search-pending" data-testid="search-pending" role="status" hidden></p>
     <div id="tree" data-testid="config-tree"></div>
   </div>
   <!-- W2 右側工作區／W3 參數欄位表（#20）：單擊左側樹的 config → 這裡顯示它的欄位表，一次一份
@@ -685,6 +694,40 @@ const API_BASE = window.CM_API_BASE || `${location.protocol}//${location.hostnam
 // 另一個 port，跨來源的 fetch 預設不帶 cookie——少了 credentials 就等於每次都是「還沒說自己是誰」。
 function apiFetch(url, init = {}) {
   return fetch(url, { credentials: "include", ...init });
+}
+
+// ── 讀取的期限（F33、F34、F35；11/9 U04「卡住」補驗）──────────────────────────────────
+// 後端卡住（連線收下、不回應）時，fetch 不會自己結束：搜尋一直顯示舊結果、檢查差異一直「檢查中…」、
+// 重新載入一直空白。所以讀取有期限：**一個動作**從觸發起 15 秒，這個動作裡的每一次讀取共用同一個
+// 期限（檢查差異＝讀清單＋搜尋框有字時的重跑搜尋），而且算到讀完並解析回應為止，不只等到標頭。
+// 期限一到就中止請求、當成一次失敗，原因寫「等了 15 秒沒有收到回應」。
+// **只給讀取用**（`GET /api/search`、`/api/configs`、`/api/mode`、`/api/session`）：寫入送出後中途放棄
+// 不代表後端沒寫，所以寫入、送出身分、取得／續期／釋放編輯權都不經過這裡，照舊等到後端回覆。
+const READ_DEADLINE_MS = 15_000;
+
+class TimedOut extends Error {}
+
+// 一個動作的期限：`signal` 交給這個動作裡的每一次讀取；動作結束時 `finish()` 收掉計時。
+function startDeadline() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new TimedOut(
+    `等了 ${READ_DEADLINE_MS / 1000} 秒沒有收到回應`,
+  )), READ_DEADLINE_MS);
+  return { signal: controller.signal, finish: () => clearTimeout(timer) };
+}
+
+// 在期限內讀一個端點並解析成資料：回應標頭、內容、解析都在同一個 signal 底下，期限一到哪一步都停。
+// 後端回絕（不是 200）照舊丟 Refused（原因原樣）；期限到了一律丟 TimedOut——不管瀏覽器那一刻給的是
+// 哪一種中止錯誤，也不管當時正在讀錯誤回應的內容。
+async function readJson(url, deadline) {
+  try {
+    const response = await apiFetch(url, { signal: deadline.signal });
+    if (!response.ok) throw new Refused(await loadErrorText(response));
+    return await response.json();
+  } catch (error) {
+    if (deadline.signal.aborted) throw deadline.signal.reason;
+    throw error;
+  }
 }
 
 // 會寫入的請求（F23）：後端只接受持有編輯權的那個分頁——帶上這個分頁的編輯階段識別碼。還沒取得
@@ -823,16 +866,20 @@ let searchError = null;
 let searchFailed = false;
 let searchGeneration = 0;
 let searchTimer = null;
+let hitsQuery = "";  // 樹上現在的命中是哪一個搜尋字查到的（F33 的等待標示要說得出來）
+const searchPendingEl = document.querySelector("[data-testid='search-pending']");
 
 function scheduleSearch() {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(runSearch, 150);  // 打字中不每字打一次端點
 }
 
-async function runSearch() {
+// `deadline`：檢查差異重跑搜尋時沿用它的期限（一個動作共用一個，F34）；其他時候這次搜尋自己起一個。
+async function runSearch(deadline = null) {
   const generation = ++searchGeneration;
   const query = search.value.trim();
   if (!query) {
+    showSearchPending(null);
     searchHits = null;
     hitParams = new Map();
     searchError = null;
@@ -845,14 +892,17 @@ async function runSearch() {
     render();
     return;
   }
+  showSearchPending(query);
+  const own = deadline ? null : startDeadline();
   try {
     const params = new URLSearchParams({ q: query, scope: searchScope.value });
-    const response = await apiFetch(`${API_BASE}/api/search?${params}`);
-    if (!response.ok) throw new Refused(await loadErrorText(response));
-    const payload = await response.json();
+    const payload = await readJson(`${API_BASE}/api/search?${params}`, deadline || own);
+    // 成功、失敗都先核對自己還是最新的那一次：較新的搜尋（或清空）開始之後，這一次的結果、錯誤、
+    // 等待標示一律不碰（F33：逾時的那一次晚到也一樣）。
     if (generation !== searchGeneration) return;
     searchHits = new Set(payload.hits.map((hit) => hit.uid));
     hitParams = new Map(payload.hits.map((hit) => [hit.uid, hit.params.map((param) => param.path)]));
+    hitsQuery = query;
     searchError = null;
     searchFailed = false;
   } catch (error) {
@@ -861,8 +911,27 @@ async function runSearch() {
     searchError = failureText("搜尋", error);
     searchFailed = true;
     markSummaryUnconfirmed();
+  } finally {
+    if (own) own.finish();  // 只收自己起的計時；共用的期限由起它的動作收
   }
+  showSearchPending(null);
   render();
+}
+
+// 搜尋等待中（F33）：樹上還是上一次的畫面——寫明那是哪一次的、還不是這次的，樹標成進行中（淡化），
+// 不讓人把舊結果當成這次查到的。`query` 為 null＝收起來。
+function showSearchPending(query) {
+  if (query === null) {
+    searchPendingEl.hidden = true;
+    tree.removeAttribute("aria-busy");
+    return;
+  }
+  let shown = `下方仍是「${hitsQuery}」的結果，還不是這次的。`;
+  if (searchError !== null || loadError !== null) shown = "下方還不是這次的結果。";
+  else if (searchHits === null) shown = "下方仍是完整清單，還不是這次的結果。";
+  searchPendingEl.textContent = `正在搜尋「${query}」…${shown}`;
+  searchPendingEl.hidden = false;
+  tree.setAttribute("aria-busy", "true");
 }
 
 function matches(row) {
@@ -978,9 +1047,13 @@ function renderTree() {
   const visible = rows.filter(matches);
   tree.replaceChildren();
   if (searchError !== null) {
+    // 重新搜尋（F33）：同一個字、同一個範圍再問一次，不清搜尋框。
+    const retry = element("button", { type: "button", "data-testid": "search-retry", text: "重新搜尋" });
+    retry.addEventListener("click", () => runSearch());
     tree.appendChild(element("div", { class: "notice error", "data-testid": "search-error" }, [
       element("strong", { text: "搜尋失敗。" }),
       element("pre", { text: searchError }),
+      retry,
     ]));
     return;
   }
@@ -1090,24 +1163,34 @@ class Refused extends Error {}
 // 不在各處自己拼一句「送不出去」。
 function failureText(action, error) {
   if (error instanceof Refused) return error.message;
+  // 讀取等太久（F33–F35）：請求送出了、沒收到回應——不說「送不出去」，也不猜是離線還是斷線。
+  if (error instanceof TimedOut) {
+    return `「${action}」${error.message}，已停止等待；這個動作沒有完成。`
+      + "下一步：確認後端服務還在回應（例如查看後端服務的紀錄），再試一次。";
+  }
   const why = error && error.message ? error.message : String(error);
   return `「${action}」送不出去（${why}）：後端沒有回應，這個動作沒有完成。`
     + "下一步：確認後端服務在執行、這台電腦連得到它，再試一次。";
 }
 
-async function load() {
+// `deadline`：「檢查差異」傳進它那個動作的期限（讀清單與重跑搜尋共用，F34）；其他呼叫者不傳，這次
+// 載入自己起一個 15 秒的。
+async function load(deadline = null) {
   const generation = ++loadGeneration;
+  const own = deadline ? null : startDeadline();
   try {
-    const response = await apiFetch(`${API_BASE}/api/configs`);
-    if (!response.ok) throw new Refused(await loadErrorText(response));
-    const data = await response.json();
+    const data = await readJson(`${API_BASE}/api/configs`, deadline || own);
     if (generation !== loadGeneration) return;  // 有更新的載入開始了，這次過時、丟棄
     rows = data;
     loadError = null;
     // 搜尋框有字就重跑搜尋（F27）：清單是現在的，命中（或失敗的原因）也要是現在的——否則
     // 「檢查完成」和停機時留下的「搜尋失敗」紅框並排。重跑仍失敗時紅框留著、摘要另說。
-    if (search.value.trim()) await runSearch();
+    // 重跑沿用同一個期限：從按下「檢查差異」起合計 15 秒，不是各 15 秒（F34）。
+    if (search.value.trim()) await runSearch(deadline || own);
     else render();
+    // 重跑搜尋的那段等待裡可能已經有更新的載入開始了：摘要、開著的區塊、草稿數交給那一次寫，
+    // 這一次的收尾不蓋掉它（F34）。
+    if (generation !== loadGeneration) return;
     refreshScanSummary();
     syncOpenPanels();  // 開著的區塊跟著清單走（第 6 批 F31）
     loadDrafts();
@@ -1118,6 +1201,8 @@ async function load() {
     loadError = failureText("讀取 config 清單", error);
     render();
     refreshScanSummary();
+  } finally {
+    if (own) own.finish();  // 只收自己起的計時；共用的期限由起它的動作收
   }
 }
 
@@ -1171,12 +1256,17 @@ function markSummaryUnconfirmed() {
     `${scanStatus.dataset.at} 的檢查結果尚未重新確認：搜尋失敗（${searchError}）。修正後再按一次「檢查差異」。`);
 }
 
+// 一次「檢查差異」一個期限（F34）：讀清單與搜尋框有字時的重跑搜尋合計 15 秒。期限到了 load() 照讀不到
+// 清單處理（黏性的讀不到、摘要檢查失敗），這裡結束等待——按鈕可再按，忙碌標記拿掉後「退出」依 F3 的
+// 規則自己恢復（那條規則不改：寫入進行中照舊不能退出）。
 async function rescan() {
   rescanButton.disabled = true;
   setScanStatus("running", "檢查中…");  // 從這裡開始摘要是看得見的；結果由 load() 寫上去
+  const deadline = startDeadline();
   try {
-    await load();
+    await load(deadline);
   } finally {
+    deadline.finish();
     rescanButton.disabled = false;
   }
 }
@@ -3273,7 +3363,10 @@ async function whileBusy(button, label, work) {
 
 // 有動作正在跑（進版、寫出…）時不能退出（F3）：退出會釋放編輯權、清掉草稿，跑到一半的動作會被擋下。
 function refreshExitButton() {
-  exitButton.disabled = document.querySelector("[aria-busy='true']") !== null;
+  // 樹的 aria-busy（F33：搜尋等待中）標的是「畫面內容還不是這次的」，不是一個跑到一半的動作——
+  // 不算進來，否則搜尋卡住時會連帶擋住退出。
+  exitButton.disabled =
+    document.querySelector("[aria-busy='true']:not([data-testid='config-tree'])") !== null;
 }
 
 // 要先確認的動作在最前面問這個：已經在跑就不再開一次確認對話框。
@@ -3802,7 +3895,11 @@ roleToggle.addEventListener("click", (event) => {
 // showBrowse／showConfirm 全數漏掉，#252）就會兩個 view 疊著顯示，且殘留 view 裡的控制（如白名單的
 // 「確認移除」）還活著、可從不該出現它的畫面觸發不可逆刪除。browseView／confirmView／whitelistView
 // 在此函式之後才宣告，但本函式只在事件與啟動時被呼叫（那時整段 script 已初始化完畢），故安全。
+// 開頁時「正在向後端詢問模式與身分…」（F35）：換到任何一頁就收起。
+const startupPendingEl = document.querySelector("[data-testid='startup-pending']");
+
 function hideAllPageViews() {
+  startupPendingEl.hidden = true;
   identityForm.hidden = true;
   header.hidden = true;
   listView.hidden = true;
@@ -4764,21 +4861,31 @@ const MODE_TEXT = { development: "開發模式", deployment: "部署模式" };
 // 問後端現在是哪個模式（#47）。前端沒有決定權，也沒有端點可改——它只能問。問不到時徽章顯示
 // 「模式未知」而不是留白或假設某一種：假設成開發模式會讓之後依模式開關的行為（#48、#288）
 // 在部署機上開錯邊。之後的程式碼從 `document.body.dataset.mode` 讀。
-async function loadMode() {
+// 頁面啟動與「重試」問後端（F35）：模式與身分同時問、共用一個 15 秒期限（先後問最久要 30 秒）。每一次
+// 問帶一個世代號：成功、失敗都先核對自己還是最新的那一次——逾時那一次晚到的回應不改徽章、不改提示、
+// 不跳頁，也不蓋掉之後那一次重試的狀態。
+let backendAskGeneration = 0;
+
+// 不帶期限單獨呼叫時（只重問模式）：自己起一個 15 秒期限、算是目前這一次，問完更新提示——和 F35 之前
+// 單獨呼叫的行為一樣。
+async function loadMode(deadline = null, generation = backendAskGeneration) {
   const badge = document.querySelector("[data-testid='current-mode']");
+  const own = deadline ? null : startDeadline();
   try {
-    const response = await apiFetch(`${API_BASE}/api/mode`);
-    if (!response.ok) throw new Refused(await loadErrorText(response));
-    const { mode } = await response.json();
+    const { mode } = await readJson(`${API_BASE}/api/mode`, deadline || own);
+    if (generation !== backendAskGeneration) return;
     document.body.dataset.mode = mode;
     badge.textContent = MODE_TEXT[mode] || mode;
     backendProblems.mode = null;
   } catch (error) {
+    if (generation !== backendAskGeneration) return;
     delete document.body.dataset.mode;
     badge.textContent = "模式未知";
     backendProblems.mode = backendProblemText("詢問後端模式", error);
+  } finally {
+    if (own) own.finish();
   }
-  showBackendProblems();
+  if (own) showBackendProblems();
 }
 
 // 身分輸入頁問不到後端（F25）：模式與身分兩個請求各記各的結果——只有一項失敗就只寫那一項；字依原因分：
@@ -4795,38 +4902,64 @@ function backendProblemText(action, error) {
 
 function showBackendProblems() {
   const parts = [backendProblems.mode, backendProblems.identity].filter(Boolean);
-  unreachableText.textContent = parts.join(" ");
+  // 問不到的那幾項還沒確認（F35）：寫在最前面——身分頁出現不代表已確認這個瀏覽器沒有身分，模式未知
+  // 也不代表是哪一種模式。
+  const unconfirmed = [backendProblems.mode && "模式", backendProblems.identity && "身分"]
+    .filter(Boolean);
+  unreachableText.textContent = parts.length
+    ? `${unconfirmed.join("與")}尚未確認。${parts.join(" ")}`
+    : "";
   unreachableEl.hidden = parts.length === 0;
 }
 
 // 這個瀏覽器宣告過的身分（#288）：有就回它，沒有回 null；問不到回 null 並記下原因。
-async function probeIdentity() {
+async function probeIdentity(deadline, generation) {
   try {
-    const response = await apiFetch(`${API_BASE}/api/session`);
-    if (!response.ok) throw new Refused(await loadErrorText(response));
+    const identity = await readJson(`${API_BASE}/api/session`, deadline);
+    if (generation !== backendAskGeneration) return null;
     backendProblems.identity = null;
-    return await response.json();
+    return identity;
   } catch (error) {
+    if (generation !== backendAskGeneration) return null;
     // backend 連不上時仍顯示身分輸入頁：那是使用者唯一能操作的東西；原因寫在提示裡、可重試。
     backendProblems.identity = backendProblemText("詢問這個瀏覽器的身分", error);
     return null;
-  } finally {
+  }
+}
+
+// 問一次模式與身分。回 null＝這一次已經過時（有更新的一次開始了），呼叫端什麼都不做；否則回
+// { identity }（問不到或沒有身分時是 null，原因已寫進提示）。
+async function askBackend() {
+  const generation = ++backendAskGeneration;
+  const deadline = startDeadline();
+  try {
+    const [, identity] = await Promise.all([
+      loadMode(deadline, generation),
+      probeIdentity(deadline, generation),
+    ]);
+    if (generation !== backendAskGeneration) return null;
     showBackendProblems();
+    return { identity };
+  } finally {
+    deadline.finish();
   }
 }
 
 // 重試只重問模式與身分：不重送表單、不清掉已輸入的姓名、Email、角色；有記住的身分才進清單。
+// 也受同一個 15 秒期限（F35）。
 retryButton.addEventListener("click", () => whileBusy(retryButton, "重試中…", async () => {
-  await loadMode();
-  const identity = await probeIdentity();
+  const asked = await askBackend();
+  if (!asked) return;
   rememberLabel.hidden = document.body.dataset.mode !== "development";
-  if (identity && !identityForm.hidden) showList(identity);
+  if (asked.identity && !identityForm.hidden) showList(asked.identity);
 }));
 
 (async function start() {
-  await loadMode();
-  // 身分屬於這個瀏覽器（#288）：後端只回這個瀏覽器自己宣告過的身分，有就直接進清單。
-  const identity = await probeIdentity();
+  // 身分屬於這個瀏覽器（#288）：後端只回這個瀏覽器自己宣告過的身分，有就直接進清單。等待中頁面上是
+  // 「正在向後端詢問模式與身分…」（F35，寫在 HTML 裡、不等程式跑），換到任何一頁時收起。
+  const asked = await askBackend();
+  if (!asked) return;
+  const { identity } = asked;
   if (identity) {
     showList(identity);
     return;
