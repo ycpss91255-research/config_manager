@@ -7609,10 +7609,6 @@ def test_a_drift_found_while_the_panel_is_open_lists_the_current_change_before_a
 _DEADLINE_TEXT = "等了 15 秒沒有收到回應"
 _BEFORE_DEADLINE_MS = 14_000
 _PAST_DEADLINE_MS = 15_500
-# 開頁時的期限從頁面開始載入起算，那一刻比 `_freeze` 早一點（不超過兩秒）：
-# 停住時鐘會先跳 1 秒，之後推 11 秒＝12 秒還在等，再推到 17.5 秒必須已說明。
-_STARTUP_BEFORE_MS = 11_000
-_STARTUP_PAST_MS = 16_500
 _SETTLE_MS = 5_000  # 時間推過期限後，畫面換成說明最多等多久（真實時間）
 _SEARCH_PENDING = "[data-testid='search-pending']"
 _SEARCH_RETRY = "[data-testid='search-retry']"
@@ -7953,21 +7949,26 @@ def test_a_promote_with_no_answer_is_not_cut_off_by_the_read_deadline(open_page,
 
 
 def _startup_held(open_page, **options):
-    """開頁時問模式與身分的請求都扣住不回（後端卡住時重新載入）；時鐘在開頁前裝好。"""
+    """開頁時問模式與身分的請求都扣住不回（後端卡住時重新載入）。
+
+    時鐘在開頁**之前**就停住：開頁時的期限是頁面一開始跑就起的，開頁後才停的話，它起在時間照常走
+    的那一段，實測（CI run 42560061147）比停住那一刻早到十幾秒，量不出期限前的樣子。開頁前停住，
+    期限就從停住的那一刻算，和其他期限測試（觸發前先停）一樣。
+    """
     holders = {}
 
     def prepare(page):
         page.clock.install()
+        page.clock.pause_at(int(time.time() * 1000) + 1_000)
         holders["held"] = _Held(page, "**/api/{mode,session}")
 
     page = open_page(prepare=prepare, **options)
     holders["held"].wait_for(page, 1)
-    _freeze(page)
     return page, holders["held"]
 
 
 def _startup_times_out(page) -> None:
-    page.clock.run_for(_STARTUP_PAST_MS)
+    page.clock.run_for(_PAST_DEADLINE_MS)
     page.wait_for_selector(f"{_UNREACHABLE_NOTICE}:not([hidden])", timeout=_SETTLE_MS)
 
 
@@ -7985,11 +7986,11 @@ def test_a_startup_with_no_answer_shows_an_unconfirmed_identity_page_within_15_s
     # F35：模式與身分同時問、共用 15 秒（先後問要 30 秒）；身分頁寫明兩項都尚未確認，
     # 不讓人以為已確認沒有身分或可以編輯：徽章模式未知、不提供「記住我」。
     page, _held = _startup_held(open_page)
-    page.clock.run_for(_STARTUP_BEFORE_MS)
+    page.clock.run_for(_BEFORE_DEADLINE_MS)
     page.wait_for_timeout(300)
     waiting = page.is_hidden(_IDENTITY_FORM)
 
-    page.clock.run_for(_STARTUP_PAST_MS - _STARTUP_BEFORE_MS)
+    page.clock.run_for(_PAST_DEADLINE_MS - _BEFORE_DEADLINE_MS)
 
     page.wait_for_selector(f"{_UNREACHABLE_NOTICE}:not([hidden])", timeout=_SETTLE_MS)
     said = page.inner_text(_UNREACHABLE_NOTICE).strip()
