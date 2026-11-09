@@ -8134,28 +8134,38 @@ def _promoted_then_drifted(open_page, repo):
     return page
 
 
-def test_the_previous_result_stays_through_a_cancelled_confirmation_and_goes_when_sent(
+def test_the_previous_result_stays_through_a_cancelled_confirmation_and_goes_once_sent(
     open_page, repo
 ):
-    # 取消確認框不收；確認後一送出（請求還在路上）就收——不是等成功才收。
+    # 取消確認框不收；確認後一送出就收——不是等成功才收：讓送出的處置回 500，修正前舊的「已進版…」
+    # 要等成功才收、所以會留著；修正後送出當下已收，失敗也不會再出現。另外記下頁面實際送出的處置
+    # 請求，沒送出時斷言訊息直接列出來（11/9 第一輪改用扣住請求，CI 上沒扣到，原因未定）。
     page = _promoted_then_drifted(open_page, repo)
+    seen = []
+    page.on("request", lambda request: seen.append(f"{request.method} {request.url}")
+            if "/resolve" in request.url else None)
     page.click("[data-testid='resolve-overwrite']")
     page.wait_for_selector("[data-testid='confirm-dialog'][open]")
     page.click("[data-testid='confirm-cancel']")
     kept = page.is_visible(_PROMOTE_DONE) and "已進版" in page.inner_text(_PROMOTE_DONE)
-    held, release = _hold(page, "**/api/configs/*/resolve")
+    refused = []
+
+    def _refuse(route):
+        if route.request.method == "POST":
+            refused.append(route.request.url)
+            route.fulfill(status=500, content_type="application/json",
+                          body=json.dumps({"detail": "注入：處置失敗。下一步：無"}))
+        else:
+            route.continue_()
+
+    page.route("**/resolve", _refuse)
 
     page.click("[data-testid='resolve-overwrite']")
     page.wait_for_selector("[data-testid='confirm-dialog'][open]")
     page.click("[data-testid='confirm-ok']")
-    for _ in range(50):
-        if held:
-            break
-        page.wait_for_timeout(100)
-    gone_while_sending = page.is_hidden(_PROMOTE_DONE)
-    release()
 
-    assert (kept, len(held), gone_while_sending) == (True, 1, True)
+    page.wait_for_selector("[data-testid='resolve-error']", state="visible")
+    assert (kept, len(refused), page.is_hidden(_PROMOTE_DONE)) == (True, 1, True), seen
 
 
 def test_saving_a_draft_after_a_promote_removes_the_promote_message(open_page, repo):
