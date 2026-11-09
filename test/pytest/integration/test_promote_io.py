@@ -209,3 +209,147 @@ def test_a_symlinked_target_is_refused_at_the_snapshot_before_anything_is_writte
     assert (link.is_symlink(), real.read_text(), head(str(repo))) == (
         True, "max_vel: 0.8\n", before_head
     )
+
+
+# ── F37（11/9 U24 第 2 輪）：回滾未竟時設定庫那一行依實際回復結果四擇一，恢復步驟跟著分支 ──
+# 期望字句來自 11/9 定稿的恢復指引（cm-verify fix-plan-F36-F38-20261109 第三、十節）。
+# 只有「已完整退回」才提供以來源覆蓋／納入來源；其他三種先由維護者確認設定庫、
+# 先不要進版覆蓋或納入。
+
+_RESTORED = "設定庫：已退回進版前"
+_HEAD_ONLY = "設定庫：HEAD 已回到操作前的 commit；工作樹、索引與附帶檔案是否完整還原，仍需核對。"
+_NOT_RESTORED = "設定庫：沒能完整退回進版前"
+_UNKNOWN = "設定庫：無法確認是否已退回進版前"
+_HOLD_OFF = (
+    "先由維護者確認設定庫內容與歷史，確認可採用的來源版本後，再決定恢復方式；"
+    "目前先不要進版、覆蓋或納入。"
+)
+_OVERWRITE = "按「以來源覆蓋目標」"
+
+
+def _restore_chown_refused(monkeypatch):
+    """第 1 份寫出時設擁有者照常；回滾還原第 1 份時設擁有者被拒（錯誤帶暫存檔名）——
+    第 1 份留在新內容。"""
+    real_chown = os.chown
+    calls = []
+
+    def _chown(path, uid, gid, **kwargs):
+        calls.append(path)
+        if len(calls) >= _SECOND:
+            raise PermissionError(1, "Operation not permitted", path)
+        real_chown(path, uid, gid, **kwargs)
+
+    monkeypatch.setattr(os, "chown", _chown)
+
+
+def _status_check_fails(monkeypatch):
+    """`git status` 跑不起來（其他 git 指令照常）：工作樹與索引沒辦法核對。"""
+    real_run = subprocess.run
+
+    def _run(args, *rest, **kwargs):
+        if "status" in args:
+            raise subprocess.CalledProcessError(128, args, stderr="注入：status 跑不起來")
+        return real_run(args, *rest, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _run)
+
+
+def _left_behind(tmp_path, monkeypatch, companions=None):
+    """兩份、第 2 份寫出失敗、第 1 份還原時設擁有者被拒（有 companions 時不注入這一項）。
+
+    回 (訊息, repo, 進版前 HEAD)。"""
+    repo = _repo(tmp_path)
+    first = _plan(tmp_path, repo, "a", "max_vel: 1.2\n", "max_vel: 0.8\n")
+    second = _plan(tmp_path, repo, "b", "speed: 2\n", "speed: 1\n")
+    before_head = head(str(repo))
+    _second_write_fails(monkeypatch)
+    if companions is None:
+        _restore_chown_refused(monkeypatch)
+    with pytest.raises(PromoteLeftBehind) as caught:
+        apply(str(repo), [first, second], _AUTHOR, [str(tmp_path / "targets")],
+              companions={first.uid: companions} if companions else None)
+    return str(caught.value), repo, before_head
+
+
+def test_when_only_the_head_can_be_checked_the_message_says_so_and_holds_off(tmp_path, monkeypatch):
+    _status_check_fails(monkeypatch)
+    message, _, _ = _left_behind(tmp_path, monkeypatch)
+
+    assert (_HEAD_ONLY in message, _RESTORED in message, _HOLD_OFF in message,
+            _OVERWRITE in message) == (True, False, True, False)
+
+
+def test_when_the_reset_fails_the_message_says_the_repo_is_not_restored_and_holds_off(
+    tmp_path, monkeypatch
+):
+    def _reset_refused(repo, sha):
+        raise subprocess.CalledProcessError(128, ["git", "reset", "--hard", sha], stderr="注入")
+
+    monkeypatch.setattr(promote_io, "reset_hard", _reset_refused)
+    message, _, _ = _left_behind(tmp_path, monkeypatch)
+
+    assert (_NOT_RESTORED in message, _RESTORED in message, _HOLD_OFF in message,
+            _OVERWRITE in message) == (True, False, True, False)
+
+
+def test_a_companion_that_was_not_restored_is_not_fully_restored_even_when_the_head_matches(
+    tmp_path, monkeypatch
+):
+    # HEAD 相符不等於設定庫完整還原：一起寫回設定庫的附帶檔案（這次才新建的 schema）拿不掉時，
+    # 就算 reset 成功、HEAD 回到進版前，也只能說沒能完整退回，並註明那是設定庫裡的檔案。
+    companion = "schemas/mfz3k9qa.schema.json"
+    real_remove = os.remove
+
+    def _remove(path, *args, **kwargs):
+        if path.endswith(companion):
+            raise PermissionError(13, "Permission denied", path)
+        return real_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", _remove)
+    message, repo, before_head = _left_behind(
+        tmp_path, monkeypatch, companions=((companion, '{"type": "object"}\n'),)
+    )
+
+    assert (head(str(repo)) == before_head, _NOT_RESTORED in message, _RESTORED in message,
+            "（設定庫裡的檔案）" in message, _HOLD_OFF in message, _OVERWRITE in message) == (
+        True, True, False, True, True, False,
+    )
+
+
+def test_when_the_head_cannot_be_read_after_the_reset_the_message_cannot_confirm(
+    tmp_path, monkeypatch
+):
+    real_head = promote_io.head
+    reads = []
+
+    def _head_after_reset_unreadable(repo):
+        reads.append(repo)
+        if len(reads) >= _SECOND:
+            raise subprocess.CalledProcessError(128, ["git", "rev-parse", "HEAD"], stderr="注入")
+        return real_head(repo)
+
+    monkeypatch.setattr(promote_io, "head", _head_after_reset_unreadable)
+    message, _, _ = _left_behind(tmp_path, monkeypatch)
+
+    assert (_UNKNOWN in message, _RESTORED in message, _HOLD_OFF in message,
+            _OVERWRITE in message) == (True, False, True, False)
+
+
+def test_targets_all_restored_but_an_unverifiable_repo_is_still_reported_as_left_behind(
+    tmp_path, monkeypatch
+):
+    # 目標都還原了、設定庫卻核對不了：不能讓它看起來像整批乾淨回滾——照回滾未竟回報，
+    # 設定庫一行寫只核對到 HEAD。
+    repo = _repo(tmp_path)
+    first = _plan(tmp_path, repo, "a", "max_vel: 1.2\n", "max_vel: 0.8\n")
+    second = _plan(tmp_path, repo, "b", "speed: 2\n", "speed: 1\n")
+    _second_write_fails(monkeypatch)
+    _status_check_fails(monkeypatch)
+
+    with pytest.raises(PromoteLeftBehind) as caught:
+        apply(str(repo), [first, second], _AUTHOR, [str(tmp_path / "targets")])
+
+    message = str(caught.value)
+    assert (pathlib.Path(first.target).read_bytes(), _HEAD_ONLY in message) == (
+        b"max_vel: 0.8\n", True,
+    )

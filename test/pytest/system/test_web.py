@@ -8053,3 +8053,121 @@ def test_late_startup_answers_do_not_overwrite_a_retry_in_progress(open_page):
     page.wait_for_selector(f"{_RETRY}:not([aria-busy])", timeout=_SETTLE_MS)
     assert (meanwhile, _DEADLINE_TEXT in page.inner_text(_UNREACHABLE_NOTICE)) == (
         (True, "模式未知"), True)
+
+
+# ── T11：上一個動作的結果訊息在送出下一個寫入時收起（F38，11/9）──────────────────────────────
+# 10/31 第 4 批、11/4 走查兩次看到：以來源覆蓋之後再退版，上方還留著「已以來源覆蓋…」，
+# 退版的結果卻在歷史區。規則（使用者 11/9 定案）：確認之後、實際送出寫入的那一刻
+# 收起上一筆普通結果訊息；開確認框、取消、檢查差異這類不寫入的動作不收。
+
+_PROMOTE_DONE = "[data-testid='promote-done']"
+
+
+def _overwritten_with_history(open_page, browse_root, api):
+    """兩版歷史、目標在介面外改過 → 開頁、以來源覆蓋成功（上方是「已以來源覆蓋…」）。"""
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
+    pathlib.Path(entry["target"]).write_text("count: 9\n", encoding="utf-8")
+    uid = entry["uid"]
+    page = open_page(identity=_REMEMBERED)
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    page.dblclick(f"[data-testid='tree-item-{uid}']")
+    page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
+    page.click(f"[data-testid='panel-{uid}'] [data-testid='panel-diff']")
+    page.wait_for_selector(f"[data-testid='diff-{uid}']", state="visible")
+    page.click("[data-testid='resolve-overwrite']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已以來源覆蓋')")
+    page.get_by_role("button", name="歷史").click()
+    page.wait_for_selector(f"[data-testid='history-{uid}']", state="visible")
+    _select_first_version(page)
+    return page
+
+
+def _confirm_revert(page):
+    page.click("[data-testid='history-revert']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+
+
+def test_reverting_after_an_overwrite_does_not_leave_the_overwrite_message_on_top(
+    open_page, browse_root, api
+):
+    page = _overwritten_with_history(open_page, browse_root, api)
+
+    _confirm_revert(page)
+
+    page.wait_for_selector("[data-testid='history-notice']:not([hidden])")
+    assert page.is_hidden(_PROMOTE_DONE)
+
+
+def test_a_revert_that_fails_after_an_overwrite_does_not_keep_the_overwrite_message_either(
+    open_page, browse_root, api
+):
+    page = _overwritten_with_history(open_page, browse_root, api)
+    page.route(
+        "**/api/configs/*/revert",
+        lambda route: route.fulfill(
+            status=500, content_type="application/json",
+            body=json.dumps({"detail": "注入：退版失敗。下一步：無"}),
+        ),
+    )
+
+    _confirm_revert(page)
+
+    page.wait_for_selector("[data-testid='history-revert-error']")
+    assert page.is_hidden(_PROMOTE_DONE)
+
+
+def _promoted_then_drifted(open_page, repo):
+    """一份 config 進版成功（上方「已進版…」）→ 介面外改目標 → 檢查差異 → 打開差異檢視。"""
+    target = _listing_many(repo, {"a": "count: 3\n"})["a"]
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已進版')")
+    target.write_text("count: 9\n", encoding="utf-8")
+    page.click("[data-testid='rescan']")
+    page.wait_for_selector(f"[data-testid='panel-status-{_PARAM_UID}']:has-text('偏離')")
+    page.click(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-diff']")
+    page.wait_for_selector(f"[data-testid='diff-{_PARAM_UID}']", state="visible")
+    return page
+
+
+def test_the_previous_result_stays_through_a_cancelled_confirmation_and_goes_when_sent(
+    open_page, repo
+):
+    # 取消確認框不收；確認後一送出（請求還在路上）就收——不是等成功才收。
+    page = _promoted_then_drifted(open_page, repo)
+    page.click("[data-testid='resolve-overwrite']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-cancel']")
+    kept = page.is_visible(_PROMOTE_DONE) and "已進版" in page.inner_text(_PROMOTE_DONE)
+    held, release = _hold(page, "**/api/configs/*/resolve")
+
+    page.click("[data-testid='resolve-overwrite']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+    for _ in range(50):
+        if held:
+            break
+        page.wait_for_timeout(100)
+    gone_while_sending = page.is_hidden(_PROMOTE_DONE)
+    release()
+
+    assert (kept, len(held), gone_while_sending) == (True, 1, True)
+
+
+def test_saving_a_draft_after_a_promote_removes_the_promote_message(open_page, repo):
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已進版')")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+
+    page.fill(_param_value("count"), "5")
+    _save(page, _PARAM_UID)
+
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    assert page.is_hidden(_PROMOTE_DONE)

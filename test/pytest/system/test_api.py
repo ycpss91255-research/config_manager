@@ -1952,6 +1952,186 @@ def test_a_rollback_whose_chown_fails_names_the_target_as_left_behind(
     assert _head(repo) == before
 
 
+# ── T9：回滾未竟的訊息與恢復指引（F37，11/9 U24 第 2 輪）──────────────────────────────────
+# 照實際會出現的失敗注入（11/5 U24 第 2 輪那段原文）：第 2 份寫出時設擁有者被拒——writer 自己組出帶
+# 「下一步：…。」的原本失敗；回滾還原第 1 份時設擁有者也被拒——PermissionError 帶當時的暫存檔名。
+# 期望字句來自 11/9 定稿的恢復指引（cm-verify fix-plan-F36-F38-20261109 第三、十節），
+# 不是從程式抄來的。
+
+_SKIP_EXTERNAL = "需就地 monkeypatch 並讀 HEAD，外部映像控不了 server 端模組"
+
+
+def _realistic_chown_refusals(monkeypatch):
+    """第 1 次設擁有者（第 1 份寫出）照常；之後每一次（第 2 份寫出、回滾還原第 1 份）都被拒，
+    錯誤帶當時的路徑。"""
+    real_chown = os.chown
+    calls = []
+
+    def _chown(path, uid, gid, **kwargs):
+        calls.append(path)
+        if len(calls) >= _SECOND_WRITE:
+            raise PermissionError(1, "Operation not permitted", path)
+        real_chown(path, uid, gid, **kwargs)
+
+    monkeypatch.setattr(os, "chown", _chown)
+    return calls
+
+
+def _message_of(detail):
+    """回滾未竟的可讀訊息：現在 detail 是字串；之後若改成帶 message 的物件（#345）也讀得到。"""
+    return detail["message"] if isinstance(detail, dict) else detail
+
+
+def _promote_left_behind(api, sources_root, repo, monkeypatch, name):
+    """兩份草稿、照實際的失敗進版 → 回 (第 1 份, 第 2 份, 進版前 HEAD, 訊息)。"""
+    _clear_drafts(api)
+    first = _onboard(api, sources_root, f"{name}_a.yaml")
+    second = _onboard(api, sources_root, f"{name}_b.yaml", b"speed: 1\n")
+    _post(api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.2}})
+    _post(api, "/api/drafts", {"uid": second["uid"], "edits": {"speed": 2}})
+    before = _head(repo)
+    _realistic_chown_refusals(monkeypatch)
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, "/api/promote", {})
+    return first, second, before, (exc.value.code, _message_of(_detail(exc.value)))
+
+
+def test_a_left_behind_message_has_one_next_step_no_doubled_full_stop_and_no_temporary_file(
+    api, sources_root, repo, monkeypatch
+):
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip(_SKIP_EXTERNAL)
+    *_, (code, message) = _promote_left_behind(api, sources_root, repo, monkeypatch, "f37_format")
+
+    assert (code, message.count("下一步："), "。。" in message, ".config_manager-" in message) == (
+        _SERVER_ERROR, 1, False, False,
+    )
+
+
+def test_a_left_behind_message_names_the_target_the_failed_step_and_the_original_failure(
+    api, sources_root, repo, monkeypatch
+):
+    # 只說「可能留下部分變更」——沒有讀回核對，不斷言目標就是這次要寫入的內容；
+    # 原本的失敗自帶的建議照留，但標明是給維護者參考。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip(_SKIP_EXTERNAL)
+    first, second, _, (_, message) = _promote_left_behind(
+        api, sources_root, repo, monkeypatch, "f37_names"
+    )
+
+    assert (
+        f"未還原：{first['target']}" in message,
+        "把擁有者改回" in message,
+        "Operation not permitted" in message,
+        f"原本的失敗：沒有權限把 {second['target']}" in message,
+        "原本的失敗附的建議（給維護者參考）：這份 config 若真的需要別的擁有者" in message,
+        "可能留下部分變更，內容、擁有者與權限需要重新核對" in message,
+        "現在是這次要進版的內容" in message,
+    ) == (True, True, True, True, True, True, False)
+
+
+def test_a_left_behind_message_asks_to_save_the_current_state_before_the_original_failure(
+    api, sources_root, repo, monkeypatch
+):
+    # 先保存現況（維護者備份目標檔與擁有者、權限到指定位置，保存錯誤與差異），
+    # 再把原本的失敗交維護者判斷；不引導新人為了通過而直接改擁有者。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip(_SKIP_EXTERNAL)
+    *_, (_, message) = _promote_left_behind(api, sources_root, repo, monkeypatch, "f37_order")
+    save = message.find("先保存現況")
+    hand_over = message.find("原本的失敗交給維護者判斷")
+
+    assert (
+        0 <= save < hand_over,
+        "備份到指定的位置" in message,
+        "只記下畫面上的值不能代替完整備份" in message,
+        "不要為了讓進版通過而直接改擁有者或權限" in message,
+    ) == (True, True, True, True)
+
+
+def test_when_the_repo_is_fully_restored_the_message_offers_overwrite_or_adopt_then_a_recheck(
+    api, sources_root, repo, monkeypatch
+):
+    # 設定庫已完整退回（附帶檔案全還原、reset 成功、HEAD 等於進版前、工作樹與索引乾淨）這一支，
+    # 才提供以來源覆蓋／納入來源、才把來源稱為進版前的內容；最後是重新核對再決定，
+    # 不寫「可以再按進版」；還沒有的「未還原」標示（#345）不在這段訊息裡。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip(_SKIP_EXTERNAL)
+    _, _, before, (_, message) = _promote_left_behind(
+        api, sources_root, repo, monkeypatch, "f37_restored"
+    )
+
+    assert (
+        f"設定庫：已退回進版前（HEAD 回到 {before[:7]}" in message,
+        "確定要恢復來源（進版前）的內容：按「以來源覆蓋目標」" in message,
+        "要保留目標現在的內容：按「將目標現況納入來源」" in message,
+        "不保證回到進版前的擁有者與權限" in message,
+        "重新核對目前的來源、目標及全部草稿，再決定是否進版" in message,
+        "可以再按" in message,
+        "「未還原」" in message,
+    ) == (True, True, True, True, True, False, False)
+
+
+def _write_and_reset_fail(monkeypatch):
+    """目標寫出失敗、回滾時 reset 也失敗：設定庫沒能退回（單一份的操作只有這樣才會回滾未竟）。"""
+
+    def _write_refused(target, content, permissions, roots):
+        raise TargetNotWritable(f"注入：{target} 寫不進去。下一步：無")
+
+    def _reset_refused(repo, sha):
+        raise subprocess.CalledProcessError(128, ["git", "reset", "--hard", sha], stderr="注入")
+
+    monkeypatch.setattr(promote_io, "write", _write_refused)
+    monkeypatch.setattr(promote_io, "reset_hard", _reset_refused)
+
+
+def test_a_left_behind_adopt_names_adopting_and_says_the_drafts_did_not_change(
+    api, sources_root, monkeypatch
+):
+    # 將目標現況納入來源走同一套寫出與回滾：第一行寫這個操作，不寫「進版」；草稿說明是這個操作的；
+    # 設定庫沒能退回 → 不提供覆蓋／納入，先由維護者確認設定庫。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip(_SKIP_EXTERNAL)
+    entry = _drifted(api, sources_root, "f37_adopt.yaml")
+    _write_and_reset_fail(monkeypatch)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, f"/api/configs/{entry['uid']}/resolve", {"action": "adopt"})
+
+    message = _message_of(_detail(exc.value))
+    assert (
+        message.startswith("將目標現況納入來源沒有完成"),
+        "設定庫：沒能完整退回" in message,
+        "先由維護者確認設定庫內容與歷史" in message,
+        "目前先不要進版、覆蓋或納入" in message,
+        "草稿沒有因為這次失敗而改變" in message,
+        "按「以來源覆蓋目標」" in message,
+    ) == (True, True, True, True, True, False)
+
+
+def test_a_left_behind_revert_names_reverting_and_says_there_were_no_drafts(
+    api, sources_root, monkeypatch
+):
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip(_SKIP_EXTERNAL)
+    _clear_drafts(api)
+    entry = _onboard(api, sources_root, "f37_revert.yaml", b"count: 1\n")
+    _promote_value(api, entry["uid"], "count", 2)
+    _promote_value(api, entry["uid"], "count", 3)
+    first_cfg = _history(api, entry["uid"])[-1]["sha"]
+    _write_and_reset_fail(monkeypatch)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(api, f"/api/configs/{entry['uid']}/revert", {"version": first_cfg})
+
+    message = _message_of(_detail(exc.value))
+    assert (
+        message.startswith("退版沒有完成"),
+        "設定庫：沒能完整退回" in message,
+        "這一份在退版前本來就沒有草稿，這次失敗也沒有產生草稿" in message,
+    ) == (True, True, True)
+
+
 # ── T9：單筆內容（GET /api/configs/{uid}，#20）────────────────────────────────
 
 
