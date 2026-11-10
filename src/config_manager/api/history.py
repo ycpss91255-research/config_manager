@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from config_manager.api.checks import drafted_by_in, overrides_in
 from config_manager.api.lock import Editing
 from config_manager.api.session import Identity
-from config_manager.core.drafts import Promotion, Stage
+from config_manager.core.drafts import Promotion
 from config_manager.core.errors import SyntaxParse
 from config_manager.core.inference import infer_types
 from config_manager.core.models import ConfigList, FileEntry
@@ -54,7 +54,7 @@ def register_history(app: FastAPI, repo: str, editing: Editing) -> None:
     def revert_config(uid: str, payload: RevertInput, request: Request) -> dict[str, object]:
         """退版（設計文件 §3.5.3、§5.3）：以反向變更寫回舊版內容並寫出目標，不改寫歷史（#24）。"""
         with editing.write(request, "退版") as identity:
-            return _revert_config(repo, identity, editing.stage_box, uid, payload)
+            return _revert_config(repo, identity, editing, uid, payload)
 
 
 # 歷史預設只看內容變更（§7.6.1、圖 7）：cfg、adopt、revert 都真的改了來源與目標的內容
@@ -222,7 +222,7 @@ def _find_version(changes: list[Change], entry: FileEntry, sha: str) -> Change:
 def _revert_config(
     repo: str,
     identity: Identity,
-    stage_box: dict[str, Stage],
+    editing: Editing,
     uid: str,
     payload: RevertInput,
 ) -> dict[str, object]:
@@ -238,7 +238,7 @@ def _revert_config(
     """
     config_list = read_config_list(repo)
     entry = require_entry(config_list, uid)
-    if uid in stage_box["stage"].drafts:
+    if uid in editing.stage_box["stage"].drafts:
         raise HTTPException(
             status_code=409,
             detail=f"「{entry.name}@{entry.hostname}」有未進版的草稿，退版會讓草稿對不上來源。"
@@ -260,13 +260,17 @@ def _revert_config(
         apply_promotions(
             repo, [plan], identity.git_author, root_prefixes(repo), {uid: companions}
         )
-    except (PromoteLeftBehind, WriterError, CalledProcessError, OSError) as error:
+    except PromoteLeftBehind as error:
+        # 回滾沒能完全還原或結果無法確認：記「未還原」事件，回物件格式的 500（#345）。
+        raise editing.marks.rollback_error(error) from error
+    except (WriterError, CalledProcessError, OSError) as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
     latest = history(repo, uid)[0]
     return {
         "uid": uid,
         "reverted_to": target_change.sha,
         "schema_effect": schema_effect,
+        "left_behind_cleared": editing.marks.cleared([(uid, entry.target)]),
         "record": {
             "sha": latest.sha, "kind": latest.kind, "summary": latest.summary,
             "author": latest.author, "at": latest.at,

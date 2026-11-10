@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import dataclass
 
 _NEXT_STEP = "下一步："
 
@@ -392,7 +393,31 @@ class PromoteLeftBehind(Exception):
     已被改成新內容、紀錄卻被撤銷」這種半套狀態悄悄留著——那正是 ADR-00000006 要防的
     「已記錄未套用／已套用未記錄」。訊息同時說出原本的失敗、哪些項目沒還原與設定庫的實際
     回復結果；已知還原失敗與「設定庫核對不完整、結果無法確認」寫成兩種第一行（F37）。
+
+    另帶結構化的事實（`facts`，`RollbackFacts`），給 api 層記「未還原」標記與回物件格式的 500
+    （#345）。
     """
+
+    def __init__(self, message: str, facts: RollbackFacts) -> None:
+        super().__init__(message)
+        self.facts = facts
+
+
+@dataclass(frozen=True)
+class RollbackFacts:
+    """一次回滾錯誤的結構化事實（#345）。
+
+    `operation`：操作名稱（進版／將目標現況納入來源／退版）。`left_behind`：還原步驟失敗的每一項
+    ——(config 的 uid；設定庫裡的附帶檔案是 None, 路徑, 那一步（含被拒／失敗）, 原因)。`repo`：
+    設定庫的 (結果, 原因)，結果是 `not_restored`（沒能完整退回）或 `unconfirmed`（回滾結果無法
+    確認）；已完整退回是 None。`original`：原本的失敗只取原因。`uids`：這次操作涉及的 config。
+    """
+
+    operation: str
+    left_behind: tuple[tuple[str | None, str, str, str], ...]
+    repo: tuple[str, str] | None
+    original: str
+    uids: tuple[str, ...]
 
 
 class UnmanageNotFound(Exception):

@@ -116,7 +116,7 @@ def register_drafts(app: FastAPI, repo: str, editing: Editing) -> None:
         with editing.write(request, "進版") as identity:
             me = owner_of(identity, ticket_of(request))
             expected = None if payload is None else payload.expected
-            return _promote_all(repo, root_prefixes(repo), me, stage_box, expected)
+            return _promote_all(repo, root_prefixes(repo), me, editing, expected)
 
 
 def _apply_edits(parsed: Parsed, edits: dict[str, object], uid: str, source: str) -> None:
@@ -211,11 +211,15 @@ def _promote_all(
     repo: str,
     roots: tuple[str, ...],
     promoter: Owner,
-    stage_box: dict[str, Stage],
+    editing: Editing,
     expected: list[ExpectedDraft] | None,
 ) -> dict[str, object]:
     """進版的邏輯（#19）：core promote 全部驗證 → io apply 寫出＋記錄（失敗整批回滾）→ 清空草稿。
-    `expected` 不是 None 時先比簽章（ADR-00000032）：確認框開著時草稿變了就不進版。"""
+    `expected` 不是 None 時先比簽章（ADR-00000032）：確認框開著時草稿變了就不進版。
+
+    「未還原」標記（#345）：回滾錯誤記成事件、回物件格式的 500；整批成功才收起這批寫出的目標，
+    回 `left_behind_cleared`（依寫出順序，只列確實收起的）。"""
+    stage_box = editing.stage_box
     stage = stage_box["stage"]
     if not stage.drafts:
         raise HTTPException(
@@ -259,8 +263,12 @@ def _promote_all(
     except TargetReadError as error:
         # 某份目標不是一般檔案／太大／讀不出來：拍現場時就停、整批不進版、草稿保留（F14）。
         raise HTTPException(status_code=422, detail=str(error)) from error
-    except (PromoteLeftBehind, WriterError, CalledProcessError, OSError) as error:
-        # 寫出／記錄／回滾失敗：伺服器側的錯，帶訊息的 500（PromoteLeftBehind 指名殘留）。
+    except PromoteLeftBehind as error:
+        # 回滾沒能完全還原或結果無法確認：記「未還原」事件，回物件格式的 500（#345）。
+        raise editing.marks.rollback_error(error) from error
+    except (WriterError, CalledProcessError, OSError) as error:
+        # 寫出／記錄失敗、回滾完整：伺服器側的錯，帶訊息的 500（字串，照舊）。
         raise HTTPException(status_code=500, detail=str(error)) from error
     stage_box["stage"] = discard(stage)  # 進版後草稿清空（T18）
-    return {"promoted": promoted, "count": 0}
+    cleared = editing.marks.cleared((plan.uid, plan.target) for plan in plans)
+    return {"promoted": promoted, "count": 0, "left_behind_cleared": cleared}

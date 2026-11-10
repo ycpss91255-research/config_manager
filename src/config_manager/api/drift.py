@@ -3,7 +3,8 @@
 三個處置出口一支端點（`POST /api/configs/{uid}/resolve`，§3.5.3 的 resolve 動作）：
 `overwrite`（以來源覆蓋目標）、`adopt`（將目標現況納入來源，走完整驗證）、`adopt_draft`
 （先納入、待修正：目標現況載入草稿，含非法值只警告）。未部署的寫出修復是 `POST …/apply`。
-不自動處置：這裡每一條都是人按了之後才跑。
+不自動處置：這裡每一條都是人按了之後才跑。寫出目標的出口整個成功時回 `left_behind_cleared`（這次
+確實收起的「未還原」，#345）。
 """
 
 from __future__ import annotations
@@ -50,14 +51,14 @@ def register_drift(app: FastAPI, repo: str, editing: Editing) -> None:
         """處置一份偏離的 config（設計文件 §3.5.3、§5.4）。三個出口都由人選、都留下痕跡。"""
         with editing.write(request, "處置偏離") as identity:
             me = owner_of(identity, ticket_of(request))
-            return _resolve(repo, me, editing.stage_box, uid, payload.action)
+            return _resolve(repo, me, editing, uid, payload.action)
 
     @app.post("/api/configs/{uid}/apply")
     def apply_missing(uid: str, request: Request) -> dict[str, object]:
         """未部署的寫出修復（設計文件 §5.4）：目標不存在時把來源寫到 target；repo 沒變、不留
         紀錄。目標已存在→409，不覆蓋。"""
         with editing.write(request, "寫出到目標"):
-            return _apply_missing(repo, uid)
+            return _apply_missing(repo, uid, editing)
 
 
 def _permissions_of(repo: str, uid: str) -> tuple[FileEntry, Permissions]:
@@ -94,11 +95,8 @@ def _target_text(entry: FileEntry) -> str | None:
         ) from error
 
 
-def _resolve(
-    repo: str, me: Owner, stage_box: dict[str, Stage], uid: str, action: str
-) -> dict[str, object]:
+def _resolve(repo: str, me: Owner, editing: Editing, uid: str, action: str) -> dict[str, object]:
     entry, permissions = _permissions_of(repo, uid)
-    roots = root_prefixes(repo)
     target_text = _target_text(entry)
     source_text = read_source_copy(repo, entry.source, entry.format)
     if target_text is None:
@@ -108,35 +106,55 @@ def _resolve(
             "下一步：用寫出修復（POST /api/configs/{uid}/apply）",
         )
     if target_text == source_text:
-        raise HTTPException(
-            status_code=409,
-            detail=f"「{entry.name}@{entry.hostname}」目標與來源一致，沒有偏離可處置。"
-            "下一步：按「檢查差異」重新掃描",
-        )
+        raise _in_sync(entry)
+    if action == "adopt_draft":
+        return _adopt_into_draft(repo, me, editing.stage_box, entry, target_text)
+    roots = root_prefixes(repo)
     try:
         if action == "overwrite":
             overwrite(repo, entry, permissions, me.label, roots)
-            return {"uid": uid, "action": action, "record": _latest(repo, uid)}
-        if action == "adopt":
+        else:
             _reject_invalid(repo, entry, target_text)
-            plan = adoption(entry, permissions, target_text)
-            apply_promotions(repo, [plan], me.label, roots)
-            return {"uid": uid, "action": action, "record": _latest(repo, uid)}
+            apply_promotions(repo, [adoption(entry, permissions, target_text)], me.label, roots)
     except TargetReadError as error:
         # 以來源覆蓋／採納前拍現場就發現目標不是一般檔案：拒絕整個動作、目標與 repo 都沒動（F14）。
         raise HTTPException(status_code=422, detail=str(error)) from error
-    except (PromoteLeftBehind, WriterError, CalledProcessError, OSError) as error:
+    except PromoteLeftBehind as error:
+        # 納入來源的回滾沒能完全還原或結果無法確認：記「未還原」事件，回物件格式的 500（#345）。
+        raise editing.marks.rollback_error(error) from error
+    except (WriterError, CalledProcessError, OSError) as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
-    # adopt_draft：內容照載，每個問題當警告回去；進版前須改正（T18）。不碰 repo、不碰 target。
+    return {
+        "uid": uid,
+        "action": action,
+        "record": _latest(repo, uid),
+        "left_behind_cleared": editing.marks.cleared([(uid, entry.target)]),
+    }
+
+
+def _in_sync(entry: FileEntry) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail=f"「{entry.name}@{entry.hostname}」目標與來源一致，沒有偏離可處置。"
+        "下一步：按「檢查差異」重新掃描",
+    )
+
+
+def _adopt_into_draft(
+    repo: str, me: Owner, stage_box: dict[str, Stage], entry: FileEntry, target_text: str
+) -> dict[str, object]:
+    """先納入、待修正：內容照載，每個問題當警告回去；進版前須改正（T18）。不碰 repo、不碰 target，
+    所以不收起任何「未還原」（`left_behind_cleared` 恆為空）。"""
     stage, warnings = adopt_draft(
-        stage_box["stage"], uid, target_text, entry.format,
+        stage_box["stage"], entry.uid, target_text, entry.format,
         replace(checks_for(repo, entry), owner=me),
     )
     stage_box["stage"] = stage
     return {
-        "uid": uid,
-        "action": action,
+        "uid": entry.uid,
+        "action": "adopt_draft",
         "warnings": [as_problem(problem) for problem in warnings],
+        "left_behind_cleared": [],
         **drafts_view(stage, me),
     }
 
@@ -188,7 +206,7 @@ def _latest(repo: str, uid: str) -> dict[str, object]:
     }
 
 
-def _apply_missing(repo: str, uid: str) -> dict[str, object]:
+def _apply_missing(repo: str, uid: str, editing: Editing) -> dict[str, object]:
     """寫出修復：目標**不存在**時把來源寫到 target，不留紀錄。
 
     目標那個位置已經有東西（一般檔、目錄、符號連結）→ 409，一個位元組都不動。這條路不留紀錄
@@ -209,4 +227,8 @@ def _apply_missing(repo: str, uid: str) -> dict[str, object]:
         ) from error
     except (WriterError, OSError) as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
-    return {"uid": uid, "target": entry.target}
+    return {
+        "uid": uid,
+        "target": entry.target,
+        "left_behind_cleared": editing.marks.cleared([(uid, entry.target)]),
+    }
