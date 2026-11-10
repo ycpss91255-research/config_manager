@@ -360,3 +360,127 @@ def test_targets_all_restored_but_an_unverifiable_repo_is_reported_as_unconfirme
         "沒有完全還原" in message,
         "未還原：" in message,
     ) == (b"max_vel: 0.8\n", True, True, True, False, False, False)
+
+
+# ── #345（11/10）：「設定庫裡的檔案」依角色判斷，不看路徑 ────────────────────────────────────────
+# F37 的回滾曾以路徑前綴判斷：目標放在設定庫目錄底下（未追蹤的部署目錄）時，它的還原失敗被當成
+# 附帶檔案沒還原、設定庫被強制記成沒能完整退回（11/10 T11 露出，19c2557 修正）。這三則直接驗
+# PromoteLeftBehind 的事實：目標還是目標、附帶檔案還是附帶檔案、兩者同時時各自保留。
+
+_INSIDE = "deployed"
+_ALREADY_RESTORED = "設定庫：已退回進版前"
+
+
+def _plan_inside(tmp_path, repo, name, text, before):
+    """同 `_plan`，但目標放在設定庫目錄底下、沒被 git 追蹤（repo/deployed/）。"""
+    plan = _plan(tmp_path, repo, name, text, before)
+    inside = repo / _INSIDE
+    inside.mkdir(exist_ok=True)
+    target = inside / f"{name}.yaml"
+    target.write_text(before, encoding="utf-8")
+    return Promotion(
+        uid=plan.uid, source=plan.source, target=str(target), text=plan.text,
+        permissions=plan.permissions, summary=plan.summary, kind=plan.kind,
+    )
+
+
+def _companion_removal_refused(monkeypatch, companion):
+    real_remove = os.remove
+
+    def _remove(path, *args, **kwargs):
+        if path.endswith(companion):
+            raise PermissionError(13, "Permission denied", path)
+        return real_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", _remove)
+
+
+def _roots(tmp_path, repo):
+    return [str(tmp_path / "targets"), str(repo / _INSIDE)]
+
+
+def test_a_target_inside_the_repo_directory_that_cannot_be_restored_stays_a_target(
+    tmp_path, monkeypatch
+):
+    # 目標放在設定庫目錄底下、沒被追蹤：還原失敗記在那一份目標上，設定庫照實是已完整退回——
+    # 不因為路徑在設定庫底下就判成設定庫的失敗。
+    repo = _repo(tmp_path)
+    first = _plan_inside(tmp_path, repo, "a", "max_vel: 1.2\n", "max_vel: 0.8\n")
+    second = _plan(tmp_path, repo, "b", "speed: 2\n", "speed: 1\n")
+    tracked = subprocess.run(
+        ["git", "-C", str(repo), "ls-files", "--error-unmatch", first.target],
+        capture_output=True, check=False,
+    ).returncode == 0
+    if tracked:
+        raise AssertionError(
+            f"前提不成立：{first.target} 被 git 追蹤了，驗的就不是「沒被追蹤的目標」"
+        )
+    _second_write_fails(monkeypatch)
+    _restore_chown_refused(monkeypatch)
+
+    with pytest.raises(PromoteLeftBehind) as caught:
+        apply(str(repo), [first, second], _AUTHOR, _roots(tmp_path, repo))
+
+    facts, message = caught.value.facts, str(caught.value)
+    assert (
+        [(uid, path) for uid, path, _, _ in facts.left_behind],
+        facts.repo,
+        "（設定庫裡的檔案）" in message,
+        _ALREADY_RESTORED in message,
+    ) == ([(first.uid, first.target)], None, False, True)
+
+
+def test_a_companion_that_cannot_be_restored_is_a_repo_failure_even_when_the_head_matches(
+    tmp_path, monkeypatch
+):
+    # 真正的附帶檔案（這次才新建的 schema）拿不掉：就算 HEAD 回到進版前，設定庫的事實仍是
+    # 沒能完整退回，那一項沒有 config 的 uid——這次修正不能把它漏掉。
+    repo = _repo(tmp_path)
+    first = _plan(tmp_path, repo, "a", "max_vel: 1.2\n", "max_vel: 0.8\n")
+    second = _plan(tmp_path, repo, "b", "speed: 2\n", "speed: 1\n")
+    before_head = head(str(repo))
+    companion = "schemas/mfz3k9qa.schema.json"
+    _second_write_fails(monkeypatch)
+    _companion_removal_refused(monkeypatch, companion)
+
+    with pytest.raises(PromoteLeftBehind) as caught:
+        apply(str(repo), [first, second], _AUTHOR, [str(tmp_path / "targets")],
+              companions={first.uid: ((companion, '{"type": "object"}\n'),)})
+
+    facts = caught.value.facts
+    assert (
+        head(str(repo)) == before_head,
+        [uid for uid, _, _, _ in facts.left_behind],
+        [path.endswith(companion) for _, path, _, _ in facts.left_behind],
+        None if facts.repo is None else facts.repo[0],
+    ) == (True, [None], [True], "not_restored")
+
+
+def test_a_target_and_a_companion_that_both_cannot_be_restored_keep_their_own_reasons(
+    tmp_path, monkeypatch
+):
+    # 兩者同時：目標那一項（擁有者被拒）與附帶檔案那一項（拿不掉）各自保留原因，設定庫是
+    # 沒能完整退回，訊息第一行是已知的還原失敗（整體 not_restored）。
+    repo = _repo(tmp_path)
+    first = _plan_inside(tmp_path, repo, "a", "max_vel: 1.2\n", "max_vel: 0.8\n")
+    second = _plan(tmp_path, repo, "b", "speed: 2\n", "speed: 1\n")
+    companion = "schemas/mfz3k9qa.schema.json"
+    _second_write_fails(monkeypatch)
+    _restore_chown_refused(monkeypatch)
+    _companion_removal_refused(monkeypatch, companion)
+
+    with pytest.raises(PromoteLeftBehind) as caught:
+        apply(str(repo), [first, second], _AUTHOR, _roots(tmp_path, repo),
+              companions={first.uid: ((companion, '{"type": "object"}\n'),)})
+
+    facts, message = caught.value.facts, str(caught.value)
+    items = {uid: (path, reason) for uid, path, _, reason in facts.left_behind}
+    assert (
+        set(items) == {first.uid, None},
+        items.get(first.uid, ("", ""))[0] == first.target,
+        "Operation not permitted" in items.get(first.uid, ("", ""))[1],
+        items.get(None, ("", ""))[0].endswith(companion),
+        "Permission denied" in items.get(None, ("", ""))[1],
+        None if facts.repo is None else facts.repo[0],
+        message.startswith("進版沒有完成，而且回滾沒有完全還原。"),
+    ) == (True, True, True, True, True, "not_restored", True)
