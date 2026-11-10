@@ -2626,7 +2626,10 @@ def test_a_left_behind_adopt_or_revert_adds_a_repo_event_with_its_own_operation(
         ):
             with pytest.raises(urllib.error.HTTPError):
                 _post(own_api, path, body)
-        marks = _marks(own_api)
+    # 讀標示放在殘留核對之後、區塊外：區塊內只有預期會失敗而被接住的請求，殘留核對（多出 2 筆
+    # 紀錄、工作樹與索引沒有未提交的變更）一定先執行；讀標示失敗不會讓它被跳過（11/10 紅燈那一輪
+    # 就是這樣跳過的）。
+    marks = _marks(own_api)
 
     assert (
         [event["operation"] for event in marks["repo"]["events"]],
