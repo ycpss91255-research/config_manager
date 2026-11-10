@@ -8413,6 +8413,16 @@ def _confirm(page) -> str:
     return body
 
 
+def _rewrite_sent(page):
+    """按確認框的「重新寫出」，回這次實際送出的處置請求：(回應狀態, 送出的 action)——以請求佐證真的
+    走到重新寫出，不只看畫面。"""
+    with page.expect_response(
+        lambda response: response.request.method == "POST" and response.url.endswith("/resolve")
+    ) as answer:
+        _confirm(page)
+    return answer.value.status, json.loads(answer.value.request.post_data or "{}").get("action")
+
+
 def _warning_names_a(page, targets) -> bool:
     """上方警示還在、還列著 a。要驗的是「沒被收起」，所以先讓頁面把手上還沒跑完的處理跑完再讀——
     剛收到回應就讀，可能讀到處理前的舊畫面而假通過。"""
@@ -8755,7 +8765,7 @@ def test_a_rewrite_whose_record_fails_shows_no_success_and_keeps_the_warning(
     with monkeypatch.context() as patch:
         patch.setattr(drift_io, "record_empty", _record_refused)
         page.click(_REWRITE)
-        _confirm(page)
+        sent = _rewrite_sent(page)
         page.wait_for_selector(
             f"[data-testid='panel-{_PARAM_UID}'] [data-testid='left-behind-rewrite-error']",
             state="visible",
@@ -8767,7 +8777,8 @@ def test_a_rewrite_whose_record_fails_shows_no_success_and_keeps_the_warning(
         _warning_names_a(page, targets),
         page.is_visible(_row_mark()),
         recorded,
-    ) == (True, True, True, [_PARAM_UID])
+        sent,  # 真的送出了重新寫出、後端在記錄那一步失敗而回 500
+    ) == (True, True, True, [_PARAM_UID], (500, "rewrite"))
 
 
 def test_the_history_says_a_rewrite_reset_the_owner_and_mode_from_the_list(
@@ -8777,7 +8788,7 @@ def test_the_history_says_a_rewrite_reset_the_owner_and_mode_from_the_list(
     _back_in_sync(page, targets)
     page.wait_for_selector(_REWRITE, state="visible")
     page.click(_REWRITE)
-    _confirm(page)
+    sent = _rewrite_sent(page)
     page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已以來源重新寫出')")
 
     page.locator(f"[data-testid='panel-{_PARAM_UID}']").get_by_role("button", name="歷史").click()
@@ -8785,4 +8796,6 @@ def test_the_history_says_a_rewrite_reset_the_owner_and_mode_from_the_list(
     _select(page, _entries(page)[0], wait_for="[data-testid='history-diff-note']")
 
     note = page.inner_text("[data-testid='history-diff-note']")
-    assert ("照清單重新寫出" in note, "不代表回到進版前的擁有者與權限" in note) == (True, True)
+    assert (sent, "照清單重新寫出" in note, "不代表回到進版前的擁有者與權限" in note) == (
+        (200, "rewrite"), True, True,
+    )
