@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from subprocess import CalledProcessError
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
@@ -20,6 +19,7 @@ from pydantic import BaseModel
 from config_manager.api.history import require_entry
 from config_manager.api.checks import checks_for
 from config_manager.api.browser import ticket_of
+from config_manager.api.left_behind import write_failures
 from config_manager.api.lock import Editing, owner_of
 from config_manager.api.shapes import as_problem, drafts_view
 from config_manager.core.drafts import Owner, Stage, adopt_draft
@@ -28,7 +28,7 @@ from config_manager.core.validate import ERROR, check
 from config_manager.io.allowed_roots import root_prefixes
 from config_manager.io.drift import adoption, overwrite, rewrite
 from config_manager.io.digest import read_target
-from config_manager.io.errors import PromoteLeftBehind, TargetExists, TargetReadError, WriterError
+from config_manager.io.errors import TargetExists, TargetReadError, WriterError
 from config_manager.io.git import history
 from config_manager.io.parsers import as_text
 from config_manager.io.parsers import read_source as read_source_copy
@@ -114,24 +114,26 @@ def _resolve(repo: str, me: Owner, editing: Editing, uid: str, action: str) -> d
         return _adopt_into_draft(repo, me, editing.stage_box, entry, target_text)
     roots = root_prefixes(repo)
     try:
-        if action == "overwrite":
-            overwrite(repo, entry, permissions, me.label, roots)
-        else:
-            _reject_invalid(repo, entry, target_text)
-            apply_promotions(repo, [adoption(entry, permissions, target_text)], me.label, roots)
+        # 納入來源的回滾錯誤另記「未還原」、回物件格式的 500（#345）。
+        with write_failures(editing.marks):
+            if action == "overwrite":
+                overwrite(repo, entry, permissions, me.label, roots)
+            else:
+                _reject_invalid(repo, entry, target_text)
+                apply_promotions(repo, [adoption(entry, permissions, target_text)], me.label, roots)
     except TargetReadError as error:
         # 以來源覆蓋／採納前拍現場就發現目標不是一般檔案：拒絕整個動作、目標與 repo 都沒動（F14）。
         raise HTTPException(status_code=422, detail=str(error)) from error
-    except PromoteLeftBehind as error:
-        # 納入來源的回滾沒能完全還原或結果無法確認：記「未還原」事件，回物件格式的 500（#345）。
-        raise editing.marks.rollback_error(error) from error
-    except (WriterError, CalledProcessError, OSError) as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
+    return _written(repo, editing, entry, action)
+
+
+def _written(repo: str, editing: Editing, entry: FileEntry, action: str) -> dict[str, object]:
+    """寫出目標的處置整個成功：回最新那一筆紀錄，並收起這一份同路徑的「未還原」（#345）。"""
     return {
-        "uid": uid,
+        "uid": entry.uid,
         "action": action,
-        "record": _latest(repo, uid),
-        "left_behind_cleared": editing.marks.cleared([(uid, entry.target)]),
+        "record": _latest(repo, entry.uid),
+        "left_behind_cleared": editing.marks.cleared([(entry.uid, entry.target)]),
     }
 
 
@@ -167,18 +169,12 @@ def _rewrite(repo: str, me: Owner, editing: Editing, uid: str, in_sync: bool) ->
     entry, permissions = _permissions_of(repo, uid)
     _refuse_rewrite(editing, entry, in_sync)
     try:
-        rewrite(repo, entry, permissions, me.label, root_prefixes(repo))
+        # 寫出失敗、記錄失敗（放回位元組也失敗）：500、標記保留，不宣稱收起。
+        with write_failures(editing.marks):
+            rewrite(repo, entry, permissions, me.label, root_prefixes(repo))
     except TargetReadError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    except (WriterError, CalledProcessError, OSError) as error:
-        # 寫出失敗、記錄失敗（放回位元組也失敗）：標記保留，不宣稱收起。
-        raise HTTPException(status_code=500, detail=str(error)) from error
-    return {
-        "uid": uid,
-        "action": "rewrite",
-        "record": _latest(repo, uid),
-        "left_behind_cleared": editing.marks.cleared([(uid, entry.target)]),
-    }
+    return _written(repo, editing, entry, "rewrite")
 
 
 def _refuse_rewrite(editing: Editing, entry: FileEntry, in_sync: bool) -> None:

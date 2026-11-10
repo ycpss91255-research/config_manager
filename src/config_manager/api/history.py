@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from config_manager.api.checks import drafted_by_in, overrides_in
+from config_manager.api.left_behind import write_failures
 from config_manager.api.lock import Editing
 from config_manager.api.session import Identity
 from config_manager.core.drafts import Promotion
@@ -21,7 +22,6 @@ from config_manager.core.inference import infer_types
 from config_manager.core.models import ConfigList, FileEntry
 from config_manager.core.parse import parse, values
 from config_manager.io.allowed_roots import root_prefixes
-from config_manager.io.errors import PromoteLeftBehind, WriterError
 from config_manager.io.git import KINDS, Change, history, show
 from config_manager.io.parsers import read_source as read_source_copy
 from config_manager.io.preflight import read_config_list
@@ -256,15 +256,11 @@ def _revert_config(
     )
     # schema 跟著回到那一版（#39 的定案，ADR-00000021）：與內容進同一筆紀錄、同進同退。
     schema_effect, companions = schema_revert(repo, uid, target_change.sha)
-    try:
+    # 寫出／記錄／回滾失敗：500（回滾錯誤另記「未還原」、回物件格式，#345）。
+    with write_failures(editing.marks):
         apply_promotions(
             repo, [plan], identity.git_author, root_prefixes(repo), {uid: companions}
         )
-    except PromoteLeftBehind as error:
-        # 回滾沒能完全還原或結果無法確認：記「未還原」事件，回物件格式的 500（#345）。
-        raise editing.marks.rollback_error(error) from error
-    except (WriterError, CalledProcessError, OSError) as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
     latest = history(repo, uid)[0]
     return {
         "uid": uid,

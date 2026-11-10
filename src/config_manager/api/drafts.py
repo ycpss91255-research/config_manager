@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from subprocess import CalledProcessError
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
@@ -16,6 +15,7 @@ from pydantic import BaseModel
 from config_manager.api.checks import checks_for
 from config_manager.api.history import require_entry, source_unreadable
 from config_manager.api.browser import ticket_of
+from config_manager.api.left_behind import write_failures
 from config_manager.api.lock import Editing, owner_of
 from config_manager.api.schema import as_specified
 from config_manager.api.shapes import as_problem, draft_sha, drafts_view
@@ -34,7 +34,7 @@ from config_manager.core.parse import Parsed, dump, parse, set_value
 from config_manager.core.problem import WARNING, Problem
 from config_manager.core.validate import check
 from config_manager.io.allowed_roots import root_prefixes
-from config_manager.io.errors import PromoteLeftBehind, TargetReadError, WriterError
+from config_manager.io.errors import TargetReadError
 from config_manager.io.parsers import read_source as read_source_copy
 from config_manager.io.preflight import read_config_list
 from config_manager.io.promote import apply as apply_promotions
@@ -259,16 +259,12 @@ def _promote_all(
             },
         ) from error
     try:
-        promoted = apply_promotions(repo, plans, promoter.label, roots)
+        # 寫出／記錄／回滾失敗：伺服器側的錯，500（回滾錯誤另記「未還原」、回物件格式，#345）。
+        with write_failures(editing.marks):
+            promoted = apply_promotions(repo, plans, promoter.label, roots)
     except TargetReadError as error:
         # 某份目標不是一般檔案／太大／讀不出來：拍現場時就停、整批不進版、草稿保留（F14）。
         raise HTTPException(status_code=422, detail=str(error)) from error
-    except PromoteLeftBehind as error:
-        # 回滾沒能完全還原或結果無法確認：記「未還原」事件，回物件格式的 500（#345）。
-        raise editing.marks.rollback_error(error) from error
-    except (WriterError, CalledProcessError, OSError) as error:
-        # 寫出／記錄失敗、回滾完整：伺服器側的錯，帶訊息的 500（字串，照舊）。
-        raise HTTPException(status_code=500, detail=str(error)) from error
     stage_box["stage"] = discard(stage)  # 進版後草稿清空（T18）
     cleared = editing.marks.cleared((plan.uid, plan.target) for plan in plans)
     return {"promoted": promoted, "count": 0, "left_behind_cleared": cleared}

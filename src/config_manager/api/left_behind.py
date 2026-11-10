@@ -11,8 +11,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
+from subprocess import CalledProcessError
 
 from fastapi import FastAPI, HTTPException
 
@@ -26,7 +28,7 @@ from config_manager.core.left_behind import (
     target_view,
     untrack,
 )
-from config_manager.io.errors import PromoteLeftBehind
+from config_manager.io.errors import PromoteLeftBehind, WriterError
 from config_manager.io.preflight import read_config_list
 
 
@@ -69,6 +71,18 @@ class MarksBox:
     @property
     def has_repo_mark(self) -> bool:
         return self.marks.repo is not None
+
+
+@contextmanager
+def write_failures(box: MarksBox) -> Iterator[None]:
+    """寫入的失敗怎麼回（進版、處置、退版共用）：回滾錯誤記「未還原」事件、回物件格式的 500
+    （#345）；其他寫出／記錄失敗（回滾完整）照舊回字串的 500。"""
+    try:
+        yield
+    except PromoteLeftBehind as error:
+        raise box.rollback_error(error) from error
+    except (WriterError, CalledProcessError, OSError) as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
 
 
 def rollback_detail(error: PromoteLeftBehind) -> dict[str, object]:

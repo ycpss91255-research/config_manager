@@ -338,18 +338,7 @@ def _rollback(
     由 `apply` 把原本的失敗原樣往上拋。丟出時帶結構化的事實（`RollbackFacts`，#345）。
     """
     operation = _operation_of(promotions)
-    leftover: list[tuple[str, bool]] = []
-    items: list[tuple[str | None, str, str, str]] = []
-    for before in reversed(touched):
-        try:
-            _restore(before)
-        except _RestoreFailed as failed:
-            inside = _inside(repo, before.path)
-            label = "（設定庫裡的檔案）" if inside else ""
-            leftover.append((f"{before.path}{label}——{failed.describe()}", inside))
-            items.append(
-                (before.config, before.path, failed.step_text(), failure_reason(failed.error))
-            )
+    leftover, items = _restore_each(repo, touched)
     outcome = _reset_and_check(repo, before_head)
     if any(inside for _, inside in leftover):  # HEAD 相符也不算完整退回
         extra = "" if outcome.state == "restored" else f"；{outcome.detail}"
@@ -364,6 +353,26 @@ def _rollback(
             uids=tuple(plan.uid for plan in promotions),
         )
         raise PromoteLeftBehind(message, facts) from failure
+
+
+def _restore_each(
+    repo: str, touched: Sequence[_Snapshot]
+) -> tuple[list[tuple[str, bool]], list[tuple[str | None, str, str, str]]]:
+    """寫出過的目標與附帶檔案逐個還原（後寫的先還原）。回 (訊息用的殘留：(說明, 是不是設定庫裡的
+    檔案), 結構化的殘留：(config 的 uid 或 None, 路徑, 那一步, 原因))。"""
+    leftover: list[tuple[str, bool]] = []
+    items: list[tuple[str | None, str, str, str]] = []
+    for before in reversed(touched):
+        try:
+            _restore(before)
+        except _RestoreFailed as failed:
+            inside = _inside(repo, before.path)
+            label = "（設定庫裡的檔案）" if inside else ""
+            leftover.append((f"{before.path}{label}——{failed.describe()}", inside))
+            items.append(
+                (before.config, before.path, failed.step_text(), failure_reason(failed.error))
+            )
+    return leftover, items
 
 
 def _repo_fact(outcome: _RepoOutcome) -> tuple[str, str] | None:
