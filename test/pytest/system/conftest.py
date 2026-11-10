@@ -231,12 +231,14 @@ def api(repo, sources_root):
 
 
 @pytest.fixture
-def api_alone(repo, sources_root, api):
-    """一個**自己的**部署模式服務（F36，#345）。
+def api_fresh(repo, sources_root, api):
+    """這一則自己起的一個部署模式服務（F36，#345），回位址。
 
     「未還原」標示放在服務的記憶體、掛在 app 上：共用的 `api` 會讓前一則留下的標示——設定庫那一筆
-    又不會自動收起——影響後面的規格。同一份 config-repo，身分、編輯階段、草稿與標示各自獨立。逐則
-    起、逐則收。這些規格要就地注入失敗，外部映像控不了 server 端模組，略過。
+    又不會自動收起——影響後面的規格。身分、編輯階段、草稿與標示掛在各自的 app 上；**設定庫仍是共用
+    的同一份**，注入失敗後清回並核對基準由規格自己做（`test_api.py` 的 `own_api`）。逐則起、逐則收。
+    這些規格要就地注入失敗，外部映像控不了 server 端模組，在這裡就略過——規格本體一行都不跑。
+    （名字不叫 api_alone：那是 F23 排隊規格已在用的夾具，回 (位址, LockBox)。）
     """
     if os.environ.get("CM_SYSTEM_BASE_URL"):
         pytest.skip("需就地注入失敗、每則自己起一個服務；外部映像控不了 server 端模組")

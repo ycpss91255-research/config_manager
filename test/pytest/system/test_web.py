@@ -8360,8 +8360,30 @@ def _left_behind_page(open_page, repo, monkeypatch, *, restore_fails=True, repo_
     return page, targets
 
 
+def _answered(page, method: str, path_end: str, act) -> None:
+    """做 `act`，等這一次的 `method …path_end` 請求回來且成功才往下（以這次請求完成佐證，不看畫面上
+    可能是舊的提示）；沒成功就停下。"""
+    with page.expect_response(
+        lambda response: response.request.method == method and response.url.endswith(path_end)
+    ) as answer:
+        act()
+    if not answer.value.ok:
+        raise AssertionError(f"{method} {path_end} 沒有成功：{answer.value.status}")
+
+
+def _saved_draft(page, uid: str) -> None:
+    """存草稿：等這次 POST /api/drafts 成功，再等這一塊的存檔提示出現——欄位一改提示就收起，所以
+    出現的是這次存檔的提示，表示頁面已處理完這次回應。"""
+    _answered(page, "POST", "/api/drafts", lambda: _save(page, uid))
+    page.wait_for_selector(
+        f"[data-testid='panel-{uid}'] [data-testid='panel-save-note']", state="visible"
+    )
+
+
 def _rescan(page) -> None:
-    page.click("[data-testid='rescan']")
+    """檢查差異：等這次重讀清單（GET /api/configs，`rescan` → `load`）成功，再等按鈕結束「檢查中」。
+    不等 GET /api/left-behind：那是還沒實作的請求，等它會讓紅燈紅在「請求沒觸發」，不是重現。"""
+    _answered(page, "GET", "/api/configs", lambda: page.click("[data-testid='rescan']"))
     page.wait_for_selector("[data-testid='rescan']:not([aria-busy='true'])")
 
 
@@ -8392,6 +8414,9 @@ def _confirm(page) -> str:
 
 
 def _warning_names_a(page, targets) -> bool:
+    """上方警示還在、還列著 a。要驗的是「沒被收起」，所以先讓頁面把手上還沒跑完的處理跑完再讀——
+    剛收到回應就讀，可能讀到處理前的舊畫面而假通過。"""
+    page.wait_for_timeout(300)
     return page.is_visible(_WARNING) and str(targets["a"]) in page.inner_text(_WARNING)
 
 
@@ -8418,6 +8443,7 @@ def test_a_marked_target_that_matches_the_source_again_shows_in_sync_with_the_ma
 
     _back_in_sync(page, targets)
 
+    page.wait_for_timeout(300)  # 要驗的是「還在」：讓頁面處理完這次重讀再看
     assert page.is_visible(_row_mark())
 
 
@@ -8560,8 +8586,7 @@ def test_the_warning_stays_after_draft_attribute_and_schema_writes(open_page, re
     stayed = []
 
     page.fill(f"{panel} {_param_value('speed')}", "3.5")
-    _save(page, _SECOND_UID)
-    page.wait_for_selector(f"{panel} [data-testid='panel-save-note']", state="visible")
+    _saved_draft(page, _SECOND_UID)
     stayed.append(_warning_names_a(page, targets))
     page.click(f"{panel} [data-testid='panel-discard']")
     _confirm(page)
@@ -8569,7 +8594,8 @@ def test_the_warning_stays_after_draft_attribute_and_schema_writes(open_page, re
     stayed.append(_warning_names_a(page, targets))
     page.click(f"{panel} [data-testid='panel-attributes']")
     page.locator(f"[data-testid='attributes-{_SECOND_UID}']").get_by_label("說明").fill("F36")
-    page.click("[data-testid='attributes-save']")
+    _answered(page, "POST", f"/api/configs/{_SECOND_UID}/attributes",
+              lambda: page.click("[data-testid='attributes-save']"))
     page.wait_for_selector("[data-testid='attributes-saved-notice']", state="visible")
     stayed.append(_warning_names_a(page, targets))
     page.click(f"{panel} [data-testid='panel-schema-draft']")
@@ -8613,12 +8639,10 @@ def test_the_panel_banner_and_the_tree_mark_stay_when_the_panel_is_redrawn(
     page.wait_for_selector(_panel_mark(), state="visible")
 
     page.fill(f"[data-testid='panel-{_PARAM_UID}'] {_param_value('count')}", "5")
-    _save(page, _PARAM_UID)
-    page.wait_for_selector(
-        f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-save-note']", state="visible"
-    )
+    _saved_draft(page, _PARAM_UID)
     _rescan(page)
 
+    page.wait_for_timeout(300)  # 要驗的是「還在」：讓頁面處理完這次重讀再看
     assert (page.is_visible(_panel_mark()), page.is_visible(_row_mark())) == (True, True)
 
 
@@ -8632,6 +8656,8 @@ def test_overwriting_the_marked_target_removes_its_mark_and_says_so_without_clai
     _overwrite_confirmed(page)
 
     page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已以來源覆蓋')")
+    page.wait_for_selector(_row_mark(), state="detached")
+    page.wait_for_selector(_WARNING, state="hidden")
     done = page.inner_text(_PROMOTE_DONE)
     assert (
         page.query_selector(_row_mark()),
@@ -8653,6 +8679,7 @@ def test_unmanaging_the_marked_config_says_it_only_stops_tracking(open_page, rep
     asked = _confirm(page)
 
     page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已解除')")
+    page.wait_for_selector(_WARNING, state="hidden")
     done = page.inner_text(_PROMOTE_DONE)
     assert (
         "停止追蹤" in asked,
@@ -8676,6 +8703,7 @@ def test_a_marked_in_sync_panel_offers_a_rewrite_whose_confirmation_says_it_rewr
     page.click("[data-testid='confirm-cancel']")
     page.wait_for_selector("[data-testid='confirm-dialog'][open]", state="detached")
 
+    page.wait_for_timeout(300)  # 取消後不該有請求出去：留一點時間讓誤送的請求現形
     assert (
         "內容目前一致，此操作仍會重新寫出並套用清單的擁有者與權限" in asked,
         seen,
@@ -8716,6 +8744,7 @@ def test_a_rewrite_whose_record_fails_shows_no_success_and_keeps_the_warning(
             state="visible",
         )
 
+    page.wait_for_timeout(300)  # 要驗的是「沒宣稱成功、標示還在」：讓頁面處理完這次回應再看
     assert (
         page.is_hidden(_PROMOTE_DONE),
         _warning_names_a(page, targets),
