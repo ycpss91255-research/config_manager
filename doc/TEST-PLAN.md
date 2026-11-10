@@ -1604,6 +1604,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `core/attributes` | T16 | 已落地（`update_attributes`／`describe_change`／`is_safe_hostname`，#286）；`group_tree` 不落核心層——樹由介面當場建，見 T16 的說明 |
 | `core/roles` | T17 | 已落地（`permits(角色, 動作)`：權限對照表的唯一定義，端點門檻 `api/lock.require_permission` 問它；角色與開發／部署模式的常數也在這裡，兩者正交——模式不是表的參數，#47） |
 | `core/drafts` | T18 | 已落地：草稿（`save_draft`／`adopt_draft`／`discard`，不可變 `Stage`，#18）；`promote` 全部驗證才回 `[Promotion]`、任一沒過丟 `PromoteInvalid`（#19）；儲存、納入、進版以 `Checks` 帶 schema 與規則跑第 2、3 層（#39／#41）；違反規則要理由才存得成（`OverrideRequired`）、理由跟著草稿、進版時寫進紀錄內文（#42） |
+| `core/left_behind` | T9 | 已落地：「未還原」標記的純邏輯（#345）——每次回滾錯誤一個事件、全部保留，第一次與最近一次各自配對；設定庫那一筆任一次沒能完整退回整體就是 `not_restored`；同路徑才收起、解除納管是停止追蹤。效果透過 T9 的 `GET /api/configs`、`GET /api/left-behind`、回滾錯誤的物件與寫入成功的 `left_behind_cleared`／`left_behind_untracked` 觀察（純函式，不另開介面） |
 | `io/writer` | T8 | 已落地 |
 | `io/atomic` | T8——原子替換的共用核心，行為由 `io/writer` 的 T8 規格擋著（#186） | 已落地；`only_if_missing`：以 hard link 原子地「只在不存在時放上去」，已有東西丟 `TargetExists`（寫出修復不覆蓋） |
 | `io/repo` | 效果透過既有介面觀察：逐位元組相同→T20（`io/digest`）、清單檔可讀→T1（`load`）（#186）；**`read_or_none` 只給 repo 內自己的檔用，目標現況一律走 T20 的 `read_target`（F14）** | 已落地（`place_source`／`write_config_list`／`load_list`——會改寫清單檔的編排共用的讀＋載入，失敗映成 `ConfigListUnparsable`，#257） |
@@ -1637,6 +1638,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `api/attributes` | T9 | 已落地（`POST /api/configs/{uid}/attributes`——僅開發者，修改名稱／群組／主機／說明，#286） |
 | `api/schema` | T9 | 已落地（`POST /api/configs/{uid}/schema`——僅開發者，產生 schema 骨架，#38；`schema_view` 供單筆內容帶欄位提示、人工指定的型別與 schema 的錯誤，#40／#285；`POST /api/configs/{uid}/types` 指定／清除型別、`as_specified` 讓指定成 double 的欄位寫出帶小數點，#285） |
 | `api/history` | T9 | 已落地（`GET /api/configs/{uid}/history`、`GET /api/configs/{uid}/history/{sha}`、`POST /api/configs/{uid}/revert`——歷史與退版的端點與邏輯，自 `api/routes` 拆出以免該模組超過千行，#24） |
+| `api/left_behind` | T9 | 已落地（`GET /api/left-behind`、回滾錯誤的 500 物件 `{kind: "rollback", outcome, …}`、寫入成功的 `left_behind_cleared`／解除納管的 `left_behind_untracked`、進版／處置／退版共用的寫入失敗轉換——#345）。標記掛在 app 上、未持久化；T11 由畫面觀察（未還原標示、橫幅、警示） |
 | `api/cli` | T10 | 已落地（`serve`、`list`、`import`、`browse`、`inspect`）；`import` 以 `--name`／`--email`（`--role`）自帶作者——CLI 不是瀏覽器，沒有頁面上輸入過的身分可沿用（#288）；`import` 和頁面同一套規則：取得編輯權 → 帶識別碼納管 → 釋放（F23） |
 | `api/browser` | T9 | 已落地（`Browsers`：以後端發的瀏覽器票（cookie `cm_browser`，HttpOnly、SameSite=Lax、session cookie）為鍵記各瀏覽器的身分；端點以 `Depends(browsers.current)` 取「這個請求的瀏覽器」的身分；形狀不合的票當沒帶、重新發，#288；閒置逾時的 HTTP 這一層——讀注入的時鐘、逾時的票交給 `on_timeout`、`idle_view` 給介面顯示，#48；身分表的讀寫和編輯階段共用同一把鎖，F23） |
 | `api/session` | T13（生命週期）＋ T9（HTTP 層行為） | 已落地：身分（`author`）；階段 `SessionLock` 的 acquire／renew／resume（重新整理後接續、換識別碼）／release／sweep，時鐘注入（#33） |
