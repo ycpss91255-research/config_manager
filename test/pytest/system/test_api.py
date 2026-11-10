@@ -2876,15 +2876,17 @@ def test_a_rewrite_whose_record_and_putting_the_bytes_back_both_fail_keeps_the_m
     ) == (_SERVER_ERROR, True, False, ["record", "put back"])
 
 
-def test_a_rewrite_without_the_editing_token_is_refused(
+def test_a_rewrite_with_an_identity_but_no_editing_token_is_refused_as_editing_missing(
     own_api, fresh_sources, fresh_repo, monkeypatch
 ):
-    # 回歸（預期一開始就綠）：編輯權的保護照舊，`rewrite` 不另開後門。
+    # 編輯權的保護照舊，`rewrite` 不另開後門：已有身分、沒帶編輯識別碼 → 410 editing_missing，
+    # 同既有契約（有身分、沒帶識別碼那一則）。原本誤寫成 403（11/10 維護者同意改，不改產品去迎合）。
+    # 只驗這一道門檻；它不證明沒有寫入——標示保留由寫出、記錄失敗那幾則驗。
     first, _ = _marked_in_sync(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_rewrite_token")
 
-    code = _refusal_code(lambda: _rewrite(own_api, first["uid"], token=None))
+    refused = _refusal(lambda: _rewrite(own_api, first["uid"], token=None))
 
-    assert code == _FORBIDDEN  # 標示有沒有保留由寫出、記錄失敗那幾則驗；這一則只驗編輯權
+    assert refused == (_GONE, "editing_missing")
 
 
 # ── T9：單筆內容（GET /api/configs/{uid}，#20）────────────────────────────────
