@@ -3822,8 +3822,22 @@ def test_a_draft_adopted_with_a_rule_warning_asks_for_the_reason_when_reopened(
     page.wait_for_function(
         "document.querySelector(\"[data-testid='rule-warnings']\").textContent.includes('已略過')"
     )
+    # 這份草稿先由另一個瀏覽器身分存過（上面 API 那一段），這個頁面接手後再存：參與者累加，
+    # 這批含別人存的草稿，進版先經確認（ADR-00000032）。原本這裡只等結果橫幅出現，被畫面上舊的
+    # 「接手了…」訊息滿足，從沒走到進版（F38 讓存草稿收起舊訊息後才露出）：核對確認框、按確認，
+    # 並明確等「已進版」。收起接手訊息不能清掉參與者：確認框照樣列出兩位。
     page.click("[data-testid='promote-all']")
-    page.wait_for_selector("[data-testid='promote-done']", state="visible")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    asked = (page.inner_text("[data-testid='confirm-title']"),
+             page.inner_text("[data-testid='confirm-items']"))
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_selector("[data-testid='promote-done']:has-text('已進版')")
+
+    assert (
+        "這批含別人存的草稿" in asked[0],
+        f"{_NAME}（另一個瀏覽器身分）：參與 1 份" in asked[1],
+        "你：參與 1 份" in asked[1],
+    ) == (True, True, True)
 
 
 # ── W3 儲存草稿（#21）────────────────────────────────────────────────────────
