@@ -8476,7 +8476,7 @@ def test_when_rereading_the_list_after_a_failed_write_fails_the_page_says_it_is_
     page = open_page(identity=_DEVELOPER)
     page.wait_for_selector("[data-testid='config-tree']", state="visible")
     _save_draft_for(page, _PARAM_UID, "count", "4")
-    promoted = []
+    promoted, failed_reads = [], []
 
     def _promote(route):
         promoted.append(route.request.method)
@@ -8485,6 +8485,7 @@ def test_when_rereading_the_list_after_a_failed_write_fails_the_page_says_it_is_
 
     def _listing(route):
         if promoted and route.request.method == "GET":
+            failed_reads.append(route.request.url)  # 寫入失敗之後的重讀真的發出、被注入失敗
             route.fulfill(status=500, content_type="application/json",
                           body=json.dumps({"detail": "注入：讀不到清單。下一步：無"}))
         else:
@@ -8495,22 +8496,27 @@ def test_when_rereading_the_list_after_a_failed_write_fails_the_page_says_it_is_
     page.click("[data-testid='promote-all']")
 
     page.wait_for_selector("[data-testid='status-not-updated']", state="visible")
-    assert "尚未更新" in page.inner_text("[data-testid='status-not-updated']")
+    assert ("尚未更新" in page.inner_text("[data-testid='status-not-updated']"),
+            len(promoted), bool(failed_reads)) == (True, 1, True)
 
 
 def test_when_the_marks_cannot_be_read_the_page_says_no_mark_is_no_proof(open_page, repo):
     _listing_many(repo, {"a": "count: 3\n"})
     page = open_page(identity=_DEVELOPER)
-    page.route(
-        "**/api/left-behind",
-        lambda route: route.fulfill(status=500, content_type="application/json",
-                                    body=json.dumps({"detail": "注入：讀不到。下一步：無"})),
-    )
+    refused = []
+
+    def _unreadable(route):
+        refused.append(route.request.url)  # 讀標示的請求真的發出、被注入失敗
+        route.fulfill(status=500, content_type="application/json",
+                      body=json.dumps({"detail": "注入：讀不到。下一步：無"}))
+
+    page.route("**/api/left-behind", _unreadable)
 
     page.reload()
 
     page.wait_for_selector("[data-testid='left-behind-unreadable']", state="visible")
-    assert "不代表沒有未還原的目標" in page.inner_text("[data-testid='left-behind-unreadable']")
+    assert ("不代表沒有未還原的目標" in page.inner_text("[data-testid='left-behind-unreadable']"),
+            bool(refused)) == (True, True)
 
 
 def test_the_marked_panel_names_the_failed_step_the_reason_and_the_original_failure(
@@ -8731,8 +8737,11 @@ def test_a_rewrite_whose_record_fails_shows_no_success_and_keeps_the_warning(
     _back_in_sync(page, targets)
     page.wait_for_selector(_REWRITE, state="visible")
 
+    recorded = []
+
     def _record_refused(*args, **kwargs):
-        del args, kwargs
+        del kwargs
+        recorded.append(args[1])  # 寫出之後、記錄時真的被注入失敗
         raise subprocess.CalledProcessError(128, ["git", "commit"], stderr="注入")
 
     with monkeypatch.context() as patch:
@@ -8749,7 +8758,8 @@ def test_a_rewrite_whose_record_fails_shows_no_success_and_keeps_the_warning(
         page.is_hidden(_PROMOTE_DONE),
         _warning_names_a(page, targets),
         page.is_visible(_row_mark()),
-    ) == (True, True, True)
+        recorded,
+    ) == (True, True, True, [_PARAM_UID])
 
 
 def test_the_history_says_a_rewrite_reset_the_owner_and_mode_from_the_list(
