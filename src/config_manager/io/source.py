@@ -182,12 +182,12 @@ def service_identity() -> tuple[str, frozenset[str], bool]:
     用**有效** uid／gid 而非真實的：新建檔取用建立者的 euid，chown／chgrp 的權限由有效
     （fs）身分決定，不是真實 uid（#175 的資安審查）。群組能設的是 egid ＋ 附屬群組——
     真實 gid 若既非 egid 也不在附屬群組裡其實設不上，所以不放進來（否則會少標一筆該
-    提權的，那是危險的方向）。名稱查不到時回數字形式（同 `_owner_name`／`_group_name`，
+    提權的，那是危險的方向）。名稱查不到時回數字形式（同 `owner_name`／`group_name`，
     容器裡常沒有 passwd 項目）。
     """
     euid = os.geteuid()
     gids = {os.getegid(), *os.getgroups()}
-    return _owner_name(euid), frozenset(_group_name(gid) for gid in gids), euid == 0
+    return owner_name(euid), frozenset(group_name(gid) for gid in gids), euid == 0
 
 
 def _resolve_source(path: str) -> str:
@@ -333,13 +333,13 @@ def _permissions_of(info: os.stat_result) -> Permissions:
     那一份內容。
     """
     return Permissions(
-        owner=_owner_name(info.st_uid),
-        group=_group_name(info.st_gid),
+        owner=owner_name(info.st_uid),
+        group=group_name(info.st_gid),
         mode=f"{stat.S_IMODE(info.st_mode):04o}",
     )
 
 
-def _owner_name(uid: int) -> str:
+def owner_name(uid: int) -> str:
     # 容器裡的使用者常常沒有 passwd 項目（`io/writer` 記過實測 uid 501 查不到名字）。
     # 查不到就回數字形式——那不是取巧，是部署環境的現實，而且它仍然是正確的擁有者。
     try:
@@ -348,7 +348,7 @@ def _owner_name(uid: int) -> str:
         return str(uid)
 
 
-def _group_name(gid: int) -> str:
+def group_name(gid: int) -> str:
     try:
         return grp.getgrgid(gid).gr_name
     except KeyError:

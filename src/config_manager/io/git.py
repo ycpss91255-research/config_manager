@@ -81,6 +81,17 @@ def head(repo: str) -> str:
     return _git(repo, "rev-parse", "HEAD").strip()
 
 
+def tracked_clean(repo: str) -> bool:
+    """受追蹤的檔案在工作區與索引都沒有未提交的變更（`git status --porcelain --untracked-files=no`
+    是空的）。
+
+    進版回滾 reset 之後用來核對設定庫真的退回去了（F37）：只核對 HEAD 相符，不等於工作區
+    與索引也回來了。未追蹤的檔案不算——那不是 reset 管得到的東西；這次才新建的附帶檔案由
+    回滾自己點名拿掉、拿不掉就列為未還原。
+    """
+    return _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
+
+
 def reset_hard(repo: str, sha: str) -> None:
     """把 HEAD、索引與工作區一併退回 `sha`（`git reset --hard`）。
 

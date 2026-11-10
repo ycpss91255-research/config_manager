@@ -610,3 +610,40 @@ def test_onboard_with_structurally_broken_existing_list_is_unparsable_not_a_conf
 
     with pytest.raises(ConfigListUnparsable):
         onboard(str(repo), _request(root, path), _AUTHOR)
+
+
+def test_a_rollback_that_cannot_finish_has_one_next_step_and_does_not_presume_removal(
+    tmp_path, monkeypatch
+):
+    # F37（11/9，同 U24 第 2 輪的進版回滾訊息）：原本的失敗自帶「下一步：…。」時，
+    # 回滾未竟的訊息仍只有一個「下一步：」、沒有「。。」；原本的建議標明給維護者參考；
+    # 殘留由維護者核對歸屬與用途再決定保留、還原或移除——不預設刪除。
+    # 期望字句來自 11/9 定稿（cm-verify fix-plan-F36-F38-20261109 3.3）。
+    repo = _repo(tmp_path)
+    root, path = _source(tmp_path)
+    seen = []
+
+    def _write_then_fail(*args, **kwargs):
+        seen.append(1)
+        if len(seen) == 1:
+            return real_write_config_list(*args, **kwargs)
+        raise OSError("還原也寫不進去")
+
+    monkeypatch.setattr("config_manager.io.onboard.write_config_list", _write_then_fail)
+
+    def _commit_refused(*args, **kwargs):
+        raise RuntimeError("注入：commit 寫不進去。下一步：確認設定庫目錄可寫，再試一次。")
+
+    monkeypatch.setattr("config_manager.io.onboard.record", _commit_refused)
+
+    with pytest.raises(OnboardLeftBehind) as caught:
+        onboard(str(repo), _request(root, path), _AUTHOR)
+
+    message = str(caught.value)
+    assert (
+        message.count("下一步："),
+        "。。" in message,
+        "原本的失敗附的建議（給維護者參考）：確認設定庫目錄可寫" in message,
+        "由維護者核對殘留的歸屬與用途，再決定保留、還原或移除" in message,
+        "清掉上列殘留" in message,
+    ) == (1, False, True, True, False)

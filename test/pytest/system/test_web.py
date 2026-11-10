@@ -3822,8 +3822,22 @@ def test_a_draft_adopted_with_a_rule_warning_asks_for_the_reason_when_reopened(
     page.wait_for_function(
         "document.querySelector(\"[data-testid='rule-warnings']\").textContent.includes('已略過')"
     )
+    # 這份草稿先由另一個瀏覽器身分存過（上面 API 那一段），這個頁面接手後再存：參與者累加，
+    # 這批含別人存的草稿，進版先經確認（ADR-00000032）。原本這裡只等結果橫幅出現，被畫面上舊的
+    # 「接手了…」訊息滿足，從沒走到進版（F38 讓存草稿收起舊訊息後才露出）：核對確認框、按確認，
+    # 並明確等「已進版」。收起接手訊息不能清掉參與者：確認框照樣列出兩位。
     page.click("[data-testid='promote-all']")
-    page.wait_for_selector("[data-testid='promote-done']", state="visible")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    asked = (page.inner_text("[data-testid='confirm-title']"),
+             page.inner_text("[data-testid='confirm-items']"))
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_selector("[data-testid='promote-done']:has-text('已進版')")
+
+    assert (
+        "這批含別人存的草稿" in asked[0],
+        f"{_NAME}（另一個瀏覽器身分）：參與 1 份" in asked[1],
+        "你：參與 1 份" in asked[1],
+    ) == (True, True, True)
 
 
 # ── W3 儲存草稿（#21）────────────────────────────────────────────────────────
@@ -8053,3 +8067,183 @@ def test_late_startup_answers_do_not_overwrite_a_retry_in_progress(open_page):
     page.wait_for_selector(f"{_RETRY}:not([aria-busy])", timeout=_SETTLE_MS)
     assert (meanwhile, _DEADLINE_TEXT in page.inner_text(_UNREACHABLE_NOTICE)) == (
         (True, "模式未知"), True)
+
+
+# ── T11：上一個動作的結果訊息在送出下一個寫入時收起（F38，11/9）──────────────────────────────
+# 10/31 第 4 批、11/4 走查兩次看到：以來源覆蓋之後再退版，上方還留著「已以來源覆蓋…」，
+# 退版的結果卻在歷史區。規則（使用者 11/9 定案）：確認之後、實際送出寫入的那一刻
+# 收起上一筆普通結果訊息；開確認框、取消、檢查差異這類不寫入的動作不收。
+
+_PROMOTE_DONE = "[data-testid='promote-done']"
+
+
+def _overwritten_with_history(open_page, browse_root, api):
+    """兩版歷史、目標在介面外改過 → 開頁、以來源覆蓋成功（上方是「已以來源覆蓋…」）。"""
+    entry = _history_via_api(api, browse_root, ["count: 1\n", "count: 2\n"])
+    pathlib.Path(entry["target"]).write_text("count: 9\n", encoding="utf-8")
+    uid = entry["uid"]
+    page = open_page(identity=_REMEMBERED)
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    page.dblclick(f"[data-testid='tree-item-{uid}']")
+    page.wait_for_selector(f"[data-testid='panel-{uid}']", state="visible")
+    page.click(f"[data-testid='panel-{uid}'] [data-testid='panel-diff']")
+    page.wait_for_selector(f"[data-testid='diff-{uid}']", state="visible")
+    page.click("[data-testid='resolve-overwrite']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+    page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已以來源覆蓋')")
+    page.get_by_role("button", name="歷史").click()
+    page.wait_for_selector(f"[data-testid='history-{uid}']", state="visible")
+    _select_first_version(page)
+    return page
+
+
+def _confirm_revert(page):
+    page.click("[data-testid='history-revert']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+
+
+def test_reverting_after_an_overwrite_does_not_leave_the_overwrite_message_on_top(
+    open_page, browse_root, api
+):
+    page = _overwritten_with_history(open_page, browse_root, api)
+
+    _confirm_revert(page)
+
+    page.wait_for_selector("[data-testid='history-notice']:not([hidden])")
+    assert page.is_hidden(_PROMOTE_DONE)
+
+
+def test_a_revert_that_fails_after_an_overwrite_does_not_keep_the_overwrite_message_either(
+    open_page, browse_root, api
+):
+    page = _overwritten_with_history(open_page, browse_root, api)
+    page.route(
+        "**/api/configs/*/revert",
+        lambda route: route.fulfill(
+            status=500, content_type="application/json",
+            body=json.dumps({"detail": "注入：退版失敗。下一步：無"}),
+        ),
+    )
+
+    _confirm_revert(page)
+
+    page.wait_for_selector("[data-testid='history-revert-error']")
+    assert page.is_hidden(_PROMOTE_DONE)
+
+
+def _promoted_then_drifted(open_page, repo):
+    """一份 config 進版成功（上方「已進版…」）→ 介面外改目標 → 檢查差異 → 打開差異檢視。"""
+    target = _listing_many(repo, {"a": "count: 3\n"})["a"]
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已進版')")
+    target.write_text("count: 9\n", encoding="utf-8")
+    page.click("[data-testid='rescan']")
+    page.wait_for_selector(f"[data-testid='panel-status-{_PARAM_UID}']:has-text('偏離')")
+    page.click(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-diff']")
+    page.wait_for_selector(f"[data-testid='diff-{_PARAM_UID}']", state="visible")
+    return page
+
+
+def _resolve_requests(page):
+    """記下頁面實際送出的處置請求（方法＋網址）；沒走到預期路徑時放進斷言訊息，不必猜。"""
+    seen = []
+    page.on("request", lambda request: seen.append(f"{request.method} {request.url}")
+            if "/resolve" in request.url else None)
+    return seen
+
+
+def _overwrite_confirmed(page):
+    page.click("[data-testid='resolve-overwrite']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-ok']")
+
+
+def test_cancelling_a_confirmation_keeps_the_previous_result(open_page, repo):
+    # 「取消不清除」：開確認框再取消，沒有送出任何寫入，上方「已進版…」照舊。現在就是這樣——
+    # 這則預期一開始就綠，是防止修過頭（確認框一開就收）的回歸測試。
+    page = _promoted_then_drifted(open_page, repo)
+    seen = _resolve_requests(page)
+
+    page.click("[data-testid='resolve-overwrite']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-cancel']")
+
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]", state="detached")
+    assert (page.is_visible(_PROMOTE_DONE), "已進版" in page.inner_text(_PROMOTE_DONE), seen) == (
+        True, True, [],
+    )
+
+
+def test_the_previous_result_goes_as_soon_as_the_write_is_sent_before_the_answer(
+    open_page, repo
+):
+    # 「送出後、回應前清除」：確認送出後，回應還沒回來（請求扣住、處置鈕仍是進行中）時，上方的
+    # 「已進版…」已經收起——不是等成功才收。11/9 第一輪以「**/api/configs/*/resolve」扣住時 CI 上
+    # 扣到 0 次（原因未定），這裡改用「**/resolve」並把實際送出的處置請求放進斷言訊息。
+    page = _promoted_then_drifted(open_page, repo)
+    seen = _resolve_requests(page)
+    held = []
+
+    def _keep(route):
+        if route.request.method == "POST":
+            held.append(route)
+        else:
+            route.continue_()
+
+    page.route("**/resolve", _keep)
+
+    _overwrite_confirmed(page)
+    for _ in range(50):
+        if held:
+            break
+        page.wait_for_timeout(100)
+    pending = page.get_attribute("[data-testid='resolve-overwrite']", "aria-busy")
+    gone_before_answer = page.is_hidden(_PROMOTE_DONE)
+    for route in held:
+        route.continue_()
+    page.unroute("**/resolve")
+
+    assert (len(held), pending, gone_before_answer) == (1, "true", True), seen
+
+
+def test_a_failed_write_does_not_bring_the_previous_result_back(open_page, repo):
+    # 「500 後不殘留」：送出的處置回 500——修正前舊的「已進版…」要等成功才收，失敗時會留著；
+    # 修正後送出當下已收，失敗也不會再出現。只證明失敗之後沒有殘留，不證明送出當下的時機
+    # （那是上一則）。
+    page = _promoted_then_drifted(open_page, repo)
+    seen = _resolve_requests(page)
+    refused = []
+
+    def _refuse(route):
+        if route.request.method == "POST":
+            refused.append(route.request.url)
+            route.fulfill(status=500, content_type="application/json",
+                          body=json.dumps({"detail": "注入：處置失敗。下一步：無"}))
+        else:
+            route.continue_()
+
+    page.route("**/resolve", _refuse)
+
+    _overwrite_confirmed(page)
+
+    page.wait_for_selector("[data-testid='resolve-error']", state="visible")
+    assert (len(refused), page.is_hidden(_PROMOTE_DONE)) == (1, True), seen
+
+
+def test_saving_a_draft_after_a_promote_removes_the_promote_message(open_page, repo):
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = _enter_identity(open_page())
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    page.click("[data-testid='promote-all']")
+    page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已進版')")
+    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+
+    page.fill(_param_value("count"), "5")
+    _save(page, _PARAM_UID)
+
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
+    assert page.is_hidden(_PROMOTE_DONE)

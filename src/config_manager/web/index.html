@@ -275,6 +275,8 @@
     color: var(--muted);
   }
   .notice.error { border-color: var(--drift); color: var(--drift); }
+  /* 後端的錯誤訊息可能分行（回滾沒能還原時的恢復步驟一步一行，F37）：照原樣換行，不擠成一段 */
+  .notice.error > strong { white-space: pre-line; }
   /* 警告（第 3 層的規則）：與紅色的硬擋分得開——琥珀色；允許帶理由通過（§6.2、#44） */
   .notice.warning { border-color: var(--warn); color: var(--warn); }
   .notice.warning ul { margin: 8px 0 0; padding-left: 18px; }
@@ -1816,6 +1818,7 @@ async function saveAttributes(detail, ui) {
     description: ui.inputs.description.value,
   };
   ui.save.disabled = true;
+  clearPromoteBanners();  // F38
   try {
     const response = await editFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/attributes`, {
       method: "POST",
@@ -1850,6 +1853,7 @@ async function specifyType(detail, row, typeName, ui) {
     ui.reset();
     return;
   }
+  clearPromoteBanners();  // F38：指定型別寫的是設定庫的 schema 檔
   try {
     const response = await editFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/types`, {
       method: "POST",
@@ -1895,6 +1899,7 @@ async function draftSchema(detail, ui) {
   await whileBusy(ui.button, "產生中…", async () => {
     ui.error.hidden = true;
     ui.button.disabled = true;
+    clearPromoteBanners();  // F38
     try {
       const response = await editFetch(
         `${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/schema`, { method: "POST" },
@@ -2017,6 +2022,7 @@ async function saveDraft(detail, entries, ui, overrides = {}) {
   }
   ui.error.hidden = true;
   ui.save.disabled = true;
+  clearPromoteBanners();  // F38：存草稿也是一次寫入，送出就收起上一個結果（例如「已進版…」）
   try {
     const response = await editFetch(`${API_BASE}/api/drafts`, {
       method: "POST",
@@ -2917,6 +2923,7 @@ async function revertTo(view, detail, version, changes, button) {
   if (!ok) return;
   await whileBusy(button, "退版中…", async () => {
     const diff = view.querySelector("[data-testid='history-diff']");
+    clearPromoteBanners();  // F38：退版的結果寫在歷史區，上方不再留著前一個動作的訊息
     try {
       const response = await editFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/revert`, {
         method: "POST",
@@ -3054,6 +3061,7 @@ async function applyMissing(detail, errorEl) {
       }, [element("strong", { text: changed })]));
       return;
     }
+    clearPromoteBanners();  // F38：重新比對後真的要寫出才收起上一個結果
     const response = await editFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/apply`, {
       method: "POST",
     });
@@ -3062,7 +3070,6 @@ async function applyMissing(detail, errorEl) {
       renderSaveError(errorEl, payload.detail);  // 後端的原因（哪個路徑、為什麼、下一步）原樣顯示
       return;
     }
-    clearPromoteBanners();
     promoteDoneEl.textContent = `已把「${detail.name}」的來源寫出到 ${payload.target}，狀態回到一致。`
       + "設定庫沒有改變，所以沒有變更紀錄。";
     promoteDoneEl.hidden = false;
@@ -3221,6 +3228,7 @@ async function resolveDrift(detail, option, view, errorEl, button) {
   }
   await whileBusy(button, "處理中…", async () => {
     errorEl.hidden = true;
+    clearPromoteBanners();  // F38：確認後送出就收起上一個結果，不等成功
     for (const button of view.querySelectorAll(".resolve-actions button")) button.disabled = true;
     try {
       const response = await editFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/resolve`, {
@@ -3234,7 +3242,6 @@ async function resolveDrift(detail, option, view, errorEl, button) {
         renderSaveError(errorEl, payload.detail);
         return;
       }
-      clearPromoteBanners();
       if (option.action === "adopt_draft") {
         applyDraftsView(payload);
         // 來源與目標都沒動，狀態本來就仍是偏離，不必重掃；等欄位表換上，finally 才放開處置按鈕
@@ -4804,6 +4811,7 @@ async function submitOnboard() {
     .map((ambiguity) => `第 ${ambiguity.line} 行「${ambiguity.value}」已確認`)
     .join("；");
   onboardErrorEl.hidden = true;
+  clearPromoteBanners();  // F38：送出就收起上一個結果，不等成功
   try {
     const response = await editFetch(`${API_BASE}/api/configs`, {
       method: "POST",
@@ -4821,7 +4829,6 @@ async function submitOnboard() {
     }
     // 回清單（load() 會重掃，新條目出現在左側樹）、選到剛納管的那一份、說一聲納管成了。
     selectedUid = payload.uid;
-    clearPromoteBanners();
     showList(currentIdentity);
     promoteDoneEl.textContent = `已納管「${payload.ref}」，並記一筆變更紀錄。目標檔案：${payload.target}。`;
     promoteDoneEl.hidden = false;
