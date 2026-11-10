@@ -231,20 +231,46 @@ def api(repo, sources_root):
 
 
 @pytest.fixture
-def api_fresh(repo, sources_root, api):
-    """這一則自己起的一個部署模式服務（F36，#345），回位址。
+def fresh_sources(tmp_path):
+    """這一則自己的白名單根目錄（F36，#345），放候選來源檔與目標。外部映像控不了 server 端模組、
+    也不能另起服務，在這裡就略過——規格本體一行都不跑。"""
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地注入失敗、每則自己起一個服務與設定庫；外部映像控不了 server 端模組")
+    path = tmp_path / "sources"
+    path.mkdir()
+    return str(path)
 
-    「未還原」標示放在服務的記憶體、掛在 app 上：共用的 `api` 會讓前一則留下的標示——設定庫那一筆
-    又不會自動收起——影響後面的規格。身分、編輯階段、草稿與標示掛在各自的 app 上；**設定庫仍是共用
-    的同一份**，注入失敗後清回並核對基準由規格自己做（`test_api.py` 的 `own_api`）。逐則起、逐則收。
-    這些規格要就地注入失敗，外部映像控不了 server 端模組，在這裡就略過——規格本體一行都不跑。
+
+@pytest.fixture
+def fresh_repo(tmp_path, fresh_sources):
+    """這一則自己的 config-repo（F36，#345）：種法同共用的 `repo`（清單檔先提交），白名單只放
+    `fresh_sources`。注入的故障（含刻意讓 reset 失敗而留下的紀錄）只會留在這一份，測試結束跟著
+    tmp_path 丟掉——不碰共用的設定庫，也就不必「清回」它。"""
+    path = tmp_path / "config-repo"
+    path.mkdir()
+    (path / "config-list.toml").write_text(_MINIMAL_LIST, encoding="utf-8")
+    subprocess.run(["git", "-C", str(path), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(path), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(path), "-c", "user.name=seed", "-c", "user.email=s@e.x",
+         "commit", "-q", "-m", "chore: 種下清單檔"],
+        check=True,
+    )
+    _seed_allowed_roots(str(path), fresh_sources)
+    return str(path)
+
+
+@pytest.fixture
+def api_fresh(fresh_repo):
+    """這一則自己起的一個部署模式服務（F36，#345），掛在這一則自己的設定庫上，回位址。
+
+    「未還原」標示放在服務的記憶體、掛在 app 上，設定庫那一筆又不會自動收起：共用的 `api` 會讓
+    標示跨規格殘留。身分、編輯階段、草稿、標示與設定庫都是這一則自己的；唯一共用的是測試端的
+    cookie 罐（票沿用、不換），由 `test_api.py` 的 `own_api` 核對。逐則起、逐則收。
     （名字不叫 api_alone：那是 F23 排隊規格已在用的夾具，回 (位址, LockBox)。）
     """
-    if os.environ.get("CM_SYSTEM_BASE_URL"):
-        pytest.skip("需就地注入失敗、每則自己起一個服務；外部映像控不了 server 端模組")
-    del sources_root, api  # 只為了排序：白名單已由 `api` 種好
     port = _free_port()
-    app = create_app(repo)
+    app = create_app(fresh_repo)
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
