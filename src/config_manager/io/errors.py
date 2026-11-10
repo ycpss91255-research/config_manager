@@ -2,7 +2,47 @@
 
 具名（而非裸 OSError），讓呼叫端與測試能精確辨識失敗種類。訊息一律含路徑、
 原因與下一步——只說「操作失敗」的訊息等於沒說（不變式 2）。
+
+另有三個給回滾訊息用的小工具（F37）：回滾訊息要引用「原本的失敗」與「還原時的失敗」，又要只有
+自己那一個「下一步：」、不疊出「。。」、不引用已清掉的暫存檔。
 """
+
+from __future__ import annotations
+
+import subprocess
+
+_NEXT_STEP = "下一步："
+
+
+def split_advice(text: str) -> tuple[str, str]:
+    """把一段失敗訊息拆成（原因, 它自帶的建議）：以第一個「下一步：」為界，兩段都去掉句尾的句號。
+
+    回滾訊息要自己給「下一步：」，原本失敗的建議改標成給維護者參考——直接整句塞進去，一段訊息
+    會出現兩個「下一步」、接縫處還疊出「。。」（U24 第 2 輪）。
+    """
+    reason, _, advice = text.partition(_NEXT_STEP)
+    return reason.strip().rstrip("。").strip(), advice.strip().rstrip("。").strip()
+
+
+def failure_reason(error: BaseException) -> str:
+    """一個失敗的原因，給回滾訊息引用。
+
+    OSError 只取 errno 與說明、不帶檔名：還原時出錯的檔名是已經清掉的暫存檔，引用它只會讓人去找
+    不存在的檔（U24 第 2 輪）。git 的失敗取結束碼與 stderr。其他取訊息裡「下一步」之前的那一段。
+    """
+    if isinstance(error, OSError) and error.errno is not None and error.strerror:
+        return f"[Errno {error.errno}] {error.strerror}"
+    if isinstance(error, subprocess.CalledProcessError):
+        stderr = error.stderr.strip() if isinstance(error.stderr, str) else ""
+        return f"git 結束碼 {error.returncode}" + (f"：{stderr}" if stderr else "")
+    return split_advice(str(error) or type(error).__name__)[0]
+
+
+def original_failure(error: BaseException) -> tuple[str, str]:
+    """回滾訊息裡的「原本的失敗」與它自帶的建議（沒有就是空字串）。"""
+    if isinstance(error, OSError) and error.errno is not None and error.strerror:
+        return failure_reason(error), ""
+    return split_advice(str(error) or type(error).__name__)
 
 
 class WriterError(Exception):
@@ -346,11 +386,12 @@ class CandidateUnreadable(CandidateError):
 
 
 class PromoteLeftBehind(Exception):
-    """進版中途失敗、回滾又沒能完全還原（#19）。
+    """進版（或將目標現況納入來源、退版）中途失敗，回滾又沒能完全還原、或還原結果無法確認（#19）。
 
     與 `OnboardLeftBehind` 同構：不蓋掉原本的失敗（`__cause__` 指向它），但也不讓「目標檔案
     已被改成新內容、紀錄卻被撤銷」這種半套狀態悄悄留著——那正是 ADR-00000006 要防的
-    「已記錄未套用／已套用未記錄」。訊息同時說出原本的失敗與哪些目標沒還原。
+    「已記錄未套用／已套用未記錄」。訊息同時說出原本的失敗、哪些項目沒還原與設定庫的實際
+    回復結果；已知還原失敗與「設定庫核對不完整、結果無法確認」寫成兩種第一行（F37）。
     """
 
 

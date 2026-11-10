@@ -60,7 +60,12 @@ from config_manager.core.errors import AlreadyManaged
 from config_manager.core.identity import derive_name, new_uid
 from config_manager.core.models import ConfigList, FileEntry, Permissions
 from config_manager.io.atomic import replace_atomically
-from config_manager.io.errors import OnboardLeftBehind, WriterError
+from config_manager.io.errors import (
+    OnboardLeftBehind,
+    WriterError,
+    failure_reason,
+    original_failure,
+)
 from config_manager.io.git import record, stage, unstage
 from config_manager.io.preflight import CONFIG_LIST_NAME
 from config_manager.io.repo import load_list, place_source, source_relpath, write_config_list
@@ -145,12 +150,12 @@ def _rollback(repo: str, relative: str, before: _WritePreState, failure: BaseExc
     try:
         unstage(repo, relative, CONFIG_LIST_NAME)
     except (OSError, subprocess.CalledProcessError) as error:
-        leftover.append(f"索引（{error}）")
+        leftover.append(f"索引（{failure_reason(error)}）")
 
     try:
         write_config_list(repo, before.list_text)
     except (OSError, WriterError) as error:
-        leftover.append(f"{CONFIG_LIST_NAME}（{error}）")
+        leftover.append(f"{CONFIG_LIST_NAME}（{failure_reason(error)}）")
 
     try:
         if before.source_existed:
@@ -158,15 +163,31 @@ def _rollback(repo: str, relative: str, before: _WritePreState, failure: BaseExc
         elif os.path.lexists(absolute):
             os.remove(absolute)
     except (OSError, WriterError) as error:
-        leftover.append(f"{relative}（{error}）")
+        leftover.append(f"{relative}（{failure_reason(error)}）")
 
     if leftover:
-        raise OnboardLeftBehind(
-            f"納管中途失敗後回滾未竟，殘留：{'；'.join(leftover)}。"
-            f"原本的失敗：{failure}。"
-            f"下一步：先照原本的失敗處理，再手動清掉上列殘留——"
-            f"留著的話，孤兒來源檔會被下一次不相干的 commit 收走。"
-        ) from failure
+        raise OnboardLeftBehind(_left_behind_message(leftover, failure)) from failure
+
+
+def _left_behind_message(leftover: list[str], failure: BaseException) -> str:
+    """回滾沒能清乾淨時的訊息（F37）：只有一個「下一步：」；原本的失敗自帶的建議標明給維護者參考；
+    殘留由維護者核對歸屬與用途再決定怎麼處理——不預設刪除（殘留也可能是別人的東西）。"""
+    reason, advice = original_failure(failure)
+    lines = [
+        "納管沒有完成，而且回滾沒有完全清掉。",
+        f"殘留：{'；'.join(leftover)}。",
+        f"原本的失敗：{reason}。",
+    ]
+    if advice:
+        lines.append(f"原本的失敗附的建議（給維護者參考）：{advice}。")
+    lines += [
+        "下一步：",
+        "1. 先保存現況：請維護者把上列殘留連同擁有者與權限備份到指定的位置，並保存這段錯誤訊息。",
+        "2. 原本的失敗交給維護者判斷怎麼處理。",
+        "3. 由維護者核對殘留的歸屬與用途，再決定保留、還原或移除。"
+        "注意：殘留的來源檔若留在設定庫裡，可能被下一次不相干的 commit 一起收走。",
+    ]
+    return "\n".join(lines)
 
 
 def _refuse_if_managed(current: ConfigList, target: str) -> None:
