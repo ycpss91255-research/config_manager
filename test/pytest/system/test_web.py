@@ -8526,16 +8526,24 @@ def test_the_marked_panel_names_the_failed_step_the_reason_and_the_original_fail
 
     page.wait_for_selector(_panel_mark(), state="visible")
     banner = page.inner_text(_panel_mark())
+    # 防誤導的要求：要說「可能留下部分變更、不代表都沒還原、一致也不代表擁有者與權限已恢復」
+    # 那一整句（定稿），而且畫面上沒有任何成功提示。原本用「全文不得含『已恢復』」，會把定稿的
+    # 否定句誤判成宣稱已恢復（11/10 維護者同意改）。
+    warned = (
+        "還原步驟失敗表示目標可能留下部分變更，不代表所有內容都沒還原；"
+        "內容、擁有者與權限需要重新核對。"
+        "上面的狀態只比對內容；顯示「一致」也不代表擁有者與權限已恢復。"
+    )
     assert (
         "未還原：之前的寫入沒有完成，這份目標的還原步驟失敗。" in banner,
         "發生在" in banner,
         "把擁有者改回" in banner,
         "Operation not permitted" in banner,
         "原本的失敗：沒有權限把" in banner,
-        "不代表所有內容都沒還原" in banner,
+        warned in banner,
         "按「以來源覆蓋目標」" in banner,
-        "已恢復" in banner,
-    ) == (True, True, True, True, True, True, True, False)
+        page.is_hidden(_PROMOTE_DONE),
+    ) == (True, True, True, True, True, True, True, True)
 
 
 def test_the_warning_stays_after_another_config_promotes(open_page, repo, monkeypatch):
