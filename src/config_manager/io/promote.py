@@ -319,10 +319,6 @@ def _left_behind_message(
     return "\n".join(lines)
 
 
-def _inside(repo: str, path: str) -> bool:
-    return os.path.abspath(path).startswith(os.path.abspath(repo) + os.sep)
-
-
 def _rollback(
     repo: str,
     before_head: str,
@@ -338,7 +334,7 @@ def _rollback(
     由 `apply` 把原本的失敗原樣往上拋。丟出時帶結構化的事實（`RollbackFacts`，#345）。
     """
     operation = _operation_of(promotions)
-    leftover, items = _restore_each(repo, touched)
+    leftover, items = _restore_each(touched)
     outcome = _reset_and_check(repo, before_head)
     if any(inside for _, inside in leftover):  # HEAD 相符也不算完整退回
         extra = "" if outcome.state == "restored" else f"；{outcome.detail}"
@@ -356,17 +352,22 @@ def _rollback(
 
 
 def _restore_each(
-    repo: str, touched: Sequence[_Snapshot]
+    touched: Sequence[_Snapshot],
 ) -> tuple[list[tuple[str, bool]], list[tuple[str | None, str, str, str]]]:
     """寫出過的目標與附帶檔案逐個還原（後寫的先還原）。回 (訊息用的殘留：(說明, 是不是設定庫裡的
-    檔案), 結構化的殘留：(config 的 uid 或 None, 路徑, 那一步, 原因))。"""
+    檔案), 結構化的殘留：(config 的 uid 或 None, 路徑, 那一步, 原因))。
+
+    「設定庫裡的檔案」看的是**它是什麼**（附帶檔案：快照沒有 config），不是它放在哪：目標也可能
+    就放在設定庫的目錄底下（例如沒被追蹤的部署目錄），那仍是一份目標，不是設定庫裡的檔案
+    （#345，11/10 T11 發現：以路徑前綴判斷，會把這種目標的還原失敗當成附帶檔案沒還原、記成設定庫
+    沒能完整退回）。"""
     leftover: list[tuple[str, bool]] = []
     items: list[tuple[str | None, str, str, str]] = []
     for before in reversed(touched):
         try:
             _restore(before)
         except _RestoreFailed as failed:
-            inside = _inside(repo, before.path)
+            inside = before.config is None
             label = "（設定庫裡的檔案）" if inside else ""
             leftover.append((f"{before.path}{label}——{failed.describe()}", inside))
             items.append(
