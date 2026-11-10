@@ -24,6 +24,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from config_manager.api.browser import Browsers, ticket_of
+from config_manager.api.left_behind import MarksBox
 from config_manager.api.errors import InvalidAuthor
 from config_manager.api.session import (
     EditingSession,
@@ -453,11 +454,14 @@ class Editing:
     會寫入的端點都以 `with editing.write(request, "<動作>") as identity:` 包住「業務檢查＋寫入」。
     請求要在 `X-CM-Editing-Token` 帶目前編輯階段的識別碼，而且送請求的瀏覽器票就是取得它的那一張
     （另一個瀏覽器拿到識別碼也不行）。不寫入的端點（讀取、身分、編輯階段本身、偵測）不經過這裡。
+
+    `marks` 是這個 app 的「未還原」標記（#345）：寫入的端點在 `write` 的鎖裡記事件或收起。
     """
 
     browsers: Browsers
     stage_box: dict[str, Stage]
     box: LockBox
+    marks: MarksBox = field(default_factory=MarksBox)
 
     @contextmanager
     def write(self, request: Request, action: str) -> Iterator[Identity]:

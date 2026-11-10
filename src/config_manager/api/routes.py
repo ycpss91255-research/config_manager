@@ -25,6 +25,7 @@ from config_manager.api.checks import checks_for
 from config_manager.api.drafts import register_drafts
 from config_manager.api.drift import register_drift
 from config_manager.api.history import register_history, require_entry, source_unreadable
+from config_manager.api.left_behind import register_left_behind
 from config_manager.api.schema import register_schema, schema_view
 from config_manager.api.browser import ticket_of
 from config_manager.api.shapes import as_problem, owner_view
@@ -227,8 +228,14 @@ def create_app(
         快取一份會讓「畫面上的狀態」與「磁碟上的狀態」有機會不一致——而這個
         系統存在的理由就是要讓那兩者對得上。設計文件 §5.4 也是這樣定的：
         開啟主畫面時掃一次，按下「檢查差異」時再掃一次。
+
+        每一列另帶 `left_behind`（「未還原」標記，沒有是 null；#345）：它不是狀態，狀態照舊只由內容
+        比對決定。
         """
-        return [_as_row(entry, state) for entry, state in scan(repo)]
+        return [
+            {**_as_row(entry, state), "left_behind": editing.marks.target(entry.uid)}
+            for entry, state in scan(repo)
+        ]
 
     @app.post("/api/configs")
     def onboard_config(payload: ConfigInput, request: Request) -> dict[str, object]:
@@ -239,10 +246,11 @@ def create_app(
     @app.get("/api/configs/{uid}")
     def config_detail(uid: str, request: Request) -> dict[str, object]:
         """單筆的 metadata 與內容（設計文件 §3.5.3）。欄位表（W3，#20）據 `types`＋`values`
-        渲染。有草稿時另說是誰存的（相對於看的人，ADR-00000032）。"""
+        渲染。有草稿時另說是誰存的（相對於看的人，ADR-00000032）。另帶 `left_behind`（#345）。"""
         identity = editing.browsers.current(request)
         viewer = None if identity is None else owner_of(identity, ticket_of(request))
-        return _config_detail(repo, stage_box, uid, viewer)
+        detail = _config_detail(repo, stage_box, uid, viewer)
+        return {**detail, "left_behind": editing.marks.target(uid)}
 
     @app.get("/api/browse")
     def browse_filesystem(path: str) -> dict[str, object]:
@@ -275,6 +283,7 @@ def create_app(
     register_schema(app, repo, editing)
     register_attributes(app, repo, editing)
     register_session(app, editing.browsers, stage_box, lock_box)
+    register_left_behind(app, repo, editing.marks)
     return app
 
 
@@ -304,7 +313,9 @@ def _register_unmanage(app: FastAPI, repo: str, editing: Editing) -> None:
         """解除納管：從清單檔移除、來源複本自 repo 拿掉、記一筆 unmanage；**不刪 target**
         （§5.5）。"""
         with editing.write(request, "解除納管") as identity:
-            return _unmanage_config(repo, identity, editing.stage_box, uid)
+            removed = _unmanage_config(repo, identity, editing.stage_box, uid)
+            # 解除納管只是停止追蹤：拿掉「未還原」標記但不算收起、目標沒有被還原（#345）。
+            return {**removed, "left_behind_untracked": editing.marks.untracked(uid)}
 
 
 def _unmanage_config(

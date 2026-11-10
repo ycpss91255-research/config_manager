@@ -13,15 +13,15 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from config_manager.api.checks import drafted_by_in, overrides_in
+from config_manager.api.left_behind import write_failures
 from config_manager.api.lock import Editing
 from config_manager.api.session import Identity
-from config_manager.core.drafts import Promotion, Stage
+from config_manager.core.drafts import Promotion
 from config_manager.core.errors import SyntaxParse
 from config_manager.core.inference import infer_types
 from config_manager.core.models import ConfigList, FileEntry
 from config_manager.core.parse import parse, values
 from config_manager.io.allowed_roots import root_prefixes
-from config_manager.io.errors import PromoteLeftBehind, WriterError
 from config_manager.io.git import KINDS, Change, history, show
 from config_manager.io.parsers import read_source as read_source_copy
 from config_manager.io.preflight import read_config_list
@@ -54,7 +54,7 @@ def register_history(app: FastAPI, repo: str, editing: Editing) -> None:
     def revert_config(uid: str, payload: RevertInput, request: Request) -> dict[str, object]:
         """退版（設計文件 §3.5.3、§5.3）：以反向變更寫回舊版內容並寫出目標，不改寫歷史（#24）。"""
         with editing.write(request, "退版") as identity:
-            return _revert_config(repo, identity, editing.stage_box, uid, payload)
+            return _revert_config(repo, identity, editing, uid, payload)
 
 
 # 歷史預設只看內容變更（§7.6.1、圖 7）：cfg、adopt、revert 都真的改了來源與目標的內容
@@ -222,7 +222,7 @@ def _find_version(changes: list[Change], entry: FileEntry, sha: str) -> Change:
 def _revert_config(
     repo: str,
     identity: Identity,
-    stage_box: dict[str, Stage],
+    editing: Editing,
     uid: str,
     payload: RevertInput,
 ) -> dict[str, object]:
@@ -238,7 +238,7 @@ def _revert_config(
     """
     config_list = read_config_list(repo)
     entry = require_entry(config_list, uid)
-    if uid in stage_box["stage"].drafts:
+    if uid in editing.stage_box["stage"].drafts:
         raise HTTPException(
             status_code=409,
             detail=f"「{entry.name}@{entry.hostname}」有未進版的草稿，退版會讓草稿對不上來源。"
@@ -256,17 +256,17 @@ def _revert_config(
     )
     # schema 跟著回到那一版（#39 的定案，ADR-00000021）：與內容進同一筆紀錄、同進同退。
     schema_effect, companions = schema_revert(repo, uid, target_change.sha)
-    try:
+    # 寫出／記錄／回滾失敗：500（回滾錯誤另記「未還原」、回物件格式，#345）。
+    with write_failures(editing.marks):
         apply_promotions(
             repo, [plan], identity.git_author, root_prefixes(repo), {uid: companions}
         )
-    except (PromoteLeftBehind, WriterError, CalledProcessError, OSError) as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
     latest = history(repo, uid)[0]
     return {
         "uid": uid,
         "reverted_to": target_change.sha,
         "schema_effect": schema_effect,
+        "left_behind_cleared": editing.marks.cleared([(uid, entry.target)]),
         "record": {
             "sha": latest.sha, "kind": latest.kind, "summary": latest.summary,
             "author": latest.author, "at": latest.at,

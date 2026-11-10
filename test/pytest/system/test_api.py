@@ -35,6 +35,7 @@ from config_manager.api import drafts as drafts_api
 from config_manager.core.allowed_roots import load as load_allowed_roots
 from config_manager.api.lock import LockBox
 from config_manager.core.errors import UidHorizonReached
+from config_manager.io import drift as drift_io
 from config_manager.io import promote as promote_io
 from config_manager.io.errors import TargetNotWritable
 
@@ -1903,7 +1904,8 @@ def test_a_rollback_that_cannot_restore_a_target_names_it_and_leaves_it_as_new_c
         _post(api, "/api/promote", {})
 
     assert exc.value.code == _SERVER_ERROR
-    detail = _detail(exc.value)
+    # 回滾錯誤的 detail 是物件（#345）：可讀的那一整段在 message（規格變更，不是放寬）。
+    detail = _message_of(_detail(exc.value))
     assert first["target"] in detail and "還原時寫不進去" in detail
     assert "原本的失敗" in detail and "寫不進去" in detail
     assert "下一步" in detail
@@ -1944,7 +1946,8 @@ def test_a_rollback_whose_chown_fails_names_the_target_as_left_behind(
         _post(api, "/api/promote", {})
 
     assert exc.value.code == _SERVER_ERROR
-    detail = _detail(exc.value)
+    # 回滾錯誤的 detail 是物件（#345）：可讀的那一整段在 message（規格變更，不是放寬）。
+    detail = _message_of(_detail(exc.value))
     assert first["target"] in detail and "Operation not permitted" in detail
     assert "原本的失敗" in detail
     assert len(chowns) >= _SECOND_WRITE  # 回滾真的試著把擁有者設回去
@@ -2076,15 +2079,29 @@ def test_when_the_repo_is_fully_restored_the_message_offers_overwrite_or_adopt_t
 def _restoring_shared_repo(repo):
     """reset 被注入失敗時，共用的設定庫（整個測試階段只有一份）會留下一筆沒完成的紀錄。這裡在
     結束時（斷言之後；斷言失敗也一樣）用真的 git 退回開始前的 HEAD，再核對 HEAD、筆數與工作區都和
-    開始前相同——各自比對 HEAD 不足以證明不影響後面的案例，要把現場清回來並驗過。"""
+    開始前相同——各自比對 HEAD 不足以證明不影響後面的案例，要把現場清回來並驗過。
+
+    清回用的是 `reset --hard`，它會連別人留下、還沒提交的變更一起清掉：開始前工作樹或索引有已追蹤
+    檔案的變更就不動手（11/10 外部映像那一輪，清回把映像設定庫裡沒提交的清單修改清掉了）。
+
+    共用設定庫不在預期的狀態（開始前就不乾淨，或清回後對不上）時，**停掉整個測試階段**
+    （`pytest.exit`）：只讓這一則失敗的話，後面的規格會在被動過的設定庫上繼續跑。F36 的規格不用
+    這個，改用每則自己的設定庫（`fresh_repo`）。"""
     before = _repo_state(repo)
+    uncommitted = [line for line in before[2].splitlines() if not line.startswith("??")]
+    if uncommitted:
+        pytest.exit(
+            f"共用設定庫開始前就有未提交的變更，清回會一起清掉，停掉測試階段：{uncommitted}",
+            returncode=1,
+        )
     try:
         yield
     finally:
         subprocess.run(["git", "-C", repo, "reset", "-q", "--hard", before[0]], check=True)
         after = _repo_state(repo)
         if after != before:
-            raise AssertionError(f"共用設定庫沒有清回開始前：{before} → {after}")
+            pytest.exit(f"共用設定庫沒有清回開始前，停掉測試階段：{before} → {after}",
+                        returncode=1)
 
 
 def _write_and_reset_fail(monkeypatch):
@@ -2145,6 +2162,732 @@ def test_a_left_behind_revert_names_reverting_and_says_there_were_no_drafts(
             "設定庫：沒能完整退回" in message,
             "這一份在退版前本來就沒有草稿，這次失敗也沒有產生草稿" in message,
         ) == (True, True, True)
+
+
+# ── T9：「未還原」標示（F36，#345）────────────────────────────────────────────────────
+# 規格：cm-verify fix-plan-F36-20261110（第四版）；issue #345 的驗收條件。
+# 每則用 `own_api`：自己起一個服務，掛在**自己的設定庫**（`fresh_repo`）與來源目錄
+# （`fresh_sources`）上——標示在記憶體、掛在 app 上，設定庫那一筆又不會自動收起；注入的故障
+# （含刻意讓 reset 失敗而留下的紀錄）只留在這一份，不碰共用的設定庫。產品的回滾該讓設定庫回到
+# 基準的，包 `_unchanged_repo` 核對；刻意讓 reset 失敗的，預期殘留由 `_expected_residue` 另外核對，
+# 和收尾（tmp 目錄丟掉）分開。唯一共用的是測試端的 cookie 罐與共用的 `api`：`own_api` 前後核對，
+# 被動到就停掉整個測試階段。
+# 在目前已核對的程式路徑與故障注入下，目標的「未還原」來自一次進版兩份以上的批次——將目標現況
+# 納入來源、退版一次一份，寫出目標是最後一步，回滾失敗落在設定庫。這不是產品保證（單筆寫出途中的
+# 部分變更等路徑沒有排除）。
+
+_REWRITE_SUMMARY = "以來源重新寫出目標（照清單重設擁有者與權限）"
+_TWO_EVENTS = 2
+
+
+_PRIVATE_MODE = 0o600
+_OTHER_MODE = 0o640
+
+
+def _refuse_every_write(target, content, permissions, roots):
+    del content, permissions, roots
+    raise TargetNotWritable(f"注入：{target} 寫不進去。下一步：無")
+
+
+def _jar():
+    return next(
+        handler.cookiejar for handler in _browser.handlers
+        if isinstance(handler, urllib.request.HTTPCookieProcessor)
+    )
+
+
+def _shared_state(api, repo):
+    """共用的那一份：這個瀏覽器的 cookie、共用服務上的身分與編輯權持有者、共用設定庫的 HEAD、筆數、
+    工作樹與索引。"""
+    cookies = sorted((c.name, c.value, c.domain, c.path) for c in _jar())
+    return cookies, _get(api, "/api/session"), _get(api, "/api/session/lock"), _repo_state(repo)
+
+
+@pytest.fixture
+def own_api(api_fresh, api, repo):
+    """`api_fresh`（這一則自己的服務與設定庫）加上隔離核對（`repo` 是**共用的**設定庫）。
+
+    開始前先讓這個瀏覽器在共用服務上有票（`_set_session`，每則本來就自己設）：沒有票時，這一則
+    自己的服務會發新票、換掉 cookie。結束時共用的那一份要與開始前完全相同——不同就**停掉整個測試
+    階段**（`pytest.exit`），不讓後面的規格在被動過的共用狀態上繼續跑。"""
+    _set_session(api)
+    before = _shared_state(api, repo)
+    yield api_fresh
+    after = _shared_state(api, repo)
+    if after != before:
+        pytest.exit(f"F36 規格動到了共用的狀態，停掉整個測試階段：{before} → {after}", returncode=1)
+
+
+@contextlib.contextmanager
+def _unchanged_repo(fresh_repo):
+    """注入失敗、但 reset 照常：產品的回滾該讓（這一則自己的）設定庫回到失敗前的基準——HEAD、筆數、
+    工作樹與索引都相同。沒回到就停下這一則：那是產品的回滾有問題，或注入方式不對，後面的斷言驗的
+    就不是預定的情境。"""
+    before = _repo_state(fresh_repo)
+    yield
+    after = _repo_state(fresh_repo)
+    if after != before:
+        raise AssertionError(f"注入失敗後設定庫沒有回到基準：{before} → {after}")
+
+
+def _tracked_changes(fresh_repo):
+    return subprocess.run(
+        ["git", "-C", fresh_repo, "status", "--porcelain", "--untracked-files=no"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+
+
+@contextlib.contextmanager
+def _expected_residue(fresh_repo, commits):
+    """刻意讓 reset 失敗：預期殘留是這一段裡的操作各留下一筆紀錄（`commits` 筆），工作樹與索引沒有
+    未提交的變更——殘留和收尾分開記：這裡核對殘留是不是預期的那樣，收尾是 tmp 目錄跟著丟掉、不清回。
+    殘留不符就停下這一則（情境不是預定的那個）。"""
+    head_before = _head(fresh_repo)
+    yield
+    added = subprocess.run(
+        ["git", "-C", fresh_repo, "rev-list", "--count", f"{head_before}..HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    if (added, _tracked_changes(fresh_repo)) != (str(commits), ""):
+        raise AssertionError(
+            f"reset 失敗的預期殘留不符：多了 {added} 筆紀錄（預期 {commits}）、"
+            f"未提交的變更 {_tracked_changes(fresh_repo)!r}"
+        )
+
+
+def _refused_with(call):
+    """呼叫 `call`，回 (狀態碼, 回應 body)；沒被擋就停下。"""
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        call()
+    return exc.value.code, json.loads(exc.value.read().decode("utf-8"))
+
+
+def _row(api, uid):
+    return next(row for row in _get(api, "/api/configs") if row["uid"] == uid)
+
+
+def _marks(api):
+    return _get(api, "/api/left-behind")
+
+
+def _marked(api, fresh_sources, fresh_repo, monkeypatch, name):
+    """兩份草稿進版：第 2 份寫出時設擁有者被拒、回滾還原第 1 份時也被拒（U24 第 2 輪的實際失敗）
+    → 第 1 份帶「未還原」。注入只在這一段有效。回 (第 1 份, 第 2 份, 回滾錯誤的 detail)。"""
+    _clear_drafts(api)
+    first = _onboard(api, fresh_sources, f"{name}_a.yaml")
+    second = _onboard(api, fresh_sources, f"{name}_b.yaml", b"speed: 1\n")
+    _post(api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.2}})
+    _post(api, "/api/drafts", {"uid": second["uid"], "edits": {"speed": 2}})
+    with _unchanged_repo(fresh_repo), monkeypatch.context() as patch:
+        _realistic_chown_refusals(patch)
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(api, "/api/promote", {})
+    return first, second, _detail(exc.value)
+
+
+def _repo_check_fails(patch):
+    """reset 之後核對工作樹與索引時 `git status` 跑不起來：設定庫只核對到 HEAD
+    （回滾結果無法確認）。回呼叫紀錄（注入真的觸發了才有）。"""
+    calls = []
+
+    def _status_fails(fresh_repo):
+        calls.append(fresh_repo)
+        raise subprocess.CalledProcessError(128, ["git", "-C", fresh_repo, "status"], stderr="注入")
+
+    patch.setattr(promote_io, "tracked_clean", _status_fails)
+    return calls
+
+
+def _refusing_writes(patch, module):
+    """`module.write` 每次都被拒；回呼叫紀錄（注入真的觸發了才有）。"""
+    calls = []
+
+    def _refused(target, content, permissions, roots):
+        calls.append(target)
+        _refuse_every_write(target, content, permissions, roots)
+
+    patch.setattr(module, "write", _refused)
+    return calls
+
+
+def _promote_one_with_reset_failing(api, fresh_sources, fresh_repo, monkeypatch, name):
+    """一份草稿進版、目標寫出失敗、回滾時 reset 也失敗 → 設定庫沒能完整退回。預期殘留：這一則自己的
+    設定庫多一筆沒完成的紀錄（`_expected_residue` 核對）。回那一份。"""
+    _clear_drafts(api)
+    entry = _onboard(api, fresh_sources, f"{name}.yaml", b"count: 1\n")
+    _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
+    with _expected_residue(fresh_repo, 1), monkeypatch.context() as patch:
+        _write_and_reset_fail(patch)
+        with pytest.raises(urllib.error.HTTPError):
+            _post(api, "/api/promote", {})
+    return entry
+
+
+def _back_in_sync(entry, mode=None):
+    """在介面外把目標改回來源的內容（還原步驟失敗的那一份，目標留著這次要寫入的值）。"""
+    target = pathlib.Path(entry["target"])
+    target.write_bytes(b"max_vel: 0.8\n")
+    if mode is not None:
+        target.chmod(mode)
+
+
+def test_a_target_whose_restore_failed_is_marked_and_its_state_still_comes_from_the_content(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    first, second, _ = _marked(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_mark")
+    row, untouched = _row(own_api, first["uid"]), _row(own_api, second["uid"])
+    event = row["left_behind"]["events"][0]
+
+    assert (
+        row["state"],
+        row["left_behind"]["path"] == first["target"],
+        len(row["left_behind"]["events"]),
+        event["operation"],
+        "把擁有者改回" in event["step"],
+        "Operation not permitted" in event["reason"],
+        f"沒有權限把 {second['target']}" in event["original"],
+        untouched["left_behind"],
+    ) == ("drift", True, 1, "進版", True, True, True, None)
+
+
+def test_a_rollback_error_answers_an_object_with_the_outcome_and_each_item(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    first, _, detail = _marked(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_object")
+
+    assert (
+        detail["kind"],
+        detail["outcome"],
+        detail["operation"],
+        [(item["uid"], item["path"]) for item in detail["left_behind"]],
+        "把擁有者改回" in detail["left_behind"][0]["step"],
+        detail["repo"],
+        detail["message"].startswith("進版沒有完成，而且回滾沒有完全還原。"),
+        "沒有權限把" in detail["original"],
+    ) == (
+        "rollback", "not_restored", "進版", [(first["uid"], first["target"])], True, None, True,
+        True,
+    )
+
+
+def test_targets_all_restored_with_an_unverifiable_repo_mark_no_target_but_an_unconfirmed_repo(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    # 還原步驟都沒有失敗：不把還原成功的目標標成「未還原」；只有設定庫那一筆，而且是無法確認。
+    _clear_drafts(own_api)
+    first = _onboard(own_api, fresh_sources, "f36_unconfirmed_a.yaml")
+    second = _onboard(own_api, fresh_sources, "f36_unconfirmed_b.yaml", b"speed: 1\n")
+    _post(own_api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.2}})
+    _post(own_api, "/api/drafts", {"uid": second["uid"], "edits": {"speed": 2}})
+    with _unchanged_repo(fresh_repo), monkeypatch.context() as patch:
+        _inject_second_write_failure(patch)
+        _repo_check_fails(patch)
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(own_api, "/api/promote", {})
+    detail, marks = _detail(exc.value), _marks(own_api)
+
+    assert (
+        detail["outcome"],
+        detail["left_behind"],
+        detail["repo"]["state"],
+        _row(own_api, first["uid"])["left_behind"],
+        _row(own_api, second["uid"])["left_behind"],
+        marks["targets"],
+        marks["repo"]["state"],
+    ) == ("unconfirmed", [], "unconfirmed", None, None, [], "unconfirmed")
+
+
+def test_a_failed_reset_marks_the_repo_as_not_restored(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    entry = _promote_one_with_reset_failing(
+        own_api, fresh_sources, fresh_repo, monkeypatch, "f36_reset"
+    )
+    marks = _marks(own_api)
+
+    assert (
+        marks["repo"]["state"],
+        [event["state"] for event in marks["repo"]["events"]],
+        entry["uid"] in marks["repo"]["events"][0]["uids"],
+        "reset" in marks["repo"]["events"][0]["detail"],
+        marks["targets"],
+    ) == ("not_restored", ["not_restored"], True, True, [])
+
+
+def test_a_target_failure_with_an_unverifiable_repo_keeps_both_results_apart(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    # 兩種同時有：整體 outcome 是 not_restored，但目標那一項與設定庫那一項（無法確認）各自保留。
+    _clear_drafts(own_api)
+    first = _onboard(own_api, fresh_sources, "f36_both_a.yaml")
+    second = _onboard(own_api, fresh_sources, "f36_both_b.yaml", b"speed: 1\n")
+    _post(own_api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.2}})
+    _post(own_api, "/api/drafts", {"uid": second["uid"], "edits": {"speed": 2}})
+    with _unchanged_repo(fresh_repo), monkeypatch.context() as patch:
+        _realistic_chown_refusals(patch)
+        _repo_check_fails(patch)
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(own_api, "/api/promote", {})
+    detail, marks = _detail(exc.value), _marks(own_api)
+
+    assert (
+        detail["outcome"],
+        [item["uid"] for item in detail["left_behind"]],
+        detail["repo"]["state"],
+        [target["uid"] for target in marks["targets"]],
+        marks["repo"]["state"],
+    ) == ("not_restored", [first["uid"]], "unconfirmed", [first["uid"]], "unconfirmed")
+
+
+def test_a_later_unconfirmed_rollback_does_not_overwrite_an_earlier_known_repo_failure(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    _promote_one_with_reset_failing(
+        own_api, fresh_sources, fresh_repo, monkeypatch, "f36_known_first"
+    )
+    known = _marks(own_api)["repo"]["events"][0]
+    _clear_drafts(own_api)
+    later = _onboard(own_api, fresh_sources, "f36_known_first_later.yaml", b"count: 1\n")
+    _post(own_api, "/api/drafts", {"uid": later["uid"], "edits": {"count": 2}})
+    with _unchanged_repo(fresh_repo), monkeypatch.context() as patch:
+        checked = _repo_check_fails(patch)
+        refused = _refusing_writes(patch, promote_io)
+        with pytest.raises(urllib.error.HTTPError):
+            _post(own_api, "/api/promote", {})
+    repo_mark = _marks(own_api)["repo"]
+
+    assert (
+        repo_mark["state"],
+        [event["state"] for event in repo_mark["events"]],
+        repo_mark["events"][0] == known,
+        (len(refused), bool(checked)),  # 第二次失敗真的發生：寫出被拒一次、核對被注入失敗
+    ) == ("not_restored", ["not_restored", "unconfirmed"], True, (1, True))
+
+
+def test_a_later_known_repo_failure_makes_the_whole_repo_mark_not_restored(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    _clear_drafts(own_api)
+    early = _onboard(own_api, fresh_sources, "f36_unconfirmed_first.yaml", b"count: 1\n")
+    _post(own_api, "/api/drafts", {"uid": early["uid"], "edits": {"count": 2}})
+    with _unchanged_repo(fresh_repo), monkeypatch.context() as patch:
+        checked = _repo_check_fails(patch)
+        refused = _refusing_writes(patch, promote_io)
+        with pytest.raises(urllib.error.HTTPError):
+            _post(own_api, "/api/promote", {})
+    first_event = _marks(own_api)["repo"]["events"][0]
+    # 第二段的 reset 失敗由 _promote_one_with_reset_failing 的預期殘留核對佐證（多 1 筆只有 reset
+    # 真的失敗才會留下）。
+    _promote_one_with_reset_failing(
+        own_api, fresh_sources, fresh_repo, monkeypatch, "f36_known_later"
+    )
+    repo_mark = _marks(own_api)["repo"]
+
+    assert (
+        repo_mark["state"],
+        [event["state"] for event in repo_mark["events"]],
+        repo_mark["events"][0] == first_event,
+        (len(refused), bool(checked)),  # 第一段的注入真的觸發
+    ) == ("not_restored", ["unconfirmed", "not_restored"], True, (1, True))
+
+
+def test_the_first_and_the_latest_event_each_keep_their_own_time_and_reason(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    # 同一份兩次都沒還原：第一次（還原時設擁有者被拒）與最近一次（還原時寫回被拒、空間不足）
+    # 各自成對，不把最近一次的原因接在第一次的時刻後面。
+    first, _, _ = _marked(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_events")
+    third = _onboard(own_api, fresh_sources, "f36_events_c.yaml", b"speed: 1\n")
+    _clear_drafts(own_api)
+    _post(own_api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.5}})
+    _post(own_api, "/api/drafts", {"uid": third["uid"], "edits": {"speed": 3}})
+
+    no_space = []
+    real_replace = promote_io.replace_atomically
+
+    def _no_space(target, content, **kwargs):
+        # 只在「還原第 1 份的目標」那一步失敗：io/promote 寫來源複本也用同一個函式，全擋的話第一步就
+        # 失敗、走不到還原（11/10 補紀錄時發現）。
+        if target != first["target"]:
+            return real_replace(target, content, **kwargs)
+        no_space.append(target)
+        raise OSError(28, "No space left on device", target)
+
+    with _unchanged_repo(fresh_repo), monkeypatch.context() as patch:
+        writes = _inject_second_write_failure(patch)
+        patch.setattr(promote_io, "replace_atomically", _no_space)
+        with pytest.raises(urllib.error.HTTPError):
+            _post(own_api, "/api/promote", {})
+    events = _row(own_api, first["uid"])["left_behind"]["events"]
+
+    assert (
+        len(events),
+        "Operation not permitted" in events[0]["reason"],
+        "沒有權限把" in events[0]["original"],
+        "No space left on device" in events[-1]["reason"],
+        "注入" in events[-1]["original"],
+        events[0]["at"] <= events[-1]["at"],
+        # 第二次失敗真的發生：第 2 份寫出被拒、還原第 1 份時寫回被拒
+        (len(writes), no_space),
+    ) == (_TWO_EVENTS, True, True, True, True, True, (_TWO_EVENTS, [first["target"]]))
+
+
+def test_a_mark_stays_through_rereading_the_content_coming_back_and_other_writes(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    # 不收：重讀清單、內容在介面外改回一致、別份的進版成功、只動設定庫的操作（屬性）。
+    first, _, _ = _marked(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_stays")
+    before = _row(own_api, first["uid"])["left_behind"]
+    _get(own_api, "/api/configs")
+    _back_in_sync(first)
+    other = _onboard(own_api, fresh_sources, "f36_stays_other.yaml", b"count: 1\n")
+    _clear_drafts(own_api)
+    _promote_value(own_api, other["uid"], "count", 2)
+    _attributes(own_api, first["uid"], description="F36：只動設定庫")
+    row = _row(own_api, first["uid"])
+
+    assert (row["state"], row["left_behind"] == before) == ("in_sync", True)
+
+
+def test_a_batch_that_writes_the_marked_target_and_then_rolls_back_keeps_the_mark(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    # 批次中途寫出這一份、後面另一份失敗又整批回滾：還原回去的正是未還原時的樣子，不收。
+    first, _, _ = _marked(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_batch")
+    before = _row(own_api, first["uid"])["left_behind"]
+    third = _onboard(own_api, fresh_sources, "f36_batch_c.yaml", b"speed: 1\n")
+    _clear_drafts(own_api)
+    _post(own_api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.5}})
+    _post(own_api, "/api/drafts", {"uid": third["uid"], "edits": {"speed": 3}})
+    with _unchanged_repo(fresh_repo), monkeypatch.context() as patch:
+        written = _inject_second_write_failure(patch)
+        _, body = _refused_with(lambda: _post(own_api, "/api/promote", {}))
+
+    assert (
+        # 這一份寫出了、第 2 份寫出時失敗（注入觸發）
+        written == [first["target"], third["target"]],
+        _row(own_api, first["uid"])["left_behind"] == before,
+        "left_behind_cleared" in body,
+    ) == (True, True, False)
+
+
+def test_overwriting_the_marked_target_clears_the_mark(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    first, _, _ = _marked(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_overwrite")
+    _clear_drafts(own_api)
+
+    result = _post(own_api, f"/api/configs/{first['uid']}/resolve", {"action": "overwrite"})
+
+    assert (result["left_behind_cleared"], _row(own_api, first["uid"])["left_behind"]) == (
+        [first["uid"]], None,
+    )
+
+
+def test_a_batch_promote_reports_only_the_marks_it_actually_cleared(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    # 批次的格式：這次確實收起的 uid 依進版順序列出；沒有標示的那一份不列。
+    first, second, _ = _marked(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_cleared_batch")
+    _clear_drafts(own_api)
+    _post(own_api, "/api/drafts", {"uid": first["uid"], "edits": {"max_vel": 1.5}})
+    _post(own_api, "/api/drafts", {"uid": second["uid"], "edits": {"speed": 3}})
+
+    promoted = _post(own_api, "/api/promote", {})
+
+    assert (promoted["left_behind_cleared"], _row(own_api, first["uid"])["left_behind"]) == (
+        [first["uid"]], None,
+    )
+
+
+def test_a_write_that_clears_no_mark_reports_an_empty_list(own_api, fresh_sources, fresh_repo):
+    # 單筆的格式：沒有標示可收時是空的，不是省略也不是列出這一份。
+    drifted = _drifted(own_api, fresh_sources, "f36_cleared_none.yaml")
+
+    result = _post(own_api, f"/api/configs/{drifted['uid']}/resolve", {"action": "overwrite"})
+
+    assert result["left_behind_cleared"] == []
+
+
+def test_unmanaging_the_marked_config_stops_tracking_it(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    first, _, _ = _marked(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_unmanage")
+    _clear_drafts(own_api)
+
+    removed = _send(own_api, "DELETE", f"/api/configs/{first['uid']}")
+
+    assert (
+        removed["left_behind_untracked"],
+        "left_behind_cleared" in removed,
+        [target["uid"] for target in _marks(own_api)["targets"]],
+        pathlib.Path(first["target"]).exists(),
+    ) == ([first["uid"]], False, [], True)
+
+
+def test_no_successful_write_or_unmanage_clears_the_repo_mark(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    _promote_one_with_reset_failing(
+        own_api, fresh_sources, fresh_repo, monkeypatch, "f36_repo_stays"
+    )
+    before = _marks(own_api)["repo"]
+    drifted = _drifted(own_api, fresh_sources, "f36_repo_stays_drift.yaml")
+    _post(own_api, f"/api/configs/{drifted['uid']}/resolve", {"action": "overwrite"})
+    gone = _onboard(own_api, fresh_sources, "f36_repo_stays_gone.yaml", b"count: 1\n")
+    _send(own_api, "DELETE", f"/api/configs/{gone['uid']}")
+
+    assert _marks(own_api)["repo"] == before
+
+
+def test_a_left_behind_adopt_or_revert_adds_a_repo_event_with_its_own_operation(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    # 納入來源、退版一次一份：回滾失敗只會在設定庫，事件的操作名稱是各自的那一個。
+    adopted = _drifted(own_api, fresh_sources, "f36_op_adopt.yaml")
+    reverted = _onboard(own_api, fresh_sources, "f36_op_revert.yaml", b"count: 1\n")
+    _promote_value(own_api, reverted["uid"], "count", 2)
+    _promote_value(own_api, reverted["uid"], "count", 3)
+    first_cfg = _history(own_api, reverted["uid"])[-1]["sha"]
+    with _expected_residue(fresh_repo, 2), monkeypatch.context() as patch:
+        _write_and_reset_fail(patch)
+        for path, body in (
+            (f"/api/configs/{adopted['uid']}/resolve", {"action": "adopt"}),
+            (f"/api/configs/{reverted['uid']}/revert", {"version": first_cfg}),
+        ):
+            with pytest.raises(urllib.error.HTTPError):
+                _post(own_api, path, body)
+    # 讀標示放在殘留核對之後、區塊外：區塊內只有預期會失敗而被接住的請求，殘留核對（多出 2 筆
+    # 紀錄、工作樹與索引沒有未提交的變更）一定先執行；讀標示失敗不會讓它被跳過（11/10 紅燈那一輪
+    # 就是這樣跳過的）。
+    marks = _marks(own_api)
+
+    assert (
+        [event["operation"] for event in marks["repo"]["events"]],
+        [event["uids"] for event in marks["repo"]["events"]],
+        marks["targets"],
+    ) == (["將目標現況納入來源", "退版"], [[adopted["uid"]], [reverted["uid"]]], [])
+
+
+def test_other_server_errors_keep_a_plain_string_detail(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    # 回歸（預期一開始就綠）：寫出前就失敗、回滾完整——不是回滾錯誤，detail 照舊是字串。
+    _clear_drafts(own_api)
+    entry = _onboard(own_api, fresh_sources, "f36_plain.yaml", b"count: 1\n")
+    _post(own_api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}})
+    with _unchanged_repo(fresh_repo), monkeypatch.context() as patch:
+        patch.setattr(promote_io, "write", _refuse_every_write)
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(own_api, "/api/promote", {})
+
+    assert (exc.value.code, isinstance(_detail(exc.value), str)) == (_SERVER_ERROR, True)
+
+
+# ── 以來源重新寫出（`resolve` 的 `rewrite`）──
+
+
+def _marked_in_sync(api, fresh_sources, fresh_repo, monkeypatch, name):
+    """帶「未還原」、內容在介面外改回與來源一致、mode 也和清單的不同。回 (那一份, 清單的 mode)。"""
+    first, _, _ = _marked(api, fresh_sources, fresh_repo, monkeypatch, name)
+    _clear_drafts(api)
+    wanted = int(_get(api, f"/api/configs/{first['uid']}")["permissions"]["mode"], 8)
+    _back_in_sync(first, _OTHER_MODE if wanted == _PRIVATE_MODE else _PRIVATE_MODE)
+    return first, wanted
+
+
+def _rewrite(api, uid, token=_ACQUIRE):
+    return _post(api, f"/api/configs/{uid}/resolve", {"action": "rewrite"}, token=token)
+
+
+def _refusal_code(call):
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        call()
+    return exc.value.code
+
+
+def test_rewriting_a_marked_in_sync_target_applies_the_list_mode_and_clears_the_mark(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    first, wanted = _marked_in_sync(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_rewrite")
+
+    result = _rewrite(own_api, first["uid"])
+
+    assert (
+        stat.S_IMODE(pathlib.Path(first["target"]).stat().st_mode) == wanted,
+        pathlib.Path(first["target"]).read_bytes(),
+        result["left_behind_cleared"],
+        _row(own_api, first["uid"])["left_behind"],
+    ) == (True, b"max_vel: 0.8\n", [first["uid"]], None)
+
+
+def test_a_rewrite_leaves_its_own_record_even_though_the_content_did_not_change(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    first, _ = _marked_in_sync(
+        own_api, fresh_sources, fresh_repo, monkeypatch, "f36_rewrite_record"
+    )
+    before = len(_history(own_api, first["uid"]))
+
+    _rewrite(own_api, first["uid"])
+    changes = _history(own_api, first["uid"])
+
+    assert (len(changes) - before, changes[0]["kind"], changes[0]["summary"],
+            changes[0]["author"]) == (1, "cfg", _REWRITE_SUMMARY, "陳小明 <ming@example.com>")
+
+
+def test_an_unmarked_in_sync_target_is_still_refused_by_overwrite_and_rewrite(
+    own_api, fresh_sources, fresh_repo
+):
+    _clear_drafts(own_api)
+    entry = _onboard(own_api, fresh_sources, "f36_unmarked.yaml", b"count: 1\n")
+    before = len(_history(own_api, entry["uid"]))
+    path = f"/api/configs/{entry['uid']}/resolve"
+
+    codes = (
+        _refusal_code(lambda: _post(own_api, path, {"action": "overwrite"})),
+        _refusal_code(lambda: _rewrite(own_api, entry["uid"])),
+    )
+
+    assert (codes, len(_history(own_api, entry["uid"])) == before) == (
+        (_CONFLICT, _CONFLICT), True,
+    )
+
+
+def _move_target_in_the_list(fresh_repo, old, new):
+    """在介面外把（這一則自己的）清單檔裡這一份的目標路徑改掉並提交。找不到那一行就停下（沒搬成
+    的話，後面的斷言驗的不是「路徑不同」）。"""
+    listing = pathlib.Path(fresh_repo) / "config-list.toml"
+    text = listing.read_text(encoding="utf-8")
+    line = f'target = "{old}"'
+    if text.count(line) != 1:
+        raise AssertionError(f"清單檔裡找不到唯一的一行 {line}，沒辦法搬目標")
+    listing.write_text(text.replace(line, f'target = "{new}"'), encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", fresh_repo, "-c", "user.name=seed", "-c", "user.email=s@e.x",
+         "commit", "-qam", "chore: 搬目標（F36 測試）"],
+        check=True,
+    )
+
+
+def test_a_rewrite_is_refused_when_the_mark_names_another_target_path(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    first, _ = _marked_in_sync(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_rewrite_path")
+    before = _row(own_api, first["uid"])["left_behind"]
+    moved = pathlib.Path(fresh_sources) / "f36_rewrite_path_moved.yaml"
+    moved.write_bytes(b"max_vel: 0.8\n")
+    _move_target_in_the_list(fresh_repo, first["target"], moved)
+    code = _refusal_code(lambda: _rewrite(own_api, first["uid"]))
+    after = _row(own_api, first["uid"])["left_behind"]
+
+    assert (code, after == before, moved.read_bytes()) == (_CONFLICT, True, b"max_vel: 0.8\n")
+
+
+def test_a_rewrite_is_refused_while_there_is_a_repo_mark(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    first, _ = _marked_in_sync(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_rewrite_repo")
+    _promote_one_with_reset_failing(
+        own_api, fresh_sources, fresh_repo, monkeypatch, "f36_rewrite_repo_c"
+    )
+    before = _row(own_api, first["uid"])["left_behind"]
+
+    code = _refusal_code(lambda: _rewrite(own_api, first["uid"]))
+
+    assert (code, _row(own_api, first["uid"])["left_behind"] == before) == (_CONFLICT, True)
+
+
+def test_a_rewrite_is_refused_when_the_marked_target_no_longer_matches_the_source(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    first, _, _ = _marked(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_rewrite_drift")
+    _clear_drafts(own_api)
+    before = pathlib.Path(first["target"]).read_bytes()
+
+    code = _refusal_code(lambda: _rewrite(own_api, first["uid"]))
+
+    assert (code, pathlib.Path(first["target"]).read_bytes() == before) == (_CONFLICT, True)
+
+
+def test_a_rewrite_that_cannot_write_keeps_the_mark(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    first, _ = _marked_in_sync(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_rewrite_write")
+    before = _row(own_api, first["uid"])["left_behind"]
+    with _unchanged_repo(fresh_repo), monkeypatch.context() as patch:
+        refused = _refusing_writes(patch, drift_io)
+        code, body = _refused_with(lambda: _rewrite(own_api, first["uid"]))
+
+    assert (
+        code, _row(own_api, first["uid"])["left_behind"] == before, "left_behind_cleared" in body,
+        refused,  # 寫出真的被注入失敗（不是在條件那一關就被擋）
+    ) == (_SERVER_ERROR, True, False, [first["target"]])
+
+
+def test_a_rewrite_whose_record_fails_keeps_the_mark_and_leaves_no_record(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    first, _ = _marked_in_sync(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_rewrite_rec")
+    before = (_row(own_api, first["uid"])["left_behind"], len(_history(own_api, first["uid"])))
+
+    recorded = []
+
+    def _record_refused(*args, **kwargs):
+        del kwargs
+        recorded.append(args[1])
+        raise subprocess.CalledProcessError(128, ["git", "commit"], stderr="注入")
+
+    with _unchanged_repo(fresh_repo), monkeypatch.context() as patch:
+        patch.setattr(drift_io, "record_empty", _record_refused)
+        code, body = _refused_with(lambda: _rewrite(own_api, first["uid"]))
+    after = (_row(own_api, first["uid"])["left_behind"], len(_history(own_api, first["uid"])))
+
+    assert (code, after == before, "left_behind_cleared" in body, recorded) == (
+        _SERVER_ERROR, True, False, [first["uid"]],  # 寫出之後、記錄時真的被注入失敗
+    )
+
+
+def test_a_rewrite_whose_record_and_putting_the_bytes_back_both_fail_keeps_the_mark(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    first, _ = _marked_in_sync(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_rewrite_back")
+    before = _row(own_api, first["uid"])["left_behind"]
+
+    injected = []
+
+    def _record_refused(*args, **kwargs):
+        del args, kwargs
+        injected.append("record")
+        raise subprocess.CalledProcessError(128, ["git", "commit"], stderr="注入")
+
+    def _put_back_refused(target, content, **kwargs):
+        del content, kwargs
+        injected.append("put back")
+        raise OSError(28, "No space left on device", target)
+
+    with _unchanged_repo(fresh_repo), monkeypatch.context() as patch:
+        patch.setattr(drift_io, "record_empty", _record_refused)
+        patch.setattr(drift_io, "replace_atomically", _put_back_refused)
+        code, body = _refused_with(lambda: _rewrite(own_api, first["uid"]))
+
+    assert (
+        code, _row(own_api, first["uid"])["left_behind"] == before, "left_behind_cleared" in body,
+        injected,  # 記錄失敗、接著放回位元組也失敗——兩個注入依序觸發
+    ) == (_SERVER_ERROR, True, False, ["record", "put back"])
+
+
+def test_a_rewrite_with_an_identity_but_no_editing_token_is_refused_as_editing_missing(
+    own_api, fresh_sources, fresh_repo, monkeypatch
+):
+    # 編輯權的保護照舊，`rewrite` 不另開後門：已有身分、沒帶編輯識別碼 → 410 editing_missing，
+    # 同既有契約（有身分、沒帶識別碼那一則）。原本誤寫成 403（11/10 維護者同意改，不改產品去迎合）。
+    # 只驗這一道門檻；它不證明沒有寫入——標示保留由寫出、記錄失敗那幾則驗。
+    first, _ = _marked_in_sync(own_api, fresh_sources, fresh_repo, monkeypatch, "f36_rewrite_token")
+
+    refused = _refusal(lambda: _rewrite(own_api, first["uid"], token=None))
+
+    assert refused == (_GONE, "editing_missing")
 
 
 # ── T9：單筆內容（GET /api/configs/{uid}，#20）────────────────────────────────

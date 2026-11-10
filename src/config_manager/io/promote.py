@@ -21,12 +21,13 @@ import os
 import stat
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from config_manager.core.drafts import Promotion
 from config_manager.io.atomic import replace_atomically
 from config_manager.io.errors import (
     PromoteLeftBehind,
+    RollbackFacts,
     WriterError,
     failure_reason,
     original_failure,
@@ -62,7 +63,7 @@ def apply(
         for plan in promotions:
             batch.apply_one(plan)
     except BaseException as failure:
-        _rollback(repo, before_head, batch.touched, failure, _operation_of(promotions))
+        _rollback(repo, before_head, batch.touched, failure, promotions)
         raise
     return [plan.uid for plan in promotions]
 
@@ -89,7 +90,8 @@ class _Batch:
         stage(self.repo, plan.source, *(relative for relative, _ in beside))
         record(self.repo, plan.uid, plan.kind, plan.summary, self.author)
         # 先拍、寫成功才列入要還原的：write 原子，失敗＝目標沒動，回滾不該再去重寫它（F29）。
-        before = _snapshot(plan.target)
+        # 記下是哪一份 config 的目標：還原失敗時「未還原」標記要掛在那一份上（#345）。
+        before = replace(_snapshot(plan.target), config=plan.uid)
         write(plan.target, plan.text, plan.permissions, self.roots)
         self.touched.append(before)
 
@@ -103,6 +105,7 @@ class _Snapshot:
     uid: int = 0
     gid: int = 0
     mode: int = 0
+    config: str | None = None  # 這是哪一份 config 的目標；設定庫裡的附帶檔案是 None（#345）
 
 
 def _snapshot(path: str) -> _Snapshot:
@@ -163,9 +166,13 @@ class _RestoreFailed(Exception):
         self.step = step
         self.error = error
 
-    def describe(self) -> str:
+    def step_text(self) -> str:
+        """失敗的那一步，含被拒或失敗（例「把擁有者改回 svc:svc時被拒」）。"""
         verb = "時被拒" if isinstance(self.error, PermissionError) else "時失敗"
-        return f"{self.step}{verb}（{failure_reason(self.error)}）"
+        return f"{self.step}{verb}"
+
+    def describe(self) -> str:
+        return f"{self.step_text()}（{failure_reason(self.error)}）"
 
 
 def _restore(before: _Snapshot) -> None:
@@ -312,39 +319,73 @@ def _left_behind_message(
     return "\n".join(lines)
 
 
-def _inside(repo: str, path: str) -> bool:
-    return os.path.abspath(path).startswith(os.path.abspath(repo) + os.sep)
-
-
 def _rollback(
     repo: str,
     before_head: str,
     touched: Sequence[_Snapshot],
     failure: BaseException,
-    operation: str,
+    promotions: Sequence[Promotion],
 ) -> None:
     """還原到操作前：寫出過的目標（與一起寫回 repo 的其他檔案）逐個回寫拍下的內容與 owner／mode
     （原本不存在的就刪），repo reset 回操作前 HEAD，再核對設定庫真的回去了。
 
     有已知還原失敗、或設定庫沒能確認完整退回，就大聲失敗——不蓋掉原本的失敗（`__cause__` 指向它），
     也不讓「目標已是新內容、紀錄卻沒了」的半套狀態悄悄留著。全部還原且設定庫核對完整時什麼都不丟，
-    由 `apply` 把原本的失敗原樣往上拋。
+    由 `apply` 把原本的失敗原樣往上拋。丟出時帶結構化的事實（`RollbackFacts`，#345）。
     """
-    leftover: list[tuple[str, bool]] = []
-    for before in reversed(touched):
-        try:
-            _restore(before)
-        except _RestoreFailed as failed:
-            inside = _inside(repo, before.path)
-            label = "（設定庫裡的檔案）" if inside else ""
-            leftover.append((f"{before.path}{label}——{failed.describe()}", inside))
+    operation = _operation_of(promotions)
+    leftover, items = _restore_each(touched)
     outcome = _reset_and_check(repo, before_head)
     if any(inside for _, inside in leftover):  # HEAD 相符也不算完整退回
         extra = "" if outcome.state == "restored" else f"；{outcome.detail}"
         outcome = _RepoOutcome("not_restored", f"附帶檔案沒能還原，見上列{extra}")
     if leftover or outcome.state != "restored":
         message = _left_behind_message(operation, leftover, failure, outcome)
-        raise PromoteLeftBehind(message) from failure
+        facts = RollbackFacts(
+            operation=operation,
+            left_behind=tuple(items),
+            repo=_repo_fact(outcome),
+            original=original_failure(failure)[0],
+            uids=tuple(plan.uid for plan in promotions),
+        )
+        raise PromoteLeftBehind(message, facts) from failure
+
+
+def _restore_each(
+    touched: Sequence[_Snapshot],
+) -> tuple[list[tuple[str, bool]], list[tuple[str | None, str, str, str]]]:
+    """寫出過的目標與附帶檔案逐個還原（後寫的先還原）。回 (訊息用的殘留：(說明, 是不是設定庫裡的
+    檔案), 結構化的殘留：(config 的 uid 或 None, 路徑, 那一步, 原因))。
+
+    「設定庫裡的檔案」看的是**它是什麼**（附帶檔案：快照沒有 config），不是它放在哪：目標也可能
+    就放在設定庫的目錄底下（例如沒被追蹤的部署目錄），那仍是一份目標，不是設定庫裡的檔案
+    （#345，11/10 T11 發現：以路徑前綴判斷，會把這種目標的還原失敗當成附帶檔案沒還原、記成設定庫
+    沒能完整退回）。"""
+    leftover: list[tuple[str, bool]] = []
+    items: list[tuple[str | None, str, str, str]] = []
+    for before in reversed(touched):
+        try:
+            _restore(before)
+        except _RestoreFailed as failed:
+            inside = before.config is None
+            label = "（設定庫裡的檔案）" if inside else ""
+            leftover.append((f"{before.path}{label}——{failed.describe()}", inside))
+            items.append(
+                (before.config, before.path, failed.step_text(), failure_reason(failed.error))
+            )
+    return leftover, items
+
+
+def _repo_fact(outcome: _RepoOutcome) -> tuple[str, str] | None:
+    """設定庫的結果給「未還原」標記用的兩種（#345）：沒能完整退回（not_restored）或回滾結果無法確認
+    （unconfirmed＝只核對到 HEAD、讀不到 HEAD）；已完整退回是 None。"""
+    if outcome.state == "restored":
+        return None
+    if outcome.state == "not_restored":
+        return "not_restored", outcome.detail
+    if outcome.state == "head_only":
+        return "unconfirmed", f"只核對到 HEAD；核對工作樹與索引時失敗：{outcome.detail}"
+    return "unconfirmed", outcome.detail
 
 
 def _operation_of(promotions: Sequence[Promotion]) -> str:

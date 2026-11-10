@@ -53,6 +53,9 @@ from v8_coverage import line_coverage
 
 from config_manager.api.lock import LockBox
 from config_manager.api.routes import create_app
+from config_manager.io import drift as drift_io
+from config_manager.io import promote as promote_io
+from config_manager.io.errors import TargetNotWritable
 
 _ROOT = pathlib.Path(__file__).resolve().parents[3]
 _WEB_DIR = _ROOT / "src" / "config_manager" / "web"
@@ -4614,13 +4617,19 @@ def _drift(repo, source: str, target: str) -> None:
     (repo / "deployed" / "p.yaml").write_text(target, encoding="utf-8")
 
 
-def test_a_drifted_config_shows_a_banner_saying_the_change_bypassed_the_interface(open_page, repo):
-    # AC1：橫幅說明該修改未經介面進行、沒有對應的變更紀錄與作者資訊；一致的 config 沒有橫幅。
+def test_a_drifted_config_shows_a_neutral_banner_that_does_not_guess_the_cause(open_page, repo):
+    # AC1（F36／#345 改，維護者 11/10 定的字句——規格變更，不是放寬）：偏離不一定是介面外修改，回滾
+    # 沒能還原時也會偏離；橫幅只說內容不同、僅憑差異無法判定原因，不斷言未經介面或沒有紀錄與作者。
     _drift(repo, "count: 3\n", "count: 9\n")
     page = _open_panel(open_page())
 
     banner = page.inner_text("[data-testid='panel-mfz3k9q1'] [data-testid='drift-banner']")
-    assert "未經介面" in banner and "作者" in banner
+    neutral = "目標內容與來源不同；僅憑差異無法判定原因，請比對兩邊及相關紀錄，再決定保留哪一邊。"
+    assert (
+        neutral in banner,
+        "未經介面" in banner,
+        "作者資訊" in banner,
+    ) == (True, False, False)
 
 
 def test_an_in_sync_config_has_no_drift_banner(open_page, repo):
@@ -8240,10 +8249,560 @@ def test_saving_a_draft_after_a_promote_removes_the_promote_message(open_page, r
     _save_draft_for(page, _PARAM_UID, "count", "4")
     page.click("[data-testid='promote-all']")
     page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已進版')")
-    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    # 進版成功的訊息先出現，區塊稍後才依新的清單重畫（F12）；重畫會換掉區塊，等它完成（來源值變成剛
+    # 進版的 4）再改值——否則改到的是要被換掉的那一塊（#345 讓重讀多一個請求後露出的時序競爭）。
+    page.wait_for_selector(
+        f"[data-testid='panel-{_PARAM_UID}'] [data-testid='param-count'] "
+        "[data-testid='param-source-value']:text-is('4')"
+    )
 
     page.fill(_param_value("count"), "5")
     _save(page, _PARAM_UID)
 
     page.wait_for_selector(_draft_dot(_PARAM_UID), state="visible")
     assert page.is_hidden(_PROMOTE_DONE)
+
+
+# ── T11：「未還原」的畫面（F36，#345）────────────────────────────────────────────────
+# 規格：cm-verify fix-plan-F36-20261110（第三版）；issue #345。每則自己有一份設定庫與一個服務，
+# 標示不跨規格殘留。進版回滾照 U24 第 2 輪的實際失敗注入：第 2 份寫出時設擁有者被拒、
+# 回滾還原第 1 份時也被拒。
+# 清單與來源複本先提交：回滾會 `git reset --hard`，沒提交的清單會被退掉。目標在設定庫目錄底下的
+# targets/，**不提交**——提交了，reset 會連目標也「還原」，重現不了沒還原的那一份。
+
+_WARNING = "[data-testid='left-behind-warning']"
+_DEVELOPER = {"name": _NAME, "email": _EMAIL, "role": "developer"}
+_REWRITE = f"[data-testid='panel-{_PARAM_UID}'] [data-testid='left-behind-rewrite']"
+_SECOND_CALL = 2
+_ROLLBACK_DETAIL = {
+    "kind": "rollback",
+    "outcome": "not_restored",
+    "message": "進版沒有完成，而且回滾沒有完全還原。\n下一步：\n1. 先保存現況。",
+    "operation": "進版",
+    "left_behind": [],
+    "repo": None,
+    "original": "注入：寫不進去",
+}
+
+
+def _row_mark(uid: str = _PARAM_UID) -> str:
+    return f"[data-testid='tree-item-{uid}'] [data-testid='row-left-behind']"
+
+
+def _panel_mark(uid: str = _PARAM_UID) -> str:
+    return f"[data-testid='panel-{uid}'] [data-testid='left-behind-banner']"
+
+
+def _status_of(page, uid: str) -> str:
+    return page.get_attribute(
+        f"[data-testid='tree-item-{uid}'] [data-testid='status-dot']", "data-state"
+    )
+
+
+def _commit_list_and_sources(repo) -> None:
+    """只提交清單檔與來源複本（targets/ 不提交，見本段開頭）。"""
+    subprocess.run(["git", "-C", str(repo), "add", "config-list.toml", "files"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=seed", "-c", "user.email=s@e.x",
+         "commit", "-q", "-m", "chore: 種下清單與來源（F36）"],
+        check=True,
+    )
+
+
+def _chown_refused_from_the_second(patch) -> None:
+    real_chown = os.chown
+    calls = []
+
+    def _chown(path, uid, gid, **kwargs):
+        calls.append(path)
+        if len(calls) >= _SECOND_CALL:
+            raise PermissionError(1, "Operation not permitted", path)
+        real_chown(path, uid, gid, **kwargs)
+
+    patch.setattr(os, "chown", _chown)
+
+
+def _second_write_refused(patch) -> None:
+    real_write = promote_io.write
+    calls = []
+
+    def _write(target, content, permissions, roots):
+        calls.append(target)
+        if len(calls) == _SECOND_CALL:
+            raise TargetNotWritable(f"注入：{target} 寫不進去。下一步：無")
+        real_write(target, content, permissions, roots)
+
+    patch.setattr(promote_io, "write", _write)
+
+
+def _repo_check_refused(patch) -> None:
+    def _status_fails(repo):
+        raise subprocess.CalledProcessError(128, ["git", "-C", repo, "status"], stderr="注入")
+
+    patch.setattr(promote_io, "tracked_clean", _status_fails)
+
+
+def _left_behind_page(open_page, repo, monkeypatch, *, restore_fails=True, repo_check_fails=False):
+    """a、b 兩份草稿進版失敗。預設 a 的還原步驟失敗（帶「未還原」）；`restore_fails=False` 時
+    還原都成功。
+    `repo_check_fails` 讓 reset 之後的核對做不完（設定庫回滾結果無法確認）。注入只在這次進版有效。
+    回 (頁面, 目標)；a、b 的區塊都開著。"""
+    targets = _listing_many(repo, {"a": "count: 3\n", "b": "speed: 1.5\n"})
+    _commit_list_and_sources(repo)
+    page = open_page(identity=_DEVELOPER)
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    _save_draft_for(page, _SECOND_UID, "speed", "2.5")
+    with monkeypatch.context() as patch:
+        if restore_fails:
+            _chown_refused_from_the_second(patch)
+        else:
+            _second_write_refused(patch)
+        if repo_check_fails:
+            _repo_check_refused(patch)
+        page.click("[data-testid='promote-all']")
+        page.wait_for_selector(_PROMOTE_ERROR, state="visible")
+    return page, targets
+
+
+def _answered(page, method: str, path_end: str, act) -> None:
+    """做 `act`，等這一次的 `method …path_end` 請求回來且成功才往下（以這次請求完成佐證，不看畫面上
+    可能是舊的提示）；沒成功就停下。"""
+    with page.expect_response(
+        lambda response: response.request.method == method and response.url.endswith(path_end)
+    ) as answer:
+        act()
+    if not answer.value.ok:
+        raise AssertionError(f"{method} {path_end} 沒有成功：{answer.value.status}")
+
+
+def _saved_draft(page, uid: str) -> None:
+    """存草稿：等這次 POST /api/drafts 成功，再等這一塊的存檔提示出現——欄位一改提示就收起，所以
+    出現的是這次存檔的提示，表示頁面已處理完這次回應。"""
+    _answered(page, "POST", "/api/drafts", lambda: _save(page, uid))
+    page.wait_for_selector(
+        f"[data-testid='panel-{uid}'] [data-testid='panel-save-note']", state="visible"
+    )
+
+
+def _rescan(page) -> None:
+    """檢查差異：等這次重讀清單（GET /api/configs，`rescan` → `load`）成功，再等按鈕結束「檢查中」。
+    不等 GET /api/left-behind：那是還沒實作的請求，等它會讓紅燈紅在「請求沒觸發」，不是重現。"""
+    _answered(page, "GET", "/api/configs", lambda: page.click("[data-testid='rescan']"))
+    page.wait_for_selector("[data-testid='rescan']:not([aria-busy='true'])")
+
+
+def _back_in_sync(page, targets) -> None:
+    """在介面外把 a 的目標改回來源的內容，檢查差異後等 a 回到一致。"""
+    targets["a"].write_text("count: 3\n", encoding="utf-8")
+    _rescan(page)
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}'] [data-state='in_sync']")
+
+
+def _diff_of(page, uid: str) -> None:
+    page.click(f"[data-testid='panel-{uid}'] [data-testid='panel-diff']")
+    page.wait_for_selector(f"[data-testid='diff-{uid}']", state="visible")
+
+
+def _b_drifted_with_its_diff_open(page, targets) -> None:
+    targets["b"].write_text("speed: 9\n", encoding="utf-8")
+    _rescan(page)
+    page.wait_for_selector(f"[data-testid='panel-status-{_SECOND_UID}']:has-text('偏離')")
+    _diff_of(page, _SECOND_UID)
+
+
+def _confirm(page) -> str:
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    body = page.inner_text("[data-testid='confirm-dialog']")
+    page.click("[data-testid='confirm-ok']")
+    return body
+
+
+def _rewrite_sent(page):
+    """按確認框的「重新寫出」，回這次實際送出的處置請求：(回應狀態, 送出的 action)——以請求佐證真的
+    走到重新寫出，不只看畫面。"""
+    with page.expect_response(
+        lambda response: response.request.method == "POST" and response.url.endswith("/resolve")
+    ) as answer:
+        _confirm(page)
+    return answer.value.status, json.loads(answer.value.request.post_data or "{}").get("action")
+
+
+def _warning_names_a(page, targets) -> bool:
+    """上方警示還在、還列著 a。要驗的是「沒被收起」，所以先讓頁面把手上還沒跑完的處理跑完再讀——
+    剛收到回應就讀，可能讀到處理前的舊畫面而假通過。"""
+    page.wait_for_timeout(300)
+    return page.is_visible(_WARNING) and str(targets["a"]) in page.inner_text(_WARNING)
+
+
+def test_a_left_behind_promote_marks_the_tree_with_the_rechecked_state_without_a_rescan(
+    open_page, repo, monkeypatch
+):
+    # 不按檢查差異：a 的目標留著這次要寫入的值、來源退回去了 → 重新比對後是偏離，加「未還原」；
+    # 不會留著失敗前的「一致」又沒有標示。草稿點與進版計數保留。
+    page, _ = _left_behind_page(open_page, repo, monkeypatch)
+
+    page.wait_for_selector(_row_mark(), state="visible")
+    assert (
+        _status_of(page, _PARAM_UID),
+        page.is_visible(_draft_dot(_PARAM_UID)),
+        page.is_visible(_draft_dot(_SECOND_UID)),
+        page.inner_text("[data-testid='promote-all']"),
+    ) == ("drift", True, True, "進版 (2)")
+
+
+def test_a_marked_target_that_matches_the_source_again_shows_in_sync_with_the_mark(
+    open_page, repo, monkeypatch
+):
+    page, targets = _left_behind_page(open_page, repo, monkeypatch)
+
+    _back_in_sync(page, targets)
+
+    page.wait_for_timeout(300)  # 要驗的是「還在」：讓頁面處理完這次重讀再看
+    assert page.is_visible(_row_mark())
+
+
+def test_with_only_an_unconfirmed_repo_nothing_is_marked_and_the_warning_says_unconfirmed(
+    open_page, repo, monkeypatch
+):
+    # 還原步驟都成功、設定庫只核對到 HEAD：樹上不標「未還原」，涉及的區塊有補充說明。
+    page, _ = _left_behind_page(open_page, repo, monkeypatch, restore_fails=False,
+                                repo_check_fails=True)
+
+    page.wait_for_selector(_WARNING, state="visible")
+    page.wait_for_selector(
+        f"[data-testid='panel-{_PARAM_UID}'] [data-testid='left-behind-repo-note']",
+        state="visible",
+    )
+    warning = page.inner_text(_WARNING)
+    assert (
+        page.query_selector(_row_mark(_PARAM_UID)),
+        page.query_selector(_row_mark(_SECOND_UID)),
+        "回滾結果無法確認" in warning,
+        "沒能完整退回" in warning,
+    ) == (None, None, True, False)
+
+
+def test_when_rereading_the_list_after_a_failed_write_fails_the_page_says_it_is_not_updated(
+    open_page, repo
+):
+    _listing_many(repo, {"a": "count: 3\n", "b": "speed: 1.5\n"})
+    _commit_list_and_sources(repo)
+    page = open_page(identity=_DEVELOPER)
+    page.wait_for_selector("[data-testid='config-tree']", state="visible")
+    _save_draft_for(page, _PARAM_UID, "count", "4")
+    promoted, failed_reads = [], []
+
+    def _promote(route):
+        promoted.append(route.request.method)
+        route.fulfill(status=500, content_type="application/json",
+                      body=json.dumps({"detail": _ROLLBACK_DETAIL}))
+
+    def _listing(route):
+        if promoted and route.request.method == "GET":
+            failed_reads.append(route.request.url)  # 寫入失敗之後的重讀真的發出、被注入失敗
+            route.fulfill(status=500, content_type="application/json",
+                          body=json.dumps({"detail": "注入：讀不到清單。下一步：無"}))
+        else:
+            route.continue_()
+
+    page.route("**/api/promote", _promote)
+    page.route("**/api/configs", _listing)
+    page.click("[data-testid='promote-all']")
+
+    page.wait_for_selector("[data-testid='status-not-updated']", state="visible")
+    assert ("尚未更新" in page.inner_text("[data-testid='status-not-updated']"),
+            len(promoted), bool(failed_reads)) == (True, 1, True)
+
+
+def test_when_the_marks_cannot_be_read_the_page_says_no_mark_is_no_proof(open_page, repo):
+    _listing_many(repo, {"a": "count: 3\n"})
+    page = open_page(identity=_DEVELOPER)
+    refused = []
+
+    def _unreadable(route):
+        refused.append(route.request.url)  # 讀標示的請求真的發出、被注入失敗
+        route.fulfill(status=500, content_type="application/json",
+                      body=json.dumps({"detail": "注入：讀不到。下一步：無"}))
+
+    page.route("**/api/left-behind", _unreadable)
+
+    page.reload()
+
+    page.wait_for_selector("[data-testid='left-behind-unreadable']", state="visible")
+    assert ("不代表沒有未還原的目標" in page.inner_text("[data-testid='left-behind-unreadable']"),
+            bool(refused)) == (True, True)
+
+
+def test_the_marked_panel_names_the_failed_step_the_reason_and_the_original_failure(
+    open_page, repo, monkeypatch
+):
+    page, _ = _left_behind_page(open_page, repo, monkeypatch)
+
+    page.wait_for_selector(_panel_mark(), state="visible")
+    banner = page.inner_text(_panel_mark())
+    # 防誤導的要求：要說「可能留下部分變更、不代表都沒還原、一致也不代表擁有者與權限已恢復」
+    # 那一整句（定稿），而且畫面上沒有任何成功提示。原本用「全文不得含『已恢復』」，會把定稿的
+    # 否定句誤判成宣稱已恢復（11/10 維護者同意改）。
+    warned = (
+        "還原步驟失敗表示目標可能留下部分變更，不代表所有內容都沒還原；"
+        "內容、擁有者與權限需要重新核對。"
+        "上面的狀態只比對內容；顯示「一致」也不代表擁有者與權限已恢復。"
+    )
+    assert (
+        "未還原：之前的寫入沒有完成，這份目標的還原步驟失敗。" in banner,
+        "發生在" in banner,
+        "把擁有者改回" in banner,
+        "Operation not permitted" in banner,
+        "原本的失敗：沒有權限把" in banner,
+        warned in banner,
+        "按「以來源覆蓋目標」" in banner,
+        page.is_hidden(_PROMOTE_DONE),
+    ) == (True, True, True, True, True, True, True, True)
+
+
+def test_the_warning_stays_after_another_config_promotes(open_page, repo, monkeypatch):
+    page, targets = _left_behind_page(open_page, repo, monkeypatch)
+    page.wait_for_selector(_WARNING, state="visible")
+    page.click(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-discard']")
+    _confirm(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="detached")
+
+    page.click("[data-testid='promote-all']")
+
+    page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已進版')")
+    assert _warning_names_a(page, targets)
+
+
+def test_the_warning_stays_after_another_write_fails(open_page, repo, monkeypatch):
+    page, targets = _left_behind_page(open_page, repo, monkeypatch)
+    page.wait_for_selector(_WARNING, state="visible")
+    _b_drifted_with_its_diff_open(page, targets)
+    page.route(
+        "**/resolve",
+        lambda route: route.fulfill(status=500, content_type="application/json",
+                                    body=json.dumps({"detail": "注入：處置失敗。下一步：無"})),
+    )
+
+    _overwrite_confirmed(page)
+
+    page.wait_for_selector("[data-testid='resolve-error']", state="visible")
+    assert _warning_names_a(page, targets)
+
+
+def test_the_warning_stays_through_a_cancelled_and_a_confirmed_confirmation(
+    open_page, repo, monkeypatch
+):
+    page, targets = _left_behind_page(open_page, repo, monkeypatch)
+    page.wait_for_selector(_WARNING, state="visible")
+    _b_drifted_with_its_diff_open(page, targets)
+
+    page.click("[data-testid='resolve-overwrite']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    page.click("[data-testid='confirm-cancel']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]", state="detached")
+    after_cancel = _warning_names_a(page, targets)
+    _overwrite_confirmed(page)
+    page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已以來源覆蓋')")
+
+    assert (after_cancel, _warning_names_a(page, targets)) == (True, True)
+
+
+def test_the_warning_stays_after_draft_attribute_and_schema_writes(open_page, repo, monkeypatch):
+    page, targets = _left_behind_page(open_page, repo, monkeypatch)
+    page.wait_for_selector(_WARNING, state="visible")
+    panel = f"[data-testid='panel-{_SECOND_UID}']"
+    stayed = []
+
+    page.fill(f"{panel} {_param_value('speed')}", "3.5")
+    _saved_draft(page, _SECOND_UID)
+    stayed.append(_warning_names_a(page, targets))
+    page.click(f"{panel} [data-testid='panel-discard']")
+    _confirm(page)
+    page.wait_for_selector(_draft_dot(_SECOND_UID), state="detached")
+    stayed.append(_warning_names_a(page, targets))
+    page.click(f"{panel} [data-testid='panel-attributes']")
+    page.locator(f"[data-testid='attributes-{_SECOND_UID}']").get_by_label("說明").fill("F36")
+    _answered(page, "POST", f"/api/configs/{_SECOND_UID}/attributes",
+              lambda: page.click("[data-testid='attributes-save']"))
+    page.wait_for_selector("[data-testid='attributes-saved-notice']", state="visible")
+    stayed.append(_warning_names_a(page, targets))
+    page.click(f"{panel} [data-testid='panel-schema-draft']")
+    _confirm(page)
+    page.wait_for_selector(f"[data-testid='panel-schema-{_SECOND_UID}']", state="visible")
+    stayed.append(_warning_names_a(page, targets))
+
+    assert stayed == [True, True, True, True]
+
+
+def test_the_warning_stays_through_rescans_searches_reloads_and_reentry(
+    open_page, repo, monkeypatch
+):
+    page, targets = _left_behind_page(open_page, repo, monkeypatch)
+    page.wait_for_selector(_WARNING, state="visible")
+    stayed = []
+
+    _rescan(page)
+    stayed.append(_warning_names_a(page, targets))
+    page.fill("[data-testid='search-input']", "a")
+    page.wait_for_selector(f"[data-testid='tree-item-{_PARAM_UID}']", state="visible")
+    stayed.append(_warning_names_a(page, targets))
+    page.fill("[data-testid='search-input']", "")
+    page.reload()
+    page.wait_for_selector(_WARNING, state="visible")
+    stayed.append(_warning_names_a(page, targets))
+    page.click("[data-testid='exit']")
+    _confirm(page)
+    page.wait_for_selector("[data-testid='identity-form']", state="visible")
+    _enter_identity(page)
+    page.wait_for_selector(_WARNING, state="visible")
+    stayed.append(_warning_names_a(page, targets))
+
+    assert stayed == [True, True, True, True]
+
+
+def test_the_panel_banner_and_the_tree_mark_stay_when_the_panel_is_redrawn(
+    open_page, repo, monkeypatch
+):
+    page, _ = _left_behind_page(open_page, repo, monkeypatch)
+    page.wait_for_selector(_panel_mark(), state="visible")
+
+    page.fill(f"[data-testid='panel-{_PARAM_UID}'] {_param_value('count')}", "5")
+    _saved_draft(page, _PARAM_UID)
+    _rescan(page)
+
+    page.wait_for_timeout(300)  # 要驗的是「還在」：讓頁面處理完這次重讀再看
+    assert (page.is_visible(_panel_mark()), page.is_visible(_row_mark())) == (True, True)
+
+
+def test_overwriting_the_marked_target_removes_its_mark_and_says_so_without_claiming_a_restore(
+    open_page, repo, monkeypatch
+):
+    page, _ = _left_behind_page(open_page, repo, monkeypatch)
+    page.wait_for_selector(_WARNING, state="visible")
+    _diff_of(page, _PARAM_UID)
+
+    _overwrite_confirmed(page)
+
+    page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已以來源覆蓋')")
+    page.wait_for_selector(_row_mark(), state="detached")
+    page.wait_for_selector(_WARNING, state="hidden")
+    done = page.inner_text(_PROMOTE_DONE)
+    assert (
+        page.query_selector(_row_mark()),
+        page.is_hidden(_WARNING),
+        "上次的「未還原」標示已收起" in done,
+        "已恢復" in done,
+        "已還原" in done,
+    ) == (None, True, True, False, False)
+
+
+def test_unmanaging_the_marked_config_says_it_only_stops_tracking(open_page, repo, monkeypatch):
+    page, _ = _left_behind_page(open_page, repo, monkeypatch)
+    page.wait_for_selector(_WARNING, state="visible")
+    page.click(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-discard']")
+    _confirm(page)
+    page.wait_for_selector(_draft_dot(_PARAM_UID), state="detached")
+
+    page.click(f"[data-testid='panel-{_PARAM_UID}'] [data-testid='panel-unmanage']")
+    asked = _confirm(page)
+
+    page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已解除')")
+    page.wait_for_selector(_WARNING, state="hidden")
+    done = page.inner_text(_PROMOTE_DONE)
+    assert (
+        "停止追蹤" in asked,
+        "目標沒有被還原" in asked,
+        "停止追蹤" in done,
+        page.is_hidden(_WARNING),
+    ) == (True, True, True, True)
+
+
+def test_a_marked_in_sync_panel_offers_a_rewrite_whose_confirmation_says_it_rewrites_anyway(
+    open_page, repo, monkeypatch
+):
+    page, targets = _left_behind_page(open_page, repo, monkeypatch)
+    _back_in_sync(page, targets)
+    page.wait_for_selector(_REWRITE, state="visible")
+    seen = _resolve_requests(page)
+
+    page.click(_REWRITE)
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]")
+    asked = page.inner_text("[data-testid='confirm-dialog']")
+    page.click("[data-testid='confirm-cancel']")
+    page.wait_for_selector("[data-testid='confirm-dialog'][open]", state="detached")
+
+    page.wait_for_timeout(300)  # 取消後不該有請求出去：留一點時間讓誤送的請求現形
+    assert (
+        "內容目前一致，此操作仍會重新寫出並套用清單的擁有者與權限" in asked,
+        seen,
+        page.is_visible(_panel_mark()),
+    ) == (True, [], True)
+
+
+def test_with_a_repo_mark_the_rewrite_is_not_offered_and_the_steps_hold_off(
+    open_page, repo, monkeypatch
+):
+    page, targets = _left_behind_page(open_page, repo, monkeypatch, repo_check_fails=True)
+    _back_in_sync(page, targets)
+
+    page.wait_for_selector(_panel_mark(), state="visible")
+    assert (
+        page.query_selector(_REWRITE),
+        "先由維護者確認設定庫內容與歷史" in page.inner_text(_panel_mark()),
+    ) == (None, True)
+
+
+def test_a_rewrite_whose_record_fails_shows_no_success_and_keeps_the_warning(
+    open_page, repo, monkeypatch
+):
+    page, targets = _left_behind_page(open_page, repo, monkeypatch)
+    _back_in_sync(page, targets)
+    page.wait_for_selector(_REWRITE, state="visible")
+
+    recorded = []
+
+    def _record_refused(*args, **kwargs):
+        del kwargs
+        recorded.append(args[1])  # 寫出之後、記錄時真的被注入失敗
+        raise subprocess.CalledProcessError(128, ["git", "commit"], stderr="注入")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(drift_io, "record_empty", _record_refused)
+        page.click(_REWRITE)
+        sent = _rewrite_sent(page)
+        page.wait_for_selector(
+            f"[data-testid='panel-{_PARAM_UID}'] [data-testid='left-behind-rewrite-error']",
+            state="visible",
+        )
+
+    page.wait_for_timeout(300)  # 要驗的是「沒宣稱成功、標示還在」：讓頁面處理完這次回應再看
+    assert (
+        page.is_hidden(_PROMOTE_DONE),
+        _warning_names_a(page, targets),
+        page.is_visible(_row_mark()),
+        recorded,
+        sent,  # 真的送出了重新寫出、後端在記錄那一步失敗而回 500
+    ) == (True, True, True, [_PARAM_UID], (500, "rewrite"))
+
+
+def test_the_history_says_a_rewrite_reset_the_owner_and_mode_from_the_list(
+    open_page, repo, monkeypatch
+):
+    page, targets = _left_behind_page(open_page, repo, monkeypatch)
+    _back_in_sync(page, targets)
+    page.wait_for_selector(_REWRITE, state="visible")
+    page.click(_REWRITE)
+    sent = _rewrite_sent(page)
+    page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已以來源重新寫出')")
+
+    page.locator(f"[data-testid='panel-{_PARAM_UID}']").get_by_role("button", name="歷史").click()
+    page.wait_for_selector(f"[data-testid='history-{_PARAM_UID}']", state="visible")
+    # 清單載入完才拿最新一筆
+    page.wait_for_selector("[data-testid^='history-entry-']", state="visible")
+    _select(page, _entries(page)[0], wait_for="[data-testid='history-diff-note']")
+
+    note = page.inner_text("[data-testid='history-diff-note']")
+    assert (sent, "照清單重新寫出" in note, "不代表回到進版前的擁有者與權限" in note) == (
+        (200, "rewrite"), True, True,
+    )
