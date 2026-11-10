@@ -1904,7 +1904,8 @@ def test_a_rollback_that_cannot_restore_a_target_names_it_and_leaves_it_as_new_c
         _post(api, "/api/promote", {})
 
     assert exc.value.code == _SERVER_ERROR
-    detail = _detail(exc.value)
+    # 回滾錯誤的 detail 是物件（#345）：可讀的那一整段在 message（規格變更，不是放寬）。
+    detail = _message_of(_detail(exc.value))
     assert first["target"] in detail and "還原時寫不進去" in detail
     assert "原本的失敗" in detail and "寫不進去" in detail
     assert "下一步" in detail
