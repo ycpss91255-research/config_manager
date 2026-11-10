@@ -8249,7 +8249,12 @@ def test_saving_a_draft_after_a_promote_removes_the_promote_message(open_page, r
     _save_draft_for(page, _PARAM_UID, "count", "4")
     page.click("[data-testid='promote-all']")
     page.wait_for_selector(f"{_PROMOTE_DONE}:has-text('已進版')")
-    page.wait_for_selector(f"[data-testid='panel-{_PARAM_UID}']", state="visible")
+    # 進版成功的訊息先出現，區塊稍後才依新的清單重畫（F12）；重畫會換掉區塊，等它完成（來源值變成剛
+    # 進版的 4）再改值——否則改到的是要被換掉的那一塊（#345 讓重讀多一個請求後露出的時序競爭）。
+    page.wait_for_selector(
+        f"[data-testid='panel-{_PARAM_UID}'] [data-testid='param-count'] "
+        "[data-testid='param-source-value']:text-is('4')"
+    )
 
     page.fill(_param_value("count"), "5")
     _save(page, _PARAM_UID)
