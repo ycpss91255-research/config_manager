@@ -17,9 +17,7 @@
 
 from __future__ import annotations
 
-import grp
 import os
-import pwd
 import stat
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
@@ -35,6 +33,7 @@ from config_manager.io.errors import (
 )
 from config_manager.io.git import head, record, reset_hard, stage, tracked_clean
 from config_manager.io.parsers import as_bytes
+from config_manager.io.source import group_name, owner_name
 from config_manager.io.digest import read_target
 from config_manager.io.writer import write
 
@@ -169,20 +168,6 @@ class _RestoreFailed(Exception):
         return f"{self.step}{verb}（{failure_reason(self.error)}）"
 
 
-def _owner_name(uid: int) -> str:
-    try:
-        return pwd.getpwuid(uid).pw_name
-    except KeyError:
-        return str(uid)
-
-
-def _group_name(gid: int) -> str:
-    try:
-        return grp.getgrgid(gid).gr_name
-    except KeyError:
-        return str(gid)
-
-
 def _restore(before: _Snapshot) -> None:
     """把一個目標回寫成拍下的內容與 owner／group／mode；進版前不存在的就刪掉（沒有就什麼都不做）。
 
@@ -201,7 +186,7 @@ def _restore(before: _Snapshot) -> None:
     step = [_WRITE_BACK_STEP]
 
     def _restore_metadata(temporary: str) -> None:
-        step[0] = f"把擁有者改回 {_owner_name(before.uid)}:{_group_name(before.gid)}"
+        step[0] = f"把擁有者改回 {owner_name(before.uid)}:{group_name(before.gid)}"
         os.chown(temporary, before.uid, before.gid)
         step[0] = f"把權限改回 {before.mode:04o}"
         os.chmod(temporary, before.mode)
