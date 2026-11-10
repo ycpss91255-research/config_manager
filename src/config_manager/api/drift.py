@@ -2,7 +2,8 @@
 
 三個處置出口一支端點（`POST /api/configs/{uid}/resolve`，§3.5.3 的 resolve 動作）：
 `overwrite`（以來源覆蓋目標）、`adopt`（將目標現況納入來源，走完整驗證）、`adopt_draft`
-（先納入、待修正：目標現況載入草稿，含非法值只警告）。未部署的寫出修復是 `POST …/apply`。
+（先納入、待修正：目標現況載入草稿，含非法值只警告）。另有 `rewrite`（以來源重新寫出，#345）：只給
+帶「未還原」、內容與來源一致的那一份。未部署的寫出修復是 `POST …/apply`。
 不自動處置：這裡每一條都是人按了之後才跑。寫出目標的出口整個成功時回 `left_behind_cleared`（這次
 確實收起的「未還原」，#345）。
 """
@@ -25,7 +26,7 @@ from config_manager.core.drafts import Owner, Stage, adopt_draft
 from config_manager.core.models import FileEntry, Permissions
 from config_manager.core.validate import ERROR, check
 from config_manager.io.allowed_roots import root_prefixes
-from config_manager.io.drift import adoption, overwrite
+from config_manager.io.drift import adoption, overwrite, rewrite
 from config_manager.io.digest import read_target
 from config_manager.io.errors import PromoteLeftBehind, TargetExists, TargetReadError, WriterError
 from config_manager.io.git import history
@@ -39,7 +40,7 @@ from config_manager.io.writer import write
 class ResolveInput(BaseModel):
     """偏離處置的請求：選哪一個出口。"""
 
-    action: Literal["overwrite", "adopt", "adopt_draft"]
+    action: Literal["overwrite", "adopt", "adopt_draft", "rewrite"]
 
 
 def register_drift(app: FastAPI, repo: str, editing: Editing) -> None:
@@ -105,6 +106,8 @@ def _resolve(repo: str, me: Owner, editing: Editing, uid: str, action: str) -> d
             detail=f"「{entry.name}@{entry.hostname}」的目標不存在（未部署），不是偏離。"
             "下一步：用寫出修復（POST /api/configs/{uid}/apply）",
         )
+    if action == "rewrite":
+        return _rewrite(repo, me, editing, uid, target_text == source_text)
     if target_text == source_text:
         raise _in_sync(entry)
     if action == "adopt_draft":
@@ -157,6 +160,58 @@ def _adopt_into_draft(
         "left_behind_cleared": [],
         **drafts_view(stage, me),
     }
+
+
+def _rewrite(repo: str, me: Owner, editing: Editing, uid: str, in_sync: bool) -> dict[str, object]:
+    """以來源重新寫出（#345）：四個條件都成立才寫，否則 409、什麼都不寫。整個成功才收起標記。"""
+    entry, permissions = _permissions_of(repo, uid)
+    _refuse_rewrite(editing, entry, in_sync)
+    try:
+        rewrite(repo, entry, permissions, me.label, root_prefixes(repo))
+    except TargetReadError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except (WriterError, CalledProcessError, OSError) as error:
+        # 寫出失敗、記錄失敗（放回位元組也失敗）：標記保留，不宣稱收起。
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    return {
+        "uid": uid,
+        "action": "rewrite",
+        "record": _latest(repo, uid),
+        "left_behind_cleared": editing.marks.cleared([(uid, entry.target)]),
+    }
+
+
+def _refuse_rewrite(editing: Editing, entry: FileEntry, in_sync: bool) -> None:
+    """重新寫出的四個條件（#345）：這一份有「未還原」、標記記的路徑與清單上現在的相同、沒有設定庫
+    那一筆、內容與來源一致。沒有標記時照舊（一致就是沒有偏離可處置）。"""
+    name = f"「{entry.name}@{entry.hostname}」"
+    marked_path = editing.marks.target_path(entry.uid)
+    if marked_path is None and in_sync:
+        raise _in_sync(entry)
+    if marked_path is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{name}沒有「未還原」標示，不是重新寫出的情況。"
+            "下一步：用差異檢視決定保留哪一邊",
+        )
+    if marked_path != entry.target:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{name}的「未還原」標示記的是 {marked_path}，清單上現在是 {entry.target}，"
+            "不重新寫出。下一步：請維護者核對這份 config 的目標設定",
+        )
+    if editing.marks.has_repo_mark:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{name}：設定庫有未退回或回滾結果無法確認的警示，不提供重新寫出。"
+            "下一步：先由維護者核對設定庫內容與歷史，確認可採用的來源版本",
+        )
+    if not in_sync:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{name}的目標現在與來源不同，不是重新寫出的情況。"
+            "下一步：用差異檢視決定保留哪一邊",
+        )
 
 
 def _reject_invalid(repo: str, entry: FileEntry, target_text: str) -> None:

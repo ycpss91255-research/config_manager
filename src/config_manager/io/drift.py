@@ -6,6 +6,9 @@
 - **以來源覆蓋目標**（`overwrite`）：來源複本寫回 target。repo 內容不變、git 沒東西可提交，但
   「誰在何時決定丟掉現場修改」要留在歷史上（A3）——記一筆**空 commit**（`record(allow_empty)`，
   kind `cfg`）。record 失敗就把 target 還原成覆蓋前的位元組，處置與紀錄成對（不變式 2）。
+- **以來源重新寫出**（`rewrite`，#345）：只給帶「未還原」、內容與來源一致的那一份——照清單重新寫出
+  並套用擁有者與權限，和以來源覆蓋同一條路（寫出 → 空 commit；紀錄失敗就放回寫出前的位元組），
+  摘要不同。條件（有標記、同路徑、沒有設定庫那一筆、內容一致）由 api 層核對。
 - **將目標現況納入來源**（`adopt`）：target 的內容當一筆 kind `adopt` 的進版資料交給
   `io/promote.apply`（`adoption` 組進版資料）——寫來源複本→記錄→寫出 target，失敗整批回滾。
   第 1 層驗證在 API 層先擋（含非法值不進來源）；「先納入、待修正」不在這裡，那是
@@ -27,6 +30,7 @@ from config_manager.io.digest import read_target
 from config_manager.io.writer import write
 
 OVERWRITE_SUMMARY = "以來源覆蓋目標（捨棄現場修改）"
+REWRITE_SUMMARY = "以來源重新寫出目標（照清單重設擁有者與權限）"
 ADOPT_SUMMARY = "納入現場調整"
 
 
@@ -34,11 +38,33 @@ def overwrite(
     repo: str, entry: FileEntry, permissions: Permissions, author: str, roots: tuple[str, ...]
 ) -> None:
     """來源複本寫回 target，並記一筆空的 cfg 紀錄。紀錄沒成就把 target 還原。"""
+    _write_and_record(repo, entry, permissions, (author, OVERWRITE_SUMMARY), roots)
+
+
+def rewrite(
+    repo: str, entry: FileEntry, permissions: Permissions, author: str, roots: tuple[str, ...]
+) -> None:
+    """以來源重新寫出（#345）：照清單重新寫出 target 並套用擁有者與權限，記一筆空的 cfg 紀錄
+    （摘要 `REWRITE_SUMMARY`）。內容沒有差異也留下這次的操作紀錄；不代表回到操作前的擁有者與權限。
+    紀錄失敗的處理同 `overwrite`——只放回位元組、不放回擁有者與權限（產品待辦已列的缺口）。"""
+    _write_and_record(repo, entry, permissions, (author, REWRITE_SUMMARY), roots)
+
+
+def _write_and_record(
+    repo: str,
+    entry: FileEntry,
+    permissions: Permissions,
+    why: tuple[str, str],
+    roots: tuple[str, ...],
+) -> None:
+    """寫出來源複本到 target，再記一筆空的 cfg 紀錄（`why`＝(作者, 摘要)）；紀錄沒成就放回原本的
+    位元組並重拋。"""
+    author, summary = why
     text = read_source_copy(repo, entry.source, entry.format)
     before = read_target(entry.target)  # 不是一般檔案就在這裡具名拒絕，不會把它換掉（F14）
     write(entry.target, text, permissions, roots)
     try:
-        record_empty(repo, entry.uid, "cfg", OVERWRITE_SUMMARY, author)
+        record_empty(repo, entry.uid, "cfg", summary, author)
     except BaseException:
         if before is None:
             if os.path.lexists(entry.target):
