@@ -231,6 +231,33 @@ def api(repo, sources_root):
 
 
 @pytest.fixture
+def api_alone(repo, sources_root, api):
+    """一個**自己的**部署模式服務（F36，#345）。
+
+    「未還原」標示放在服務的記憶體、掛在 app 上：共用的 `api` 會讓前一則留下的標示——設定庫那一筆
+    又不會自動收起——影響後面的規格。同一份 config-repo，身分、編輯階段、草稿與標示各自獨立。逐則
+    起、逐則收。這些規格要就地注入失敗，外部映像控不了 server 端模組，略過。
+    """
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地注入失敗、每則自己起一個服務；外部映像控不了 server 端模組")
+    del sources_root, api  # 只為了排序：白名單已由 `api` 種好
+    port = _free_port()
+    app = create_app(repo)
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    base = f"http://127.0.0.1:{port}"
+    try:
+        _wait_until_answering(base)
+        yield base
+    finally:
+        server.should_exit = True
+        thread.join(timeout=_STARTUP_TIMEOUT)
+
+
+@pytest.fixture
 def api_developing(repo, sources_root, api):
     """一個**開發模式**的服務（#47）。
 
