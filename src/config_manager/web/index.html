@@ -134,6 +134,13 @@
   .param-row.is-collapsed-child { display: none; }
   /* 草稿標記（#21）：樹節點右側的橘點與狀態色點分開（§7.4.3）；面板標頭的「草稿」字樣同色。 */
   .dot-draft { background: #e69b2e; margin-left: 4px; }
+  /* 「未還原」（#345）：診斷標示，不是狀態——和左側的狀態色點分開，放在狀態文字之後。 */
+  .row-left-behind {
+    flex: none; margin-left: 6px; padding: 0 6px; border: 1px solid var(--drift);
+    border-radius: 999px; font-size: 12px; color: var(--drift);
+  }
+  .left-behind-banner ol, [data-testid='left-behind-warning'] ul { margin: 8px 0; padding-left: 20px; }
+  .left-behind-banner .actions { margin-top: 8px; display: flex; gap: 8px; }
   .panel-draft { flex: none; font-size: 12px; color: #e69b2e; font-weight: 600; }
   /* 草稿參與者（ADR-00000032）：可聚焦的按鈕展開全部參與者，不只靠 title。 */
   .draft-owners { flex: none; font-size: 12px; padding: 0 6px; }
@@ -577,6 +584,10 @@
     <span data-testid="idle-warning-text"></span>
     <button type="button" data-testid="idle-extend">繼續使用</button>
   </div>
+  <!-- 「未還原」（#345）：獨立於普通結果訊息，不被其他操作的成功或失敗訊息收起。 -->
+  <div class="notice error banner" data-testid="left-behind-warning" role="alert" hidden></div>
+  <div class="notice error banner" data-testid="left-behind-unreadable" role="alert" hidden></div>
+  <div class="notice error banner" data-testid="status-not-updated" role="alert" hidden></div>
   <div class="notice error banner" data-testid="promote-error" hidden></div>
   <div class="notice banner" data-testid="promote-done" hidden></div>
   <!-- 退出失敗（F3）：留在主畫面，原樣說原因。 -->
@@ -768,6 +779,12 @@ const promoteButton = document.querySelector("[data-testid='promote-all']");
 const discardAllButton = document.querySelector("[data-testid='discard-all']");
 const promoteErrorEl = document.querySelector("[data-testid='promote-error']");
 const promoteDoneEl = document.querySelector("[data-testid='promote-done']");
+// 「未還原」（#345）：上方的獨立警示、讀不到標示、寫入失敗後重讀清單也失敗。三者都不是普通結果訊息，
+// clearPromoteBanners 不收；只有標示真的收起、或重新讀取成功時才收。
+const leftBehindWarningEl = document.querySelector("[data-testid='left-behind-warning']");
+const leftBehindUnreadableEl = document.querySelector("[data-testid='left-behind-unreadable']");
+const statusNotUpdatedEl = document.querySelector("[data-testid='status-not-updated']");
+let leftBehind = { targets: [], repo: null };  // GET /api/left-behind 的最近一次結果
 
 // draftUids 是唯一來源：每次它變（載入、儲存、進版、捨棄）都從這裡重畫樹與工具列。
 function setDrafts(uids) {
@@ -1014,6 +1031,7 @@ function rowNodeBase(row) {
 // 一份「一致」的 config 可以同時有草稿。有沒有草稿以 GET /api/drafts 為準（#21）。
 function rowNode(row) {
   const node = rowNodeBase(row);
+  if (row.left_behind) node.appendChild(leftBehindTag(row.left_behind));
   if (draftUids.has(row.uid)) {
     const draft = draftDetails.get(row.uid);
     const who = draft && draft.saved_by ? `（${ownerLabel(draft.saved_by)} 存）` : "";
@@ -1185,6 +1203,10 @@ async function load(deadline = null) {
     if (generation !== loadGeneration) return;  // 有更新的載入開始了，這次過時、丟棄
     rows = data;
     loadError = null;
+    statusNotUpdatedEl.hidden = true;
+    // 「未還原」標示（#345）跟著清單一起重讀：開頁、重新整理、檢查差異、寫入後、退出再進入都經這裡。
+    await loadLeftBehind(deadline || own);
+    if (generation !== loadGeneration) return;
     // 搜尋框有字就重跑搜尋（F27）：清單是現在的，命中（或失敗的原因）也要是現在的——否則
     // 「檢查完成」和停機時留下的「搜尋失敗」紅框並排。重跑仍失敗時紅框留著、摘要另說。
     // 重跑沿用同一個期限：從按下「檢查差異」起合計 15 秒，不是各 15 秒（F34）。
@@ -1467,6 +1489,7 @@ function syncOpenPanels() {
       () => (detail ? missingBanner(detail) : null));
     syncBanner(panel, "[data-testid='drift-banner']", !row.error && row.state === "drift",
       () => (detail ? driftBanner(detail, true) : null));
+    syncLeftBehindBanner(panel, detail, row);  // #345：最後掛，才會在偏離橫幅之上
   }
 }
 
@@ -1648,6 +1671,8 @@ function panelNode(detail) {
   } else if (detail.schema) {
     head.insertBefore(schemaBadge(detail.uid, detail.schema), close);
   }
+  const leftBanner = leftBehindBanner(detail, row);  // #345：區塊最上方，在偏離橫幅之前
+  if (leftBanner) panel.appendChild(leftBanner);
   if (row && row.state === "drift") panel.appendChild(driftBanner(detail, true));
   if (row && !row.error && row.state === "missing") panel.appendChild(missingBanner(detail));
   if (row && row.error) panel.appendChild(errorBanner(row.error));
@@ -2807,10 +2832,16 @@ function renderDiff(target, version, detail, view, change) {
 
 // 以來源覆蓋目標只記一筆空的「修改參數」（io/drift.py 的 OVERWRITE_SUMMARY）：設定庫沒變、目標被改回來源。
 const OVERWRITE_SUMMARY = "以來源覆蓋目標（捨棄現場修改）";
+// 以來源重新寫出（#345）也只記一筆空的「修改參數」（io/drift.py 的 REWRITE_SUMMARY）。
+const REWRITE_SUMMARY = "以來源重新寫出目標（照清單重設擁有者與權限）";
 
 // 參數值沒變的那一筆在做什麼：不留白，不讓人以為壞掉或什麼都沒做。
 function unchangedText(change) {
   if (change.kind === "meta") return "參數值沒變：這一筆改的是屬性或 schema（含型別指定）。";
+  if (change.summary === REWRITE_SUMMARY) {
+    return "參數值沒變：設定庫的內容沒變，這一筆是照清單重新寫出機器上的目標檔、重設擁有者與權限；"
+      + "不代表回到進版前的擁有者與權限。";
+  }
   if (change.summary === OVERWRITE_SUMMARY) {
     return "參數值沒變：設定庫的內容沒變，這一筆是把機器上的目標檔改回來源內容；被蓋掉的現場值沒有紀錄。";
   }
@@ -2937,13 +2968,15 @@ async function revertTo(view, detail, version, changes, button) {
           element("strong", { text: "沒有退版。" }),
           element("pre", { text: detailText(payload.detail) }),
         ]));
+        reloadAfterFailure();  // #345：重新比對清單與標示（歷史區不重畫，原因留著）
         return;
       }
       // 目前版本變了：重抓單筆內容、重開歷史（列表多一筆退回舊版本），左側樹重掃狀態。
       load();
       const fresh = await apiFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}`);
       const freshDetail = fresh.ok ? await fresh.json() : detail;
-      openHistory(freshDetail, `已退回到版本 ${short}，並寫出到目標。${SCHEMA_DONE_TEXT[payload.schema_effect] || ""}`);
+      openHistory(freshDetail, `已退回到版本 ${short}，並寫出到目標。${SCHEMA_DONE_TEXT[payload.schema_effect] || ""}`
+        + clearedSentence(payload.left_behind_cleared));
     } catch (error) {
       diff.prepend(element("div", { class: "notice error", "data-testid": "history-revert-error" }, [
         element("strong", { text: "沒有退版。" }),
@@ -3071,7 +3104,7 @@ async function applyMissing(detail, errorEl) {
       return;
     }
     promoteDoneEl.textContent = `已把「${detail.name}」的來源寫出到 ${payload.target}，狀態回到一致。`
-      + "設定庫沒有改變，所以沒有變更紀錄。";
+      + "設定庫沒有改變，所以沒有變更紀錄。" + clearedSentence(payload.left_behind_cleared);
     promoteDoneEl.hidden = false;
     await load();
     openPanel(detail.uid);
@@ -3240,6 +3273,7 @@ async function resolveDrift(detail, option, view, errorEl, button) {
       if (!response.ok) {
         // 422（納入：現況含非法值，列行號／原因／建議並指去先納入待修正）／409／500：原樣顯示，差異區保留。
         renderSaveError(errorEl, payload.detail);
+        await reloadAfterFailure();  // #345：重新比對清單與標示（差異區不重畫，原因留著）
         return;
       }
       if (option.action === "adopt_draft") {
@@ -3248,9 +3282,10 @@ async function resolveDrift(detail, option, view, errorEl, button) {
         await openPanel(detail.uid, adoptDraftNotice(payload.warnings));
         return;
       }
-      promoteDoneEl.textContent = option.action === "overwrite"
+      promoteDoneEl.textContent = (option.action === "overwrite"
         ? `已以來源覆蓋「${detail.name}」的目標，並記一筆變更紀錄。`
-        : `已將「${detail.name}」的目標現況納入來源（採納現場調整），並寫出。`;
+        : `已將「${detail.name}」的目標現況納入來源（採納現場調整），並寫出。`)
+        + clearedSentence(payload.left_behind_cleared);
       promoteDoneEl.hidden = false;
       // 覆蓋／納入後狀態回到一致：樹先換成現況，重畫的區塊才認得新的狀態。欄位表的狀態與偏離橫幅讀的
       // 是清單——不等重掃就重開，內容先回來時欄位表會照舊清單寫「偏離」（人工驗收 U27、U28，F12）。
@@ -3381,6 +3416,275 @@ function isBusy(button) {
   return Boolean(button) && button.getAttribute("aria-busy") === "true";
 }
 
+// ── 「未還原」（#345）──────────────────────────────────────────────────────────
+// 寫入操作失敗、回滾時某份目標的還原步驟失敗的**診斷標示**，不是新的狀態（狀態照舊只由內容比對決定，
+// 所以可能是「偏離＋未還原」或「一致＋未還原」）。還原步驟失敗＝可能留下部分變更，不是證明內容都沒還原。
+// 設定庫沒能完整退回、或回滾結果無法確認，記在設定庫那一筆，不標在任何一份上。標示由後端記、放在服務
+// 的記憶體（未持久化）：每次讀清單都一起重讀，畫面不自己猜、也不自己收。
+const REPO_RESULT_TEXT = { not_restored: "沒能完整退回", unconfirmed: "結果無法確認" };
+
+function whenText(at) {
+  return new Date(at).toLocaleString("zh-TW", { hour12: false });
+}
+
+function configLabel(uid) {
+  const row = rows.find((item) => item.uid === uid);
+  return row ? `${row.name}@${row.hostname}` : uid;
+}
+
+// 第一次與最近一次：時刻、操作、原因各取自同一個事件，不交叉配對。
+function eventPairs(events, describe) {
+  const first = events[0];
+  const last = events[events.length - 1];
+  if (events.length === 1) return [`發生在 ${whenText(first.at)} 的${first.operation}${describe(first)}`];
+  return [
+    `第一次：${whenText(first.at)} 的${first.operation}${describe(first)}`,
+    `最近一次：${whenText(last.at)} 的${last.operation}${describe(last)}`,
+  ];
+}
+
+function leftBehindTag(mark) {
+  const first = mark.events[0];
+  return element("span", {
+    class: "row-left-behind",
+    "data-testid": "row-left-behind",
+    title: "之前的寫入沒有完成，這份目標的還原步驟失敗，可能留下部分變更"
+      + `（第一次：${whenText(first.at)} 的${first.operation}）。`
+      + "旁邊的狀態只比對內容；顯示「一致」也不代表擁有者與權限已恢復。打開這份看恢復步驟。",
+    text: "未還原",
+  });
+}
+
+async function loadLeftBehind(deadline) {
+  try {
+    leftBehind = await readJson(`${API_BASE}/api/left-behind`, deadline);
+    leftBehindUnreadableEl.hidden = true;
+  } catch (error) {
+    // 讀不到：說出來，不把「沒有警示」當成沒有未還原的目標。原因另起一段原樣附上（它自帶下一步）。
+    leftBehindUnreadableEl.replaceChildren(
+      element("strong", {
+        text: "讀不到「未還原」標示：畫面上沒有「未還原」不代表沒有未還原的目標。"
+          + "下一步：按「檢查差異」重新讀取。",
+      }),
+      element("p", { text: failureText("讀取「未還原」標示", error) }),
+    );
+    leftBehindUnreadableEl.hidden = false;
+  }
+  renderLeftBehindWarning();
+}
+
+function repoEventText(event) {
+  return `（${REPO_RESULT_TEXT[event.state] || event.state}：${event.detail}）`;
+}
+
+function repoWarningLine(repo) {
+  const known = repo.state === "not_restored";
+  const parts = eventPairs(repo.events, repoEventText);
+  const first = repo.events[0];
+  const last = repo.events[repo.events.length - 1];
+  if (known && first.state !== "not_restored" && last.state !== "not_restored") {
+    // 整體是沒能完整退回、但第一次與最近一次都不是那一次：另列最近一次已知失敗，不讓它被蓋掉。
+    const lastKnown = [...repo.events].reverse().find((event) => event.state === "not_restored");
+    parts.push(`最近一次已知失敗：${whenText(lastKnown.at)} 的${lastKnown.operation}`
+      + `（${lastKnown.detail}）`);
+  }
+  const involved = [...new Set(repo.events.flatMap((event) => event.uids))].map(configLabel).join("、");
+  return known
+    ? `設定庫：沒能完整退回——${parts.join("；")}；涉及${involved}。`
+      + "清單上的狀態是拿目前設定庫的內容比對，可能不是操作前的來源。"
+    : `設定庫：回滾結果無法確認——${parts.join("；")}；涉及${involved}。`
+      + "設定庫是否已完整退回，請維護者核對；清單上的狀態是拿目前設定庫的內容比對。";
+}
+
+function renderLeftBehindWarning() {
+  const { targets, repo } = leftBehind;
+  if (!targets.length && !repo) {
+    leftBehindWarningEl.hidden = true;
+    leftBehindWarningEl.replaceChildren();
+    return;
+  }
+  const items = targets.map((target) => {
+    const label = target.name ? `${target.name}@${target.hostname}` : target.uid;
+    const pair = target.events.length === 1
+      ? `發生在 ${whenText(target.events[0].at)} 的${target.events[0].operation}`
+      : `第一次 ${whenText(target.events[0].at)} 的${target.events[0].operation}；`
+        + `最近一次 ${whenText(target.events[target.events.length - 1].at)} 的`
+        + target.events[target.events.length - 1].operation;
+    const open = element("button", {
+      type: "button", "data-testid": `left-behind-open-${target.uid}`, text: "打開",
+    });
+    open.addEventListener("click", () => openPanel(target.uid));
+    return element("li", {}, [element("span", { text: `${label}（${target.path}）：未還原——${pair}。` }), open]);
+  });
+  if (repo) items.push(element("li", { text: repoWarningLine(repo) }));
+  leftBehindWarningEl.replaceChildren(
+    element("strong", { text: "有寫入沒有完成：有目標的還原步驟失敗，或設定庫的回滾結果有問題，需要維護者處理。" }),
+    element("ul", {}, items),
+    element("p", {
+      text: "這則警示不會被其他操作的成功或失敗訊息收起。每一份的「未還原」只在那一份之後經介面的寫入整個成功、"
+        + "寫出同一個目標並照清單設定擁有者與權限時收起；解除納管只會停止追蹤，目標不會被還原。"
+        + "設定庫那一筆不會自動收起；本版沒有手動「已核對」收起按鈕。",
+    }),
+    element("p", {
+      text: "這則警示未持久化，服務重啟會遺失；遺失不代表問題已處理，重啟也不是修復或清除問題的方法。"
+        + "維護者核對與處理的紀錄請另外保存。沒有這則警示，也不代表所有寫入都已還原——例如「以來源覆蓋目標」"
+        + "自己的回滾失敗不會出現在這裡。",
+    }),
+  );
+  leftBehindWarningEl.hidden = false;
+}
+
+// 這一份參與過、留下設定庫那一筆的最近一次事件（沒有就是 null）。
+function repoEventFor(uid) {
+  const repo = leftBehind.repo;
+  if (!repo) return null;
+  return [...repo.events].reverse().find((event) => event.uids.includes(uid)) || null;
+}
+
+function targetEventText(event) {
+  return `——還原失敗的那一步：${event.step}（${event.reason}）；原本的失敗：${event.original}。`;
+}
+
+// 區塊最上方：這一份有「未還原」→ A；沒有、但它參與的那次操作留下設定庫那一筆 → B；都沒有 → null。
+// `signature` 記下據以畫出的資料：重讀清單後資料沒變就不重畫（重新寫出失敗的原因留在橫幅裡）。
+function leftBehindBanner(detail, row) {
+  const mark = row && row.left_behind;
+  const signature = JSON.stringify([mark, row && row.state, leftBehind.repo]);
+  if (!mark) {
+    const event = repoEventFor(detail.uid);
+    if (!event) return null;
+    const note = element("div", { class: "notice warning", "data-testid": "left-behind-repo-note" }, [
+      element("p", {
+        text: `這份參與了 ${whenText(event.at)} 的${event.operation}，那次的設定庫`
+          + `${event.state === "not_restored" ? "沒能完整退回" : "回滾結果無法確認"}（見上方警示）。`
+          + "這份目標的還原步驟沒有失敗；但清單上的狀態是拿目前設定庫的內容比對，設定庫確認之前先不要進版、"
+          + "覆蓋或納入。",
+      }),
+    ]);
+    note.dataset.signature = signature;
+    return note;
+  }
+  const latest = mark.events[mark.events.length - 1];
+  const error = element("div", {
+    class: "notice error", "data-testid": "left-behind-rewrite-error", hidden: "",
+  });
+  const steps = [
+    "先保存現況：請維護者把這份目標檔，連同它的擁有者與權限，備份到指定的位置；同時保存這段說明，"
+      + "以及「檢視差異」顯示的差異。只記下畫面上的值不能代替完整備份。",
+    "原本的失敗交給維護者判斷怎麼處理；擁有者、權限與提權設定由維護者決定，不要為了讓寫入通過而直接改"
+      + "擁有者或權限。",
+  ];
+  const actions = [];
+  if (leftBehind.repo) {
+    steps.push("先由維護者確認設定庫內容與歷史，確認可採用的來源版本後，再決定恢復方式；目前先不要進版、"
+      + "覆蓋或納入。");
+  } else if (row.state === "in_sync") {
+    steps.push("內容目前和來源一致，但擁有者與權限沒有核對。維護者核對後，要照清單重新設定：按「以來源重新"
+      + "寫出」——會重新寫出這份目標、套用清單的擁有者與權限，並記一筆變更紀錄；不保證回到"
+      + `${latest.operation}前的擁有者與權限。`);
+    const rewrite = element("button", {
+      type: "button", class: "editing-only", "data-testid": "left-behind-rewrite", text: "以來源重新寫出",
+    });
+    rewrite.addEventListener("click", () => rewriteFromSource(detail, latest.operation, rewrite, error));
+    actions.push(rewrite);
+  } else {
+    steps.push("決定保留哪一邊（在下面的差異檢視）：確定要恢復來源的內容：按「以來源覆蓋目標」；要保留目標"
+      + "現在的內容：按「將目標現況納入來源」。兩者都會照清單設定擁有者與權限，不保證回到"
+      + `${latest.operation}前的擁有者與權限。`);
+  }
+  steps.push("處理後，重新核對目前的來源、目標及全部草稿，再決定下一步。維護者核對與處理的紀錄請另外保存。");
+  const banner = element("div", { class: "notice error left-behind-banner", "data-testid": "left-behind-banner" }, [
+    element("strong", { text: "未還原：之前的寫入沒有完成，這份目標的還原步驟失敗。" }),
+    ...eventPairs(mark.events, targetEventText).map((text) => element("p", { text })),
+    element("p", {
+      text: "還原步驟失敗表示目標可能留下部分變更，不代表所有內容都沒還原；內容、擁有者與權限需要重新核對。"
+        + "上面的狀態只比對內容；顯示「一致」也不代表擁有者與權限已恢復。",
+    }),
+    element("p", { text: "下一步：" }),
+    element("ol", {}, steps.map((text) => element("li", { text }))),
+    element("div", { class: "actions" }, actions),
+    error,
+    element("p", {
+      text: "這個標示只在這一份之後經介面的寫入整個成功、寫出同一個目標並照清單設定擁有者與權限時收起"
+        + "（進版含這一份、以來源覆蓋目標、以來源重新寫出、將目標現況納入來源、退版、寫出到目標）；寫入失敗時"
+        + "保留。解除納管只會停止追蹤，目標不會被還原。標示未持久化，服務重啟會遺失；遺失不代表問題已處理。",
+    }),
+  ]);
+  banner.dataset.signature = signature;
+  return banner;
+}
+
+function syncLeftBehindBanner(panel, detail, row) {
+  const existing = panel.querySelector("[data-testid='left-behind-banner'], [data-testid='left-behind-repo-note']");
+  const built = detail ? leftBehindBanner(detail, row) : null;
+  if (!built) { if (existing) existing.remove(); return; }
+  if (existing && existing.dataset.signature === built.dataset.signature) return;
+  if (existing) existing.replaceWith(built);
+  else panel.insertBefore(built, panel.children[1] || null);  // 緊接在標頭下、偏離橫幅之前
+}
+
+// 收起那一句：只依回應的 `left_behind_cleared`（後端確實收起的），不自己比對前後去猜。
+function clearedSentence(cleared) {
+  if (!cleared || !cleared.length) return "";
+  if (cleared.length === 1) {
+    return "上次的「未還原」標示已收起：這次寫入已改寫這份目標，並照清單設定擁有者與權限。";
+  }
+  return `上次的「未還原」標示已收起：${cleared.map(configLabel).join("、")}——`
+    + "這次寫入已改寫這些目標，並照清單設定擁有者與權限。";
+}
+
+// 寫入失敗後（409 drafts_changed 除外）：重新比對清單與標示，開著的區塊跟著換（草稿保留，後端沒清）。
+// 重新讀取也失敗時明說畫面上的狀態尚未更新——不讓失敗前的「一致」看起來像現況。
+async function reloadAfterFailure() {
+  await load();
+  if (loadError === null) return;
+  statusNotUpdatedEl.replaceChildren(
+    element("strong", {
+      text: "寫入失敗後重新讀取清單也失敗：畫面上的狀態是這次寫入之前的，尚未更新。"
+        + "下一步：按「檢查差異」重新讀取。",
+    }),
+    element("p", { text: loadError }),
+  );
+  statusNotUpdatedEl.hidden = false;
+}
+
+async function rewriteFromSource(detail, operation, button, errorEl) {
+  if (isBusy(button)) return;
+  const permissions = detail.permissions || {};
+  const ok = await confirmAction(
+    `以來源重新寫出「${detail.name}」的目標？`,
+    "內容目前一致，此操作仍會重新寫出並套用清單的擁有者與權限。"
+      + `${detail.target} 會照清單設為 ${permissions.owner}:${permissions.group}、${permissions.mode}，`
+      + `並記一筆變更紀錄；不保證回到${operation}前的擁有者與權限。`,
+    "重新寫出",
+  );
+  if (!ok) return;
+  await whileBusy(button, "重新寫出中…", async () => {
+    errorEl.hidden = true;
+    clearPromoteBanners();  // F38：確認後送出就收起上一個結果
+    try {
+      const response = await editFetch(`${API_BASE}/api/configs/${encodeURIComponent(detail.uid)}/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "rewrite" }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        renderSaveError(errorEl, payload.detail);  // 原因留在橫幅裡；標示照舊，不宣稱收起
+        await reloadAfterFailure();
+        return;
+      }
+      promoteDoneEl.textContent = `已以來源重新寫出「${detail.name}」的目標，並記一筆變更紀錄。`
+        + clearedSentence(payload.left_behind_cleared);
+      promoteDoneEl.hidden = false;
+      await load();
+      await openPanel(detail.uid);
+    } catch (error) {
+      renderSaveError(errorEl, failureText("以來源重新寫出", error));
+    }
+  });
+}
+
 function clearPromoteBanners() {
   promoteErrorEl.hidden = true;
   promoteDoneEl.hidden = true;
@@ -3439,11 +3743,13 @@ async function promoteAll(expected) {
       const detail = payload.detail;
       if (detail && detail.uid) openPanel(detail.uid);  // 把人帶到沒過的那一份
       setDrafts(draftUids);  // 草稿保留，按鈕恢復
+      await reloadAfterFailure();  // #345：不留著失敗前的狀態——回滾沒還原的那一份要看得到
       return false;
     }
     draftDetails = new Map();
     setDrafts([]);  // 進版後草稿清空（T18）
-    promoteDoneEl.textContent = `已進版 ${payload.promoted.length} 份，各記一筆變更紀錄並寫出至目標。`;
+    promoteDoneEl.textContent = `已進版 ${payload.promoted.length} 份，各記一筆變更紀錄並寫出至目標。`
+      + clearedSentence(payload.left_behind_cleared);
     promoteDoneEl.hidden = false;
     // 目標變了：重掃完才重畫打開的那幾份（現在來源＝剛進版的內容）。偏離的 config 進版後回到一致，
     // 不等重掃，欄位表會照舊清單寫「偏離」（F12，同 resolveDrift）。
@@ -3493,10 +3799,15 @@ async function discardDrafts(uid, name, button = discardAllButton) {
 // 工作區消失；目標檔案不動。後端拒絕（有草稿、寫入失敗）時原因原樣顯示，項目留在原處。
 async function unmanageConfig(detail, button) {
   if (isBusy(button)) return;
+  const marked = (rows.find((item) => item.uid === detail.uid) || {}).left_behind;
   const ok = await confirmAction(
     `解除「${detail.name}」的納管？`,
     `系統不再追蹤這份檔案，它會從清單消失。目標檔案 ${detail.target} 保留、內容不動；`
-      + "過去的變更歷史仍留在設定庫裡。之後要再管理它，得重新納管。",
+      + "過去的變更歷史仍留在設定庫裡。之後要再管理它，得重新納管。"
+      + (marked
+        ? `這份有「未還原」標示（第一次：${whenText(marked.events[0].at)} 的${marked.events[0].operation}）。`
+          + "解除納管只是停止追蹤：標示會拿掉，但目標沒有被還原，內容、擁有者與權限仍需要維護者核對。"
+        : ""),
     "解除納管",
   );
   if (!ok) return;
@@ -3512,7 +3823,10 @@ async function unmanageConfig(detail, button) {
         return;
       }
       closeSlot(detail.uid);
-      promoteDoneEl.textContent = `已解除「${detail.name}」的納管，並記一筆變更紀錄。目標檔案保留在 ${detail.target}。`;
+      promoteDoneEl.textContent = `已解除「${detail.name}」的納管，並記一筆變更紀錄。目標檔案保留在 ${detail.target}。`
+        + ((payload.left_behind_untracked || []).length
+          ? "這份原本有「未還原」標示；解除納管只是停止追蹤，目標沒有被還原。"
+          : "");
       promoteDoneEl.hidden = false;
       load();
     } catch (error) {
@@ -4019,6 +4333,7 @@ function leaveMainPage(blank) {
   for (const node of [...workspace.children]) if (node !== workspaceEmpty) node.remove();
   refreshWorkspaceEmpty();
   clearPromoteBanners();
+  for (const node of [leftBehindWarningEl, leftBehindUnreadableEl, statusNotUpdatedEl]) node.hidden = true;
   exitErrorEl.hidden = true;
   if (blank) identityForm.reset();
   for (const button of roleToggle.querySelectorAll("button[data-role]")) {
