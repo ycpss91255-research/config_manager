@@ -8798,6 +8798,8 @@ def test_the_history_says_a_rewrite_reset_the_owner_and_mode_from_the_list(
 
     page.locator(f"[data-testid='panel-{_PARAM_UID}']").get_by_role("button", name="歷史").click()
     page.wait_for_selector(f"[data-testid='history-{_PARAM_UID}']", state="visible")
+    # 清單載入完才拿最新一筆
+    page.wait_for_selector("[data-testid^='history-entry-']", state="visible")
     _select(page, _entries(page)[0], wait_for="[data-testid='history-diff-note']")
 
     note = page.inner_text("[data-testid='history-diff-note']")
