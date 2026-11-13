@@ -79,7 +79,11 @@ jobs:
   #
   # 每一段先建 test-tools 映像。runner 每次都是新機器，所以層從 GitHub Actions 的快取取
   # （CM_TEST_IMAGE_CACHE，見 test.sh）：setup-buildx-action 起一個能讀寫那個快取的建置器，
-  # ghaction-github-runtime 把快取服務的位址與 token 交給它。只有 lint 寫回快取，其餘只讀。
+  # ghaction-github-runtime 把快取服務的位址與 token 交給它。
+  #
+  # 只有 bats 寫回快取，其餘只讀。寫回要多花一段時間（空快取時實測約 40 秒），放在誰身上
+  # 誰就晚那麼久回報；bats 不在「兩分鐘內回報」的那幾段裡，lint 在。快取在這一次執行裡
+  # 幫不了任何 job（它們同時開始），所以由哪一段寫回，對下一次的效果相同。
   #
   # 這兩個 action 只加在跑 test.sh 的 job。build、compose-smoke、backup-drill 用的是一般的
   # `docker build`／`docker compose`，換成 buildx 的建置器，建好的映像就不會進 docker 的映像
@@ -97,7 +101,7 @@ jobs:
       - uses: crazy-max/ghaction-github-runtime@v4
       - run: ./script/test.sh --lint
         env:
-          CM_TEST_IMAGE_CACHE: gha-write
+          CM_TEST_IMAGE_CACHE: gha
 
   unit-integration:
     # test_api.py 與 test_web.py 以外的全部 pytest 規格：unit 與 integration。
@@ -158,7 +162,7 @@ jobs:
       - uses: crazy-max/ghaction-github-runtime@v4
       - run: ./script/test.sh --part bats
         env:
-          CM_TEST_IMAGE_CACHE: gha
+          CM_TEST_IMAGE_CACHE: gha-write
 
   web-e2e:
     # test_web.py（瀏覽器端到端）依收集順序輪流分成幾份，一份一個 job，分法與 api 相同。
