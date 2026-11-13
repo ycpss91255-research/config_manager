@@ -189,7 +189,7 @@ jobs:
   coverage:
     # 把各段合起來：每一條 pytest 規格恰好被一段跑過，再合併覆蓋率，交給
     # script/coverage_gate.sh。core／io／api／web 各自的 85% 下限寫在 pyproject.toml，
-    # 這裡同樣不複述。
+    # 這裡同樣不複述。任何一段沒過，這一段就被跳過——ci-rollup 把那判成沒通過。
     needs: [unit-integration, api, web-e2e]
     runs-on: ubuntu-latest
     steps:
@@ -271,21 +271,36 @@ jobs:
     # job 永遠不必去改保護規則。
     #
     # `always()` 加上明確的結果判定：少了它，被跳過或被取消的相依會被讀成成功，
-    # 於是閘門會在一次什麼都沒檢查的執行上打開。
+    # 於是閘門會在一次什麼都沒檢查的執行上打開。判定在 script/ci_rollup.sh：每個 job
+    # 照它這一次該不該跑判，該跑卻被跳過也是沒通過；workflow 有、needs 沒列的 job
+    # 也擋，所以新增一個 job 卻忘了列進來，會在這裡紅，不會安靜地不被檢查。
+    #
+    # 三組規則對應上面各 job 的 `if:`——改了其中一邊，另一邊要一起改。
     if: always()
-    needs: [commit-message, checkpoints, test-interfaces, lint, unit-integration, api, bats, web-e2e, coverage, acceptance, build, compose-smoke, backup-drill]
+    needs:
+      - commit-message
+      - checkpoints
+      - test-interfaces
+      - lint
+      - unit-integration
+      - api
+      - bats
+      - web-e2e
+      - coverage
+      - acceptance
+      - build
+      - compose-smoke
+      - backup-drill
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
       - name: Check that every job passed
         # 走 env，不要直接內插進腳本：把運算式直接拼進 `run` 會開出一個
         # shell injection 的缺口，而且 Actions 的運算式只吃單引號。
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
-        run: |
-          echo "job results: ${RESULTS}"
-          for r in ${RESULTS}; do
-            case "${r}" in
-              success|skipped) ;;
-              *) echo "::error::a required job did not pass: ${r}"; exit 1 ;;
-            esac
-          done
+          NEEDS: ${{ toJSON(needs) }}
+        run: >-
+          ./script/ci_rollup.sh .github/workflows/ci.yaml
+          --always "lint unit-integration api bats web-e2e coverage build compose-smoke backup-drill"
+          --pull-request "commit-message checkpoints test-interfaces"
+          --main-push "acceptance"
