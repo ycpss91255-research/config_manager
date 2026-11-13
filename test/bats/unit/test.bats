@@ -239,3 +239,308 @@ in_image() {
   # 不會壞掉，所以錯誤不會自己現形——只有數掛載的個數才看得見那個判斷有沒有在判斷。
   [ "$(grep -cxF -- '--volume' "${DOCKER_ARGV}")" -eq 1 ]
 }
+
+# ── 映像的層從哪裡來（#358）──────────────────────────────────────────────────
+#
+# CI 的每個 job 都是新機器，CM_TEST_IMAGE_CACHE 讓它們從 GitHub Actions 的快取取層。
+# 被觀察的仍是 dispatch_to_container 組出來的 argv：快取真的有沒有被讀到，要真的
+# GitHub Actions 才看得見，那由 CI 的時間記錄回答，不在這裡。
+
+@test "不設 CM_TEST_IMAGE_CACHE 時照舊以 docker build 建映像，不碰快取" {
+  link_tool git
+  link_tool id
+  fake_docker
+  make_repo
+
+  gate "${MAIN}/script/test.sh" --lint no-such-linter
+
+  ! grep -qxF -- 'buildx' "${DOCKER_ARGV}"
+}
+
+@test "CM_TEST_IMAGE_CACHE=gha 時從 GitHub Actions 的快取讀層，不寫回" {
+  link_tool git
+  link_tool id
+  fake_docker
+  make_repo
+
+  gate CM_TEST_IMAGE_CACHE=gha "${MAIN}/script/test.sh" --lint no-such-linter
+
+  grep -qxF -- 'type=gha,scope=config_manager-test-tools' "${DOCKER_ARGV}"
+  ! grep -qxF -- '--cache-to' "${DOCKER_ARGV}"
+}
+
+@test "CM_TEST_IMAGE_CACHE=gha-write 時建好的層寫回快取" {
+  link_tool git
+  link_tool id
+  fake_docker
+  make_repo
+
+  gate CM_TEST_IMAGE_CACHE=gha-write "${MAIN}/script/test.sh" --lint no-such-linter
+
+  grep -qxF -- 'type=gha,mode=max,scope=config_manager-test-tools' "${DOCKER_ARGV}"
+}
+
+@test "用了快取時建好的映像放進 docker 的映像清單，docker run 才找得到它" {
+  link_tool git
+  link_tool id
+  fake_docker
+  make_repo
+
+  gate CM_TEST_IMAGE_CACHE=gha "${MAIN}/script/test.sh" --lint no-such-linter
+
+  grep -qxF -- '--load' "${DOCKER_ARGV}"
+}
+
+@test "不認得的 CM_TEST_IMAGE_CACHE 以 2 結束並指名它，不建映像" {
+  link_tool git
+  link_tool id
+  fake_docker
+  make_repo
+
+  gate CM_TEST_IMAGE_CACHE=s3 "${MAIN}/script/test.sh" --lint no-such-linter
+
+  [ "${status}" -eq 2 ]
+  [[ "${output}" == *"CM_TEST_IMAGE_CACHE=s3"* ]]
+  [ ! -e "${DOCKER_ARGV}" ]
+}
+
+# ── 分段執行（#358）─────────────────────────────────────────────────────────
+#
+# 被觀察的是「每一段交給 pytest 的是哪幾條」與「gate 放不放行」。pytest 與 coverage
+# 換成 PATH 上的假工具：被測的是 test.sh 怎麼切、怎麼合，不是 pytest 怎麼跑——真的
+# 切法對真的規格樹對不對得起來，由 CI 上 gate 的那一次回答。
+#
+# 假 pytest 的收集結果是一份固定的清單：兩條一般的規格、三條 test_api.py 的規格、
+# 五條 test_web.py 的規格，交錯排著。收集的參數指到一支規格檔時只印那支的，與真的
+# pytest 相同。
+
+COLLECTED_UNIT_1="test/pytest/unit/test_a.py::test_one"
+COLLECTED_UNIT_2="test/pytest/unit/test_a.py::test_two"
+
+make_parts_repo() {
+  PARTS_REPO="${WORK}/repo"
+  mkdir -p "${PARTS_REPO}/script"
+  cp "${SCRIPT}" "${PARTS_REPO}/script/test.sh"
+  # gate 最後交給 coverage_gate.sh；這裡被觀察的是它有沒有被叫到，不是它怎麼判
+  # ——那由 coverage_gate.bats 擋著。
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'echo coverage_gate-was-called\n'
+  } >"${PARTS_REPO}/script/coverage_gate.sh"
+  chmod +x "${PARTS_REPO}/script/coverage_gate.sh"
+
+  {
+    printf '%s\n' "${COLLECTED_UNIT_1}"
+    printf 'test/pytest/system/test_api.py::test_a%s\n' 1
+    printf 'test/pytest/system/test_web.py::test_w%s\n' 1 2
+    printf '%s\n' "${COLLECTED_UNIT_2}"
+    printf 'test/pytest/system/test_api.py::test_a%s\n' 2 3
+    printf 'test/pytest/system/test_web.py::test_w%s\n' 3 4 5
+  } >"${WORK}/collected"
+
+  # 收集時印固定清單；執行時把 @檔案 的內容記下來，並像 pytest-cov 一樣留下 .coverage。
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'if [[ " $* " == *" --collect-only "* ]]; then\n'
+    printf '  spec="${!#}"\n'
+    printf '  if [[ "${spec}" == *.py ]]; then\n'
+    printf '    grep -F "${spec}::" "%s"\n' "${WORK}/collected"
+    printf '  else\n'
+    printf '    cat "%s"\n' "${WORK}/collected"
+    printf '  fi\n'
+    printf '  printf "\\n10 tests collected\\n"\n'
+    printf '  exit 0\n'
+    printf 'fi\n'
+    printf 'for arg in "$@"; do case "${arg}" in @*) cp "${arg#@}" "%s" ;; esac; done\n' "${WORK}/pytest-ran"
+    printf ': >.coverage\n'
+  } >"${BIN}/pytest"
+  chmod +x "${BIN}/pytest"
+
+  COVERAGE_ARGV="${WORK}/coverage-argv"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'printf "%%s\\n" "$@" >>"%s"\n' "${COVERAGE_ARGV}"
+  } >"${BIN}/coverage"
+  chmod +x "${BIN}/coverage"
+}
+
+# 假工具放在 PATH 最前面，其餘照舊（python3、awk 這些是腳本自己跑起來就要的）。
+in_parts_repo() {
+  local path="${PATH}"
+  if [[ -n "${BATS_LIBEXEC:-}" ]]; then
+    path="${path//"${BATS_LIBEXEC}:"/}"
+  fi
+  run env -i PATH="${BIN}:${path}" HOME="${HOME:-/tmp}" CM_IN_TEST_IMAGE=1 "${PARTS_REPO}/script/test.sh" "$@"
+}
+
+@test "web <i>/<n> 交給 pytest 的是 test_web.py 收集順序裡第 i、i+n…條" {
+  make_parts_repo
+
+  in_parts_repo --part web 2/3
+
+  [ "$(cat "${WORK}/pytest-ran")" = "$(printf 'test/pytest/system/test_web.py::test_w%s\n' 2 5)" ]
+}
+
+@test "api <i>/<n> 交給 pytest 的是 test_api.py 收集順序裡第 i、i+n…條" {
+  make_parts_repo
+
+  in_parts_repo --part api 1/2
+
+  [ "$(cat "${WORK}/pytest-ran")" = "$(printf 'test/pytest/system/test_api.py::test_a%s\n' 1 3)" ]
+}
+
+@test "fast 交給 pytest 的是 test_api.py 與 test_web.py 以外的全部規格" {
+  make_parts_repo
+
+  in_parts_repo --part fast
+
+  [ "$(cat "${WORK}/pytest-ran")" = "$(printf '%s\n' "${COLLECTED_UNIT_1}" "${COLLECTED_UNIT_2}")" ]
+}
+
+@test "一段記下的清單就是交給 pytest 的那一份" {
+  make_parts_repo
+
+  in_parts_repo --part web 1/3
+
+  cmp -s "${WORK}/pytest-ran" "${PARTS_REPO}/ci-parts/web-1-of-3/ids.txt"
+}
+
+@test "分到零條規格的那一份以 2 結束，不交給 pytest——空的參數會讓 pytest 跑全部" {
+  make_parts_repo
+
+  in_parts_repo --part web 6/6
+
+  [ "${status}" -eq 2 ]
+  [ ! -e "${WORK}/pytest-ran" ]
+}
+
+@test "web 的第 i 份超出總份數時以 2 結束" {
+  in_image "${SCRIPT}" --part web 7/6
+
+  [ "${status}" -eq 2 ]
+  [[ "${output}" == *"超出了總共 6 份"* ]]
+}
+
+@test "不認得的段名以 2 結束" {
+  in_image "${SCRIPT}" --part everything
+
+  [ "${status}" -eq 2 ]
+  [[ "${output}" == *"不認得的段名 everything"* ]]
+}
+
+# 一段已經跑完的結果：ids.txt 與 python.coverage。
+write_part() {
+  local name="$1"
+  shift
+  mkdir -p "${PARTS_REPO}/ci-parts/${name}"
+  printf '%s\n' "$@" >"${PARTS_REPO}/ci-parts/${name}/ids.txt"
+  : >"${PARTS_REPO}/ci-parts/${name}/python.coverage"
+}
+
+# 一段的 web 報告：index.html 共 10 行程式碼，$2 是沒被執行到的行（JSON 陣列）。
+write_web_report() {
+  local name="$1" uncovered="$2" count
+  count="$(python3 -c 'import json, sys; print(len(json.loads(sys.argv[1])))' "${uncovered}")"
+  printf '{"area": "web", "file": "src/config_manager/web/index.html", "covered_lines": %s, "code_lines": 10, "percent": 0, "uncovered_lines": %s}\n' \
+    "$(( 10 - count ))" "${uncovered}" >"${PARTS_REPO}/ci-parts/${name}/web.json"
+}
+
+# fast 一段、api 一份、web 兩份，合起來恰好是那十條。
+write_complete_parts() {
+  write_part fast "${COLLECTED_UNIT_1}" "${COLLECTED_UNIT_2}"
+  write_part api-1-of-1 "test/pytest/system/test_api.py::test_a1" \
+    "test/pytest/system/test_api.py::test_a2" "test/pytest/system/test_api.py::test_a3"
+  write_part web-1-of-2 "test/pytest/system/test_web.py::test_w1" \
+    "test/pytest/system/test_web.py::test_w3" "test/pytest/system/test_web.py::test_w5"
+  write_web_report web-1-of-2 '[2, 3, 5]'
+  write_part web-2-of-2 "test/pytest/system/test_web.py::test_w2" "test/pytest/system/test_web.py::test_w4"
+  write_web_report web-2-of-2 '[3, 5, 7]'
+}
+
+@test "gate 合併 web 覆蓋率時，沒被執行到的行取各段的交集" {
+  make_parts_repo
+  write_complete_parts
+
+  in_parts_repo --part gate
+
+  # 一份沒執行到 2、3、5，另一份沒執行到 3、5、7：兩份都沒執行到的只有 3 與 5。
+  [ "$(python3 -c 'import json, sys; r = json.load(open(sys.argv[1])); print(r["covered_lines"], r["uncovered_lines"])' \
+    "${PARTS_REPO}/.coverage-web.json")" = "8 [3, 5]" ]
+}
+
+@test "gate 把每一段的 Python 覆蓋率資料都交給 coverage combine" {
+  make_parts_repo
+  write_complete_parts
+
+  in_parts_repo --part gate
+
+  for part in fast api-1-of-1 web-1-of-2 web-2-of-2; do
+    grep -qxF -- "${PARTS_REPO}/ci-parts/${part}/python.coverage" "${COVERAGE_ARGV}"
+  done
+}
+
+@test "各段齊全時 gate 交給 coverage_gate.sh 判" {
+  make_parts_repo
+  write_complete_parts
+
+  in_parts_repo --part gate
+
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"coverage_gate-was-called"* ]]
+}
+
+@test "一條規格沒有被任何一段跑到時 gate 不判覆蓋率，並指名那條規格" {
+  make_parts_repo
+  write_complete_parts
+  write_part fast "${COLLECTED_UNIT_1}"
+
+  in_parts_repo --part gate
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"沒有被任何一段跑到：${COLLECTED_UNIT_2}"* ]]
+  [[ "${output}" != *"coverage_gate-was-called"* ]]
+}
+
+@test "一條規格被兩段跑到時 gate 不放行" {
+  make_parts_repo
+  write_complete_parts
+  write_part fast "${COLLECTED_UNIT_1}" "${COLLECTED_UNIT_2}" "test/pytest/system/test_web.py::test_w2"
+
+  in_parts_repo --part gate
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"被不只一段跑到：test/pytest/system/test_web.py::test_w2"* ]]
+}
+
+@test "少了一份分片時 gate 不放行，並指名少了第幾份" {
+  make_parts_repo
+  write_complete_parts
+  rm -rf "${PARTS_REPO}/ci-parts/web-2-of-2"
+
+  in_parts_repo --part gate
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"web 分成 2 份，少了第 2 份"* ]]
+}
+
+@test "api 那一組整組沒跑時 gate 不放行，並指名那一組" {
+  make_parts_repo
+  write_complete_parts
+  rm -rf "${PARTS_REPO}/ci-parts/api-1-of-1"
+
+  in_parts_repo --part gate
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"一段 api 都沒有"* ]]
+}
+
+@test "一份分片沒有 web 報告時 gate 不放行" {
+  make_parts_repo
+  write_complete_parts
+  rm -f "${PARTS_REPO}/ci-parts/web-1-of-2/web.json"
+
+  in_parts_repo --part gate
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"ci-parts/web-1-of-2/web.json 不存在"* ]]
+}

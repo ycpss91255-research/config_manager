@@ -1,10 +1,14 @@
 # CI 直接寫出來，不呼叫共用的 reusable worker（設計附錄 A.1：採用那套 worker 展開
 # 就等於連模板的發版機制一起採用，而這個 repo 不發布映像）。
 #
-# 本機 == CI，而且現在是字面上的相同：checks job 跑 ./script/test.sh，那支會建置
-# docker/Dockerfile.test-tools 並在裡面跑每一項檢查——與開發者機器上 `just test` 用的
-# 是同一份映像、走同一條路徑。這裡不安裝任何工具，所以這裡也漂移不出開發者手上的
-# 那一套。
+# 本機 == CI，而且現在是字面上的相同：lint、unit-integration、api、bats、web-e2e 與
+# coverage 這幾個 job 都跑 ./script/test.sh，那支會建置 docker/Dockerfile.test-tools 並在
+# 裡面跑每一項檢查——與開發者機器上 `just test` 用的是同一份映像、走同一條路徑。這裡不
+# 安裝任何檢查工具，所以這裡也漂移不出開發者手上的那一套。
+#
+# 它們合起來就是不帶參數的 `./script/test.sh` 那一次執行，只是拆開平行跑（#358）：那一次
+# 要 13 分鐘，其中 test_web.py 一支佔了 10 分鐘、test_api.py 佔了將近 3 分鐘。拆法寫在
+# test.sh 的 --part；「拆開之後對得回原本那一次」由 coverage 那一段的 gate 檢查。
 #
 # 來由：CI 曾經把每一支 linter 各自複述成一個 YAML step，而 `just test lint` 會跳過
 # 主機沒有的工具，於是 pipeline 連續六次全紅，本機每次執行卻都報乾淨。base 把同一個
@@ -71,23 +75,136 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ./script/lint_test_interfaces.sh agreed "origin/${{ github.base_ref }}"
 
-  checks:
+  # ── 不帶參數的 ./script/test.sh，拆成平行的幾段（#358）────────────────────
+  #
+  # 每一段先建 test-tools 映像。runner 每次都是新機器，所以層從 GitHub Actions 的快取取
+  # （CM_TEST_IMAGE_CACHE，見 test.sh）：setup-buildx-action 起一個能讀寫那個快取的建置器，
+  # ghaction-github-runtime 把快取服務的位址與 token 交給它。只有 lint 寫回快取，其餘只讀。
+  #
+  # 這兩個 action 只加在跑 test.sh 的 job。build、compose-smoke、backup-drill 用的是一般的
+  # `docker build`／`docker compose`，換成 buildx 的建置器，建好的映像就不會進 docker 的映像
+  # 清單——那三個 job 的行為會跟著變，而它們不需要這個快取。
+  #
+  # fetch-depth: 0 每一段都給：原本那一次是在完整歷史上跑的（lint_commit 要讀歷史），
+  # 拆開之後每一段的輸入不該比原本少。
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          # lint_commit 要讀歷史；淺層 clone 沒有歷史。
           fetch-depth: 0
-      # 每一支 linter、每一個測試層級，以及覆蓋率下限——全部在測試映像裡。
-      # core／io／api／web 各自的 85% 下限寫在 pyproject.toml、由
-      # script/coverage_gate.sh 四個分開擋，所以這裡同樣不複述。
-      - run: ./script/test.sh
+      - uses: docker/setup-buildx-action@v4
+      - uses: crazy-max/ghaction-github-runtime@v4
+      - run: ./script/test.sh --lint
+        env:
+          CM_TEST_IMAGE_CACHE: gha-write
+
+  unit-integration:
+    # test_api.py 與 test_web.py 以外的全部 pytest 規格：unit 與 integration。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v4
+      - uses: crazy-max/ghaction-github-runtime@v4
+      - run: ./script/test.sh --part fast
+        env:
+          CM_TEST_IMAGE_CACHE: gha
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ci-part-fast
+          path: ci-parts/
+          if-no-files-found: error
+          retention-days: 3
+
+  api:
+    # test_api.py 依收集順序輪流分成幾份，一份一個 job。它一支就要兩、三分鐘——不分的話，
+    # 這一段回報不了「兩分鐘內」。
+    #
+    # 份數只寫在 matrix 這一處：傳給 test.sh 的 <i>/<n> 由 strategy.job-index／job-total
+    # 算出來，不另外抄一個數字。寫錯也不會靜默——gate 會指出哪些規格沒有被任何一份跑到。
+    # fail-fast: false：一份失敗不取消其餘的，失敗的規格一次看齊。
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v4
+      - uses: crazy-max/ghaction-github-runtime@v4
+      - run: ./script/test.sh --part api "$(( JOB_INDEX + 1 ))/${JOB_TOTAL}"
+        env:
+          CM_TEST_IMAGE_CACHE: gha
+          JOB_INDEX: ${{ strategy.job-index }}
+          JOB_TOTAL: ${{ strategy.job-total }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ci-part-api-${{ matrix.shard }}
+          path: ci-parts/
+          if-no-files-found: error
+          retention-days: 3
+
+  bats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v4
+      - uses: crazy-max/ghaction-github-runtime@v4
+      - run: ./script/test.sh --part bats
+        env:
+          CM_TEST_IMAGE_CACHE: gha
+
+  web-e2e:
+    # test_web.py（瀏覽器端到端）獨立一個 job。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v4
+      - uses: crazy-max/ghaction-github-runtime@v4
+      - run: ./script/test.sh --part web 1/1
+        env:
+          CM_TEST_IMAGE_CACHE: gha
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ci-part-web-1
+          path: ci-parts/
+          if-no-files-found: error
+          retention-days: 3
+
+  coverage:
+    # 把各段合起來：每一條 pytest 規格恰好被一段跑過，再合併覆蓋率，交給
+    # script/coverage_gate.sh。core／io／api／web 各自的 85% 下限寫在 pyproject.toml，
+    # 這裡同樣不複述。
+    needs: [unit-integration, api, web-e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v4
+      - uses: crazy-max/ghaction-github-runtime@v4
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ci-part-*
+          path: ci-parts/
+          merge-multiple: true
+      - run: ./script/test.sh --part gate
+        env:
+          CM_TEST_IMAGE_CACHE: gha
 
   acceptance:
     # 驗收報表跑在 main 上，不跑在每個 pull request 上。
     #
     # acceptance.sh 會把對照表指到的規格再跑一次，而那幾乎是整組規格——接成每個
-    # PR 的必要檢查，CI 時間翻倍換來的是同一批規格的第二個答案。它比 checks 多
+    # PR 的必要檢查，CI 時間翻倍換來的是同一批規格的第二個答案。它比 test.sh 那幾段多
     # 出來的訊號只有一種：**對照表與規格之間的對應**（一條檢查點沒有人驗、一條
     # 參照指到不存在的規格）。那個訊號只在對照表或規格名改動時才會變。
     #
@@ -108,8 +225,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # runtime-test 是 FROM runtime，並在它自己的建置過程中跑 bats 的 smoke 規格，
-      # 所以建置是綠的就代表可部署的產物真的起得來——不只是編得過。與 `checks` 分開，
-      # 因為它建的是應用映像，不是工具映像。
+      # 所以建置是綠的就代表可部署的產物真的起得來——不只是編得過。與跑 test.sh 的
+      # 那幾段分開，因為它建的是應用映像，不是工具映像。
       - run: docker build --target runtime-test -t config_manager:runtime-test .
       # devel 也要建，而且不是為了對稱：runtime-test 的鏈是 devel-base -> runtime，
       # 永遠不會進到 devel。於是每個開發者每天都在建的那個階段，正好是 CI 從來不建的
@@ -118,7 +235,7 @@ jobs:
 
   compose-smoke:
     # compose 的服務實測（T25 的第二個觀察位置，#51）：host 與 bridge 各**實際起一次**，量
-    # 「只有本機連得到」「容器整個重建後已進版的都在」「停得掉」。設定解析那一半在 checks 裡
+    # 「只有本機連得到」「容器整個重建後已進版的都在」「停得掉」。設定解析那一半在 bats 那一段裡
     # （test/bats/integration/compose.bats，工具映像內）；兩者回答不同的問題，結果分開。
     #
     # 跑在映像之外，與 build 同一個理由：它要 docker daemon，還要**真的** host 網路——工具映像
@@ -132,8 +249,8 @@ jobs:
   backup-drill:
     # 備份與還原的實際演練（T26 的第三個觀察位置，#52）：真的容器、真的 volume、真的檔案權限底下，
     # 服務開著邊進版邊備份、三種該拒絕的還原、設定庫整個沒了之後還原回來、目標狀態重新比對、
-    # 補回缺檔並核對內容與權限、偏離的不被覆寫。設定庫層與主機端指令那兩半在 checks 裡；三者回答
-    # 不同的問題，結果分開。
+    # 補回缺檔並核對內容與權限、偏離的不被覆寫。設定庫層與主機端指令那兩半分別在
+    # unit-integration 與 bats 裡；三者回答不同的問題，結果分開。
     #
     # 跑在映像之外，與 compose-smoke 同一個理由：它要 docker daemon 與真的 host 網路。它用隔離的
     # compose 專案名、自己的 volume 與暫存的目標目錄，結束時清掉。
@@ -149,7 +266,7 @@ jobs:
     # `always()` 加上明確的結果判定：少了它，被跳過或被取消的相依會被讀成成功，
     # 於是閘門會在一次什麼都沒檢查的執行上打開。
     if: always()
-    needs: [commit-message, checkpoints, test-interfaces, checks, acceptance, build, compose-smoke, backup-drill]
+    needs: [commit-message, checkpoints, test-interfaces, lint, unit-integration, api, bats, web-e2e, coverage, acceptance, build, compose-smoke, backup-drill]
     runs-on: ubuntu-latest
     steps:
       - name: Check that every job passed

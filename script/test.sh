@@ -14,10 +14,13 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly REPO_ROOT
 readonly TEST_IMAGE="config_manager-test-tools:local"
 readonly TEST_DOCKERFILE="docker/Dockerfile.test-tools"
+# GitHub Actions 快取裡放這份映像的層所用的範圍名。只有這份映像用它。
+readonly TEST_IMAGE_CACHE_SCOPE="config_manager-test-tools"
 
 usage() {
   cat <<'USAGE'
 用法：script/test.sh [--level <name>] [--lint [<tool>]] [--file <path>] [--filter <regex>]
+                     [--part fast | api <i>/<n> | web <i>/<n> | bats | gate]
 
   （不帶參數）        lint ＋ 全部層級 ＋ 覆蓋率
   --level <name>      unit | integration | system | acceptance
@@ -27,6 +30,15 @@ usage() {
                       | portability | messages | exceptions | audit | derived | interfaces
   --file <path>       單一規格檔
   --filter <regex>    符合這個樣式的規格
+  --part <段>         把不帶參數的那一次執行拆成幾段分開跑，CI 用它平行：
+                      fast         test_api.py 與 test_web.py 以外的全部 pytest 規格，帶覆蓋率
+                      api <i>/<n>  test_api.py 依收集順序輪流分成 n 份，跑第 i 份，帶覆蓋率
+                      web <i>/<n>  test_web.py 依收集順序輪流分成 n 份，跑第 i 份，帶覆蓋率
+                      bats         全部層級的 bats 規格
+                      gate         確認每一條 pytest 規格恰好被一段跑過，合併各段的覆蓋率，
+                                   再交給 script/coverage_gate.sh
+                      fast、api、web 把結果寫在 ci-parts/<段名>/，gate 讀那裡。
+                      lint 那一段就是 --lint。
 
 在 docker/Dockerfile.test-tools 裡執行，那份映像帶齊每一支檢查工具。
 主機不是這個專案的證據：它的 Python、它的 pytest、它缺席的 linter，
@@ -37,6 +49,8 @@ usage() {
 
   CM_TEST_LOCAL=1     改在這台主機上跑。缺什麼會被指名並跳過——大聲的跳過，
                       仍然不是一項檢查。
+  CM_TEST_IMAGE_CACHE=gha        建映像時從 GitHub Actions 的快取取層（CI 用）
+  CM_TEST_IMAGE_CACHE=gha-write  同上，並把建好的層寫回快取
 USAGE
 }
 
@@ -49,12 +63,40 @@ dispatch_to_container() {
     exit 1
   fi
 
+  local -a _build
+  # CI 的每個 job 都是一台全新的機器，本機那層快取不存在，於是每個 job 都從頭建一次
+  # ——拆成平行的 job 之後，這筆時間是每個 job 各付一次（#358）。GitHub Actions 的
+  # 快取讓它們共用建好的層。只換掉「層從哪裡來」：建的仍是同一份 Dockerfile、同一個
+  # tag，之後的 docker run 一個字都不變，所以本機與 CI 跑的仍是同一份映像。
+  #
+  # 只有一個 job 寫回快取（gha-write），其餘只讀：每個 job 都寫的話，映像一改，十幾個
+  # job 會同時上傳同一批層。不設時與這段之前完全相同——本機沒有那個快取可以讀。
+  case "${CM_TEST_IMAGE_CACHE:-}" in
+    "")
+      _build=(docker build --quiet)
+      ;;
+    gha | gha-write)
+      # --load：buildx 用的建置器把結果留在它自己那裡，不放進 docker 的映像清單；
+      # 少了這個，下面的 docker run 找不到這個 tag。
+      _build=(docker buildx build --load --quiet
+        --cache-from "type=gha,scope=${TEST_IMAGE_CACHE_SCOPE}")
+      if [[ "${CM_TEST_IMAGE_CACHE}" == "gha-write" ]]; then
+        _build+=(--cache-to "type=gha,mode=max,scope=${TEST_IMAGE_CACHE_SCOPE}")
+      fi
+      ;;
+    *)
+      printf 'test.sh: 不認得 CM_TEST_IMAGE_CACHE=%s，映像沒有建，檢查一項都沒跑\n' "${CM_TEST_IMAGE_CACHE}" >&2
+      printf 'test.sh: 下一步：不設它，或設成 gha（只讀快取）／gha-write（讀並寫回）\n' >&2
+      exit 2
+      ;;
+  esac
+  _build+=(-f "${REPO_ROOT}/${TEST_DOCKERFILE}" -t "${TEST_IMAGE}")
+
   # 有快取時很便宜；只有 Dockerfile 或釘住的 requirements 真的變了，層才會重建。
   # 進度往 stdout，不往 fd 2。**fd 2 是錯誤的出口**，而建置進度不是錯誤——寫到
   # 那裡的話，它會落在 §0.4 三要素的管轄內，而「下一步」對一行進度訊息沒有意義
   # （#108 實測）。
   printf 'test.sh: 建置 %s\n' "${TEST_IMAGE}"
-  local -a _build=(docker build --quiet -f "${REPO_ROOT}/${TEST_DOCKERFILE}" -t "${TEST_IMAGE}")
   # 映像預設用台灣的 Debian 鏡像，因為從開發這個 repo 的網路連不到
   # deb.debian.org。在別的地方答案不同的話，設 CM_APT_MIRROR，不要改檔案。
   [[ -n "${CM_APT_MIRROR:-}" ]] && _build+=(--build-arg "APT_MIRROR=${CM_APT_MIRROR}")
@@ -347,6 +389,294 @@ note_levels_without_specs() {
   done
 }
 
+# ── 分段執行（#358）────────────────────────────────────────────────────────
+#
+# 不帶參數的那一次執行從頭跑到尾，而其中 test_web.py 一支就佔了四分之三的時間，
+# test_api.py 再佔掉兩、三分鐘。CI 把它拆成幾段平行跑，那兩支各自再分成幾份；
+# **拆開之後要對得回原本那一次**，這一段的每一個決定都為了這件事：
+#
+#   - 每一段 pytest 跑的，正是它寫進 ids.txt 的那幾條。那份檔案就是傳給 pytest 的
+#     參數（`@檔案`），不是另外算一次的清單——記下來的與真的跑的是同一份東西。
+#   - gate 自己重新收集一次全部規格，要求每一條**恰好**出現在一段裡：漏掉的、重複的、
+#     收集裡沒有的都擋。份數寫錯、某一段整個沒跑，都會在那裡變成「有規格沒被跑到」。
+#   - 覆蓋率合起來才判：test_web.py 把 uvicorn 起在同一個行程裡，所以它對 api／io／core
+#     也有貢獻，分開判會讓每一段都看起來不夠。判的仍是 coverage_gate.sh，一個字不改。
+readonly PARTS_DIR="ci-parts"
+readonly API_SPEC="test/pytest/system/test_api.py"
+readonly WEB_SPEC="test/pytest/system/test_web.py"
+
+# 用法錯誤：說哪裡錯，連同用法一起送到 fd 2，以 2 結束。
+part_usage_error() {
+  printf 'test.sh: %s。下一步：照下面的用法改 --part 的參數\n' "$1" >&2
+  usage >&2
+  exit 2
+}
+
+# 把收集到的節點 ID 照收集順序寫進 $1，一行一條。只收集，不執行。
+#
+# `--collect-only -q` 先印節點 ID，接著一個空行，再來才是摘要與可能的警告。取第一個
+# 空行之前的那一段，並要求每一行都長得像節點 ID：讀不懂的輸出要大聲失敗——把一行
+# 摘要算成一條規格，或少算一條，gate 的「恰好一次」就不再是真的。
+collect_ids() {
+  local dest="$1"; shift
+  local out
+  out="$(mktemp)"
+  if ! pytest --collect-only -q "$@" >"${out}" 2>&1; then
+    cat "${out}" >&2
+    printf 'test.sh: 收集 %s 的規格失敗，上面是 pytest 的輸出。下一步：先修好收集錯誤再重跑\n' "$*" >&2
+    rm -f "${out}"
+    exit 1
+  fi
+  awk 'NF == 0 { exit } { print }' "${out}" >"${dest}"
+  rm -f "${out}"
+
+  if [[ ! -s "${dest}" ]] || grep -v -q -F '::' "${dest}"; then
+    printf 'test.sh: 讀不懂 pytest --collect-only -q 對 %s 的輸出，規格清單沒有建起來\n' "$*" >&2
+    printf 'test.sh: 下一步：確認 pytest 的輸出格式（第一個空行之前每行一個節點 ID）是否改了\n' >&2
+    exit 1
+  fi
+}
+
+# 一段 pytest：跑 $2 裡的那幾條，結果寫進 ci-parts/$1/。
+#
+# 覆蓋率報表在這裡不印：一段的數字只是一部分，印出來只會被讀成整體。合起來的那一份
+# 由 gate 印。
+run_pytest_part() {
+  local name="$1" ids="$2"
+  local dir="${REPO_ROOT}/${PARTS_DIR}/${name}"
+
+  # 空的清單不能交給 pytest：沒有參數的 pytest 會照 testpaths 跑**全部**規格，而那
+  # 看起來就像這一段很盡責。
+  if [[ ! -s "${ids}" ]]; then
+    printf 'test.sh: %s 這一段一條規格都沒有分到，沒有東西可跑\n' "${name}" >&2
+    printf 'test.sh: 下一步：份數不要多於 %s 或 %s 的規格數\n' "${API_SPEC}" "${WEB_SPEC}" >&2
+    exit 2
+  fi
+
+  rm -rf "${dir}"
+  mkdir -p "${dir}"
+  cp "${ids}" "${dir}/ids.txt"
+  # 上一次留下的資料不能被當成這一次的：.coverage 會被 pytest-cov 覆寫，但
+  # .coverage-web.json 只有在這一段真的開過頁面時才會被寫。
+  rm -f "${REPO_ROOT}/.coverage" "${REPO_ROOT}/.coverage-web.json"
+
+  pytest "@${dir}/ids.txt" --cov=src/config_manager --cov-report=
+
+  # 名字不以點開頭：CI 上傳結果時預設略過隱藏檔。
+  cp "${REPO_ROOT}/.coverage" "${dir}/python.coverage"
+  if [[ -f "${REPO_ROOT}/.coverage-web.json" ]]; then
+    cp "${REPO_ROOT}/.coverage-web.json" "${dir}/web.json"
+  fi
+}
+
+# test_api.py 與 test_web.py 以外的全部 pytest 規格。
+run_part_fast() {
+  note_levels_without_specs
+  local all ids
+  all="$(mktemp)"
+  ids="$(mktemp)"
+  collect_ids "${all}" test/pytest
+  grep -v -F -e "${API_SPEC}::" -e "${WEB_SPEC}::" "${all}" >"${ids}" || true
+  run_pytest_part fast "${ids}"
+  rm -f "${all}" "${ids}"
+}
+
+# 一支規格檔（$1 是組名 api 或 web，$2 是檔案）的第 i 份（共 n 份）。依收集順序輪流發：
+# 第 1、1+n、1+2n… 條是第 1 份。輪流而不是切成連續的 n 段：相鄰的規格多半測同一個
+# 端點或畫面、花差不多的時間，輪流發讓每一份分到的長短比較平均。
+run_part_share() {
+  local group="$1" spec="$2" share="$3"
+  [[ "${share}" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] \
+    || part_usage_error "${group} 要一個 <i>/<n>（例如 2/6），拿到的是「${share}」"
+  local index="${BASH_REMATCH[1]}" total="${BASH_REMATCH[2]}"
+  (( index <= total )) || part_usage_error "${group} 的第 ${index} 份超出了總共 ${total} 份"
+
+  local all ids
+  all="$(mktemp)"
+  ids="$(mktemp)"
+  collect_ids "${all}" "${spec}"
+  awk -v i="${index}" -v n="${total}" '(NR - 1) % n == i - 1' "${all}" >"${ids}"
+  run_pytest_part "${group}-${index}-of-${total}" "${ids}"
+  rm -f "${all}" "${ids}"
+}
+
+# 把各段合起來，再交給 coverage_gate.sh。
+run_part_gate() {
+  local root="${REPO_ROOT}/${PARTS_DIR}"
+  if [[ ! -d "${root}" ]]; then
+    printf 'test.sh: 找不到 %s/，沒有任何一段的結果可以合併\n' "${PARTS_DIR}" >&2
+    printf 'test.sh: 下一步：先跑 --part fast 與每一份 --part api／web <i>/<n>，再跑 --part gate\n' >&2
+    exit 1
+  fi
+
+  local all data
+  all="$(mktemp)"
+  data="$(mktemp)"
+  collect_ids "${all}" test/pytest
+
+  # 判定與 web 覆蓋率的合併在這裡；失敗時它自己說原因並以非零結束，set -e 接著停下。
+  # 成功時把要合併的 Python 覆蓋率資料檔逐行寫進 ${data}。
+  python3 - "${root}" "${all}" "${REPO_ROOT}/.coverage-web.json" "${data}" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+collected = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+web_out = pathlib.Path(sys.argv[3])
+data_out = pathlib.Path(sys.argv[4])
+
+SHOWN = 10
+SHARE = re.compile(r"(api|web)-([1-9][0-9]*)-of-([1-9][0-9]*)")
+GROUPS = ("api", "web")
+problems = []
+
+
+def listed(items):
+    head = "、".join(items[:SHOWN])
+    return head + (f"……共 {len(items)} 條" if len(items) > SHOWN else "")
+
+
+# ── 每一段都在 ────────────────────────────────────────────────────────────
+parts = sorted(path for path in root.iterdir() if path.is_dir())
+names = [path.name for path in parts]
+shares = {group: {} for group in GROUPS}
+web_parts = []
+for path in parts:
+    if path.name == "fast":
+        continue
+    match = SHARE.fullmatch(path.name)
+    if match is None:
+        problems.append(f"ci-parts/{path.name}/ 不是認得的段名（fast、api-<i>-of-<n> 或 web-<i>-of-<n>）")
+        continue
+    shares[match[1]].setdefault(int(match[3]), set()).add(int(match[2]))
+    if match[1] == "web":
+        web_parts.append(path)
+
+if "fast" not in names:
+    problems.append("少了 fast 那一段")
+for group in GROUPS:
+    if not shares[group]:
+        problems.append(f"一段 {group} 都沒有")
+    elif len(shares[group]) > 1:
+        problems.append(f"{group} 各段的總份數不一致：{sorted(shares[group])}")
+    else:
+        ((total, got),) = shares[group].items()
+        missing = sorted(set(range(1, total + 1)) - got)
+        if missing:
+            problems.append(f"{group} 分成 {total} 份，少了第 {'、'.join(map(str, missing))} 份")
+
+for path in parts:
+    needed = ["ids.txt", "python.coverage"] + (["web.json"] if path in web_parts else [])
+    for name in needed:
+        if not (path / name).is_file():
+            problems.append(f"ci-parts/{path.name}/{name} 不存在")
+
+# ── 每一條規格恰好被一段跑過 ──────────────────────────────────────────────
+owner = {}
+twice = []
+for path in parts:
+    ids_file = path / "ids.txt"
+    if not ids_file.is_file():
+        continue
+    for node in ids_file.read_text(encoding="utf-8").splitlines():
+        if node in owner:
+            twice.append(f"{node}（{owner[node]} 與 {path.name}）")
+        else:
+            owner[node] = path.name
+
+expected = set(collected)
+never = [node for node in collected if node not in owner]
+unknown = sorted(node for node in owner if node not in expected)
+if never:
+    problems.append(f"{len(never)} 條規格沒有被任何一段跑到：{listed(never)}")
+if twice:
+    problems.append(f"{len(twice)} 條規格被不只一段跑到：{listed(twice)}")
+if unknown:
+    problems.append(f"{len(unknown)} 條跑過的規格不在這次的收集裡：{listed(unknown)}")
+
+# ── web 覆蓋率的合併 ──────────────────────────────────────────────────────
+# 每一段的報告是同一份 index.html 的行覆蓋率。「有程式碼的行」只由原始碼決定
+# （test/pytest/system/v8_coverage.py 的 code_lines），所以每一段的那一組行相同，
+# 合起來「沒被執行到的行」就是各段的交集。這個前提先驗：同一個檔案、同樣的行數、
+# 每一份自己的數字加得起來。對不上就停，不猜。
+reports = []
+for path in web_parts:
+    report_file = path / "web.json"
+    if report_file.is_file():
+        reports.append((path.name, json.loads(report_file.read_text(encoding="utf-8"))))
+
+for name, report in reports:
+    if report["covered_lines"] + len(report["uncovered_lines"]) != report["code_lines"]:
+        problems.append(f"ci-parts/{name}/web.json 自己的數字加不起來，格式可能改了")
+if reports:
+    files = {report["file"] for _, report in reports}
+    code = {report["code_lines"] for _, report in reports}
+    if len(files) != 1 or len(code) != 1:
+        problems.append(f"各段的 web 報告不是同一份檔案、同樣的行數：檔案 {sorted(files)}、行數 {sorted(code)}")
+
+if problems:
+    print("test.sh: 各段合不起來，覆蓋率沒有判：", file=sys.stderr)
+    for problem in problems:
+        print(f"  {problem}", file=sys.stderr)
+    print(
+        "test.sh: 下一步：補跑缺的那幾段，或修正 --part api／web 的份數，再重跑 --part gate",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+uncovered = set(reports[0][1]["uncovered_lines"])
+for _, report in reports[1:]:
+    uncovered &= set(report["uncovered_lines"])
+code_lines = reports[0][1]["code_lines"]
+covered = code_lines - len(uncovered)
+web_out.write_text(
+    json.dumps(
+        {
+            "area": "web",
+            "file": reports[0][1]["file"],
+            "covered_lines": covered,
+            "code_lines": code_lines,
+            "percent": round(100 * covered / code_lines, 2) if code_lines else 0.0,
+            "uncovered_lines": sorted(uncovered),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+data_out.write_text(
+    "".join(f"{path / 'python.coverage'}\n" for path in parts), encoding="utf-8"
+)
+print(
+    f"test.sh: {len(parts)} 段、{len(collected)} 條規格，每一條恰好被一段跑過；"
+    f"web 覆蓋率由 {len(reports)} 份報告合併"
+)
+PY
+
+  local -a files=()
+  mapfile -t files <"${data}"
+  rm -f "${all}" "${data}" "${REPO_ROOT}/.coverage"
+  # --keep：各段的資料檔留著，gate 重跑時還讀得到同一份輸入。
+  coverage combine --keep --data-file="${REPO_ROOT}/.coverage" "${files[@]}"
+  coverage report
+  ./script/coverage_gate.sh
+}
+
+run_part() {
+  case "${1:-}" in
+    fast) run_part_fast ;;
+    api) [[ $# -ge 2 ]] || part_usage_error "api 後面要接 <i>/<n>"; run_part_share api "${API_SPEC}" "$2" ;;
+    web) [[ $# -ge 2 ]] || part_usage_error "web 後面要接 <i>/<n>"; run_part_share web "${WEB_SPEC}" "$2" ;;
+    bats) run_bats_levels ;;
+    gate) run_part_gate ;;
+    "") part_usage_error "--part 後面要接一個段名" ;;
+    *) part_usage_error "不認得的段名 $1" ;;
+  esac
+}
+
 main() {
   cd "${REPO_ROOT}"
 
@@ -388,6 +718,7 @@ main() {
       esac
       ;;
     --filter) shift; [[ $# -gt 0 ]] || { usage >&2; exit 2; }; exec pytest test/pytest -k "$1" ;;
+    --part) shift; run_part "$@" ;;
     *) printf 'test.sh: 不認得的參數 %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 }
