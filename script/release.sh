@@ -209,9 +209,11 @@ _release() {
     verdict='未通過'
   fi
 
+  # 人工待驗也列（#355）：自動檢查全綠、只差人工簽核時，沒有未通過或未涵蓋可列，不列它，
+  # 擋下的訊息就說不出還差什麼。
   local -a offenders=()
   mapfile -t offenders < <(printf '%s\n' "${body}" |
-    grep -E '檢查點 [0-9]+[[:space:]]+(未通過|未涵蓋)' || true)
+    grep -E '檢查點 [0-9]+[[:space:]]+(未通過|未涵蓋|人工待驗)' || true)
 
   # 正式 tag 的閘門。rc 走不到這裡：它的紅燈是它要記錄的東西。
   if [[ -z "${RC}" && "${verdict}" == '未通過' ]]; then
@@ -224,7 +226,7 @@ _release() {
     fi
     printf 'release: %s 的驗收報表未通過，正式 tag %s 不建立 release%s\n' \
       "${MILESTONE}" "${tag}" "${offender_note}" >&2
-    printf 'release: 下一步：修好上面那幾條，推一個 %s 確認報表轉綠，再打 %s\n' \
+    printf 'release: 下一步：修好上面那幾條（人工待驗的要照 doc/ACCEPTANCE-SIGNOFF.md 補上簽核），推一個 %s 確認報表轉綠，再打 %s\n' \
       "$(_next_rc_tag "${MILESTONE}")" "${tag}" >&2
     return 1
   fi
