@@ -1533,6 +1533,10 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `--next <milestone>` | 印出下一個 rc tag 名；一個 rc 都還沒有時是 `rc1` |
 | 認不得的 tag 格式 | 非零結束，不建立 release |
 | `gh` 不在 `PATH` 上 | 大聲失敗——一支建不了 release 卻回 0 的腳本就是不變式 2 的靜默通過 |
+| 覆蓋率 badge（#354）：在 tag 指的 commit 上重新量測，以 `coverage_badge.sh <版本> <tsv>` 畫出來的 SVG 與 `doc/badge/coverage.svg` 逐位元組相同 | 照驗收報表的判定處理，badge 不另外擋 |
+| 正式 tag，badge 與重新量測畫出來的不同（數字不同或版本不同） | **不建立 release**（gh 沒有被呼叫），以 1 結束，訊息指出不同、列出差異與下一步 |
+| rc tag，badge 與重新量測畫出來的不同 | release **仍然建立**，release notes 寫明 badge 與實測不同 |
+| 重新量測失敗（量測指令非零結束、沒有寫出 tsv，或某一層沒量到） | 正式 tag 不建立 release、以 1 結束；rc 照樣建立，notes 寫明沒有量到 |
 
 **「報表未通過」與「報表壞掉」分得開，處置也不同。** 前者是「這一版還沒做完」，
 而那正是 rc 要記錄的事——**擋下紅色的 rc 等於讓 N 無法遞增**，rc 也就失去意義。
@@ -1543,6 +1547,11 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 與 `CM_ACCEPTANCE_MAP` 同一個先例）。真的報表若參與這些規格，它們會在任何一條
 檢查點轉紅的那天跟著轉紅——而一組結果取決於別的規格有沒有跑的規格，測的不是
 這支腳本。
+
+**覆蓋率的重新量測同樣以替身代替**（`CM_RELEASE_COVERAGE` 覆寫點：一個指令，收一個參數＝
+要寫出 `coverage.tsv` 的位置，#354）。預設的量測依序跑 `script/test.sh --part fast`、
+`--part api 1/1`、`--part web 1/1`、`--part gate`，那是整組測試，規格不跑它；預設這條路徑
+要等第一次真的發版、或另外以假的 gh 實跑才驗得到。畫 SVG 的是真的 `coverage_badge.sh`。
 
 **`coverage_gate.sh --summary` 與 `script/coverage_badge.sh` 被觀察的是「覆蓋率的數字怎麼被呈現」**
 （#354）。門檻本身怎麼判不變，由上面 `coverage_gate.sh` 那幾條擋著；這裡多的是兩件事：判完之後把
