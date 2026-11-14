@@ -47,6 +47,42 @@ STUB
   git config user.name spec
   git config user.email spec@example.invalid
   git commit -q --allow-empty -m "chore(base): 起點"
+
+  # 覆蓋率的重新量測（#354）以替身代替：預設量到的數字，與 repo 裡那份 badge 畫的數字相同，
+  # 所以預設是「一致」——其餘規格不受這一項影響。
+  COVERAGE="${WORK}/coverage"
+  export CM_RELEASE_COVERAGE="${COVERAGE}"
+  stub_coverage "${SAME[@]}"
+  commit_badge v0.1.0 "${SAME[@]}"
+}
+
+# 四層各 90/100 的一份量測結果（tsv 的一行一層，以 | 代替 tab）。
+SAME=('core|90|100|85|pass' 'io|90|100|85|pass' 'api|90|100|85|pass' 'web|90|100|85|pass')
+
+# 替身量測：把給定的幾行寫成 tsv，交到 release.sh 指定的位置。
+stub_coverage() {
+  printf '%s\n' "$@" | tr '|' '\t' >"${WORK}/measured.tsv"
+  cat >"${COVERAGE}" <<STUB
+#!/usr/bin/env bash
+cp '${WORK}/measured.tsv' "\$1"
+STUB
+  chmod +x "${COVERAGE}"
+}
+
+# 替身量測失敗：非零結束、什麼都沒寫。
+stub_coverage_fails() {
+  printf '#!/usr/bin/env bash\nexit 1\n' >"${COVERAGE}"
+  chmod +x "${COVERAGE}"
+}
+
+# repo 裡進版控的 badge，用真的 coverage_badge.sh 從給定的版本與數字畫出來。
+commit_badge() {
+  local version="$1"
+  shift
+  printf '%s\n' "$@" | tr '|' '\t' >"${WORK}/committed.tsv"
+  mkdir -p "${WORK}/repo/doc/badge"
+  "${REPO_ROOT}/script/coverage_badge.sh" "${version}" "${WORK}/committed.tsv" \
+    >"${WORK}/repo/doc/badge/coverage.svg"
 }
 
 teardown() {
@@ -200,6 +236,80 @@ gh_was_called() {
   run "${SCRIPT}" v0.1.0
 
   [[ "${output}" == *"檢查點 3"* ]]
+}
+
+# ── 覆蓋率 badge（#354）：在 tag 指的 commit 上重新量測，畫出來要與版控裡的逐位元組相同 ──
+
+@test "正式 tag，badge 的數字與重新量測不同時以 1 結束" {
+  stub_green
+  stub_coverage 'core|90|100|85|pass' 'io|90|100|85|pass' 'api|89|100|85|pass' 'web|90|100|85|pass'
+
+  run "${SCRIPT}" v0.1.0
+
+  [ "${status}" -eq 1 ]
+}
+
+@test "正式 tag，badge 與重新量測不同時一個 release 都沒有建立" {
+  stub_green
+  stub_coverage 'core|90|100|85|pass' 'io|90|100|85|pass' 'api|89|100|85|pass' 'web|90|100|85|pass'
+
+  run "${SCRIPT}" v0.1.0
+
+  ! gh_was_called
+}
+
+@test "正式 tag，badge 標的版本不是這一版時以 1 結束" {
+  stub_green
+  commit_badge v0.0.9 "${SAME[@]}"
+
+  run "${SCRIPT}" v0.1.0
+
+  [ "${status}" -eq 1 ]
+}
+
+@test "正式 tag 因 badge 被擋下時，訊息指出 badge 與重新量測畫出來的不同" {
+  stub_green
+  stub_coverage 'core|90|100|85|pass' 'io|90|100|85|pass' 'api|89|100|85|pass' 'web|90|100|85|pass'
+
+  run "${SCRIPT}" v0.1.0
+
+  [[ "${output}" == *"doc/badge/coverage.svg 與這個 commit 重新量測畫出來的不同"* ]]
+}
+
+@test "rc tag，badge 與重新量測不同時 release 仍然建立" {
+  stub_green
+  stub_coverage 'core|90|100|85|pass' 'io|90|100|85|pass' 'api|89|100|85|pass' 'web|90|100|85|pass'
+
+  run "${SCRIPT}" v0.1.0-rc1
+
+  gh_was_called
+}
+
+@test "rc tag，badge 與重新量測不同時 release notes 寫明" {
+  stub_green
+  stub_coverage 'core|90|100|85|pass' 'io|90|100|85|pass' 'api|89|100|85|pass' 'web|90|100|85|pass'
+
+  run "${SCRIPT}" v0.1.0-rc1
+
+  grep -qF '覆蓋率 badge：與這個 commit 重新量測畫出來的不同' "$(gh_value_after --notes-file)"
+}
+
+@test "重新量測失敗時，正式 tag 以 1 結束" {
+  stub_green
+  stub_coverage_fails
+
+  run "${SCRIPT}" v0.1.0
+
+  [ "${status}" -eq 1 ]
+}
+
+@test "重新量測失敗時，rc 的 release notes 寫明沒有量到" {
+  stub_green
+  stub_coverage_fails
+
+  run "${SCRIPT}" v0.1.0-rc1
+
+  grep -qF '覆蓋率 badge：這個 commit 的覆蓋率沒有量到' "$(gh_value_after --notes-file)"
 }
 
 @test "報表全數通過時正式 tag 建得起來" {
