@@ -304,6 +304,62 @@ in_image() {
   [ ! -e "${DOCKER_ARGV}" ]
 }
 
+# 建置紀錄要逐層留下來，CI 的日誌才看得出每一層是不是取自快取（#358 定案 3）。
+# 以下兩條的假 docker 在建映像那一次多做一件事：往 fd 2 印一行建置紀錄，或以 17
+# 結束。17 不是 docker 會用的碼，看到它就知道結束碼是照傳、不是另外寫死的。
+
+@test "建映像時不收起建置紀錄：不用 --quiet，以 --progress=plain 逐層印出" {
+  link_tool git
+  link_tool id
+  fake_docker
+  make_repo
+
+  gate "${MAIN}/script/test.sh" --lint no-such-linter
+
+  ! grep -qxF -- '--quiet' "${DOCKER_ARGV}"
+  grep -qxF -- '--progress=plain' "${DOCKER_ARGV}"
+}
+
+@test "用了快取時同樣逐層印出建置紀錄，看得出每一層是否取自快取" {
+  link_tool git
+  link_tool id
+  fake_docker
+  make_repo
+
+  gate CM_TEST_IMAGE_CACHE=gha "${MAIN}/script/test.sh" --lint no-such-linter
+
+  ! grep -qxF -- '--quiet' "${DOCKER_ARGV}"
+  grep -qxF -- '--progress=plain' "${DOCKER_ARGV}"
+}
+
+@test "建置紀錄印在 stdout，不在 fd 2" {
+  link_tool git
+  link_tool id
+  fake_docker
+  printf 'if [[ "$1" == build || "$1" == buildx ]]; then printf "#5 CACHED\\n" >&2; fi\n' >>"${BIN}/docker"
+  make_repo
+
+  run env -i PATH="${BIN}" bash -c '"$0" --lint no-such-linter 2>"$1"' "${MAIN}/script/test.sh" "${WORK}/stderr"
+
+  [[ "${output}" == *"#5 CACHED"* ]]
+  ! grep -qF -- '#5 CACHED' "${WORK}/stderr"
+}
+
+@test "映像建不起來時以 docker 的結束碼結束，在 fd 2 指出並給下一步，不跑檢查" {
+  link_tool git
+  link_tool id
+  fake_docker
+  printf 'if [[ "$1" == build || "$1" == buildx ]]; then exit 17; fi\n' >>"${BIN}/docker"
+  make_repo
+
+  run env -i PATH="${BIN}" bash -c '"$0" --lint no-such-linter 2>"$1"' "${MAIN}/script/test.sh" "${WORK}/stderr"
+
+  [ "${status}" -eq 17 ]
+  grep -qF -- '建不起來' "${WORK}/stderr"
+  grep -qF -- '下一步：' "${WORK}/stderr"
+  ! grep -qxF -- 'run' "${DOCKER_ARGV}"
+}
+
 # ── 分段執行（#358）─────────────────────────────────────────────────────────
 #
 # 被觀察的是「每一段交給 pytest 的是哪幾條」與「gate 放不放行」。pytest 與 coverage
