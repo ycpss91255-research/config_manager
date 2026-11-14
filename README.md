@@ -1,7 +1,7 @@
 # config_manager
 
-集中式 config 管理系統。以 Git 為版控核心，正規的修改都經由這個服務：
-納管、驗證後修改、進版、退版、偏離偵測。目前 Web UI 能做全部操作，CLI 只能做其中幾項（見下一節）。
+集中式 config 管理系統。以 Git 為版控核心：納管、驗證後修改、進版、退版、偏離偵測。
+正規的設定變更經由服務提供的操作完成。Web UI 與 CLI 目前支援的操作如下；備份與還原另使用專用指令。
 
 目標版本 **v0.10.0**（功能完整、可正式投入使用）。設計見 `config-manager-design.pdf`。
 
@@ -21,7 +21,7 @@
 | 開發者：維護白名單、產生 schema、指定型別、編輯屬性 | 可以 | 還沒有 |
 | 備份、還原 | 沒有 | `just docker backup`、`just docker restore`（見 [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md)） |
 
-CLI 現有的指令：
+CLI 現有的指令如下。**`just cfg` 是在這台機器上直接執行 CLI，不是在容器裡**：照下面的步驟用 Docker 把服務起起來，只代表服務在容器裡起來了，不代表這台機器上的 `just cfg` 已經能用。它需要這台機器另外有 CLI 的執行環境，目前沒有提供完整的安裝步驟；從零 clone 之後能不能直接用，也沒有驗證過。
 
 ```bash
 just cfg list
@@ -33,7 +33,6 @@ just cfg import --source <檔案> --format <格式> --name <姓名> --email <ema
 - 都連到這台機器上執行中的服務（預設 `http://127.0.0.1:8080`，可用 `--api` 改）。
 - `just cfg import` 與網頁走同一套規則：要先取得編輯權，別人正在編輯時會被拒絕；角色預設是一般使用者，開發者加 `--role developer`。
 - `just cfg serve` 是直接在這台機器上起後端；一般請用下面「開始」裡的 `just docker run`。
-- **限制**：`just cfg` 是在這台機器上直接執行 CLI，需要本機有 CLI 的執行環境。目前的安裝步驟沒有包含這個環境，從零 clone 之後能不能直接用，也沒有驗證過。
 
 ## 支援平台
 
