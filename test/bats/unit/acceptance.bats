@@ -347,3 +347,320 @@ TOML
   [[ "${output}" == *"test_一條會紅的規格"* ]]
 }
 
+
+# ── 人工檢查點與簽核（#355，doc/ACCEPTANCE-SIGNOFF.md） ─────────────────────
+#
+# 人工檢查點是「只能由真人驗收」的那一種。它不能因為機器跑完了就變綠，也不能讓 main
+# 上的 job 一直是紅的：所以報表分三段，閘門分兩種。簽核只核對格式與網址的形狀——它
+# 擋得住「沒寫」「寫錯地方」「寫錯格式」，擋不住「網址的內容不是這一條的證據」。
+
+report_with() {
+  CM_ACCEPTANCE_MAP="${MAP}" CM_ACCEPTANCE_ROOT="${ROOT}" run "${SCRIPT}" "$@"
+}
+
+# 一條人工檢查點。第三個參數是簽核那一段的內容（TOML 的鍵值），空的就沒有簽核。
+manual_checkpoint() {
+  local number="$1" text="$2" signoff="${3:-}"
+  cat >>"${MAP}" <<TOML
+
+[[milestone.checkpoint]]
+number = ${number}
+text = '${text}'
+manual = true
+TOML
+  if [[ -n "${signoff}" ]]; then
+    signoff_block "${signoff}"
+  fi
+}
+
+# 把簽核接在對照表最後一條檢查點底下——不論那一條是不是人工的。
+signoff_block() {
+  printf '\n[milestone.checkpoint.signoff]\n%s\n' "$1" >>"${MAP}"
+}
+
+GOOD_SIGNOFF="by = '王小明 <ming@example.com>'
+date = 2026-12-01
+evidence = 'https://github.com/ycpss91255-research/config_manager/issues/123#issuecomment-456'
+summary = '未參與開發的同事照步驟操作，五項任務都完成'"
+
+@test "人工檢查點沒有簽核時，列為人工待驗" {
+  start_map
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+  manual_checkpoint 2 '只能由真人驗收的'
+
+  report
+
+  [[ "${output}" == *"檢查點 2  人工待驗"* ]]
+}
+
+@test "人工待驗時，預設的閘門判整體未通過，以 1 結束" {
+  start_map
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+  manual_checkpoint 2 '只能由真人驗收的'
+
+  report
+
+  [ "${status}" -eq 1 ]
+}
+
+@test "--gate overall 與不帶 --gate 相同：人工待驗時以 1 結束" {
+  start_map
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+  manual_checkpoint 2 '只能由真人驗收的'
+
+  report_with --gate overall v0.1.0
+
+  [ "${status}" -eq 1 ]
+}
+
+@test "--gate automated 時，人工待驗不讓結束碼變紅" {
+  # main 上的 acceptance job 用這個閘門：它抓的是自動檢查退步與對照表壞掉，
+  # 人工項目要等真人，不應讓 main 一直是紅的。
+  start_map
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+  manual_checkpoint 2 '只能由真人驗收的'
+
+  report_with --gate automated v0.1.0
+
+  [ "${status}" -eq 0 ]
+}
+
+@test "--gate automated 時，人工待驗仍印在報表上" {
+  start_map
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+  manual_checkpoint 2 '只能由真人驗收的'
+
+  report_with --gate automated v0.1.0
+
+  [[ "${output}" == *"檢查點 2  人工待驗"* ]]
+}
+
+@test "--gate automated 時，自動檢查未通過仍以 1 結束" {
+  start_map
+  checkpoint 1 '會紅的' "'test/pytest/unit/test_red.py'"
+
+  report_with --gate automated v0.1.0
+
+  [ "${status}" -eq 1 ]
+}
+
+@test "--gate automated 時，未涵蓋仍以 1 結束——未涵蓋不是人工待驗" {
+  start_map
+  checkpoint 1 '沒人驗的' ""
+
+  report_with --gate automated v0.1.0
+
+  [ "${status}" -eq 1 ]
+}
+
+@test "不認得的 --gate 以 2 結束" {
+  start_map
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+
+  report_with --gate lenient v0.1.0
+
+  [ "${status}" -eq 2 ]
+}
+
+@test "人工檢查點有合格的簽核時，列為已簽核並印出簽核的證據網址" {
+  start_map
+  manual_checkpoint 1 '只能由真人驗收的' "${GOOD_SIGNOFF}"
+
+  report
+
+  [[ "${output}" == *"檢查點 1  已簽核"*"https://github.com/ycpss91255-research/config_manager/issues/123#issuecomment-456"* ]]
+}
+
+@test "自動檢查全部通過、人工檢查點都已簽核時，整體通過，以 0 結束" {
+  start_map
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+  manual_checkpoint 2 '只能由真人驗收的' "${GOOD_SIGNOFF}"
+
+  report
+
+  [ "${status}" -eq 0 ]
+}
+
+@test "簽核寫在自動檢查點上時以 2 結束——簽核不能把規格變成通過" {
+  start_map
+  checkpoint 1 '會紅的' "'test/pytest/unit/test_red.py'"
+  signoff_block "${GOOD_SIGNOFF}"
+
+  report
+
+  [ "${status}" -eq 2 ]
+}
+
+@test "簽核寫在未涵蓋的檢查點上時以 2 結束——簽核不能取代沒做的驗收" {
+  start_map
+  checkpoint 1 '沒人驗的' ""
+  signoff_block "${GOOD_SIGNOFF}"
+
+  report
+
+  [ "${status}" -eq 2 ]
+}
+
+@test "簽核缺 summary 時以 2 結束，並指名那一欄" {
+  start_map
+  manual_checkpoint 1 '只能由真人驗收的' "by = '王小明 <ming@example.com>'
+date = 2026-12-01
+evidence = 'https://github.com/ycpss91255-research/config_manager/issues/123'"
+
+  report
+
+  [ "${status}" -eq 2 ]
+  [[ "${output}" == *"summary"* ]]
+}
+
+@test "簽核的 by 是空的時以 2 結束，並指名那一欄" {
+  start_map
+  manual_checkpoint 1 '只能由真人驗收的' "by = ''
+date = 2026-12-01
+evidence = 'https://github.com/ycpss91255-research/config_manager/issues/123'
+summary = '做了什麼'"
+
+  report
+
+  [ "${status}" -eq 2 ]
+  [[ "${output}" == *"by"* ]]
+}
+
+@test "簽核的 date 是字串而不是日期時以 2 結束，並指名那一欄" {
+  start_map
+  manual_checkpoint 1 '只能由真人驗收的' "by = '王小明 <ming@example.com>'
+date = '2026-12-01'
+evidence = 'https://github.com/ycpss91255-research/config_manager/issues/123'
+summary = '做了什麼'"
+
+  report
+
+  [ "${status}" -eq 2 ]
+  [[ "${output}" == *"date"* ]]
+}
+
+@test "簽核的 evidence 不是這個 repo 的 issue 或 PR 時以 2 結束，並指名那一欄" {
+  start_map
+  manual_checkpoint 1 '只能由真人驗收的' "by = '王小明 <ming@example.com>'
+date = 2026-12-01
+evidence = 'https://example.com/screenshot.png'
+summary = '做了什麼'"
+
+  report
+
+  [ "${status}" -eq 2 ]
+  [[ "${output}" == *"evidence"* ]]
+}
+
+@test "簽核有問題時，指名是哪一條檢查點" {
+  start_map
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+  manual_checkpoint 7 '只能由真人驗收的' "by = ''
+date = 2026-12-01
+evidence = 'https://github.com/ycpss91255-research/config_manager/issues/123'
+summary = '做了什麼'"
+
+  report
+
+  [[ "${output}" == *"檢查點 7"* ]]
+}
+
+@test "同一條檢查點同時有 specs 與 manual = true 時以 2 結束" {
+  start_map
+  checkpoint 1 '說不清楚的' "'test/pytest/unit/test_green.py'"
+  printf 'manual = true\n' >>"${MAP}"
+
+  report
+
+  [ "${status}" -eq 2 ]
+}
+
+@test "沒有人工檢查點時，報表照樣印出自動檢查、人工待驗清單、整體三段" {
+  start_map
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+
+  report
+
+  [[ "${output}" == *"【自動檢查】"*"【人工待驗清單】"*"【整體】"* ]]
+}
+
+# ── 目標版本（--target） ──────────────────────────────────────────────────
+
+# 對照表頂層的 target 必須寫在第一個 [[milestone]] 之前（TOML 的頂層鍵）。
+start_map_with_target() {
+  printf "target = '%s'\n\n" "$1" >"${MAP}"
+  cat >>"${MAP}" <<'TOML'
+[[milestone]]
+id = 'v0.1.0'
+title = '替身'
+TOML
+}
+
+milestone() {
+  printf "\n[[milestone]]\nid = '%s'\ntitle = '替身'\n" "$1" >>"${MAP}"
+}
+
+@test "--target 跑對照表頂層 target 指的那一版" {
+  start_map_with_target v0.2.0
+  checkpoint 1 'v0.1.0 的' "'test/pytest/unit/test_red.py'"
+  milestone v0.2.0
+  checkpoint 1 'v0.2.0 的' "'test/pytest/unit/test_green.py'"
+
+  report_with --target
+
+  [ "${status}" -eq 0 ]
+}
+
+@test "對照表沒有寫 target 時，--target 以 2 結束" {
+  start_map
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+
+  report_with --target
+
+  [ "${status}" -eq 2 ]
+}
+
+@test "target 寫的版本不在對照表裡時，--target 以 2 結束" {
+  start_map_with_target v9.9.9
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+
+  report_with --target
+
+  [ "${status}" -eq 2 ]
+}
+
+@test "--target 的目標已整體通過、之後還有版本時以 2 結束，並指名下一版" {
+  # 留在已完成的版本上，這個 job 會永遠報綠——與原本寫死 v0.1.0 是同一個問題。
+  start_map_with_target v0.1.0
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+  milestone v0.2.0
+  checkpoint 1 'v0.2.0 的' "'test/pytest/unit/test_red.py'"
+
+  report_with --target
+
+  [ "${status}" -eq 2 ]
+  [[ "${output}" == *"v0.2.0"* ]]
+}
+
+@test "--target 的目標已整體通過、之後只有不是版本的 milestone 時照常以 0 結束" {
+  start_map_with_target v0.1.0
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+  milestone core-flow
+  checkpoint 1 'core-flow 的' "'test/pytest/unit/test_red.py'"
+
+  report_with --target
+
+  [ "${status}" -eq 0 ]
+}
+
+@test "--target 的目標還沒整體通過時不觸發防呆，照常以 1 結束" {
+  start_map_with_target v0.1.0
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+  manual_checkpoint 2 '只能由真人驗收的'
+  milestone v0.2.0
+  checkpoint 1 'v0.2.0 的' "'test/pytest/unit/test_green.py'"
+
+  report_with --target
+
+  [ "${status}" -eq 1 ]
+}
