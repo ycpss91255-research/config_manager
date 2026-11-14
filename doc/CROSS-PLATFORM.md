@@ -70,8 +70,11 @@
 
 - **已定案**：目前沒有使用 self-hosted runner 的打算（#356）。
 - **現在可評估的方案**：
-  - runner 的能力（讀 GitHub runner 映像的說明）：macOS 映像沒有列出任何容器工具；Windows 映像列出 Docker 29.7.2、Docker Compose 2.40.3，只啟用 WSLv1，快取的映像都是 Windows 容器。推論：兩者都不能直接跑這裡的 Linux 容器，說明頁沒有直接寫明。
-  - 所以「服務在 Docker Desktop 上起不起得來」不能在 GitHub-hosted runner 上自動驗證；這一半靠實機（#348）。
+  - runner 映像預裝了什麼（2026-11-14 查閱 `actions/runner-images` 的映像說明，只查了下面兩份）：
+    - macOS 15 映像（[`images/macos/macos-15-Readme.md`](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md)）：沒有列出 Docker、Docker Compose 或其他容器工具。
+    - Windows Server 2022 映像（[`images/windows/Windows2022-Readme.md`](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)）：列出 Docker 29.7.2、Docker Compose 2.40.3、Docker-wincred 0.9.12；WSL 只啟用 WSLv1；快取的容器映像都是 Windows 映像。說明頁沒有寫它跑的是 Linux 還是 Windows 容器。
+    - 「沒有預裝」不等於「不能使用」：在 runner 上另外安裝容器環境是否可行，沒有查，也沒有試。其他版本的 macOS、Windows 映像沒有查。
+  - 推論：照這兩份映像的預裝內容，不能直接跑這裡的 Linux 容器。要在 GitHub-hosted runner 上自動驗證「服務在 macOS、Windows 上起不起得來」，得先另外安裝容器環境並驗證可行；在那之前，這一半靠實機（#348）。
   - 入口工具本身（第 1 項的 (b)）不需要容器也能在 `macos-latest`、`windows-latest` 上測：參數、找不到 docker 時的訊息、傳給 `docker compose` 的參數。
 - **需要實驗回答的問題**：Windows runner 能否以任何方式跑 Linux 容器（例如另裝）；要不要做，取決於成本。
 - **相關決策**：無。
@@ -87,7 +90,7 @@
 | Docker Desktop 的網路處理（第 2 項） | 可以 | 只有埠與「頁面怎麼找後端」與 #361 的單一入口有關 |
 | 路徑與權限的實測與處理（第 3 項） | 可以 | 是 Docker 與主機的行為 |
 | CI：入口工具在 macOS、Windows 上的測試（第 4 項） | 可以，但要等入口工具寫出來 | 測的對象是第 1 項的產物 |
-| CI：服務在 Docker Desktop 上的檢查（第 4 項） | 可以，但 GitHub-hosted runner 做不到（推論） | 靠實機（#348） |
+| CI：服務在 Docker Desktop 上的檢查（第 4 項） | 可以，但查過的兩份 runner 映像沒有預裝能跑 Linux 容器的環境 | 另裝是否可行沒有查；在那之前靠實機（#348） |
 | #349（移除 `src/config_manager/` 包層） | 依賴後端重構 | 標題就以「後端改用 Rust 或其他語言」為條件 |
 
 ## 結論：要不要擴展
@@ -101,5 +104,5 @@
 
 ## 參考
 
-- Docker：Compose 的環境變數（`COMPOSE_PATH_SEPARATOR`、`COMPOSE_FILE`）、Docker Desktop 的設定（File sharing、host networking）、host 網路驅動。
-- GitHub：`actions/runner-images` 的 macOS 15 與 Windows Server 2022 映像說明。
+- GitHub：`actions/runner-images` 的 macOS 15 與 Windows Server 2022 映像說明（2026-11-14 查閱，網址見第 4 項）。
+- Docker（2026-11-14 查閱）：[Compose 的環境變數](https://docs.docker.com/compose/how-tos/environment-variables/envvars/)、[Docker Desktop 的設定](https://docs.docker.com/desktop/settings-and-maintenance/settings/)、[host 網路驅動](https://docs.docker.com/engine/network/drivers/host/)。
