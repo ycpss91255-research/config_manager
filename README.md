@@ -1,5 +1,9 @@
 # config_manager
 
+[![CI](https://github.com/ycpss91255-research/config_manager/actions/workflows/ci.yaml/badge.svg)](https://github.com/ycpss91255-research/config_manager/actions/workflows/ci.yaml)
+![Coverage](doc/badge/coverage.svg)
+[![License](doc/badge/license.svg)](./LICENSE)
+
 集中式 config 管理系統。以 Git 為版控核心，Web UI 是唯一正規修改入口：
 納管、驗證後修改、進版、退版、偏離偵測。
 
