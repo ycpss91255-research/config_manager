@@ -1661,7 +1661,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/lint_messages.sh` | T19 | 已落地 |
 | `script/lint_exceptions.sh` | T19（§0.4 第 1 條：捕捉具名例外後只吞掉，#112） | 已落地 |
 | `script/lint_coverage_audit.sh` | T19（這張表自己立的規則，表與樹對不起來就停下，#117） | 已落地 |
-| `script/lint_derived.sh` | T19（文件不得抄一份可推導的東西，#98） | 已落地 |
+| `script/lint_derived.sh` | T19（文件不得抄一份可推導的東西，#98；沒給檔案時同時檢查 `README.md` 與 `doc/DEVELOPMENT.md`，#362） | 已落地 |
 | `script/check_file.sh` | T19（單檔檢查的派工規則） | 已落地 |
 | `script/test.sh` | T19（缺工具不得靜默通過，#72；worktree 的 git 目錄要掛進容器，#103） | 已落地 |
 | `script/coverage_gate.sh` | T19（每層門檻各自獨立、指名的只有轉紅的那一層） | 已落地 |
