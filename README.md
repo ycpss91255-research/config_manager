@@ -22,6 +22,7 @@
 
 - Docker Desktop（macOS、Windows）上，預設的 `host` 網路不是主機的網路，要改用 bridge 網路的疊加檔。做法與限制見 [`doc/DEPLOYMENT.md` 的「bridge 網路」](doc/DEPLOYMENT.md#bridge-網路)。
 - Windows 的 WSL2 裡直接安裝 Docker Engine 的情況，沒有評估過。
+- 擴展到其他平台的評估，見 [`doc/CROSS-PLATFORM.md`](doc/CROSS-PLATFORM.md)。
 
 ## 開始
 
