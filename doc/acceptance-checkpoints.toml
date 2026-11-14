@@ -318,9 +318,21 @@ title = '跨欄位規則與複雜結構'
 
 [[milestone.checkpoint]]
 number = 1
-text = '違反 min < max 類規則時顯示警告且 override 需填理由，理由出現在變更紀錄；規則檔的修改能實際改變驗證行為，且退版時規則一併回退'
-specs = []
-uncovered = '第 3 層驗證尚未落地（T3、#16）'
+# 文字依維護者 11/14 在 #355 的定案 (a) 改寫，不再逐字對 §8.2：§8.2 原文的最後一句是「且退版時
+# 規則一併回退」。規則（第 3 層的 .rules/<uid>.toml 與第 1 層的 .lintrc.toml）是整個 config-repo
+# 的政策，不隨單一 config 退版；退版本身不驗證（#39），所以退到違反今天規則的那一版不會產生假
+# 警報，之後的儲存照今天的規則判。程式維持現狀，改的是這句話。
+text = '違反 min < max 類規則時顯示警告且 override 需填理由，理由出現在變更紀錄；規則檔的修改能實際改變驗證行為，且規則是整個 repo 的政策，退版時不隨單一 config 回退'
+specs = [
+  'test/pytest/system/test_api.py::test_breaking_a_rule_holds_the_save_back_until_a_reason_is_given',
+  'test/pytest/system/test_web.py::test_breaking_a_rule_shows_a_warning_distinct_from_errors_and_asks_for_a_reason',
+  'test/pytest/system/test_api.py::test_the_reason_is_written_into_the_change_record',
+  'test/pytest/system/test_web.py::test_a_reason_lets_the_draft_save_and_shows_in_the_history',
+  'test/pytest/system/test_api.py::test_a_rule_added_after_saving_blocks_promotion_until_a_reason_is_given',
+  'test/pytest/system/test_api.py::test_the_lintrc_in_the_repo_changes_what_the_first_layer_accepts',
+  'test/pytest/system/test_api.py::test_reverting_to_a_version_that_breaks_todays_rule_is_not_held_back',
+  'test/pytest/system/test_api.py::test_after_a_revert_todays_rule_still_holds_the_next_save_back',
+]
 
 [[milestone.checkpoint]]
 number = 2
