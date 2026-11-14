@@ -1731,6 +1731,7 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/check_file.sh` | T19（單檔檢查的派工規則） | 已落地 |
 | `script/test.sh` | T19（缺工具不得靜默通過，#72；worktree 的 git 目錄要掛進容器，#103；分段執行與映像的快取，#358） | 已落地 |
 | `script/coverage_gate.sh` | T19（每層門檻各自獨立、指名的只有轉紅的那一層） | 已落地 |
+| `script/coverage_badge.sh` | T19（badge 只由版本與四層的數字決定、沒量完整的數字不畫，#354） | 已落地 |
 | `script/ci_rollup.sh` | T19（該跑卻被跳過不是通過、workflow 有而 needs 沒列的 job 要擋，#358） | 已落地（CI 的 `ci-rollup` job 執行，不由 `test.sh` 執行） |
 | `script/acceptance.sh` | T19（未涵蓋不是通過、指到不存在的規格要失敗，#148） | 已落地 |
 | `script/release.sh` | T19（紅的 rc 仍發得出去、紅的正式 tag 發不出去，#150） | 已落地 |
