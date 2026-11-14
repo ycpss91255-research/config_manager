@@ -58,20 +58,31 @@ readonly ROOT="${CM_ACCEPTANCE_ROOT:-${REPO_ROOT}}"
 
 usage() {
   cat <<'USAGE'
-用法：script/acceptance.sh <milestone>
+用法：script/acceptance.sh [--gate overall|automated] <milestone>
+      script/acceptance.sh [--gate overall|automated] --target
 
   <milestone>  對照表裡的一個 id，例如 v0.1.0、v0.5.0、core-flow
+  --target     跑對照表頂層 target 指的那一版（目前的目標版本）
 
 逐條執行 doc/acceptance-checkpoints.toml 為該版本列出的規格，印出每條驗收檢查點
-的判定，最後印出摘要。
+的判定。報表每次都分三段：自動檢查、人工待驗清單、整體。
 
-  通過    該條檢查點對到的規格全數通過
-  未通過  對到的規格至少有一條轉紅
-  未涵蓋  對不到任何規格——**不是通過**
+  通過      該條檢查點對到的規格全數通過
+  未通過    對到的規格至少有一條轉紅
+  未涵蓋    對不到任何規格，也不是人工檢查點——**不是通過**
+  人工待驗  manual = true 的檢查點，還沒有簽核——**不是通過**
+  已簽核    manual = true 的檢查點，有格式合格的簽核（格式見 doc/ACCEPTANCE-SIGNOFF.md）
 
-  exit 0   全部檢查點通過
-  exit 1   有檢查點未通過或未涵蓋
-  exit 2   對照表本身有問題（找不到、解析不了、指到不存在的規格、milestone 不存在）
+  --gate overall    （預設）整體通過才以 0 結束：自動檢查全部通過、沒有未涵蓋、
+                    人工檢查點全部已簽核。script/release.sh 用這個
+  --gate automated  自動檢查全部通過、沒有未涵蓋就以 0 結束，人工待驗不影響結束碼。
+                    main 上的 acceptance job 用這個；兩種閘門印出的報表相同
+
+  exit 0   照所選的閘門通過
+  exit 1   照所選的閘門未通過
+  exit 2   對照表本身有問題（找不到、解析不了、指到不存在的規格、milestone 不存在、
+           簽核格式不對、target 沒寫或不在對照表裡），或 --target 的目標已整體通過、
+           對照表裡之後還有版本（目標該推進了）
 
 判定是跑出來的，不是寫下來的。對照表只說「§8.2 的哪一句該由誰驗」。
 
@@ -115,20 +126,51 @@ dispatch_to_container() {
 }
 
 main() {
-  case "${1:-}" in -h | --help)
-    usage
-    return 0
-    ;;
-  esac
+  local -a original=("$@")
+  local gate="overall" target=0 milestone=""
+  while (($# > 0)); do
+    case "$1" in
+      -h | --help)
+        usage
+        return 0
+        ;;
+      --gate)
+        if [[ $# -lt 2 || ( "$2" != overall && "$2" != automated ) ]]; then
+          printf 'acceptance: --gate 只認 overall 與 automated，收到的是 %s\n' "${2:-（沒有值）}" >&2
+          printf 'acceptance: 下一步：發版用 --gate overall（預設），main 上的 job 用 --gate automated\n' >&2
+          return 2
+        fi
+        gate="$2"
+        shift 2
+        ;;
+      --target)
+        target=1
+        shift
+        ;;
+      -*)
+        usage >&2
+        return 2
+        ;;
+      *)
+        if [[ -n "${milestone}" ]]; then
+          usage >&2
+          return 2
+        fi
+        milestone="$1"
+        shift
+        ;;
+    esac
+  done
 
-  # 不預設跑某一版。一份不知道自己在報哪一版的報表，讀者無從複驗。
-  if [[ $# -ne 1 ]]; then
+  # 不預設跑某一版。一份不知道自己在報哪一版的報表，讀者無從複驗。--target 不是預設：
+  # 它讀的是對照表裡明寫的那一版。兩者都給，說不清楚要跑哪一版。
+  if [[ -n "${milestone}" && ${target} -eq 1 ]] || [[ -z "${milestone}" && ${target} -eq 0 ]]; then
     usage >&2
     return 2
   fi
 
   if [[ "${CM_IN_TEST_IMAGE:-}" != "1" && "${CM_TEST_LOCAL:-}" != "1" ]]; then
-    dispatch_to_container "$@"
+    dispatch_to_container "${original[@]}"
   fi
 
   if ! command -v python3 >/dev/null 2>&1; then
@@ -137,16 +179,27 @@ main() {
     return 2
   fi
 
-  python3 - "$1" "${TABLE}" "${ROOT}" <<'PY'
+  python3 - "${milestone}" "${TABLE}" "${ROOT}" "${gate}" "${target}" <<'PY'
+import datetime
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
 import tomllib
 
 MILESTONE, TABLE, ROOT = sys.argv[1], pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+GATE, USE_TARGET = sys.argv[4], sys.argv[5] == "1"
 
 PASSED, FAILED, UNCOVERED = "通過  ", "未通過", "未涵蓋"
+MANUAL_PENDING, SIGNED = "人工待驗", "已簽核"
+
+# 簽核的證據要指到這個 repo 的 issue 或 PR（可以帶 #issuecomment-… 之類的錨點）。只核對形狀，
+# 不核對那個網址的內容真的是這一條的證據——那一半要人看（doc/ACCEPTANCE-SIGNOFF.md）。
+EVIDENCE = re.compile(
+    r"^https://github\.com/ycpss91255-research/config_manager/(issues|pull)/[1-9][0-9]*(#[A-Za-z0-9_-]+)?$"
+)
+VERSION = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)$")
 
 # 對照表壞掉與檢查點沒過是兩種不同的失敗，結束碼也分開：前者代表這份報表本身不能信，
 # 後者代表這一版還沒做完。混成同一個碼，CI 上就分不出「規格指錯了」與「功能沒做完」。
@@ -178,6 +231,57 @@ def load_table():
     return None
 
 
+def pick_target(table):
+    """--target：對照表頂層 target 指的那一版。來源只有這一個，不查 GitHub 的 milestone。"""
+    target = table.get("target")
+    if not isinstance(target, str) or not target:
+        die(
+            f"acceptance: 對照表 {TABLE} 沒有寫頂層的 target，--target 不知道要跑哪一版",
+            "acceptance: 下一步：在對照表第一個 [[milestone]] 之前寫 target = 'vX.Y.Z'，"
+            "或改成直接給 milestone 的 id",
+        )
+    return target
+
+
+def later_versions(table):
+    """對照表裡版號比目前這一版大的 milestone，由小到大。core-flow 這種不是版本，不算。"""
+    current = VERSION.match(MILESTONE)
+    if current is None:
+        return []
+    key = tuple(int(part) for part in current.groups())
+    found = []
+    for entry in table.get("milestone", []):
+        match = VERSION.match(str(entry.get("id", "")))
+        if match is not None and tuple(int(part) for part in match.groups()) > key:
+            found.append((tuple(int(part) for part in match.groups()), entry["id"]))
+    return [name for _, name in sorted(found)]
+
+
+def is_manual(item):
+    return item.get("manual") is True
+
+
+def signoff_problems(signoff):
+    """簽核的每一欄對不對。回傳說得出是哪一欄、要怎麼寫的句子；空的就是合格。"""
+    if not isinstance(signoff, dict):
+        return ["signoff：要是一張表（[milestone.checkpoint.signoff]）"]
+    problems = []
+    for field in ("by", "summary"):
+        value = signoff.get(field)
+        if not isinstance(value, str) or not value.strip():
+            problems.append(f"{field}：缺少或是空的")
+    # datetime 是 date 的子類別，所以比的是確切型別：簽核記的是驗收完成的那一天。
+    if type(signoff.get("date")) is not datetime.date:
+        problems.append("date：要寫 TOML 的日期，例如 2026-12-01（不加引號、不帶時間）")
+    evidence = signoff.get("evidence")
+    if not isinstance(evidence, str) or EVIDENCE.match(evidence) is None:
+        problems.append(
+            "evidence：要是這個 repo 的 issue 或 PR 網址，例如 "
+            "https://github.com/ycpss91255-research/config_manager/issues/123#issuecomment-456"
+        )
+    return problems
+
+
 def pick_milestone(table):
     milestones = table.get("milestone", [])
     for entry in milestones:
@@ -201,11 +305,34 @@ def checkpoints_of(milestone):
             "acceptance: 下一步：補上 [[milestone.checkpoint]]。零條檢查點不是全部通過",
         )
     for item in items:
+        number = item.get("number")
         if item.get("specs") and item.get("uncovered"):
             die(
-                f"acceptance: 檢查點 {item.get('number')} 同時寫了 specs 與 uncovered，"
+                f"acceptance: 檢查點 {number} 同時寫了 specs 與 uncovered，"
                 f"對照表 {TABLE} 說不清楚它到底有沒有人驗",
                 "acceptance: 下一步：有規格就拿掉 uncovered，沒有就把 specs 清空",
+            )
+        if item.get("specs") and is_manual(item):
+            die(
+                f"acceptance: 檢查點 {number} 同時寫了 specs 與 manual = true，"
+                f"對照表 {TABLE} 說不清楚它由規格驗還是由人驗",
+                "acceptance: 下一步：由規格驗就拿掉 manual，只能由真人驗收就把 specs 清空",
+            )
+        if "signoff" not in item:
+            continue
+        if not is_manual(item):
+            die(
+                f"acceptance: 檢查點 {number} 不是人工檢查點，卻寫了簽核（對照表 {TABLE}）",
+                "acceptance: 簽核只用在 manual = true 的檢查點：它不能把規格變成通過，也不能取代沒做的驗收",
+                "acceptance: 下一步：拿掉那段 [milestone.checkpoint.signoff]；"
+                "真的只能由人驗收的，改成 manual = true 並把 specs 清空",
+            )
+        problems = signoff_problems(item["signoff"])
+        if problems:
+            die(
+                f"acceptance: 檢查點 {number} 的簽核有 {len(problems)} 處不對（對照表 {TABLE}）：",
+                *(f"  {problem}" for problem in problems),
+                "acceptance: 下一步：照 doc/ACCEPTANCE-SIGNOFF.md 的格式補齊 by、date、evidence、summary 四欄",
             )
     return items
 
@@ -312,7 +439,10 @@ def execute(refs):
 
 
 def main():
+    global MILESTONE
     table = load_table()
+    if USE_TARGET:
+        MILESTONE = pick_target(table)
     milestone = pick_milestone(table)
     checkpoints = checkpoints_of(milestone)
 
@@ -337,11 +467,18 @@ def main():
 
     print(
         f"acceptance: {MILESTONE} {milestone.get('title', '')} —— "
-        f"{len(checkpoints)} 條檢查點，對照表 {TABLE}"
+        f"{len(checkpoints)} 條檢查點，對照表 {TABLE}，閘門 --gate {GATE}"
     )
 
-    tally = {PASSED: 0, FAILED: 0, UNCOVERED: 0}
-    for checkpoint in checkpoints:
+    automated = [checkpoint for checkpoint in checkpoints if not is_manual(checkpoint)]
+    manual = [checkpoint for checkpoint in checkpoints if is_manual(checkpoint)]
+    tally = {PASSED: 0, FAILED: 0, UNCOVERED: 0, MANUAL_PENDING: 0, SIGNED: 0}
+
+    # 三段每次都印，即使某一段是空的：少了一段的報表，讀者分不出「沒有」與「沒印」。
+    print("【自動檢查】")
+    if not automated:
+        print("  （這一版沒有自動檢查點）")
+    for checkpoint in automated:
         number = checkpoint.get("number")
         refs = checkpoint.get("specs", [])
 
@@ -365,14 +502,57 @@ def main():
         if output:
             print(indent(output))
 
+    print("【人工待驗清單】")
+    if not manual:
+        print("  （這一版沒有人工檢查點）")
+    for checkpoint in manual:
+        signoff = checkpoint.get("signoff")
+        verdict = SIGNED if signoff is not None else MANUAL_PENDING
+        tally[verdict] += 1
+        print(f"  檢查點 {checkpoint.get('number')}  {verdict}  {checkpoint.get('text', '')}")
+        if signoff is None:
+            print("      等真人驗收；簽核格式見 doc/ACCEPTANCE-SIGNOFF.md。人工待驗不是通過")
+            continue
+        print(f"      簽核：{signoff['by']}，{signoff['date'].isoformat()}")
+        print(f"      證據：{signoff['evidence']}")
+        print(indent(signoff["summary"]))
+
+    automated_ok = tally[FAILED] == 0 and tally[UNCOVERED] == 0
+    overall_ok = automated_ok and tally[MANUAL_PENDING] == 0
+
+    print("【整體】")
+    print(
+        f"acceptance: {MILESTONE} 自動檢查{'通過' if automated_ok else '未通過'}，"
+        f"人工待驗 {tally[MANUAL_PENDING]} 條——整體{'通過' if overall_ok else '未通過'}"
+    )
+    # 這一行是報表裡最後一行帶「未涵蓋」的：script/release.sh 把它放進 release notes 的開頭。
     print(
         f"acceptance: {MILESTONE} —— "
-        f"{tally[PASSED]} 通過／{tally[FAILED]} 未通過／{tally[UNCOVERED]} 未涵蓋"
+        f"{tally[PASSED]} 通過／{tally[FAILED]} 未通過／{tally[UNCOVERED]} 未涵蓋／"
+        f"{tally[MANUAL_PENDING]} 人工待驗／{tally[SIGNED]} 已簽核"
     )
-    if tally[FAILED] or tally[UNCOVERED]:
-        print(f"acceptance: {MILESTONE} 未通過")
+
+    # 防呆：目標版本已經整體通過，而它之後還有版本——留在已完成的版本上，這個 job 會永遠
+    # 報綠，與原本寫死 v0.1.0 是同一個問題。看的是整體，不是閘門：自動檢查綠了但人工還沒
+    # 簽，這一版就還沒做完，不該被推走。
+    if USE_TARGET and overall_ok:
+        later = later_versions(table)
+        if later:
+            print(
+                f"acceptance: 目標版本 {MILESTONE} 已整體通過，對照表裡之後還有 {'、'.join(later)}",
+                file=sys.stderr,
+            )
+            print(
+                f"acceptance: 下一步：把對照表頂層的 target 改成 {later[0]}",
+                file=sys.stderr,
+            )
+            sys.exit(BROKEN_TABLE)
+
+    passed = automated_ok if GATE == "automated" else overall_ok
+    if not passed:
+        print(f"acceptance: {MILESTONE} 未通過（--gate {GATE}）")
         sys.exit(NOT_PASSED)
-    print(f"acceptance: {MILESTONE} 通過")
+    print(f"acceptance: {MILESTONE} 通過（--gate {GATE}）")
 
 
 main()
