@@ -201,6 +201,40 @@ def _seed_allowed_roots(repo, root):
     )
 
 
+# 就地起的服務各自的 LockBox，以位址查（#355）。起服務的 fixture 在建 app 前後把物件圖差出來，
+# 記下 create_app 剛建的那一個——與 `api_alone` 同一個做法。不從整個行程裡挑「持有中的那一個」：
+# 同一個行程裡可能還有別的服務的 LockBox 正處於持有狀態（`test_web.py` 每則起一個自己的服務），
+# 挑出來的就不一定是這個服務的（#355 的診斷）。
+_LOCK_BOXES: dict[str, LockBox] = {}
+
+
+def _lock_box_ids() -> set[int]:
+    return {id(obj) for obj in gc.get_objects() if isinstance(obj, LockBox)}
+
+
+def _created_lock_box(before: set[int]) -> LockBox:
+    created = [
+        obj for obj in gc.get_objects() if isinstance(obj, LockBox) and id(obj) not in before
+    ]
+    assert len(created) == 1, f"create_app 應該剛好建一個 LockBox，這次差出來 {len(created)} 個"
+    return created[0]
+
+
+@pytest.fixture(scope="session")
+def lock_box_of():
+    """`lock_box_of(api)`：這個 session 裡就地起的那個服務的 LockBox（`api`、`api_developing`）。
+
+    測逾時要動某一個服務的時鐘與逾時，就要拿到**那個服務的** LockBox。位址不是就地起的（對著映像
+    跑），這裡大聲失敗；那些規格在對著映像時本來就跳過。
+    """
+
+    def _of(base: str) -> LockBox:
+        assert base in _LOCK_BOXES, f"{base} 不是這個 session 就地起的服務，沒有記下它的 LockBox"
+        return _LOCK_BOXES[base]
+
+    return _of
+
+
 @pytest.fixture(scope="session")
 def api(repo, sources_root):
     """服務的位址。外部已經有一個就用它，否則就地起一個。"""
@@ -215,17 +249,21 @@ def api(repo, sources_root):
     # entrypoint 種它，所以這裡把 sources_root 種進去並提交（映像那份由 entrypoint 從
     # CM_ALLOWED_ROOTS 種）。
     _seed_allowed_roots(repo, sources_root)
+    before = _lock_box_ids()
     app = create_app(repo)
+    box = _created_lock_box(before)
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
 
     base = f"http://127.0.0.1:{port}"
+    _LOCK_BOXES[base] = box
     try:
         _wait_until_answering(base)
         yield base
     finally:
+        _LOCK_BOXES.pop(base, None)
         server.should_exit = True
         thread.join(timeout=_STARTUP_TIMEOUT)
 
@@ -298,17 +336,21 @@ def api_developing(repo, sources_root, api):
     """
     del sources_root, api  # 只為了排序：白名單已由 `api` 種好；外部服務時那份是 entrypoint 種的
     port = _free_port()
+    before = _lock_box_ids()
     app = create_app(repo, mode=DEVELOPMENT)
+    box = _created_lock_box(before)
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
 
     base = f"http://127.0.0.1:{port}"
+    _LOCK_BOXES[base] = box
     try:
         _wait_until_answering(base)
         yield base
     finally:
+        _LOCK_BOXES.pop(base, None)
         server.should_exit = True
         thread.join(timeout=_STARTUP_TIMEOUT)
 
@@ -349,7 +391,7 @@ def api_alone(repo, sources_root, api):
 
     排隊的規格會讓伺服器那邊的執行緒停在中間；停住時它拿著那一把鎖。逐則起、逐則收：卡住只影響
     這一則，不拖累整個 session 共用的 `api`。LockBox 從建 app 前後的物件差出來，不用
-    `_find_lock_box`（那支要求剛好一個持有中的，這個服務持有時會和它撞）。收尾時放掉還持有的
+    `lock_box_of`（那支只認 `api`／`api_developing` 起的服務）。收尾時放掉還持有的
     階段、把排隊通知換回去。連對著映像跑時也就地起（比照 `api_developing`）。
     """
     del sources_root, api  # 只為了排序：白名單已由 `api` 種好

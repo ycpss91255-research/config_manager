@@ -12,7 +12,6 @@ PDF §3.6.1 軸 2 的層級只有 Unit／Integration／System／Acceptance。先
 
 import contextlib
 import datetime
-import gc
 import http.server
 import http.cookiejar
 import json
@@ -33,7 +32,6 @@ import pytest
 import config_manager
 from config_manager.api import drafts as drafts_api
 from config_manager.core.allowed_roots import load as load_allowed_roots
-from config_manager.api.lock import LockBox
 from config_manager.core.errors import UidHorizonReached
 from config_manager.io import drift as drift_io
 from config_manager.io import promote as promote_io
@@ -3799,7 +3797,7 @@ def test_renewing_with_a_stale_token_is_gone_not_a_silent_reacquire(api):
 
 
 def test_a_renew_timeout_recycles_the_session_but_keeps_the_drafts_for_the_next_holder(
-    api, sources_root
+    api, sources_root, lock_box_of
 ):
     # ADR-00000032（F7）：續期逾時只回收階段，草稿保留；另一個瀏覽器身分取得時被告知接手了誰的幾份
     # （cleared_drafts 是 0），同一個身分重新取得則 kept_drafts 為空。回應不含票值。時鐘與逾時就地
@@ -3808,9 +3806,9 @@ def test_a_renew_timeout_recycles_the_session_but_keeps_the_drafts_for_the_next_
         pytest.skip("需就地注入時鐘與逾時，外部映像控不了 server 端模組")
     entry = _onboard(api, sources_root, "lock_drafts_kept.yaml", b"count: 1\n")
     _clear_drafts(api)
+    box = lock_box_of(api)
     session = _lock(api)
     _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"])
-    box = _find_lock_box()
     real_clock, real_timeout = box.clock, box.lock.timeout
     other = _another_browser()
     try:
@@ -3842,27 +3840,14 @@ def test_a_renew_timeout_recycles_the_session_but_keeps_the_drafts_for_the_next_
     assert (mine["cleared_drafts"], mine["kept_drafts"]) == (0, [])
 
 
-def _find_lock_box():
-    """就地起的服務：從物件圖裡撈出 app 的 LockBox（測逾時要動它的時鐘與逾時）。
-
-    撈的是**正持有編輯階段**的那一個：呼叫端在這之前都先 `_lock(api)` 取得了階段。物件圖裡可能
-    還有別的 LockBox（開發模式那個對照服務的，#47；已收掉的 app 不一定立刻被回收），它們沒有
-    人持有階段，所以不會被選到。
-    """
-    boxes = [obj for obj in gc.get_objects() if isinstance(obj, LockBox)]
-    holding = [box for box in boxes if box.lock.current is not None]
-    assert len(holding) == 1, f"預期恰好一個持有中的 LockBox，找到 {len(holding)}／{len(boxes)}"
-    return holding[0]
-
-
-def test_an_abandoned_session_is_released_once_its_renewals_stop(api):
+def test_an_abandoned_session_is_released_once_its_renewals_stop(api, lock_box_of):
     # U38 的回歸：持有分頁異常中斷（沒走到釋放）→ 心跳停了，預設的續期逾時就回收，下一個人能取得；
     # 不必設定任何逾時、也不必重啟服務。時鐘就地注入。
     if os.environ.get("CM_SYSTEM_BASE_URL"):
         pytest.skip("需就地注入時鐘，外部映像控不了 server 端模組")
+    box = lock_box_of(api)
     _set_session(api)
     _lock(api)  # 取得後就再也不續期、也不釋放
-    box = _find_lock_box()
     real_clock = box.clock
     try:
         box.clock = lambda: real_clock() + datetime.timedelta(minutes=10)
@@ -4075,12 +4060,14 @@ def test_another_browser_cannot_release_the_holders_session(api, beacon):
     assert (released, held) == ({"released": False}, True)
 
 
-def test_after_an_idle_timeout_the_old_token_is_refused_as_lost_editing(api, sources_root):
+def test_after_an_idle_timeout_the_old_token_is_refused_as_lost_editing(
+    api, sources_root, lock_box_of
+):
     if os.environ.get("CM_SYSTEM_BASE_URL"):
         pytest.skip(_IN_PLACE_ONLY)
     _clear_drafts(api)
     entry = _onboard(api, sources_root, "f23_idle.yaml", b"count: 1\n")
-    with _later(api) as (session, ahead):
+    with _later(api, lock_box_of(api)) as (session, ahead):
         ahead(10)
 
         refused = _refusal(lambda: _post(
@@ -4090,13 +4077,13 @@ def test_after_an_idle_timeout_the_old_token_is_refused_as_lost_editing(api, sou
     assert refused == (_GONE, "editing_lost")
 
 
-def test_after_a_renew_timeout_the_old_token_cannot_write(api, sources_root):
+def test_after_a_renew_timeout_the_old_token_cannot_write(api, sources_root, lock_box_of):
     if os.environ.get("CM_SYSTEM_BASE_URL"):
         pytest.skip(_IN_PLACE_ONLY)
     _clear_drafts(api)
     entry = _onboard(api, sources_root, "f23_renew_timeout.yaml", b"count: 1\n")
+    box = lock_box_of(api)
     session = _lock(api)
-    box = _find_lock_box()
     real_clock = box.clock
     try:
         # 過了續期逾時（150 秒）、還沒到閒置逾時（10 分鐘）：收回的是續期逾時這一條。
@@ -4361,14 +4348,14 @@ def test_exiting_while_nobody_holds_the_session_leaves_the_drafts_alone(api, sou
     )
 
 
-def test_exiting_after_the_idle_timeout_says_it_timed_out(api, sources_root):
+def test_exiting_after_the_idle_timeout_says_it_timed_out(api, sources_root, lock_box_of):
     # 這個瀏覽器其實已經閒置逾時（例如筆電睡過頭、頁面還沒問到）才按退出：逾時那一刻已釋放並清掉
     # 草稿（照逾時的規則）。退出照實說是逾時——不說成「原本沒有編輯權」，也不記成已退出。
     if os.environ.get("CM_SYSTEM_BASE_URL"):
         pytest.skip(_IN_PLACE_ONLY)
     entry = _onboard(api, sources_root, "f3_exit_timed_out.yaml", b"count: 1\n")
     _clear_drafts(api)
-    with _later(api) as (session, ahead):
+    with _later(api, lock_box_of(api)) as (session, ahead):
         _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"])
         ahead(10)
 
@@ -4692,35 +4679,49 @@ _HALF_MINUTE = 30
 
 
 @contextlib.contextmanager
-def _later(api):
+def _later(api, box):
     """持有編輯階段、並把這個服務的時鐘往後撥：`ahead(分鐘)` 之後的請求都發生在那個時刻。
+
+    `box` 是這個服務的 LockBox（`lock_box_of(api)`），在取得階段之前就拿到，不從物件圖裡挑。
 
     續期逾時（分頁還在不在，兩種模式都有）在這裡調到一年：這幾則要看的是**閒置**逾時，不讓另一種
     逾時先把階段收走而看不出是誰收的。
+
+    失敗也收尾（#355）：取得階段之後的每一步都在 try 裡。進來時這一則取得得到階段，代表那時沒有
+    別人持有，所以收尾時鎖上的階段是這一則留下的，放掉它；收尾自己出錯時不蓋掉原本的錯誤（附在它
+    的 note 上）。
     """
     _set_session(api)
     session = _lock(api)
-    box = _find_lock_box()
     real_clock, real_timeout = box.clock, box.lock.timeout
-    box.lock.timeout = datetime.timedelta(days=365)
-
-    def ahead(minutes):
-        box.clock = lambda: real_clock() + datetime.timedelta(minutes=minutes)
-
+    failure = None
     try:
+        box.lock.timeout = datetime.timedelta(days=365)
+
+        def ahead(minutes):
+            box.clock = lambda: real_clock() + datetime.timedelta(minutes=minutes)
+
         yield session, ahead
+    except BaseException as error:
+        failure = error
+        raise
     finally:
-        box.clock, box.lock.timeout = real_clock, real_timeout
-        # 階段不留給下一則：識別碼可能已被續期換過，直接從鎖上拿現在的那一個來釋放。
-        if box.lock.current is not None:
-            box.lock.release(box.lock.current.token)
+        try:
+            box.clock, box.lock.timeout = real_clock, real_timeout
+            # 階段不留給下一則：識別碼可能已被續期換過，直接從鎖上拿現在的那一個來釋放。
+            if box.lock.current is not None:
+                box.lock.release(box.lock.current.token)
+        except Exception as cleanup_error:
+            if failure is None:
+                raise
+            failure.add_note(f"_later 的收尾也失敗了：{cleanup_error!r}")
         _set_session(api)
 
 
-def test_the_idle_status_says_how_long_is_left_and_when_the_warning_starts(api):
+def test_the_idle_status_says_how_long_is_left_and_when_the_warning_starts(api, lock_box_of):
     if os.environ.get("CM_SYSTEM_BASE_URL"):
         pytest.skip(_IN_PLACE_ONLY)
-    with _later(api) as (_session, ahead):
+    with _later(api, lock_box_of(api)) as (_session, ahead):
         ahead(9.5)
 
         status = _get(api, "/api/session/idle")
@@ -4730,12 +4731,12 @@ def test_the_idle_status_says_how_long_is_left_and_when_the_warning_starts(api):
     assert status["timed_out"] is False
 
 
-def test_ten_idle_minutes_end_the_identity_and_release_the_session(api, sources_root):
+def test_ten_idle_minutes_end_the_identity_and_release_the_session(api, sources_root, lock_box_of):
     if os.environ.get("CM_SYSTEM_BASE_URL"):
         pytest.skip(_IN_PLACE_ONLY)
     entry = _onboard(api, sources_root, "idle_drafts.yaml", b"count: 1\n")
     _clear_drafts(api)
-    with _later(api) as (session, ahead):
+    with _later(api, lock_box_of(api)) as (session, ahead):
         _post(api, "/api/drafts", {"uid": entry["uid"], "edits": {"count": 2}}, session["token"])
         ahead(10)
 
@@ -4747,11 +4748,11 @@ def test_ten_idle_minutes_end_the_identity_and_release_the_session(api, sources_
         assert _lock(api)["cleared_drafts"] == 1  # 回報清了幾份，不靜默丟棄
 
 
-def test_the_heartbeat_of_an_open_page_does_not_count_as_activity(api):
+def test_the_heartbeat_of_an_open_page_does_not_count_as_activity(api, lock_box_of):
     # 頁面開著就每 30 秒續期一次；那不是人在操作——算進去的話，開著頁面就永遠不逾時。
     if os.environ.get("CM_SYSTEM_BASE_URL"):
         pytest.skip(_IN_PLACE_ONLY)
-    with _later(api) as (session, ahead):
+    with _later(api, lock_box_of(api)) as (session, ahead):
         token = session["token"]
         for minutes in (2, 4, 6, 8):
             ahead(minutes)
@@ -4764,11 +4765,11 @@ def test_the_heartbeat_of_an_open_page_does_not_count_as_activity(api):
     assert exc.value.code == _GONE
 
 
-def test_activity_extends_the_identity_and_the_session(api):
+def test_activity_extends_the_identity_and_the_session(api, lock_box_of):
     # 提示出現後按「繼續使用」（或單純有在操作）：重新起算 10 分鐘。
     if os.environ.get("CM_SYSTEM_BASE_URL"):
         pytest.skip(_IN_PLACE_ONLY)
-    with _later(api) as (_session, ahead):
+    with _later(api, lock_box_of(api)) as (_session, ahead):
         ahead(9.5)
         extended = _post(api, "/api/session/activity", {})
         ahead(15)
@@ -4778,10 +4779,10 @@ def test_activity_extends_the_identity_and_the_session(api):
         assert _lock(api, "GET")["held"] is True
 
 
-def test_activity_after_the_timeout_does_not_bring_the_identity_back(api):
+def test_activity_after_the_timeout_does_not_bring_the_identity_back(api, lock_box_of):
     if os.environ.get("CM_SYSTEM_BASE_URL"):
         pytest.skip(_IN_PLACE_ONLY)
-    with _later(api) as (_session, ahead):
+    with _later(api, lock_box_of(api)) as (_session, ahead):
         ahead(11)
 
         late = _post(api, "/api/session/activity", {})
@@ -4790,13 +4791,13 @@ def test_activity_after_the_timeout_does_not_bring_the_identity_back(api):
         assert _get(api, "/api/session") is None
 
 
-def test_someone_elses_idleness_does_not_end_my_identity(api):
+def test_someone_elses_idleness_does_not_end_my_identity(api, lock_box_of):
     # 閒置是每個瀏覽器各算各的：另一個瀏覽器一直沒動，不會把有在操作的這一個踢出去。
     if os.environ.get("CM_SYSTEM_BASE_URL"):
         pytest.skip(_IN_PLACE_ONLY)
     other = _another_browser()
     _request_as(other, api, "/api/session", {"name": "林巡檢", "email": "lin@example.com"})
-    with _later(api) as (_session, ahead):
+    with _later(api, lock_box_of(api)) as (_session, ahead):
         ahead(9)
         _post(api, "/api/session/activity", {})
         ahead(12)
@@ -4811,9 +4812,9 @@ def test_someone_elses_idleness_does_not_end_my_identity(api):
     assert held["held"] is True and held["holder"]["name"] == "陳小明"
 
 
-def test_development_mode_never_idles_out(api_developing):
+def test_development_mode_never_idles_out(api_developing, lock_box_of):
     # 開發模式不逾時：過了一個月身分還在、階段還在，閒置狀態說「不逾時」。
-    with _later(api_developing) as (session, ahead):
+    with _later(api_developing, lock_box_of(api_developing)) as (session, ahead):
         token = session["token"]
         ahead(60 * 24 * 30)
 
