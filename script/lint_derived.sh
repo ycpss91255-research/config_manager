@@ -39,9 +39,9 @@ readonly REPO_ROOT
 
 usage() {
   cat <<'USAGE'
-用法：script/lint_derived.sh [<檔案>]
+用法：script/lint_derived.sh [<檔案>...]
 
-  <檔案>  要檢查的 markdown 文件（預設：README.md）。
+  <檔案>  要檢查的 markdown 文件，可以給多個（預設：README.md 與 doc/DEVELOPMENT.md）。
 
   fail  手抄一份樹本身就答得出來的數量（「22 份決策紀錄」、
         「18 個測試介面」、「54 個 issue」……）
@@ -73,14 +73,9 @@ RULES
 # 測試介面與驗收旅程的代號。前後不接英數字，免得把 ADR-00000024 或 UTF-8 讀成代號。
 readonly CODE_PATTERN='(^|[^0-9A-Za-z])[TA][0-9]+([^0-9A-Za-z]|$)'
 
-main() {
-  case "${1:-}" in -h | --help)
-    usage
-    return 0
-    ;;
-  esac
-
-  local target="${1:-${REPO_ROOT}/README.md}"
+# 檢查一份文件：問題逐一印在 fd 2，最後一行印問題數；有問題或檔案不在時回非 0。
+_check() {
+  local target="$1"
 
   if [[ ! -f "${target}" ]]; then
     printf 'lint_derived: %s 不存在，所以什麼都沒有被檢查\n' "${target}" >&2
@@ -111,6 +106,25 @@ main() {
 
   printf 'lint_derived: %s -- %d 個問題\n' "${target}" "${failures}"
   ((failures == 0))
+}
+
+main() {
+  case "${1:-}" in -h | --help)
+    usage
+    return 0
+    ;;
+  esac
+
+  # 沒給檔案時檢查 README.md 與 doc/DEVELOPMENT.md：開發者的內容從 README 搬到後者（#362），
+  # 搬過去的段落原本就在這支 lint 底下，搬了之後也要在——否則等於悄悄放寬。
+  local -a targets=("$@")
+  ((${#targets[@]} > 0)) || targets=("${REPO_ROOT}/README.md" "${REPO_ROOT}/doc/DEVELOPMENT.md")
+
+  local target status=0
+  for target in "${targets[@]}"; do
+    _check "${target}" || status=1
+  done
+  return "${status}"
 }
 
 main "$@"
