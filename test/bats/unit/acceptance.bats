@@ -460,6 +460,7 @@ summary = '未參與開發的同事照步驟操作，五項任務都完成'"
   report_with --gate lenient v0.1.0
 
   [ "${status}" -eq 2 ]
+  [[ "${output}" == *"--gate 只認 overall 與 automated"* ]]
 }
 
 @test "人工檢查點有合格的簽核時，列為已簽核並印出簽核的證據網址" {
@@ -562,7 +563,7 @@ summary = '做了什麼'"
 
   report
 
-  [[ "${output}" == *"檢查點 7"* ]]
+  [[ "${output}" == *"檢查點 7 的簽核"* ]]
 }
 
 @test "同一條檢查點同時有 specs 與 manual = true 時以 2 結束" {
@@ -618,6 +619,7 @@ milestone() {
   report_with --target
 
   [ "${status}" -eq 2 ]
+  [[ "${output}" == *"沒有寫頂層的 target"* ]]
 }
 
 @test "target 寫的版本不在對照表裡時，--target 以 2 結束" {
@@ -627,6 +629,7 @@ milestone() {
   report_with --target
 
   [ "${status}" -eq 2 ]
+  [[ "${output}" == *"沒有 milestone v9.9.9"* ]]
 }
 
 @test "--target 的目標已整體通過、之後還有版本時以 2 結束，並指名下一版" {
@@ -639,7 +642,7 @@ milestone() {
   report_with --target
 
   [ "${status}" -eq 2 ]
-  [[ "${output}" == *"v0.2.0"* ]]
+  [[ "${output}" == *"target 改成 v0.2.0"* ]]
 }
 
 @test "--target 的目標已整體通過、之後只有不是版本的 milestone 時照常以 0 結束" {
