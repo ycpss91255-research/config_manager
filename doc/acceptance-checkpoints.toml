@@ -355,8 +355,21 @@ title = '部署模式與 UX'
 [[milestone.checkpoint]]
 number = 1
 text = '部署模式下不顯示「記住此裝置」，閒置 10 分鐘自動退出並釋放編輯階段，剩餘 1 分鐘時提示可延長；模式由 backend 判定，前端改動無法繞過'
-specs = []
-uncovered = '部署模式判定與編輯階段尚未落地（T13、#33）'
+# 「前端改動無法繞過」的邊界（維護者 11/14 在 #355 的定案，選 A）：指後端管得到的**模式判定**
+# 與**閒置退出**——模式由後端回報、HTTP 改不了，閒置由後端計時並釋放編輯階段。瀏覽器端的
+# localStorage（「記住此裝置」存的名字與 email）後端技術上管不到，不在這一句的保證內；
+# 部署模式要不要開放「記住此裝置」另在 #372。
+specs = [
+  'test/pytest/system/test_web.py::test_remember_device_is_offered_in_development_mode_only',
+  'test/pytest/system/test_api.py::test_ten_idle_minutes_end_the_identity_and_release_the_session',
+  'test/pytest/system/test_web.py::test_ten_idle_minutes_on_the_real_backend_end_the_page_session',
+  'test/pytest/system/test_api.py::test_the_idle_status_says_how_long_is_left_and_when_the_warning_starts',
+  'test/pytest/system/test_api.py::test_activity_extends_the_identity_and_the_session',
+  'test/pytest/system/test_web.py::test_a_minute_before_the_timeout_a_warning_says_what_will_happen',
+  'test/pytest/system/test_web.py::test_continuing_reports_activity_and_dismisses_the_warning',
+  'test/pytest/system/test_api.py::test_the_backend_reports_the_mode_and_defaults_to_deployment',
+  'test/pytest/system/test_api.py::test_the_mode_cannot_be_changed_over_http',
+]
 
 [[milestone.checkpoint]]
 number = 2
