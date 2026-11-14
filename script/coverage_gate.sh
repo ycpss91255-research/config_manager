@@ -36,10 +36,16 @@ readonly COVERAGE_JSON="${CM_COVERAGE_JSON:-}"
 
 usage() {
   cat <<'USAGE'
-用法：script/coverage_gate.sh
+用法：script/coverage_gate.sh [--summary <目錄>]
 
   fail  core / io / api / web 之中任何一個低於它自己的下限
   fail  某一層的覆蓋率報告不存在——那一層從頭到尾沒有被量到
+
+  --summary <目錄>  判完之後把四層的數字寫進這個目錄，過不過都寫：
+                    coverage.md   給人看的表格（CI 放進 Job Summary）
+                    coverage.tsv  給 script/coverage_badge.sh 讀，每層一行：
+                                  層名、執行過的行、總行數、下限、判定（pass／below／unmeasured）
+                    判定用原始數值，表格上的兩位小數只是顯示。
 
 閾值在 pyproject.toml 的 [tool.config_manager.coverage]。
 
@@ -53,11 +59,29 @@ USAGE
 }
 
 main() {
-  case "${1:-}" in -h | --help)
-    usage
-    return 0
-    ;;
-  esac
+  local summary_dir=""
+  while (($# > 0)); do
+    case "$1" in
+      -h | --help)
+        usage
+        return 0
+        ;;
+      --summary)
+        if [[ $# -lt 2 || -z "$2" ]]; then
+          printf 'coverage_gate: --summary 後面要接一個目錄\n' >&2
+          printf 'coverage_gate: 下一步：改成 --summary <目錄>，例如 --summary coverage/summary\n' >&2
+          return 2
+        fi
+        summary_dir="$2"
+        shift 2
+        ;;
+      *)
+        printf 'coverage_gate: 不認得的參數 %s\n' "$1" >&2
+        printf 'coverage_gate: 下一步：只接受 --summary <目錄>；用 --help 看用法\n' >&2
+        return 2
+        ;;
+    esac
+  done
 
   cd "${REPO_ROOT}"
 
@@ -87,7 +111,7 @@ main() {
     coverage json -o "${python_report}" --quiet
   fi
 
-  python3 - "${python_report}" "${WEB_REPORT}" <<'PY'
+  python3 - "${python_report}" "${WEB_REPORT}" "${summary_dir}" <<'PY'
 import json
 import pathlib
 import sys
@@ -98,6 +122,7 @@ AREAS = ("core", "io", "api", "web")
 
 python_report = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 web_report = pathlib.Path(sys.argv[2])
+summary_dir = sys.argv[3]
 
 settings = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
 thresholds = settings["tool"]["config_manager"]["coverage"]
@@ -126,6 +151,9 @@ def web_area():
 
 
 rows, below, unmeasured = [], [], []
+# summary 用的同一份判定：每層 (層名, 執行過的行, 總行數, 下限, 判定)。表格與 tsv 都從這裡寫，
+# 不另外算一次——另算一次的數字遲早會與結束碼說的不是同一件事。
+records = []
 for name in AREAS:
     floor = float(thresholds[name])
     measured = web_area() if name == "web" else python_area(name)
@@ -133,18 +161,22 @@ for name in AREAS:
     if measured is None:
         unmeasured.append((name, "報告不存在"))
         rows.append((name, "報告不存在", floor, "沒量到"))
+        records.append((name, None, None, floor, "unmeasured"))
         continue
     if measured[1] == 0:
         unmeasured.append((name, "報告裡一行可量的都沒有"))
         rows.append((name, "報告裡沒有可量的行", floor, "沒量到"))
+        records.append((name, None, None, floor, "unmeasured"))
         continue
 
     covered, total = measured
     value = 100.0 * covered / total
+    # 用原始數值判，不用顯示出來的兩位小數：84.996% 顯示成 85.00%，但它沒有達標。
     passed = value >= floor
     if not passed:
         below.append(name)
     rows.append((name, f"{value:.2f}%  ({covered}/{total})", floor, "通過" if passed else "未達"))
+    records.append((name, covered, total, floor, "pass" if passed else "below"))
 
 width = max(len(row[1]) for row in rows)
 print("coverage_gate: 四個資料夾各自計算、各自擋")
@@ -165,6 +197,35 @@ for name in below:
         f"——不要調低 pyproject.toml 裡的閾值，那條線是刻意拉的",
         file=sys.stderr,
     )
+
+if summary_dir:
+    VERDICT = {"pass": "通過", "below": "未達", "unmeasured": "沒量到"}
+    out = pathlib.Path(summary_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    table = [
+        "### 覆蓋率：四層各自計算、各自擋",
+        "",
+        "| 層 | 覆蓋率 | 執行過／總行數 | 下限 | 判定 |",
+        "|---|---|---|---|---|",
+    ]
+    tsv = []
+    for name, covered, total, floor, state in records:
+        if state == "unmeasured":
+            table.append(f"| {name} | 沒量到 | - | {floor:g}% | {VERDICT[state]} |")
+            tsv.append(f"{name}\t-\t-\t{floor:g}\t{state}")
+            continue
+        table.append(
+            f"| {name} | {100.0 * covered / total:.2f}% | {covered}/{total} | {floor:g}% | {VERDICT[state]} |"
+        )
+        tsv.append(f"{name}\t{covered}\t{total}\t{floor:g}\t{state}")
+    failed = [name for name, *_, state in records if state != "pass"]
+    table.append("")
+    table.append(
+        f"未達或沒量到：{'、'.join(failed)}。" if failed else "四層都達標。"
+    )
+    table.append("判定用原始數值，表格上的兩位小數只是顯示。")
+    (out / "coverage.md").write_text("\n".join(table) + "\n", encoding="utf-8")
+    (out / "coverage.tsv").write_text("\n".join(tsv) + "\n", encoding="utf-8")
 
 sys.exit(1 if (unmeasured or below) else 0)
 PY

@@ -210,6 +210,18 @@ jobs:
       - run: ./script/test.sh --part gate
         env:
           CM_TEST_IMAGE_CACHE: gha
+      # 四層覆蓋率與門檻結果（#354）：coverage_gate.sh 判完之後寫在 coverage/summary/，這裡只把
+      # 表格放進 Job Summary、把那個目錄上傳成 artifact。過不過都放——沒過的時候正是最需要看
+      # 數字的時候。gate 沒跑到（例如有規格沒被任何一段跑過）時沒有這份檔案，這兩步跟著失敗，
+      # 不假裝有數字。日常 PR 不核對 doc/badge/coverage.svg：它隨 milestone 收尾更新。
+      - if: always()
+        run: cat coverage/summary/coverage.md >> "${GITHUB_STEP_SUMMARY}"
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-summary
+          path: coverage/summary/
+          if-no-files-found: error
 
   acceptance:
     # 驗收報表跑在 main 上，不跑在每個 pull request 上。

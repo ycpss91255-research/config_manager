@@ -412,7 +412,8 @@ note_levels_without_specs() {
 #   - gate 自己重新收集一次全部規格，要求每一條**恰好**出現在一段裡：漏掉的、重複的、
 #     收集裡沒有的都擋。份數寫錯、某一段整個沒跑，都會在那裡變成「有規格沒被跑到」。
 #   - 覆蓋率合起來才判：test_web.py 把 uvicorn 起在同一個行程裡，所以它對 api／io／core
-#     也有貢獻，分開判會讓每一段都看起來不夠。判的仍是 coverage_gate.sh，一個字不改。
+#     也有貢獻，分開判會讓每一段都看起來不夠。判的仍是 coverage_gate.sh，判法與不分段時
+#     相同；多的只有 --summary 把判完的數字寫成表格（#354）。
 readonly PARTS_DIR="ci-parts"
 readonly API_SPEC="test/pytest/system/test_api.py"
 readonly WEB_SPEC="test/pytest/system/test_web.py"
@@ -674,7 +675,9 @@ PY
   # --keep：各段的資料檔留著，gate 重跑時還讀得到同一份輸入。
   coverage combine --keep --data-file="${REPO_ROOT}/.coverage" "${files[@]}"
   coverage report
-  ./script/coverage_gate.sh
+  # summary 寫進 coverage/summary/：CI 的 coverage job 把表格放進 Job Summary、上傳成
+  # artifact（#354）。coverage/ 本來就是被忽略的衍生產物。
+  ./script/coverage_gate.sh --summary coverage/summary
 }
 
 run_part() {
