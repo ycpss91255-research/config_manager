@@ -5603,6 +5603,41 @@ def test_a_rule_added_after_saving_blocks_promotion_until_a_reason_is_given(
     assert pathlib.Path(entry["target"]).read_bytes() == b"lo: 9\nhi: 5\n"
 
 
+def _reverted_to_a_rule_breaking_version(api, sources_root, repo, name):
+    """一份 config 先進版成違反 lo < hi 的內容、再改回來，之後才加上規則，再退回違反的那一版。"""
+    entry = _onboard(api, sources_root, name, b"lo: 1\nhi: 5\n")
+    _promote_value(api, entry["uid"], "lo", 9)
+    breaking = _history(api, entry["uid"])[0]["sha"]
+    _promote_value(api, entry["uid"], "lo", 2)
+    _write_rules(repo, entry["uid"], _LO_BELOW_HI)
+    _post(api, f"/api/configs/{entry['uid']}/revert", {"version": breaking})
+    return entry
+
+
+def test_reverting_to_a_version_that_breaks_todays_rule_is_not_held_back(api, sources_root, repo):
+    # v0.8.0 第 1 條（#355 定案 (a)）：規則是整個 config-repo 的政策，不隨單一 config 退版。退版本身
+    # 不驗證（與 schema 同一個定案，#39）：退到違反今天規則的那一版照樣退得回去，不要理由。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地寫 config-repo 裡的規則檔")
+    _clear_drafts(api)
+
+    entry = _reverted_to_a_rule_breaking_version(api, sources_root, repo, "rule_revert.yaml")
+
+    assert pathlib.Path(entry["target"]).read_bytes() == b"lo: 9\nhi: 5\n"
+
+
+def test_after_a_revert_todays_rule_still_holds_the_next_save_back(api, sources_root, repo):
+    # 規則沒有跟著退回那一版：退版之後的下一次儲存照今天的規則判，違反就停下來要理由。
+    if os.environ.get("CM_SYSTEM_BASE_URL"):
+        pytest.skip("需就地寫 config-repo 裡的規則檔")
+    _clear_drafts(api)
+    entry = _reverted_to_a_rule_breaking_version(api, sources_root, repo, "rule_revert_next.yaml")
+
+    status, detail = _refused(api, "/api/drafts", {"uid": entry["uid"], "edits": {"hi": 6}})
+
+    assert (status, detail["kind"]) == (_CONFLICT, "override_required")
+
+
 def test_a_value_missing_from_the_referenced_config_is_a_warning(api, sources_root, repo):
     # 外部一致性＝跨 config 對照：這份用到的 frame 必須是另一份定義過的。
     if os.environ.get("CM_SYSTEM_BASE_URL"):
