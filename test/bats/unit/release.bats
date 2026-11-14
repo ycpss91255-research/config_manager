@@ -80,6 +80,23 @@ STUB
   chmod +x "${ACCEPTANCE}"
 }
 
+# 自動檢查全綠，只剩一條人工檢查點還沒簽核（#355）。結束碼 1 == 整體未通過。
+stub_manual_pending() {
+  cat >"${ACCEPTANCE}" <<'STUB'
+#!/usr/bin/env bash
+printf 'acceptance: v0.1.0 資料層與唯讀介面 —— 2 條檢查點，閘門 --gate overall\n'
+printf '【自動檢查】\n'
+printf '  檢查點 1  通過  ADR lint 可攔截\n'
+printf '【人工待驗清單】\n'
+printf '  檢查點 2  人工待驗  由未參與開發的同事在無人指導下完成\n'
+printf '【整體】\n'
+printf 'acceptance: v0.1.0 —— 1 通過／0 未通過／0 未涵蓋／1 人工待驗／0 已簽核\n'
+printf 'acceptance: v0.1.0 未通過（--gate overall）\n'
+exit 1
+STUB
+  chmod +x "${ACCEPTANCE}"
+}
+
 # 對照表自己壞掉。結束碼 2 == 這份報表不能信。
 stub_broken() {
   cat >"${ACCEPTANCE}" <<'STUB'
@@ -200,6 +217,16 @@ gh_was_called() {
   run "${SCRIPT}" v0.1.0
 
   [[ "${output}" == *"檢查點 3"* ]]
+}
+
+@test "正式 tag 只因人工待驗被擋下時，訊息指名那一條人工檢查點" {
+  # 自動檢查全綠、只差人工簽核時，沒有「未通過／未涵蓋」可列；不列出人工待驗那一條，
+  # 擋下的訊息就說不出還差什麼。
+  stub_manual_pending
+
+  run "${SCRIPT}" v0.1.0
+
+  [[ "${output}" == *"檢查點 2  人工待驗"* ]]
 }
 
 @test "報表全數通過時正式 tag 建得起來" {
