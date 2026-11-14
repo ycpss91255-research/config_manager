@@ -21,7 +21,10 @@
    docker compose up -d
    ```
 
-   （`just docker build`、`just docker run` 是同一件事。）
+   也可以用 `just docker build`、`just docker run`：它們做的是同一組 compose 操作，另外在啟動前先檢查
+   `CM_TARGET_ROOT` 指的目錄存在。**這道檢查目前只看 shell 的環境變數，不讀 `.env`**：只寫在 `.env`、
+   而預設的 `/opt/robot/config` 又不存在時，`just docker run` 會被它擋下，`docker compose up -d` 不會。
+   用 `just` 時，改成 `export CM_TARGET_ROOT=…`。
 
 3. 在**這台機器上**開 `http://localhost:8081`。
 

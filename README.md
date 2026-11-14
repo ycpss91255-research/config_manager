@@ -32,7 +32,7 @@ just cfg import --source <檔案> --format <格式> --name <姓名> --email <ema
 
 - 都連到這台機器上執行中的服務（預設 `http://127.0.0.1:8080`，可用 `--api` 改）。
 - `just cfg import` 與網頁走同一套規則：要先取得編輯權，別人正在編輯時會被拒絕；角色預設是一般使用者，開發者加 `--role developer`。
-- `just cfg serve` 是直接在這台機器上起後端；一般請用下面「開始」裡的 `just docker run`。
+- `just cfg serve` 是直接在這台機器上起後端；一般請用下面「安裝與快速開始」裡的 `just docker run`。
 
 ## 支援平台
 
@@ -51,17 +51,59 @@ just cfg import --source <檔案> --format <格式> --name <姓名> --email <ema
 - Windows 的 WSL2 裡直接安裝 Docker Engine 的情況，沒有評估過。
 - 擴展到其他平台的評估，見 [`doc/CROSS-PLATFORM.md`](doc/CROSS-PLATFORM.md)。
 
-## 開始
+## 安裝與快速開始
 
-```bash
-just docker dev build  # 建置開發映像（疊上 compose.dev.yaml）
-just docker dev run    # 以開發模式啟動 backend + frontend
-just                   # 列出所有命令
-```
+**下面的步驟還沒有人照著從零實跑過**（見上面「支援平台」）。
 
-`just docker build`／`just docker run` 不帶 `dev` 起的是**現場部署**那一套（正式映像、部署模式、
-只有本機連得到、會自動重啟）；怎麼部署、怎麼從別台機器連進來、起不來時怎麼看原因，見
-[`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md)。
+1. **前置工具**：`git`、`docker`（要有 `docker compose`）、`just`。
+   - macOS 內建的 bash 3.2 跑不動 `just docker …` 呼叫的腳本，要先裝 bash 4 以上（例如 `brew install bash`），並讓它排在 `PATH` 的前面。
+   - 沒有 `just` 也能直接用 `docker compose`，指令見 [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md)；但那樣不會先檢查第 3 步的資料夾在不在。
+2. **取得原始碼**：
+
+   ```bash
+   git clone https://github.com/ycpss91255-research/config_manager.git
+   cd config_manager
+   ```
+
+3. **準備要管理的 config 資料夾**：它會掛進容器，也是一開始的白名單，而且**要先存在**。預設是 `/opt/robot/config`；要換成別處，用環境變數 `CM_TARGET_ROOT`：
+
+   ```bash
+   mkdir -p /path/to/your/config
+   export CM_TARGET_ROOT=/path/to/your/config
+   ```
+
+   - **shell 的 `export` 與 repo 根目錄的 `.env` 不一樣**：`export` 的值，`just docker run` 啟動前的檢查和 `docker compose` 都讀得到；`.env` 只有 `docker compose` 會讀，`just docker run` 啟動前的那一道檢查**目前不讀 `.env`**。只寫在 `.env`、而預設的 `/opt/robot/config` 又不存在時，`just docker run` 會被那道檢查擋下。
+   - Docker Desktop 只能掛載它有分享的路徑（Settings → Resources → File sharing）；資料夾要放在分享範圍內。這一點照 Docker Desktop 的文件寫，沒有在這裡驗證過。
+4. **建置並啟動**（三選一）：
+   - 現場部署（正式映像、部署模式、只有本機連得到、當掉會自己起來）：
+
+     ```bash
+     just docker build
+     just docker run
+     ```
+
+   - 開發模式：
+
+     ```bash
+     just docker dev build
+     just docker dev run
+     ```
+
+   - Docker Desktop（macOS、Windows）：預設的 `host` 網路不能用（見「支援平台」），先給這台機器一個名稱，再用 bridge：
+
+     ```bash
+     export CM_HOSTNAME=<這台機器的名稱>
+     just docker build
+     just docker bridge run
+     ```
+
+     `CM_HOSTNAME` 也可以寫在 `.env`：讀它的是 `docker compose`。
+
+   服務會用到本機的 8080、8081 與固定的容器名稱；已經有別的東西在用時起不來。
+5. **開啟介面**：在這台機器的瀏覽器開 `http://localhost:8081`。前後端都只聽本機；要從別台機器操作、起不來時怎麼看原因，見 [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md)。
+6. **介面怎麼操作**：頁面右上角的「說明」（`src/config_manager/web/help.html`）。
+
+`just` 不帶參數會列出所有命令。
 
 ## 開發者文件
 
