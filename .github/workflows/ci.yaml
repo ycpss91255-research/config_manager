@@ -223,13 +223,17 @@ jobs:
     # release.sh 對 2 的處置是不建立 release——那時候發現，代價是一個發不出去的
     # tag。跑在 main 上，最多晚一次合併就會知道。
     #
-    # 版號寫死。**v0.1.0 落地之後這裡要改成下一版**，否則這個 job 會在一個已經
-    # 完成的 milestone 上永遠報綠，而那與沒有這個 job 是同一件事。
+    # 跑的是對照表頂層 target 寫的目前目標版本，不在這裡寫死版號（#355）：寫死的版號在那一版
+    # 完成之後會永遠報綠，而那與沒有這個 job 是同一件事（原本寫死 v0.1.0，就停在那裡）。
+    # 目標版本已整體通過、對照表裡之後還有版本時，acceptance.sh 以 2 結束並指名下一版。
+    #
+    # --gate automated：這個 job 抓的是自動檢查退步與對照表壞掉。人工檢查點要等真人，不讓
+    # main 一直是紅的；報表照樣印出人工待驗清單。發版（release.sh）用預設的 --gate overall。
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - run: ./script/acceptance.sh v0.1.0
+      - run: ./script/acceptance.sh --target --gate automated
 
   build:
     runs-on: ubuntu-latest
