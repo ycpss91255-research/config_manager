@@ -510,7 +510,7 @@ evidence = 'https://github.com/ycpss91255-research/config_manager/issues/123'"
   report
 
   [ "${status}" -eq 2 ]
-  [[ "${output}" == *"summary"* ]]
+  [[ "${output}" == *"summary："* ]]
 }
 
 @test "簽核的 by 是空的時以 2 結束，並指名那一欄" {
@@ -523,7 +523,7 @@ summary = '做了什麼'"
   report
 
   [ "${status}" -eq 2 ]
-  [[ "${output}" == *"by"* ]]
+  [[ "${output}" == *"by："* ]]
 }
 
 @test "簽核的 date 是字串而不是日期時以 2 結束，並指名那一欄" {
@@ -536,7 +536,7 @@ summary = '做了什麼'"
   report
 
   [ "${status}" -eq 2 ]
-  [[ "${output}" == *"date"* ]]
+  [[ "${output}" == *"date："* ]]
 }
 
 @test "簽核的 evidence 不是這個 repo 的 issue 或 PR 時以 2 結束，並指名那一欄" {
@@ -549,7 +549,7 @@ summary = '做了什麼'"
   report
 
   [ "${status}" -eq 2 ]
-  [[ "${output}" == *"evidence"* ]]
+  [[ "${output}" == *"evidence："* ]]
 }
 
 @test "簽核有問題時，指名是哪一條檢查點" {
