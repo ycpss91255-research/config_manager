@@ -1389,6 +1389,8 @@ schema、後端在 #40（欄位表套用 schema）之前不會送 `options`—�
 | `CM_TEST_IMAGE_CACHE` 不設 | 照舊以 `docker build` 建映像，不碰快取（#358） |
 | `CM_TEST_IMAGE_CACHE=gha` ／ `gha-write` | 以 `docker buildx build --load` 從 GitHub Actions 的快取讀層；後者另外寫回 |
 | 不認得的 `CM_TEST_IMAGE_CACHE` | 以 2 結束並指名它，**不建映像** |
+| 建映像（有沒有設快取都一樣） | 不用 `--quiet`，以 `--progress=plain` 逐層印出建置紀錄（每一層是否取自快取，#358）；紀錄印在 stdout，不在 fd 2 |
+| 映像建不起來 | 以 docker 回的結束碼結束（照傳，不改寫）；fd 2 指出建不起來並給下一步；**不跑任何檢查** |
 | `--part api <i>/<n>` ／ `--part web <i>/<n>` | 交給 pytest 的是 `test_api.py` ／ `test_web.py` 收集順序裡第 i、i+n…條 |
 | `--part fast` | 交給 pytest 的是那兩支以外的全部規格 |
 | 一段記下的 `ids.txt` | 就是交給 pytest 的那一份參數，不是另外算一次的清單 |

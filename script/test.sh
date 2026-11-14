@@ -70,15 +70,19 @@ dispatch_to_container() {
   # tag，之後的 docker run 一個字都不變，所以本機與 CI 跑的仍是同一份映像。
   #
   # 只有一個 job 寫回快取（gha-write），其餘只讀：每個 job 都寫的話，映像一改，十幾個
-  # job 會同時上傳同一批層。不設時與這段之前完全相同——本機沒有那個快取可以讀。
+  # job 會同時上傳同一批層。不設時不碰快取——本機沒有那個快取可以讀。
+  #
+  # 建置紀錄不收起來（不用 --quiet），以 --progress=plain 逐層印出：每一層取自快取時
+  # 那一層會印 CACHED，CI 的日誌才看得出實際命中了哪些層，而不只是「有相符的快取」
+  # 或「快取匯入成功」（#358 定案 3）。
   case "${CM_TEST_IMAGE_CACHE:-}" in
     "")
-      _build=(docker build --quiet)
+      _build=(docker build --progress=plain)
       ;;
     gha | gha-write)
       # --load：buildx 用的建置器把結果留在它自己那裡，不放進 docker 的映像清單；
       # 少了這個，下面的 docker run 找不到這個 tag。
-      _build=(docker buildx build --load --quiet
+      _build=(docker buildx build --load --progress=plain
         --cache-from "type=gha,scope=${TEST_IMAGE_CACHE_SCOPE}")
       if [[ "${CM_TEST_IMAGE_CACHE}" == "gha-write" ]]; then
         _build+=(--cache-to "type=gha,mode=max,scope=${TEST_IMAGE_CACHE_SCOPE}")
@@ -100,7 +104,15 @@ dispatch_to_container() {
   # 映像預設用台灣的 Debian 鏡像，因為從開發這個 repo 的網路連不到
   # deb.debian.org。在別的地方答案不同的話，設 CM_APT_MIRROR，不要改檔案。
   [[ -n "${CM_APT_MIRROR:-}" ]] && _build+=(--build-arg "APT_MIRROR=${CM_APT_MIRROR}")
-  "${_build[@]}" "${REPO_ROOT}" >/dev/null
+  # docker 把建置紀錄寫在 fd 2；它是進度不是錯誤，照上面的理由併進 stdout。建不起來時
+  # 錯誤也在那段紀錄的最後幾行，所以另在 fd 2 說一次，結束碼照 docker 回的不改。
+  local _built=0
+  "${_build[@]}" "${REPO_ROOT}" 2>&1 || _built=$?
+  if ((_built != 0)); then
+    printf 'test.sh: 測試映像 %s 建不起來（docker 以 %d 結束），檢查一項都沒跑\n' "${TEST_IMAGE}" "${_built}" >&2
+    printf 'test.sh: 下一步：看上面建置紀錄的最後幾行，那是 %s 裡失敗的那一步\n' "${TEST_DOCKERFILE}" >&2
+    exit "${_built}"
+  fi
 
   # repo 用掛載而不是複製進去，這樣檢查失敗時指出的路徑在主機上真的存在，而且改
   # 一行不必重建映像。掛載是雙向的，所以 --user 才重要：映像自己的使用者是 root，

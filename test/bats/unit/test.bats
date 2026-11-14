@@ -244,7 +244,8 @@ in_image() {
 #
 # CI 的每個 job 都是新機器，CM_TEST_IMAGE_CACHE 讓它們從 GitHub Actions 的快取取層。
 # 被觀察的仍是 dispatch_to_container 組出來的 argv：快取真的有沒有被讀到，要真的
-# GitHub Actions 才看得見，那由 CI 的時間記錄回答，不在這裡。
+# GitHub Actions 才看得見，那由 CI 日誌裡逐層的建置紀錄（CACHED）回答，不在這裡。
+# 這裡只釘住「紀錄有印出來、印在哪裡」。
 
 @test "不設 CM_TEST_IMAGE_CACHE 時照舊以 docker build 建映像，不碰快取" {
   link_tool git
@@ -316,7 +317,7 @@ in_image() {
 
   gate "${MAIN}/script/test.sh" --lint no-such-linter
 
-  ! grep -qxF -- '--quiet' "${DOCKER_ARGV}"
+  [ "$(grep -cxF -- '--quiet' "${DOCKER_ARGV}")" -eq 0 ]
   grep -qxF -- '--progress=plain' "${DOCKER_ARGV}"
 }
 
@@ -328,7 +329,7 @@ in_image() {
 
   gate CM_TEST_IMAGE_CACHE=gha "${MAIN}/script/test.sh" --lint no-such-linter
 
-  ! grep -qxF -- '--quiet' "${DOCKER_ARGV}"
+  [ "$(grep -cxF -- '--quiet' "${DOCKER_ARGV}")" -eq 0 ]
   grep -qxF -- '--progress=plain' "${DOCKER_ARGV}"
 }
 
