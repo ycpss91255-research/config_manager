@@ -1310,6 +1310,7 @@ schema、後端在 #40（欄位表套用 schema）之前不會送 `options`—�
 | `script/lint_checkpoints.sh` | `test/bats/unit/lint_checkpoints.bats` |
 | `script/lint_test_interfaces.sh` | `test/bats/unit/lint_test_interfaces.bats` |
 | `script/coverage_gate.sh` | `test/bats/unit/coverage_gate.bats` |
+| `script/ci_rollup.sh` | `test/bats/unit/ci_rollup.bats` |
 | `script/acceptance.sh` | `test/bats/unit/acceptance.bats` |
 | `script/release.sh` | `test/bats/unit/release.bats` |
 | `justfile`（任務進入點的接線） | `test/bats/unit/justfile.bats` |
@@ -1385,11 +1386,52 @@ schema、後端在 #40（欄位表套用 schema）之前不會送 `options`—�
 | 在一般簽出裡轉進容器 | **不重複掛載** git 目錄，`--volume` 只有 repo 本身那一個 |
 | 一條規格自己跳過 | 結束前被**逐條指名**，不混在一片 ok 裡 |
 | 一個層級一條規格都沒有 | 被指名；`--level` 不以 pytest 的 5 結束（那是假紅燈） |
+| `CM_TEST_IMAGE_CACHE` 不設 | 照舊以 `docker build` 建映像，不碰快取（#358） |
+| `CM_TEST_IMAGE_CACHE=gha` ／ `gha-write` | 以 `docker buildx build --load` 從 GitHub Actions 的快取讀層；後者另外寫回 |
+| 不認得的 `CM_TEST_IMAGE_CACHE` | 以 2 結束並指名它，**不建映像** |
+| 建映像（有沒有設快取都一樣） | 不用 `--quiet`，以 `--progress=plain` 逐層印出建置紀錄（每一層是否取自快取，#358）；紀錄印在 stdout，不在 fd 2 |
+| 映像建不起來 | 以 docker 回的結束碼結束（照傳，不改寫）；fd 2 指出建不起來並給下一步；**不跑任何檢查** |
+| `--part api <i>/<n>` ／ `--part web <i>/<n>` | 交給 pytest 的是 `test_api.py` ／ `test_web.py` 收集順序裡第 i、i+n…條 |
+| `--part fast` | 交給 pytest 的是那兩支以外的全部規格 |
+| 一段記下的 `ids.txt` | 就是交給 pytest 的那一份參數，不是另外算一次的清單 |
+| 分到零條規格的一段 | 以 2 結束，**不交給 pytest**——空的參數會讓 pytest 跑全部 |
+| `--part gate`，各段齊全 | web 覆蓋率合併時沒被執行到的行取交集；每一段的 Python 資料都進 `coverage combine`；交給 `coverage_gate.sh` |
+| `--part gate`，有規格沒被跑到、被跑兩次、少一份分片、少了整組 api、少一份 web 報告 | 非零結束並指名，**不判覆蓋率** |
 
 **「一條規格自己跳過」與「一個層級一條規格都沒有」，與前面的缺工具那幾條是同一個保證的兩半。** 前面擋的是「工具不在卻回報通過」，後面擋的是
 「規格在卻沒有執行」——兩者在輸出上與全綠的差別都只有幾行字。兩種沉默都不算失敗
 （那些規格在工具映像裡確實跑不了，那一層確實還沒有規格），但兩種都不准安靜：
 降級要大聲，與 `CM_LINT_ALLOW_MISSING` 是同一個先例。
+
+**`--part` 被觀察的是「怎麼切、怎麼合」，不是 pytest 怎麼跑**（#358）。CI 把不帶參數的那一次
+執行拆成幾段平行跑，而拆開之後要對得回原本那一次：每一段交給 pytest 的就是它記下的清單，gate
+重新收集一次全部規格、要求每一條恰好被一段跑過，覆蓋率合起來才判。規格把 pytest 與 coverage
+換成 `PATH` 上的假工具——與假 `docker` 同一個手法——所以它們擋得住切法與合併方式寫錯，**擋不住
+真的規格樹與真的覆蓋率資料對不對得起來**。那一半由 CI 上 `coverage` 那個 job 每一次的 gate 回答，
+它讀的是各段真的跑出來的結果。
+
+**web 覆蓋率取交集的前提**：各段的「有程式碼的行」是同一組，因為它只由原始碼決定
+（`test/pytest/system/v8_coverage.py` 的 `code_lines`）。gate 先驗這個前提——同一個檔案、同樣的
+行數、每一份自己的數字加得起來——對不上就停，不猜。
+
+**`script/ci_rollup.sh` 被觀察的是「CI 唯一的必要狀態檢查放行了什麼」**（#358）。分支保護只看
+`ci-rollup` 一個 job，所以它放行的就是被合併的。它先前把每個相依的 `skipped` 都當成通過，而
+覆蓋率那一段在任何一份分片沒過時就是被跳過。它與其餘守門腳本同屬 T19，觀察位置相同：一份
+workflow、一份 `needs` 的 JSON 與觸發事件進去，結束碼與訊息出來。被觀察的行為：
+
+| 行為 | 通過條件 |
+|---|---|
+| 該跑的都是 `success`，這次本來不跑的被跳過 | 結束碼 0 |
+| 每次都該跑的 job 是 `failure` ／ `cancelled` ／ `skipped` | 非零結束，指名那個 job |
+| 只在 pull request（或只在 push 到 main）跑的 job，在那種觸發時被跳過 | 非零結束——該跑卻被跳過不是通過 |
+| 這次本來不跑的 job 跑了而失敗 | 非零結束 |
+| 不認得的結果 | 非零結束 |
+| workflow 有、`needs` 沒列的 job | 非零結束，指名那個 job——它的結果不會被看見 |
+| `needs` 有、沒被分進任何一組規則的 job；規則列了、`needs` 沒有的 job | 非零結束 |
+| `NEEDS` 不是 JSON、workflow 讀不到任何 job | 非零結束，不當成零個 job 全部通過 |
+
+**它擋不住的那一件事**：三組規則與各 job 的 `if:` 一致。規則說「只在 pull request 跑」而 `if:`
+其實每次都跑，它判得出結果但判不出那份不一致。`ci.yaml` 在規則旁邊寫明要一起改。
 
 **兩條掛載規格的觀察位置是 `docker run` 的參數，不是一個真的被啟動的容器**（#103）。
 worktree 的 `.git` 是一個檔案，內容是主 repo 那個 git 目錄的主機絕對路徑；只掛 repo
@@ -1663,8 +1705,9 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | `script/lint_coverage_audit.sh` | T19（這張表自己立的規則，表與樹對不起來就停下，#117） | 已落地 |
 | `script/lint_derived.sh` | T19（文件不得抄一份可推導的東西，#98） | 已落地 |
 | `script/check_file.sh` | T19（單檔檢查的派工規則） | 已落地 |
-| `script/test.sh` | T19（缺工具不得靜默通過，#72；worktree 的 git 目錄要掛進容器，#103） | 已落地 |
+| `script/test.sh` | T19（缺工具不得靜默通過，#72；worktree 的 git 目錄要掛進容器，#103；分段執行與映像的快取，#358） | 已落地 |
 | `script/coverage_gate.sh` | T19（每層門檻各自獨立、指名的只有轉紅的那一層） | 已落地 |
+| `script/ci_rollup.sh` | T19（該跑卻被跳過不是通過、workflow 有而 needs 沒列的 job 要擋，#358） | 已落地（CI 的 `ci-rollup` job 執行，不由 `test.sh` 執行） |
 | `script/acceptance.sh` | T19（未涵蓋不是通過、指到不存在的規格要失敗，#148） | 已落地 |
 | `script/release.sh` | T19（紅的 rc 仍發得出去、紅的正式 tag 發不出去，#150） | 已落地 |
 | `script/{build,run,exec,stop,prune}.sh` | 無——見「刻意的空格」 | 已落地 |

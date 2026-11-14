@@ -12,6 +12,8 @@ htmlcov/
 .coverage
 # web/index.html 的覆蓋率報告，由 T11 的規格寫出、由 script/coverage_gate.sh 讀。
 .coverage-web.json
+# script/test.sh --part 的各段結果，由 --part gate 讀；CI 上由各 job 上傳、再下載給 gate。
+ci-parts/
 # 驗收報表與 release notes，由 script/release.sh 寫在目前目錄下再交給 gh。
 # 它們是 release 的產物，不是 repo 的內容——權威的那一份在 release 上。
 acceptance-v*.txt
