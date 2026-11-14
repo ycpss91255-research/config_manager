@@ -382,7 +382,7 @@ make_parts_repo() {
   # ——那由 coverage_gate.bats 擋著。
   {
     printf '#!/usr/bin/env bash\n'
-    printf 'echo coverage_gate-was-called\n'
+    printf 'echo coverage_gate-was-called "$@"\n'
   } >"${PARTS_REPO}/script/coverage_gate.sh"
   chmod +x "${PARTS_REPO}/script/coverage_gate.sh"
 
@@ -544,6 +544,16 @@ write_complete_parts() {
 
   [ "${status}" -eq 0 ]
   [[ "${output}" == *"coverage_gate-was-called"* ]]
+}
+
+@test "各段齊全時 gate 交給 coverage_gate.sh 判，並要它把 summary 寫進 coverage/summary" {
+  # CI 的 coverage job 從 coverage/summary 拿表格放進 Job Summary、上傳成 artifact（#354）。
+  make_parts_repo
+  write_complete_parts
+
+  in_parts_repo --part gate
+
+  [[ "${output}" == *"coverage_gate-was-called --summary coverage/summary"* ]]
 }
 
 @test "一條規格沒有被任何一段跑到時 gate 不判覆蓋率，並指名那條規格" {

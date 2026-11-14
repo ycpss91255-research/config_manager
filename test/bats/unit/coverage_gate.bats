@@ -49,7 +49,7 @@ all_green() {
 }
 
 run_gate() {
-  CM_COVERAGE_JSON="${WORK}/coverage.json" CM_WEB_COVERAGE="${WORK}/web.json" run "${GATE}"
+  CM_COVERAGE_JSON="${WORK}/coverage.json" CM_WEB_COVERAGE="${WORK}/web.json" run "${GATE}" "$@"
 }
 
 @test "四層都達標時通過" {
@@ -150,4 +150,53 @@ run_gate() {
   run_gate
   [ "${status}" -ne 0 ]
   [[ "${output}" == *"沒有被量到"* ]]
+}
+
+# ── --summary：判完之後把四層的數字寫成表格與 tsv（#354） ─────────────────────────
+#
+# 表格給人看（CI 把它放進 Job Summary），tsv 給 script/coverage_badge.sh 讀。兩份都在
+# 判定之後寫，所以它們說的必須與結束碼是同一件事——寫出 summary 不能讓沒過的門檻變綠。
+
+@test "--summary 時，表格裡四層各一列：百分比、行數、下限、判定" {
+  all_green
+  run_gate --summary "${WORK}/summary"
+  local area
+  for area in core io api web; do
+    grep -qxF "| ${area} | 90.00% | 90/100 | 85% | 通過 |" "${WORK}/summary/coverage.md"
+  done
+}
+
+@test "--summary 時，tsv 每層一行：層名、執行過的行、總行數、下限、判定" {
+  all_green
+  run_gate --summary "${WORK}/summary"
+  [ "$(cat "${WORK}/summary/coverage.tsv")" = "$(printf 'core\t90\t100\t85\tpass\nio\t90\t100\t85\tpass\napi\t90\t100\t85\tpass\nweb\t90\t100\t85\tpass')" ]
+}
+
+@test "--summary 時，低於下限仍以非零結束——寫出 summary 不能讓門檻變綠" {
+  write_python_report 80 100 90 100 90 100
+  write_web_report 90 100
+  run_gate --summary "${WORK}/summary"
+  [ "${status}" -ne 0 ]
+}
+
+@test "--summary 時，低於下限的那一層照樣寫出，判定是 below" {
+  write_python_report 80 100 90 100 90 100
+  write_web_report 90 100
+  run_gate --summary "${WORK}/summary"
+  grep -qxF "$(printf 'core\t80\t100\t85\tbelow')" "${WORK}/summary/coverage.tsv"
+}
+
+@test "--summary 的判定用原始數值：84.99% 是未達，不因四捨五入放行" {
+  write_python_report 8499 10000 90 100 90 100
+  write_web_report 90 100
+  run_gate --summary "${WORK}/summary"
+  grep -qxF "| core | 84.99% | 8499/10000 | 85% | 未達 |" "${WORK}/summary/coverage.md"
+}
+
+@test "--summary 時，沒量到的那一層寫 unmeasured，不寫成 0%" {
+  # 報告不存在與覆蓋率是 0 是兩種失敗（見上面那兩則）；寫進 summary 之後也不能混成一種。
+  write_python_report 90 100 90 100 90 100
+  rm -f "${WORK}/web.json"
+  run_gate --summary "${WORK}/summary"
+  grep -qxF "$(printf 'web\t-\t-\t85\tunmeasured')" "${WORK}/summary/coverage.tsv"
 }
