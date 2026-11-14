@@ -39,6 +39,14 @@
 # 的差別正是這個 repo 反覆付過代價的地方（§0.4）。推導把這個 tag 自己排除在外：
 # CI 是在 tag 推上來之後才跑的，不排除的話每一次 release 都會擋下自己。
 #
+# ## 覆蓋率 badge 在 tag 指的 commit 上重新量測（#354）
+#
+# `doc/badge/coverage.svg` 隨 milestone 收尾更新，日常 PR 不核對它。發版時才核對：在 tag 指的
+# 這個 commit 上重新量一次覆蓋率，用 `coverage_badge.sh` 畫出這一版的 SVG，與版控裡的那份
+# **逐位元組**比對（維護者 11/14 在 #354 的定案：問題 1 選 A、問題 2 照 a）。不加容差。
+# 與驗收報表同一個處置：正式 tag 不一致就不建 release；rc 照常建立，notes 寫明不一致——
+# rc 記錄的是「現在走到哪」。量測本身的浮動（api 那一行時有時無）另在 #378 修，不在這裡放寬。
+#
 # ## 為什麼 gh 在容器外
 #
 # 檢查本身在容器裡：這支腳本呼叫 script/acceptance.sh，那支自己轉進映像（ADR-00000027）。
@@ -54,6 +62,11 @@ readonly REPO_ROOT
 # 是真的弄紅一條檢查點再發一次 release——而那會在 GitHub 上留下對外可見的東西。
 # 與 acceptance.sh 的 CM_ACCEPTANCE_MAP 同一個先例。
 readonly ACCEPTANCE="${CM_RELEASE_ACCEPTANCE:-${REPO_ROOT}/script/acceptance.sh}"
+
+# 覆蓋率的重新量測也可以被覆寫，理由同上：真的量一次是整組測試。這個指令收一個參數——要寫出
+# coverage.tsv 的位置——成功時以 0 結束。畫 SVG 的永遠是真的 coverage_badge.sh。
+readonly COVERAGE="${CM_RELEASE_COVERAGE:-_measure_coverage}"
+readonly BADGE="${REPO_ROOT}/script/coverage_badge.sh"
 
 usage() {
   cat <<'USAGE'
@@ -76,7 +89,11 @@ usage() {
   exit 1   正式 tag 的報表未通過，release 沒有建立
   exit 2   用法錯誤、tag 格式認不得、rc 編號跳號、缺 gh，或報表本身壞掉
 
+  覆蓋率 badge：在 <tag> 指的 commit 上重新量測，畫出這一版的 SVG，與 doc/badge/coverage.svg
+  逐位元組比對。正式 tag 不一致或量不到就不建立 release；rc 照常建立，notes 寫明
+
   CM_RELEASE_ACCEPTANCE  改用這個指令產生報表（供 test/bats/unit/release.bats 使用）
+  CM_RELEASE_COVERAGE    改用這個指令量覆蓋率，收一個參數＝寫出 coverage.tsv 的位置（同上）
 
 報表的逐條判定進 release notes，判定寫在第一行；同一份內容也作為附加檔案。
 報表寫在目前目錄下的 acceptance-<tag>.txt，notes 寫在 release-notes-<tag>.md。
@@ -158,13 +175,14 @@ _report_header() {
 }
 
 _write_notes() {
-  local notes="$1" verdict="$2" tag="$3" milestone="$4" commit="$5" body="$6"
+  local notes="$1" verdict="$2" tag="$3" milestone="$4" commit="$5" body="$6" badge="$7"
 
   {
     # 第一行就是判定。一個要往下捲三頁才看得出紅綠的 release，與一個沒有標示的
     # release 沒有差別。
     printf '## 驗收：%s %s\n\n' "${milestone}" "${verdict}"
     printf '%s\n\n' "$(printf '%s\n' "${body}" | grep -F '未涵蓋' | tail -n 1)"
+    printf '覆蓋率 badge：%s\n\n' "${badge}"
     printf '這份報表由 CI 在 tag `%s` 指的 commit `%s` 上執行 `script/acceptance.sh %s`\n' \
       "${tag}" "${commit}" "${milestone}"
     printf '產生，不是任何人手動貼上來的。同一份內容也作為附加檔案。\n\n'
@@ -173,6 +191,48 @@ _write_notes() {
     # 去別的地方找是哪一條——而那正是這份報表要取代的東西。
     printf '```text\n%s\n```\n' "${body}"
   } >"${notes}"
+}
+
+# 預設的量測：與 CI 相同的幾段（fast、api、web），各跑成一份，最後由 gate 合起來寫出
+# coverage.tsv。那是整組 pytest，規格以 CM_RELEASE_COVERAGE 換掉它。ci-parts／與
+# coverage/summary/ 是衍生產物，先清掉，免得讀到上一次留下的。
+_measure_coverage() {
+  local out="$1"
+  rm -rf "${REPO_ROOT}/ci-parts" "${REPO_ROOT}/coverage/summary"
+  "${REPO_ROOT}/script/test.sh" --part fast || return 1
+  "${REPO_ROOT}/script/test.sh" --part api 1/1 || return 1
+  "${REPO_ROOT}/script/test.sh" --part web 1/1 || return 1
+  # 低於門檻時 gate 以 1 結束，但表格照樣寫出：門檻由 CI 擋，這裡要的是數字。沒寫出就是量不到。
+  "${REPO_ROOT}/script/test.sh" --part gate || true
+  cp "${REPO_ROOT}/coverage/summary/coverage.tsv" "${out}"
+}
+
+# 覆蓋率 badge 的核對（#354）。BADGE_NOTE 是給 release notes 的一句；不一致時差異在 BADGE_DIFF。
+# 回 0＝與重新量測畫出來的逐位元組相同。
+_check_badge() {
+  local milestone="$1" work committed
+  work="$(mktemp -d)"
+  committed="$(git rev-parse --show-toplevel)/doc/badge/coverage.svg"
+  BADGE_DIFF=""
+  if ! "${COVERAGE}" "${work}/coverage.tsv" || [[ ! -s "${work}/coverage.tsv" ]]; then
+    BADGE_NOTE="這個 commit 的覆蓋率沒有量到（量測失敗，或沒有寫出 coverage.tsv）"
+    rm -rf "${work}"
+    return 1
+  fi
+  if ! "${BADGE}" "${milestone}" "${work}/coverage.tsv" >"${work}/measured.svg" 2>"${work}/badge.err"; then
+    BADGE_NOTE="這個 commit 的覆蓋率沒有量到（$(head -n 1 "${work}/badge.err")）"
+    rm -rf "${work}"
+    return 1
+  fi
+  if [[ -f "${committed}" ]] && cmp -s "${work}/measured.svg" "${committed}"; then
+    BADGE_NOTE="與這個 commit 重新量測畫出來的相同"
+    rm -rf "${work}"
+    return 0
+  fi
+  BADGE_NOTE="與這個 commit 重新量測畫出來的不同"
+  BADGE_DIFF="$(diff "${committed}" "${work}/measured.svg" 2>&1 || true)"
+  rm -rf "${work}"
+  return 1
 }
 
 _release() {
@@ -229,6 +289,24 @@ _release() {
     return 1
   fi
 
+  # 覆蓋率 badge。正式 tag 走到這裡代表驗收報表已通過；不一致或量不到就擋下。rc 照常建立。
+  local BADGE_NOTE="" BADGE_DIFF=""
+  if ! _check_badge "${MILESTONE}" && [[ -z "${RC}" ]]; then
+    # 兩種原因各有自己的下一步；先算成文字，再以連續的 printf 送出（lint_messages 的相鄰規則）。
+    local problem next
+    if [[ -n "${BADGE_DIFF}" ]]; then
+      problem="doc/badge/coverage.svg ${BADGE_NOTE}：
+${BADGE_DIFF}"
+      next="以這個 commit 量到的 coverage.tsv（CI coverage job 的 artifact coverage-summary）執行 ./script/coverage_badge.sh ${MILESTONE} coverage.tsv > doc/badge/coverage.svg 並提交，推一個 $(_next_rc_tag "${MILESTONE}") 確認後再打 ${tag}"
+    else
+      problem="${BADGE_NOTE}"
+      next="看上面的量測輸出修好量測，再重推這個 tag"
+    fi
+    printf 'release: 正式 tag %s 不建立 release：%s\n' "${tag}" "${problem}" >&2
+    printf 'release: 下一步：%s\n' "${next}" >&2
+    return 1
+  fi
+
   # notes 是給人在頁面上讀的，附加檔案是給人下載下來比對的。兩者同一份內容，
   # 但被編輯的只會是前者——要拿去比對的是後者。
   local report="${PWD}/acceptance-${tag}.txt"
@@ -238,7 +316,7 @@ _release() {
   } >"${report}"
 
   local notes="${PWD}/release-notes-${tag}.md"
-  _write_notes "${notes}" "${verdict}" "${tag}" "${MILESTONE}" "${commit}" "${body}"
+  _write_notes "${notes}" "${verdict}" "${tag}" "${MILESTONE}" "${commit}" "${body}" "${BADGE_NOTE}"
 
   local -a create=(gh release create "${tag}"
     --title "${tag} — 驗收${verdict}"
