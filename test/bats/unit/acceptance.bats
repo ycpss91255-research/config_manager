@@ -435,6 +435,17 @@ summary = '未參與開發的同事照步驟操作，五項任務都完成'"
   [[ "${output}" == *"檢查點 2  人工待驗"* ]]
 }
 
+@test "--gate automated 時，自動檢查全過、仍有人工待驗，整體那一段仍判未通過" {
+  # 閘門只決定結束碼，不改整體的判定：main 上的 job 是綠的，人工待驗也不能被讀成通過。
+  start_map
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+  manual_checkpoint 2 '只能由真人驗收的'
+
+  report_with --gate automated v0.1.0
+
+  [[ "${output}" == *"自動檢查通過，人工待驗 1 條——整體未通過"* ]]
+}
+
 @test "--gate automated 時，自動檢查未通過仍以 1 結束" {
   start_map
   checkpoint 1 '會紅的' "'test/pytest/unit/test_red.py'"

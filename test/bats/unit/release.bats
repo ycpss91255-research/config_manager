@@ -97,6 +97,38 @@ STUB
   chmod +x "${ACCEPTANCE}"
 }
 
+# **真的** acceptance.sh，餵替身對照表與替身規格（#355）：自動檢查一條會過，另一條是還沒
+# 簽核的人工檢查點。其餘規格用替身報表；這一組要驗的是兩支串起來時 release.sh 用的是整體
+# 閘門，替身報表驗不到這件事。真的對照表不參與。
+real_acceptance_with_manual_pending() {
+  local root="${WORK}/acceptance-root" map="${WORK}/checkpoints.toml"
+  mkdir -p "${root}/test/pytest/unit"
+  cat >"${root}/test/pytest/unit/test_green.py" <<'PY'
+def test_一條會過的規格():
+    assert True
+PY
+  cat >"${map}" <<'TOML'
+[[milestone]]
+id = 'v0.1.0'
+title = '替身'
+
+[[milestone.checkpoint]]
+number = 1
+text = '自動的'
+specs = ['test/pytest/unit/test_green.py']
+
+[[milestone.checkpoint]]
+number = 2
+text = '只能由真人驗收的'
+manual = true
+TOML
+  cat >"${ACCEPTANCE}" <<STUB
+#!/usr/bin/env bash
+CM_ACCEPTANCE_MAP='${map}' CM_ACCEPTANCE_ROOT='${root}' exec '${REPO_ROOT}/script/acceptance.sh' "\$@"
+STUB
+  chmod +x "${ACCEPTANCE}"
+}
+
 # 對照表自己壞掉。結束碼 2 == 這份報表不能信。
 stub_broken() {
   cat >"${ACCEPTANCE}" <<'STUB'
@@ -223,6 +255,32 @@ gh_was_called() {
   # 自動檢查全綠、只差人工簽核時，沒有「未通過／未涵蓋」可列；不列出人工待驗那一條，
   # 擋下的訊息就說不出還差什麼。
   stub_manual_pending
+
+  run "${SCRIPT}" v0.1.0
+
+  [[ "${output}" == *"檢查點 2  人工待驗"* ]]
+}
+
+@test "真的驗收報表自動檢查全過、只剩人工待驗時，正式 tag 以 1 結束" {
+  # release.sh 不帶 --gate，用的是整體：main 上的 job 是綠的，不代表這一版發得出去（#355）。
+  real_acceptance_with_manual_pending
+
+  run "${SCRIPT}" v0.1.0
+
+  [ "${status}" -eq 1 ]
+}
+
+@test "真的驗收報表只剩人工待驗時，正式 tag 一個 release 都沒有建立" {
+  real_acceptance_with_manual_pending
+
+  run "${SCRIPT}" v0.1.0
+
+  ! gh_was_called
+}
+
+@test "真的驗收報表只剩人工待驗時，擋下的訊息指名那一條人工檢查點" {
+  # 替身報表那一則（上面）的格式是照著寫的；這一則確認真的報表也對得上 release.sh 的比對。
+  real_acceptance_with_manual_pending
 
   run "${SCRIPT}" v0.1.0
 
