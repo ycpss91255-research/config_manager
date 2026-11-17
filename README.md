@@ -94,25 +94,19 @@ just cfg import --source <檔案> --format <格式> --name <姓名> --email <ema
      just docker dev run
      ```
 
-   - Docker Desktop（macOS、Windows）：預設的 `host` 網路不能用（見「支援平台」），先給這台機器一個名稱，再用 bridge：
+   - Docker Desktop（macOS、Windows）：預設的 `host` 網路不能用（見「支援平台」），改用 bridge：
 
      ```bash
-     export CM_HOSTNAME=<這台機器的名稱>
      just docker build
      just docker bridge run
      ```
 
-     `CM_HOSTNAME` 也可以寫在 `.env`：讀它的是 `docker compose`。
-
    服務會用到本機的 8080、8081 與固定的容器名稱；已經有別的東西在用時起不來。
 5. **開啟介面**：在這台機器的瀏覽器開 `http://localhost:8081`。前後端都只聽本機；要從別台機器操作、起不來時怎麼看原因，見 [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md)。
-6. **介面怎麼操作**：頁面右上角的「說明」（`src/config_manager/web/help.html`）。
+6. **第一次納管之前**：以開發者身分到介面的「設定」確認「新納管預設主機名稱」（預填啟動時在這台機器上讀到的名稱）；還沒確認時不能納管。舊版用過的 `CM_HOSTNAME` 環境變數已經不用了，留著的話服務不會啟動，升級順序見 [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md)。
+7. **介面怎麼操作**：頁面右上角的「說明」（`src/config_manager/web/help.html`）。
 
 `just` 不帶參數會列出所有命令。
-
-第一次納管之前，要以開發者身分到介面的「設定」確認「新納管預設主機名稱」（預填啟動時在這台機器上
-讀到的名稱）；還沒確認時不能納管。舊版用過的 `CM_HOSTNAME` 環境變數已經不用了，留著的話服務不會啟動，
-升級順序見 [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md)。
 
 ## 開發者文件
 
