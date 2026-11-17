@@ -43,7 +43,7 @@
 
 - **已定案**：預設 `host`，bridge 要明確選用（`compose.bridge.yaml` 的說明，不變式 4）；理由是 bridge 會讓同一台機器上的 ROS 2 discovery 靜默失效。
 - **現在可評估的方案**（現有的 bridge 路徑，讀設定檔得到）：
-  - 啟動：疊上 `compose.bridge.yaml`，`CM_HOSTNAME` 必填（沒給就在啟動前擋下）。
+  - 啟動：疊上 `compose.bridge.yaml`（`just docker bridge run`）。#385 起不再需要 `CM_HOSTNAME`：主機名稱由啟動工具在**主機**上讀取當候選，開發者在介面的「設定」確認後存在清單檔；容器裡留著舊的 `CM_HOSTNAME` 會讓服務停止啟動。
   - 連線：主機端只綁 `127.0.0.1:8080`、`127.0.0.1:8081`；backend 在容器內聽 `0.0.0.0`。頁面以 `${location.hostname}:8080` 找後端（`index.html` 第 704 行），所以在同一台機器開 `http://localhost:8081` 時，頁面會去連 `localhost:8080`。推論：兩者對得上。
   - 埠：8080、8081 與兩個容器名都寫死在 compose 檔裡，不能改；同一台機器上已有東西在用時起不來。
   - 選項：
