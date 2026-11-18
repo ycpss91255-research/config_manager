@@ -70,14 +70,14 @@ just cfg import --source <檔案> --format <格式> --name <姓名> --email <ema
    cd config_manager
    ```
 
-3. **準備要管理的 config 資料夾**：它會掛進容器，也是一開始的白名單，而且**要先存在**。預設是 `/opt/robot/config`；要換成別處，用環境變數 `CM_TARGET_ROOT`：
+3. **準備要管理的 config 資料夾**：它會掛進容器，也是一開始的白名單，而且**要先存在**。預設是 `/opt/robot/config`；要換成別處，在 repo 根目錄建立 `.env`（不進版控）寫上 `CM_TARGET_ROOT`：
 
    ```bash
    mkdir -p /path/to/your/config
-   export CM_TARGET_ROOT=/path/to/your/config
+   echo 'CM_TARGET_ROOT=/path/to/your/config' > .env
    ```
 
-   - **shell 的 `export` 與 repo 根目錄的 `.env` 不一樣**：`export` 的值，`just docker run` 啟動前的檢查和 `docker compose` 都讀得到；`.env` 只有 `docker compose` 會讀，`just docker run` 啟動前的那一道檢查**目前不讀 `.env`**。只寫在 `.env`、而預設的 `/opt/robot/config` 又不存在時，`just docker run` 會被那道檢查擋下。
+   - `just docker run` 起服務之前會檢查這個資料夾在不在；檢查的與 `docker compose` 實際掛載的是同一個值。shell 裡 `export CM_TARGET_ROOT=…` 的值優先於 `.env`。
    - Docker Desktop 只能掛載它有分享的路徑（Settings → Resources → File sharing）；資料夾要放在分享範圍內。這一點照 Docker Desktop 的文件寫，沒有在這裡驗證過。
 4. **建置並啟動**（三選一）：
    - 現場部署（正式映像、部署模式、只有本機連得到、當掉會自己起來）：
