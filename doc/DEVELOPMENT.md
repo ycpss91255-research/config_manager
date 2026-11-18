@@ -130,6 +130,10 @@ commit。
 **四個資料夾各自計算、各自擋**（`script/coverage_gate.sh`）——一個門檻同時守四個標準不同的
 區域，結果是守住最鬆的那個。
 
+**本機 git hook**（#391）：`just setup hooks` 打開、`just setup hooks-off` 關掉。登記的檢查（workflow 的
+`run-name`、標題任務編號限制）同樣在檢查映像裡跑，與 CI 的 `run-name`、`single-task` job 呼叫同一支腳本；
+`--no-verify` 會跳過本機 hook，CI 是最後一道。用法與界線見 [`doc/GIT-HOOKS.md`](GIT-HOOKS.md)。
+
 ## 給後續維護者 / agent
 
 - **不要重建設計文件。** 直接使用；有新決策就在 `doc/adr/` 加新號，接在現有的最大編號之後。
