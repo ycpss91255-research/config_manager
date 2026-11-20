@@ -162,3 +162,35 @@ DOC
   [[ "${output}" == *"NOPE.md"* ]]
   [[ "${output}" == *"下一步"* ]]
 }
+
+# 沒給檔案時檢查哪幾份（#362）：開發者的內容從 README 搬到 doc/DEVELOPMENT.md，搬過去的
+# 段落原本在這支 lint 底下，搬了之後也要在——否則等於悄悄放寬。被測的是預設，所以把腳本
+# 複製到一份假的 repo 裡跑，它的 REPO_ROOT 由自己的位置算出來。
+
+_fake_repo() {
+  FAKE="${WORK}/repo"
+  mkdir -p "${FAKE}/script" "${FAKE}/doc"
+  cp "${LINT}" "${FAKE}/script/lint_derived.sh"
+}
+
+@test "沒給檔案時 doc/DEVELOPMENT.md 也被檢查" {
+  _fake_repo
+  printf '# config_manager\n\n沒有可推導的東西。\n' >"${FAKE}/README.md"
+  printf '# 開發\n\n對照見 T19。\n' >"${FAKE}/doc/DEVELOPMENT.md"
+
+  run "${FAKE}/script/lint_derived.sh"
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"doc/DEVELOPMENT.md"* ]]
+}
+
+@test "沒給檔案時 README.md 仍被檢查" {
+  _fake_repo
+  printf '# config_manager\n\n對照見 T19。\n' >"${FAKE}/README.md"
+  printf '# 開發\n\n沒有可推導的東西。\n' >"${FAKE}/doc/DEVELOPMENT.md"
+
+  run "${FAKE}/script/lint_derived.sh"
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"README.md"* ]]
+}
