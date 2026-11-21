@@ -79,7 +79,7 @@ usage() {
   --gate overall    （預設）整體通過才以 0 結束：自動檢查全部通過、沒有未涵蓋、
                     人工檢查點全部已簽核。script/release.sh 用這個
   --gate automated  自動檢查全部通過、沒有未涵蓋就以 0 結束，人工待驗不影響結束碼。
-                    main 上的 acceptance job 用這個；兩種閘門印出的報表相同
+                    CI 的 acceptance job（PR 上與 main 的手動觸發，#407）用這個；兩種閘門印出的報表相同
 
   exit 0   照所選的閘門通過
   exit 1   照所選的閘門未通過
@@ -170,7 +170,7 @@ main() {
       --gate)
         if [[ $# -lt 2 || ( "$2" != overall && "$2" != automated ) ]]; then
           printf 'acceptance: --gate 只認 overall 與 automated，收到的是 %s\n' "${2:-（沒有值）}" >&2
-          printf 'acceptance: 下一步：發版用 --gate overall（預設），main 上的 job 用 --gate automated\n' >&2
+          printf 'acceptance: 下一步：發版用 --gate overall（預設），CI 的 acceptance job（PR 上與 main 的手動觸發）用 --gate automated\n' >&2
           return 2
         fi
         gate="$2"

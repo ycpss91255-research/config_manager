@@ -17,9 +17,15 @@
 #
 # 另外三件事對不起來也擋，因為每一件都是「有東西沒被判到」：
 #
-#   - workflow 裡有、ci-rollup 的 needs 沒列的 job：它的結果根本不會被看見
+#   - workflow 裡有、ci-rollup 的 needs 沒列的 job：它的結果根本不會被看見。排在 ci-rollup 之後的
+#     job（它自己的 needs 有 ci-rollup，例如 merge job，#407）例外：它等的就是這個結論，列不進來
 #   - needs 裡有、這裡的規則沒有分類的 job：不知道它這一次該不該跑
 #   - 規則裡寫了、needs 裡沒有的 job：規則以為在守的東西不在
+#
+# **非 main 的手動觸發一律失敗**（#407）：必要檢查只認名稱，不分 workflow 與觸發（〈Troubleshooting
+# rules〉）。在 PR 分支上手動觸發的那一輪會跳過 PR 專屬的檢查，卻在同一個 head 上留下一個綠的
+# ci-rollup；同一個 commit 有好幾個同名的 ci-rollup 時 GitHub 認哪一個，文件沒寫。所以那種觸發直接
+# 紅掉，各 job 的結果照樣印出來供參考。main 上的手動觸發是發版前要留下的 ci-rollup，照 --always 判。
 #
 # 跑在 runner 上而不是測試映像裡，與 lint_checkpoints.sh 同一個理由：它讀的是 GitHub
 # 給這個 job 的資訊（needs 的結果、觸發事件），那些只在 runner 上有。需要的只有 python3。
@@ -33,6 +39,7 @@ usage() {
   --always "<job …>"     每次都必須是 success 的 job，以空白分隔
   --pull-request "<job …>"
                          pull_request 觸發時必須是 success；其餘觸發允許 skipped
+                         （workflow_dispatch 只在 refs/heads/main 上判；其他 ref 一律失敗）
   --main-push "<job …>"  push 到 refs/heads/main 時必須是 success；其餘觸發允許 skipped
 
 讀這幾個環境變數：
@@ -43,7 +50,8 @@ usage() {
 
   fail  任何一個該跑的 job 不是 success（含 failure、cancelled、被跳過）
   fail  任何一個 job 是 failure 或 cancelled，不論它這一次該不該跑
-  fail  workflow、needs、這幾組規則三者列的 job 對不起來
+  fail  workflow、needs、這幾組規則三者列的 job 對不起來（排在 ci-rollup 之後的 job 不算漏列）
+  fail  workflow_dispatch 而 ref 不是 refs/heads/main：非 main 的手動觸發只供參考
 USAGE
 }
 
@@ -135,12 +143,14 @@ if not self_job:
 
 
 def workflow_jobs(path):
-    """workflow 檔頂層 jobs: 底下的 job id，照出現順序。
+    """workflow 檔頂層 jobs: 底下的 job id（照出現順序），與每個 job 的 needs。
 
     不靠 YAML 套件：runner 的 python3 不保證有。workflow 是這個 repo 自己寫的區塊式 YAML，
-    job id 是 jobs: 底下第一層縮排的鍵。讀不出任何一個就停，不當成「沒有 job」。
+    job id 是 jobs: 底下第一層縮排的鍵；needs 是 job 內第一層的鍵，寫成 [a, b]、a 或區塊清單。
+    讀不出任何一個 job 就停，不當成「沒有 job」。
     """
-    found, indent, inside = [], None, False
+    found, needs_of, indent, inside = [], {}, None, False
+    current, body, collecting = None, None, False
     with open(path, encoding="utf-8") as handle:
         for raw in handle:
             line = raw.rstrip("\n")
@@ -154,20 +164,48 @@ def workflow_jobs(path):
             width = len(line) - len(line.lstrip(" "))
             if indent is None:
                 indent = width
-            if width != indent:
+            if width == indent:
+                match = re.fullmatch(r"([A-Za-z0-9_-]+):\s*(#.*)?", line.strip())
+                current = match[1] if match else None
+                if current:
+                    found.append(current)
+                    needs_of[current] = []
+                body, collecting = None, False
                 continue
-            match = re.fullmatch(r"([A-Za-z0-9_-]+):\s*(#.*)?", line.strip())
-            if match:
-                found.append(match[1])
-    return found
+            if current is None or width < indent:
+                continue
+            if body is None:
+                body = width
+            text = line.strip()
+            if width == body:
+                collecting = False
+                match = re.fullmatch(r"needs:\s*([^#]*?)\s*(#.*)?", text)
+                if match and match[1].startswith("["):
+                    needs_of[current] += [v.strip() for v in match[1].strip("[]").split(",") if v.strip()]
+                elif match and match[1]:
+                    needs_of[current].append(match[1])
+                elif match:
+                    collecting = True
+            elif collecting:
+                match = re.fullmatch(r"-\s*([A-Za-z0-9_-]+)\s*(#.*)?", text)
+                if match:
+                    needs_of[current].append(match[1])
+                else:
+                    collecting = False
+    return found, needs_of
 
 
-defined = [job for job in workflow_jobs(workflow_path) if job != self_job]
+listed_jobs, needs_of = workflow_jobs(workflow_path)
+# 排在這個 job 之後的（它自己的 needs 有這個 job，例如 merge job）：它等的就是這裡的結論，列不進 needs。
+after = [job for job in listed_jobs if self_job in needs_of.get(job, [])]
+defined = [job for job in listed_jobs if job != self_job and job not in after]
 if not defined:
     stop([
         f"在 {workflow_path} 的 jobs: 底下讀不到任何 job，needs 無從比對。",
         "下一步：確認 workflow 用區塊式寫法，jobs: 底下每個 job 一個鍵",
     ])
+if after:
+    print(f"ci_rollup: 排在 {self_job} 之後、不列進 needs 的 job：{'、'.join(after)}")
 
 rules = {}
 problems = []
@@ -202,6 +240,7 @@ expected_now = {
     "pull-request": event == "pull_request",
     "main-push": event == "push" and ref == "refs/heads/main",
 }
+manual_elsewhere = event == "workflow_dispatch" and ref != "refs/heads/main"
 KNOWN = {"success", "failure", "cancelled", "skipped"}
 failed = []
 print(f"ci_rollup: 觸發 {event or '（未設）'}，ref {ref or '（未設）'}")
@@ -222,6 +261,12 @@ for job, value in needs.items():
     if not verdict.startswith("通過"):
         failed.append(job)
 
+if manual_elsewhere:
+    stop([
+        f"這一輪是 {ref} 上的手動觸發（workflow_dispatch）：非 main 的手動觸發只供參考，上面各 job 的結果照樣看得到，"
+        "但這裡不放行——必要檢查只認名稱，綠的 ci-rollup 會留在同一個 head 上替 PR 開綠燈（#407）。",
+        "下一步：要合併請走 PR（PR 上的 pull_request 執行才算，TDD red 也是）；發版前的手動觸發要在 main 上",
+    ])
 if failed:
     stop([
         f"有 job 沒有通過：{'、'.join(failed)}。",

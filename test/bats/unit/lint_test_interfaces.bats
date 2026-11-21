@@ -100,6 +100,17 @@ STUB
   [ "${status}" -eq 0 ]
 }
 
+@test "規則 B：印出讀到的識別：新介面回指的 issue 編號與它的 createdAt（#407）" {
+  stub_gh_created "2020-01-01T00:00:00Z"
+  printf '### T1 — 既有介面\n\n### T5 — 新介面\n\n來由 #42。\n' >doc/TEST-PLAN.md
+  git add -A
+  GIT_AUTHOR_DATE="2020-06-01T00:00:00Z" GIT_COMMITTER_DATE="2020-06-01T00:00:00Z" \
+    git commit -q -m "docs(test-plan): 新介面段落"
+
+  run "${LINT}" agreed "${BASE}"
+  [[ "${output}" == *"識別 T5 回指 #42 createdAt=2020-01-01T00:00:00Z"* ]]
+}
+
 @test "規則 B：新介面回指的 issue 建立時間晚於該 commit 時被擋下" {
   stub_gh_created "2020-12-01T00:00:00Z"
   printf '### T1 — 既有介面\n\n### T5 — 新介面\n\n來由 #42。\n' >doc/TEST-PLAN.md

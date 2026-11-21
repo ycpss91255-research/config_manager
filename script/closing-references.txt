@@ -1,0 +1,16 @@
+# 關閉參照的擷取規格（#407 調整需求第 5 點）。**只有這一份**：共用綁定判定 script/pr_binding.sh、
+# merge job 送出前掃合併訊息的 script/ci_merge.sh，與 Claude Code 的 PR hook 都讀它。
+#
+# 格式：以 # 開頭的行與空行是說明；其餘正好一行，是一個 Python re 的樣式，以不分大小寫比對。
+# 具名群組：keyword（關閉關鍵字）、repo（OWNER/REPOSITORY，可省略；省略就是本 repo）、number，
+# 或 url（關鍵字後面接的 GitHub 網址）。
+#
+# 寫法照〈Linking a pull request to an issue〉：close／closes／closed、fix／fixes／fixed、
+# resolve／resolves／resolved，大小寫不拘，後面可以接冒號，再接 #N、OWNER/REPOSITORY#N。
+# 從 lint_checkpoints.sh 原本的 `(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#[0-9]+` 補了四處：
+#   - 前面不能連著英數字或底線（原本會把 Discloses #12 讀成 closes #12）
+#   - 關鍵字後面可以接冒號（Closes: #10）
+#   - # 前面可以有 OWNER/REPOSITORY
+#   - 關鍵字後面接的 GitHub 網址也擷取（PR、PR 留言的網址會讓合併關掉被引用的 PR）
+# 寧可多抓：多抓到的參照只會讓判定失敗、要人改寫，少抓才會放過一張不該關的 issue。
+(?<![A-Za-z0-9_])(?P<keyword>close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s*(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#(?P<number>[0-9]+)|(?P<url>https?://(?:www\.)?github\.com/\S+))

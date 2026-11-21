@@ -37,14 +37,29 @@ run-name: >-
   || format('{0} {1} @ {2}', github.event_name, github.ref_name, github.sha) }}
 
 on:
+  # push 到 main 保留不動（#407）：merge job 以 GITHUB_TOKEN 合併不會觸發它，只有不是 GITHUB_TOKEN 的
+  # 推送（例如維護者在網頁上合併）才會。去留由 #373 定。
   push:
     branches: [main]
+  # types 寫明（#407，同 sim_asset）：ready_for_review 讓草稿轉成可合併時跑一輪（merge job 才會合併）；
+  # edited 讓使用者或 agent 帳號改標題或描述（例如補 `## TDD red`）時自動重跑。用 GITHUB_TOKEN 做的編輯
+  # 不會產生新的一輪，所以不靠它保證「每次改動都有新的一輪」：合併前一律由 merge job 重判。
   pull_request:
-  # merge queue（#356）。只在 pull request 上跑的那幾個 job 在這裡不跑（它們的 if: 只認
-  # pull_request），與 push 到 main 時一樣；acceptance 只在 push 到 main 跑。ci_rollup.sh 對
-  # 這兩組在 merge_group 時允許 skipped，其餘每次都該跑的仍要 success。
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  # merge queue 的觸發保留，但這個 repo 不用 merge queue（#407：合併由 CI 的 merge job 做），實際不會
+  # 發生。只在 pull request 上跑的那幾個 job 在這裡不跑（它們的 if: 只認 pull_request）；ci_rollup.sh
+  # 對那一組允許 skipped，其餘每次都該跑的（含 acceptance、repo-rules）仍要 success。
   merge_group:
+  # 手動觸發只在 main 上算數（#407）：發版前用它在 main 的 commit 上留下 ci-rollup。在功能分支上手動
+  # 觸發仍看得到各 job 的結果，但 ci_rollup.sh 會讓 ci-rollup 失敗——必要檢查只認名稱，不分觸發。
   workflow_dispatch:
+
+# 同一個 PR 只留最新的一輪（#407，同 sim_asset）：改兩次描述時不會兩輪都去合併。這一層的取消可能停在
+# 舊那一輪 merge job 的半途（例如已經合併、還沒關 issue），那時照 AGENTS.md 重跑原本那一輪的 merge job
+# 補作業。不是 pull_request 的觸發各自一組，不互相取消。
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -120,9 +135,8 @@ jobs:
     # 位置與樣式，不印命中的內容（這裡的紀錄是公開的）。跑在映像之外，與 checkpoints 同一個理由：它要 gh
     # 讀 PR，容器裡沒有 token。
     #
-    # 已知缺口：上面的 pull_request 沒寫 types，只在 opened、synchronize、reopened 跑；在網頁上改 PR 標題
-    # 或描述不會重跑這個 job，原本的綠燈留在同一個 head 上。觸發條件由合併規則那張 issue（#407）補，
-    # 這裡不改，免得兩邊改同一處。
+    # 在網頁上改 PR 標題或描述會重跑這個 job：pull_request 的 types 有 edited（#407）。用 GITHUB_TOKEN
+    # 做的編輯不會，那由 merge job 合併前的重判補上。
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -133,6 +147,39 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
         run: ./script/lint_attribution.sh pr "${{ github.event.pull_request.number }}" "origin/${{ github.base_ref }}"
+
+  merge-gate:
+    # 合併前的兩道檢查（#407）：這個 PR 自己的 TDD red（描述的 `## TDD red` 段落連到這個 PR 的一輪
+    # pull_request 執行，失敗在可認定 red 的 job 的 specs 步驟），以及綁定 issue 的 milestone 前面沒有
+    # 還開著的版本。repo 的 ruleset 讀不到 PR 描述與 issue，所以由這裡擋；必要檢查仍只有 ci-rollup。
+    # 讀執行紀錄的 attempt、jobs 與 job 紀錄要 actions: read；job 層的 permissions 會整組取代 workflow
+    # 層的，所以其餘三項唯讀也寫在這裡。跑在映像之外，與 checkpoints 同一個理由。
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # 綁定判定讀 base..HEAD 的 commit 訊息與 base 的合併紀錄。
+          fetch-depth: 0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./script/lint_merge_gate.sh "${{ github.event.pull_request.number }}" "origin/${{ github.base_ref }}"
+
+  repo-rules:
+    # repo 的保護設定由 CI 核對（#407，維護者定案 12）：讀 GitHub 上實際的 ruleset 與 repo 設定，和
+    # AGENTS.md 的「repo 保護設定」表逐項比，不一致或必驗項目讀不到就失敗。每次都跑：設定被改掉，
+    # 下一輪 CI 就紅。用 GITHUB_TOKEN、workflow 層的唯讀權限（這幾個端點文件都標為只要 Metadata 讀取權）。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./script/lint_repo_rules.sh AGENTS.md
 
   run-name:
     # workflow 的 run-name 分得出每一次執行對應的 commit（#350）。**獨立的 job、獨立的腳本**，不併進
@@ -159,6 +206,12 @@ jobs:
   #
   # fetch-depth: 0 每一段都給：原本那一次是在完整歷史上跑的（lint_commit 要讀歷史），
   # 拆開之後每一段的輸入不該比原本少。
+  #
+  # **跑規格的四段（unit-integration、api、bats、web-e2e）拆成 prepare 與 specs 兩步**（#407）：
+  # prepare 以 `test.sh --prepare` 建映像，specs 以 CM_TEST_IMAGE_PREBUILT=1 用建好的映像跑規格。
+  # merge-gate 認 TDD red 時只認「specs 這一步失敗、紀錄裡有規格層級的失敗」，所以映像沒建起來
+  # 與規格紅了分得開。步驟名稱 prepare、specs 是 merge-gate 讀的介面，改名要一起改
+  # script/lint_merge_gate.sh。
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -183,9 +236,15 @@ jobs:
       - uses: docker/setup-buildx-action@v4
       - uses: crazy-max/ghaction-github-runtime@v4
       - run: ./script/ci_key.sh --github-env
-      - run: ./script/test.sh --part fast
+      - name: prepare
+        run: ./script/test.sh --prepare
         env:
           CM_TEST_IMAGE_CACHE: gha
+          CM_TEST_IMAGE_TAG: ${{ env.CM_CI_KEY }}
+      - name: specs
+        run: ./script/test.sh --part fast
+        env:
+          CM_TEST_IMAGE_PREBUILT: "1"
           CM_TEST_IMAGE_TAG: ${{ env.CM_CI_KEY }}
       - uses: actions/upload-artifact@v7
         with:
@@ -216,9 +275,15 @@ jobs:
       - uses: docker/setup-buildx-action@v4
       - uses: crazy-max/ghaction-github-runtime@v4
       - run: ./script/ci_key.sh --github-env
-      - run: ./script/test.sh --part api "$(( JOB_INDEX + 1 ))/${JOB_TOTAL}"
+      - name: prepare
+        run: ./script/test.sh --prepare
         env:
           CM_TEST_IMAGE_CACHE: gha
+          CM_TEST_IMAGE_TAG: ${{ env.CM_CI_KEY }}
+      - name: specs
+        run: ./script/test.sh --part api "$(( JOB_INDEX + 1 ))/${JOB_TOTAL}"
+        env:
+          CM_TEST_IMAGE_PREBUILT: "1"
           CM_TEST_IMAGE_TAG: ${{ env.CM_CI_KEY }}
           JOB_INDEX: ${{ strategy.job-index }}
           JOB_TOTAL: ${{ strategy.job-total }}
@@ -238,9 +303,15 @@ jobs:
       - uses: docker/setup-buildx-action@v4
       - uses: crazy-max/ghaction-github-runtime@v4
       - run: ./script/ci_key.sh --github-env
-      - run: ./script/test.sh --part bats
+      - name: prepare
+        run: ./script/test.sh --prepare
         env:
           CM_TEST_IMAGE_CACHE: gha-write
+          CM_TEST_IMAGE_TAG: ${{ env.CM_CI_KEY }}
+      - name: specs
+        run: ./script/test.sh --part bats
+        env:
+          CM_TEST_IMAGE_PREBUILT: "1"
           CM_TEST_IMAGE_TAG: ${{ env.CM_CI_KEY }}
 
   web-e2e:
@@ -261,9 +332,15 @@ jobs:
       - uses: docker/setup-buildx-action@v4
       - uses: crazy-max/ghaction-github-runtime@v4
       - run: ./script/ci_key.sh --github-env
-      - run: ./script/test.sh --part web "$(( JOB_INDEX + 1 ))/${JOB_TOTAL}"
+      - name: prepare
+        run: ./script/test.sh --prepare
         env:
           CM_TEST_IMAGE_CACHE: gha
+          CM_TEST_IMAGE_TAG: ${{ env.CM_CI_KEY }}
+      - name: specs
+        run: ./script/test.sh --part web "$(( JOB_INDEX + 1 ))/${JOB_TOTAL}"
+        env:
+          CM_TEST_IMAGE_PREBUILT: "1"
           CM_TEST_IMAGE_TAG: ${{ env.CM_CI_KEY }}
           JOB_INDEX: ${{ strategy.job-index }}
           JOB_TOTAL: ${{ strategy.job-total }}
@@ -310,24 +387,21 @@ jobs:
           if-no-files-found: error
 
   acceptance:
-    # 驗收報表跑在 main 上，不跑在每個 pull request 上。
+    # 驗收報表跑在每一個 pull request 上（#407，維護者 11/20 定案 2：「搬到 PR 上跑」），合併前全部驗完；
+    # merge job 合併之後 main 不再跑一輪（GITHUB_TOKEN 的合併不觸發 push），所以它不能只在 main 上跑。
+    # 當時量的：main run 44250363331 的 acceptance 85 秒，與其他 job 並行，整輪 2 分 46 秒，最慢的是
+    # compose-smoke 128 秒——搬過來不拉長一輪。
     #
-    # acceptance.sh 會把對照表指到的規格再跑一次，而那幾乎是整組規格——接成每個
-    # PR 的必要檢查，CI 時間翻倍換來的是同一批規格的第二個答案。它比 test.sh 那幾段多
-    # 出來的訊號只有一種：**對照表與規格之間的對應**（一條檢查點沒有人驗、一條
-    # 參照指到不存在的規格）。那個訊號只在對照表或規格名改動時才會變。
+    # 它比 test.sh 那幾段多出來的訊號是**對照表與規格之間的對應**（一條檢查點沒有人驗、一條參照指到
+    # 不存在的規格）。對照表指錯時 acceptance.sh 回 2，而 release.sh 對 2 的處置是不建立 release——
+    # 在 PR 上就擋下，不必等到打 tag 那天。
     #
-    # 但它不能等到打 tag 那天才出現：對照表指錯時 acceptance.sh 回 2，而
-    # release.sh 對 2 的處置是不建立 release——那時候發現，代價是一個發不出去的
-    # tag。跑在 main 上，最多晚一次合併就會知道。
+    # 跑的是對照表頂層 target 寫的目前目標版本，不在這裡寫死版號（#355）。目標版本已整體通過、對照表裡
+    # 之後還有版本時，acceptance.sh 以 2 結束並指名下一版：讓目標版本整體通過的那一次簽核，要和 target
+    # 推進放在同一個 PR（AGENTS.md 的 v0.9.0 收尾順序）。
     #
-    # 跑的是對照表頂層 target 寫的目前目標版本，不在這裡寫死版號（#355）：寫死的版號在那一版
-    # 完成之後會永遠報綠，而那與沒有這個 job 是同一件事（原本寫死 v0.1.0，就停在那裡）。
-    # 目標版本已整體通過、對照表裡之後還有版本時，acceptance.sh 以 2 結束並指名下一版。
-    #
-    # --gate automated：這個 job 抓的是自動檢查退步與對照表壞掉。人工檢查點要等真人，不讓
-    # main 一直是紅的；報表照樣印出人工待驗清單。發版（release.sh）用預設的 --gate overall。
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # --gate automated：自動檢查全過、沒有未涵蓋就過，人工檢查點要等真人，不擋 PR；報表照樣印出人工待驗
+    # 清單。發版（release.sh）用預設的 --gate overall，人工也要簽完。
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -404,6 +478,8 @@ jobs:
       - test-interfaces
       - single-task
       - attribution
+      - merge-gate
+      - repo-rules
       - run-name
       - lint
       - unit-integration
@@ -425,6 +501,52 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
         run: >-
           ./script/ci_rollup.sh .github/workflows/ci.yaml
-          --always "run-name lint unit-integration api bats web-e2e coverage build compose-smoke backup-drill"
-          --pull-request "commit-message checkpoints test-interfaces single-task attribution"
-          --main-push "acceptance"
+          --always "repo-rules run-name lint unit-integration api bats web-e2e coverage acceptance build compose-smoke backup-drill"
+          --pull-request "commit-message checkpoints test-interfaces single-task attribution merge-gate"
+          --main-push ""
+
+  merge:
+    # 檢查全過，由 CI 以 merge commit 合併（#407，照 ycpss91255-docker/sim_asset；維護者 11/20 定案 1、3）。
+    # 排在 ci-rollup 之後，不列進它的 needs（ci_rollup.sh 放過排在它之後的 job）。merge-gate、acceptance、
+    # attribution 都經 ci-rollup 等到，不另外列。
+    #
+    # if 明寫 !cancelled() 與 ci-rollup 是 success，不靠「沒有任何 job 被跳過」；再加 sim_asset 的四個條件：
+    # pull_request、base 是 main、同 repo 的分支（fork 拿不到 write 權限，由維護者在網頁上合併）、不是草稿。
+    # 草稿事件的那一輪重跑也會跳過：重跑沿用原本的事件內容。
+    #
+    # 合併前 script/ci_merge.sh 用 API 讀現況，在同一份資料上重判讀 PR 或 issue 資料的檢查（綁定判定、
+    # checkpoints、single-task、test-interfaces、merge-gate、attribution），不沿用前面 job 的綠燈：
+    # --match-head-commit 只鎖 head，改描述、換綁、轉回草稿都可以發生在同一個 sha 上。
+    #
+    # 權限只在這個 job 開 write；actions: read 是重判 TDD red 要讀執行紀錄。用 GITHUB_TOKEN，不建 App 或 PAT。
+    # concurrency 讓兩個進入補作業的 merge job 不會同時查留言、寫留言；不取消進行中的那一個。
+    needs: [ci-rollup]
+    if: >-
+      !cancelled() && needs.ci-rollup.result == 'success' &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: merge-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # 重判在這一輪事件的 head 上跑（帳本要讀 base..HEAD 與 base 的歷史）。
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          CM_CI_ROLLUP_RESULT: ${{ needs.ci-rollup.result }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./script/ci_merge.sh "${PR_NUMBER}" "${HEAD_SHA}" origin/main

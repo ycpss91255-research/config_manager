@@ -68,13 +68,13 @@ summary = '誰、在什麼環境、照什麼步驟做了什麼，結果如何'
 | `automated` | 自動檢查全部通過、沒有未涵蓋（人工待驗不影響） | 自動檢查有未通過或未涵蓋 | 同上 |
 
 - **發布閘門看整體**：`script/release.sh` 不帶 `--gate`，用的就是預設的 `overall`，判定不用改。人工待驗時，正式 tag 不會建立 release；rc 仍會建立，標題寫未通過。擋下正式 tag 時，訊息除了未通過與未涵蓋，也逐條列出人工待驗的檢查點。
-- **main 上的 `acceptance` job 用 `--gate automated`**：它要抓的是自動檢查退步與對照表壞掉；人工項目要等真人，不應讓 main 一直是紅的。報表照樣印出三段，人工待驗看得到。
+- **CI 的 `acceptance` job 用 `--gate automated`**（#407 起跑在每一個 PR 上，以及 main 的手動觸發與不是 GITHUB_TOKEN 的 push 到 main；合併前全部驗完）：它要抓的是自動檢查退步與對照表壞掉；人工項目要等真人，不應讓每個 PR 都是紅的。報表照樣印出三段，人工待驗看得到。
 - 兩種閘門印出的報表相同，只差結束碼怎麼算。
 
 ## 目標版本
 
 - 對照表頂層寫 `target = 'vX.Y.Z'`：目前的目標版本。來源只有這一個，不查 GitHub 的 milestone。
-- `acceptance.sh --target`：跑 `target` 指的那一版。main 上的 `acceptance` job 用 `--target --gate automated`，不再寫死版號。
+- `acceptance.sh --target`：跑 `target` 指的那一版。CI 的 `acceptance` job（PR 上與 main 的手動觸發，#407）用 `--target --gate automated`，不再寫死版號。讓目標版本整體通過的那一次簽核，要和 `target` 推進放在同一個 PR（`AGENTS.md` 的發版程序）。
 - **防呆**：`--target` 時，如果目標版本已經整體通過，而對照表裡它之後還有別的版本（`id` 是 `vX.Y.Z` 的 milestone；`core-flow` 這種不算版本），就以 2 結束，並指名下一版——目標版本該推進了，留在已完成的版本上，等於這個 job 永遠報綠（與原本寫死 `v0.1.0` 是同一個問題）。
 - `target` 沒寫、寫的版本不在對照表裡：以 2 結束。
 

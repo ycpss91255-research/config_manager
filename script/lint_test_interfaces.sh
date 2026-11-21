@@ -142,6 +142,8 @@ run_agreed() {
       fi
 
       created="$(gh issue view "${issue}" --json createdAt --jq '.createdAt')"
+      # 讀到的識別（#407）：merge job 的重判與 fork 的網頁合併前拿它和現況比對。
+      printf 'lint_test_interfaces(agreed): 識別 %s 回指 #%s createdAt=%s\n' "${iface}" "${issue}" "${created}"
       if [[ "${created}" < "${commit_utc}" ]]; then
         continue
       fi

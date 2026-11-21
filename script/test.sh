@@ -24,6 +24,7 @@ usage() {
   cat <<'USAGE'
 用法：script/test.sh [--level <name>] [--lint [<tool>]] [--file <path>] [--filter <regex>]
                      [--part fast | api <i>/<n> | web <i>/<n> | bats | gate]
+      script/test.sh --prepare
 
   （不帶參數）        lint ＋ 全部層級 ＋ 覆蓋率
   --level <name>      unit | integration | system | acceptance
@@ -42,6 +43,8 @@ usage() {
                                    再交給 script/coverage_gate.sh
                       fast、api、web 把結果寫在 ci-parts/<段名>/，gate 讀那裡。
                       lint 那一段就是 --lint。
+  --prepare           只建測試映像，不跑任何檢查（#407）。CI 把「建映像」與「跑規格」拆成
+                      prepare、specs 兩步，再以 CM_TEST_IMAGE_PREBUILT=1 跑規格
 
 在 docker/Dockerfile.test-tools 裡執行，那份映像帶齊每一支檢查工具。
 主機不是這個專案的證據：它的 Python、它的 pytest、它缺席的 linter，
@@ -56,6 +59,7 @@ usage() {
   CM_TEST_IMAGE_CACHE=gha-write  同上，並把建好的層寫回快取
   CM_TEST_IMAGE_TAG=<tag>        測試映像用 config_manager-test-tools:<tag>，不用 :local（CI 用，#356）
   CM_CI_KEY=<鍵>                 建映像與起容器時帶 cm.ci.owner=<鍵> 標籤（CI 用，#356）
+  CM_TEST_IMAGE_PREBUILT=1       不建映像，直接用 --prepare 建好的那一份起容器（CI 用，#407）
 USAGE
 }
 
@@ -88,13 +92,32 @@ resolve_test_image() {
 # 把這支腳本轉進裝了工具的映像裡重跑，除非已經在裡面了。一個環境、兩個呼叫者：
 # `just test` 與 CI 走同一條路徑，所以一項檢查不可能在一邊過、在另一邊掛。
 dispatch_to_container() {
+  require_docker
+  resolve_test_image
+  if [[ "${CM_TEST_IMAGE_PREBUILT:-}" == "1" ]]; then
+    # 建映像那一步已經由 --prepare 做過（#407）：CI 把兩步拆開，merge-gate 才分得出「規格紅了」
+    # 與「映像沒建起來」。映像不在就停，不自己補建——補建會讓 specs 那一步又混進建映像的失敗。
+    if ! docker image inspect "${TEST_IMAGE}" >/dev/null 2>&1; then
+      printf 'test.sh: CM_TEST_IMAGE_PREBUILT=1，但測試映像 %s 不存在，檢查一項都沒跑\n' "${TEST_IMAGE}" >&2
+      printf 'test.sh: 下一步：先以同一組 CM_TEST_IMAGE_TAG 跑 ./script/test.sh --prepare，或拿掉 CM_TEST_IMAGE_PREBUILT 讓這一步自己建\n' >&2
+      exit 1
+    fi
+  else
+    build_test_image
+  fi
+  run_in_container "$@"
+}
+
+require_docker() {
   if ! command -v docker >/dev/null 2>&1; then
     printf 'test.sh: docker 沒有安裝，所以檢查沒有它們的映像可以跑\n' >&2
     printf 'test.sh: 下一步：安裝 docker，或設 CM_TEST_LOCAL=1 以這台主機現有的工具執行\n' >&2
     exit 1
   fi
-  resolve_test_image
+}
 
+# 建測試映像。轉進容器之前、與 --prepare（#407）走的是同一條：同一個 tag、同樣的標籤與快取設定。
+build_test_image() {
   local -a _build
   # CI 的每個 job 都是一台全新的機器，本機那層快取不存在，於是每個 job 都從頭建一次
   # ——拆成平行的 job 之後，這筆時間是每個 job 各付一次（#358）。GitHub Actions 的
@@ -145,7 +168,10 @@ dispatch_to_container() {
     printf 'test.sh: 下一步：看上面建置紀錄的最後幾行，那是 %s 裡失敗的那一步\n' "${TEST_DOCKERFILE}" >&2
     exit "${_built}"
   fi
+}
 
+# 在建好的映像裡重跑這支腳本，帶著原本的參數。
+run_in_container() {
   # repo 用掛載而不是複製進去，這樣檢查失敗時指出的路徑在主機上真的存在，而且改
   # 一行不必重建映像。掛載是雙向的，所以 --user 才重要：映像自己的使用者是 root，
   # 而 root 程序寫進 bind mount 會在主機上留下一堆 root 所有的檔案。這在這裡不是
@@ -730,6 +756,20 @@ main() {
   cd "${REPO_ROOT}"
 
   case "${1:-}" in -h|--help) usage; return 0 ;; esac
+
+  # 只建映像（#407）。在容器裡或主機上就地執行時沒有映像要建，那是用錯了，不當成建好了。
+  if [[ "${1:-}" == --prepare ]]; then
+    if [[ "${CM_IN_TEST_IMAGE:-}" == "1" || "${CM_TEST_LOCAL:-}" == "1" ]]; then
+      printf 'test.sh: --prepare 只建測試映像，而 CM_TEST_LOCAL=1 或 CM_IN_TEST_IMAGE=1 時沒有映像要建\n' >&2
+      printf 'test.sh: 下一步：拿掉 CM_TEST_LOCAL／CM_IN_TEST_IMAGE 再跑 --prepare，或直接跑要跑的檢查\n' >&2
+      exit 2
+    fi
+    require_docker
+    resolve_test_image
+    build_test_image
+    printf 'test.sh: 測試映像 %s 建好了，沒有跑任何檢查（--prepare）\n' "${TEST_IMAGE}"
+    return 0
+  fi
 
   if [[ "${CM_IN_TEST_IMAGE:-}" != "1" && "${CM_TEST_LOCAL:-}" != "1" ]]; then
     dispatch_to_container "$@"

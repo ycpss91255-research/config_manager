@@ -1395,6 +1395,10 @@ schema、後端在 #40（欄位表套用 schema）之前不會送 `options`—�
 | `script/lint_agents_link.sh`（#404） | `test/bats/unit/lint_agents_link.bats` |
 | `script/claude-hooks/no-attribution.sh`、`.claude/settings.json` 的 `attribution` 與 PreToolUse 接線（#405） | `test/bats/unit/no_attribution.bats` |
 | `script/lint_attribution.sh`、`script/githook-checks/commit-msg/20-no-attribution.sh`、`script/attribution-patterns.txt`、`ci.yaml` 的 `attribution` job 在 `ci-rollup` 的分組（#405） | `test/bats/unit/lint_attribution.bats` |
+| `script/pr_binding.sh`、`script/closing-references.txt`（#407：共用的綁定判定與唯一一份關閉參照的擷取規格） | `test/bats/unit/pr_binding.bats` |
+| `script/lint_merge_gate.sh`、`ci.yaml` 的 `merge-gate` job 在 `ci-rollup` 的分組（#407） | `test/bats/unit/lint_merge_gate.bats` |
+| `script/lint_repo_rules.sh`、`AGENTS.md` 的「repo 保護設定」表、`ci.yaml` 的 `repo-rules` job（#407） | `test/bats/unit/lint_repo_rules.bats` |
+| `script/ci_merge.sh`、`script/gh_snapshot.sh`、`ci.yaml` 的 `merge` job（#407：merge job 的腳本與它重判用的同一份資料） | `test/bats/unit/ci_merge.bats` |
 
 **`script/lint_messages.sh` 的管轄範圍從 Python 擴到 shell**（#133）。先前它的預設
 標的只有 `src/config_manager`，單檔模式還明寫「不是 `.py` 就什麼都不檢查」，所以
@@ -1478,6 +1482,8 @@ schema、後端在 #40（欄位表套用 schema）之前不會送 `options`—�
 | **（#356）`CM_TEST_IMAGE_TAG` 設了但是空的，或不是合法的映像 tag** | 以 2 結束並指名它，**不建映像** |
 | **（#356）`CM_CI_KEY=<鍵>`** | 建映像與 `docker run` 都帶 `--label cm.ci.owner=<鍵>`；不設時兩者都不帶任何 label |
 | **（#356）`CM_CI_KEY` 設了但是空的，或含小寫英數字、`-`、`_` 以外的字元** | 以 2 結束並指名它，**不建映像** |
+| **（#407）`--prepare`** | 只建映像（與轉進容器前建的是同一份：同一個 tag、同樣的標籤與快取設定），建好以 0 結束，**不跑任何檢查**；`CM_TEST_LOCAL=1` 或 `CM_IN_TEST_IMAGE=1` 時以 2 結束——那時沒有映像要建 |
+| **（#407）`CM_TEST_IMAGE_PREBUILT=1`** | 轉進容器時**不建映像**，直接以 `docker run` 用已經建好的那一份；那份映像不存在時以 1 結束並指出「先跑 `--prepare`」，不建、不跑 |
 | `--part api <i>/<n>` ／ `--part web <i>/<n>` | 交給 pytest 的是 `test_api.py` ／ `test_web.py` 收集順序裡第 i、i+n…條 |
 | `--part fast` | 交給 pytest 的是那兩支以外的全部規格 |
 | 一段記下的 `ids.txt` | 就是交給 pytest 的那一份參數，不是另外算一次的清單 |
@@ -1516,7 +1522,24 @@ workflow、一份 `needs` 的 JSON 與觸發事件進去，結束碼與訊息出
 | workflow 有、`needs` 沒列的 job | 非零結束，指名那個 job——它的結果不會被看見 |
 | `needs` 有、沒被分進任何一組規則的 job；規則列了、`needs` 沒有的 job | 非零結束 |
 | `NEEDS` 不是 JSON、workflow 讀不到任何 job | 非零結束，不當成零個 job 全部通過 |
-| **（#356）`merge_group` 觸發**：只在 pull request 跑的與只在 push 到 main 跑的 job 被跳過，其餘都是 `success` | 結束碼 0；每次都該跑的 job 被跳過仍是非零結束 |
+| **（#356）`merge_group` 觸發**：只在 pull request 跑的與只在 push 到 main 跑的 job 被跳過，其餘都是 `success` | 結束碼 0；每次都該跑的 job 被跳過仍是非零結束（#407 起 acceptance 在每次都該跑的那一組） |
+| **（#407）排在 `ci-rollup` 之後的 job**（它自己的 `needs` 有 `ci-rollup`，例如 merge job） | 不算漏列，不必列進 `ci-rollup` 的 `needs`；其他沒列進 `needs` 的 job 照樣擋 |
+| **（#407）`workflow_dispatch`，ref 不是 `refs/heads/main`** | 非零結束，寫明「非 main 的手動觸發只供參考，要合併請走 PR」——同一個 head 上不留下綠的 `ci-rollup` |
+| **（#407）`workflow_dispatch`，ref 是 `refs/heads/main`** | 照 `--always` 組判，`--pull-request` 組允許跳過 |
+
+**各觸發跑哪些檢查**（#407 調整需求第 2 點；`ci.yaml` 的 `ci-rollup` 參數與各 job 的 `if:` 照這張表）：
+
+| 觸發 | 要 success 的 | 允許跳過的 | 會合併嗎 |
+|---|---|---|---|
+| pull_request（同 repo、base 是 main） | `--always` 組（含 acceptance、`repo-rules`）與 `--pull-request` 組（commit-message、checkpoints、test-interfaces、single-task、merge-gate、`attribution`） | 無 | merge job：非草稿、全過、重判通過才合 |
+| pull_request（fork、base 是 main） | 同上 | 無 | 不會；merge job 只合同 repo 的分支，fork 的 PR 由維護者在網頁上合併 |
+| pull_request（base 不是 main） | 同上；綁定判定會失敗 | 無 | 不會 |
+| workflow_dispatch（main） | `--always` 組 | `--pull-request` 組 | 不會；發版前用它在 main 的 commit 上留下 `ci-rollup` |
+| workflow_dispatch（其他 ref） | — | — | 不會；`ci-rollup` 直接失敗 |
+| push（main） | `--always` 組 | `--pull-request` 組 | 不會；只有不是 GITHUB_TOKEN 的推送才觸發 |
+| merge_group | `--always` 組（含 acceptance、`repo-rules`） | `--pull-request` 組 | 不會；沒開 merge queue，實際不會發生 |
+
+acceptance 搬到 `--always` 之後 `--main-push` 組是空的，參數保留。
 
 **它擋不住的那一件事**：三組規則與各 job 的 `if:` 一致。規則說「只在 pull request 跑」而 `if:`
 其實每次都跑，它判得出結果但判不出那份不一致。`ci.yaml` 在規則旁邊寫明要一起改。
@@ -1601,8 +1624,8 @@ workflow 沒有 `run-name` 時，`pull_request` 觸發的每一次執行都顯�
 | 登記的 pre-push 檢查 | 把標準輸入交給 `lint_run_name.sh --pre-push`，判定與直接呼叫相同 |
 
 **它擋不住的那一件事**：運算式在每一種觸發下**真的印出**那個欄位。它看的是 `run-name` 有沒有引用那個欄位，引用藏在一個
-永遠不成立的條件裡也會通過；實際的名稱由 GitHub 上的執行紀錄核對。`merge_group` 的名稱這個 repo 沒有開 merge queue，
-沒有實際的執行可以核對。
+永遠不成立的條件裡也會通過；實際的名稱由 GitHub 上的執行紀錄核對。`merge_group` 的名稱這個 repo 不用 merge queue（#407：合併由 CI 的
+merge job 做），沒有實際的執行可以核對。
 
 **`script/lint_single_task.sh` 被觀察的是「commit 主旨、PR 標題與關聯 issue 的標題，列了幾個任務編號」**（#351）。
 維護者 11/14 與 11/18 定案：只做機械判定，不靠人工審查；規則的名稱是**標題任務編號限制**——它數的是編號，**不證明**一個
@@ -1622,7 +1645,8 @@ CI 的 `single-task` job，讀不到就失敗、不放行。被觀察的行為�
 | `type(a,b):` 這種列舉的 scope（`,`、`、`、`+`、`&` 或空白） | 擋下；單一 scope（含 `/`）通過 |
 | `commit-msg` | 只看訊息檔的第一行（主旨）；內文與 `#` 開頭的註解行不數 |
 | `pre-push` | 只看要推上去的**新** commit（remote 上已經有的不數）；新分支只看 remote 還沒有的；刪除分支的那一行略過 |
-| `pr`：PR 以關閉關鍵字綁定兩張以上的 issue（GitHub 回傳的 `closingIssuesReferences`） | 擋下，指名那幾張 |
+| `pr`：綁定判定（`script/pr_binding.sh`）沒過，例如以關閉關鍵字綁定兩張以上的 issue（#407 起改用共用的判定） | 擋下，印出它自己讀到的原因 |
+| `pr`：每一次執行（#407） | 印出讀到的識別：PR 標題與描述的 sha256、關聯 issue 的編號與 `updatedAt` |
 | `pr`：PR 標題或 PR 裡任一筆 commit 主旨違反編號或 scope 規則 | 擋下，指名是哪一則；merge commit 不數 |
 | `pr`：主旨或標題寫了 `F36（#345）`，issue #345 的標題與內文都沒有 `F36` | 擋下；有就通過 |
 | `pr`：關聯的 issue（關閉的，加上 PR 內文 `Refs #N`、`Relates to #N` 引用的）標題列了兩個以上任務編號 | 擋下，指名那張 issue；有 sub-issue 的 issue 一樣擋 |
@@ -1630,7 +1654,7 @@ CI 的 `single-task` job，讀不到就失敗、不放行。被觀察的行為�
 | 登記的兩支 hook 檢查 | commit-msg 那支把訊息檔交給 `commit-msg`，pre-push 那支把標準輸入交給 `pre-push`，判定與直接呼叫相同 |
 
 **它擋不住的**：標題只有一個編號、內容卻不只一個任務；用文字列了好幾件事、沒有寫編號；`--no-verify` 跳過的本機
-hook（CI 仍會再擋一次）。合併時 GitHub 在 squash commit 主旨加上的 `(#PR)` 不在檢查範圍：檢查的是 PR 裡的 commit 與
+hook（CI 仍會再擋一次）。merge job 的合併 commit（主旨固定是「Merge pull request #<n>」，#407）不在檢查範圍：檢查的是 PR 裡的 commit 與
 PR 標題。
 
 **`script/setup_hooks.sh` 被觀察的是「打開與關掉本機 git hook 時，動了哪一份 git 設定」**（#391）。
@@ -1694,6 +1718,14 @@ PR 標題。
 它需要 GitHub API 讀被引用的 issue，而 `test.sh` 在容器裡跑、那裡沒有 token。規格以
 PATH 上的假 `gh` 替換，所以規格本身不需要網路，也不會因為某張真的 issue 被改動而轉紅。
 
+**（#407）每個 PR 都要綁一張 issue。** `lint_checkpoints.sh` 對的是共用綁定判定（`script/pr_binding.sh`）回傳的那一張；
+PR 描述沒有關閉關鍵字、或綁定判定沒過時**失敗**，指名 PR 並寫出下一步——不再「沒有引用 issue 時通過」。帳本沒勾完的下一步是
+「都完成後才 `gh pr ready`」（草稿可以先開）。每一次執行印出讀到的識別：PR 的 `updatedAt` 與描述的 sha256、issue 的編號與
+`updatedAt`。
+
+**（#407）`lint_test_interfaces.sh agreed` 每一次讀 issue 都印出讀到的識別**：哪一個新介面回指哪一張 issue，以及那張
+issue 的 `createdAt`。merge job 的重判與 fork 的網頁合併前拿它和現況比對（`AGENTS.md` 的網頁合併程序）。
+
 **`script/acceptance.sh` 被觀察的不是任何一條驗收檢查點，而是「這份報表會不會說謊」**
 （#148）。它讀 `doc/acceptance-checkpoints.toml`——設計 §8.2 的檢查點與規格之間的
 對照表——逐條**實際執行**對應的規格，印出每條檢查點的判定。它與其餘守門腳本同屬
@@ -1715,7 +1747,8 @@ T19，因為觀察位置相同：命令列進去，結束碼與訊息出來。�
 | 同一條檢查點同時有 `specs` 與 `manual = true` | 以 2 結束 |
 | 任何一次執行 | 報表都印「自動檢查」「人工待驗清單」「整體」三段 |
 | `--target` | 跑對照表頂層 `target` 指的版本；`target` 沒寫或不在對照表裡，以 2 結束 |
-| `--target`，目標版本已整體通過、對照表裡之後還有版本 | 以 2 結束，指名下一版 |
+| `--target`，目標版本已整體通過、對照表裡之後還有版本 | 以 2 結束，下一步寫「把對照表頂層的 target 改成 <下一版>」 |
+| **（#407）`--target --gate automated`，讓目標版本整體通過的簽核與 `target` 推進到下一版放在一起，下一版只有人工檢查點** | 以 0 結束——acceptance 搬到 PR 上跑之後，這樣的簽核 PR 拿得到綠的 acceptance |
 | **（#356）`CM_TEST_IMAGE_TAG` 不設** | 轉進容器時建映像與 `docker run` 用的都是 `config_manager-test-tools:local`（行為不變） |
 | **（#356）`CM_TEST_IMAGE_TAG=<tag>`** | 建映像與 `docker run` 用的都是 `config_manager-test-tools:<tag>` |
 | **（#356）`CM_TEST_IMAGE_TAG` 設了但是空的，或不是合法的映像 tag** | 以 2 結束並指名它，**不建映像** |
@@ -1734,9 +1767,9 @@ T19，因為觀察位置相同：命令列進去，結束碼與訊息出來。�
 若參與這些規格，它們就會在別人修好 `dump` 的那天無故轉紅——而一組結果取決於別的規格
 有沒有跑的規格，測的不是這支腳本。
 
-**帳本記 commit 主旨，不記 SHA。** SHA 不是穩定識別碼：rebase 改寫它、squash 合併
-讓它從歷史裡消失，而這個 repo 規定推送前 rebase、要求分支與 base 同步、合併一律
-squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 SHA 上，實際效果是每次
+**帳本記 commit 主旨，不記 SHA。** SHA 不是穩定識別碼：rebase 改寫它，而這個 repo 規定推送前
+rebase、要求分支與 base 同步——每個 PR 都必然經歷至少一次 SHA 改寫（#407 起以 merge commit 合併，
+之前的 squash 合併也會讓 SHA 從歷史裡消失）。第一版綁在 SHA 上，實際效果是每次
 合併前手動重填一輪帳本，而那個手動步驟沒有東西擋著它被填錯（#129，實測兩次）。
 
 **它擋不住的那一件事**：工具只能確認「有一筆真的存在的 commit 被記在那一行」，
@@ -1762,9 +1795,15 @@ squash——每個 PR 都必然經歷至少一次 SHA 改寫。第一版綁在 S
 | **輸出不是一份完整的報表**（#377）：`acceptance.sh` 回 0 或 1，輸出裡卻沒有摘要行（`acceptance: <版本> —— N 通過／N 未通過／N 未涵蓋／N 人工待驗／N 已簽核`），或沒有與結束碼相符的判定行（回 0 是 `acceptance: <版本> 通過（--gate overall）`、回 1 是 `未通過（--gate overall）`）——例如建置映像失敗、執行到一半就結束 | 與報表壞掉同一個處置：**rc 也不建立 release**（gh 沒有被呼叫），以 2 結束，訊息說得出下一步 |
 | rc tag，**真的** `acceptance.sh` 建置映像失敗（`PATH` 上的假 `docker` 讓 `build` 失敗） | **不建立 release**（gh 沒有被呼叫）——它以 docker 的結束碼 1 結束，那是建置失敗，不是未通過（#377） |
 | rc tag，**真的** `acceptance.sh`（替身對照表）：只剩人工待驗 | release **照常建立**，標題標示未通過——真的報表通得過上一列的核對（#377） |
-| rc 編號不是由既有 tag 推導出來的那一個 | 擋下，並指名應該用哪一個 |
-| `--next <milestone>` | 印出下一個 rc tag 名；一個 rc 都還沒有時是 `rc1` |
-| 認不得的 tag 格式 | 非零結束，不建立 release |
+| **（#407）驗證這次收到的 tag**：排除它自己，同一個版號比它小的 rc 編號都已經有 tag（patch 版另外要比它小的 patch 號都有正式 tag） | 通過編號檢查；之後已經有更新的 tag 時，重跑舊 tag 的 release 也一樣通過 |
+| **（#407）號碼跳號**（比它小的 rc 或 patch 號有缺） | 擋下；下一步寫「這個 tag 留著（不能刪），改推 `--next` 印出的那一個」——不叫人刪 tag 或重推同名 tag |
+| **（#407）`--next <版號>`** | 印出那個版號的下一個 rc tag 名：既有的 rc 全部算進去（含被擋下而保留的），取最小的缺號，沒有缺號就是最大號加 1——rc1、rc2、誤推的 rc5 → rc3，再來 rc4、rc6；一個 rc 都沒有時是 `rc1`；patch 版號從它自己的 `rc1` 起算 |
+| 認不得的 tag 格式 | 非零結束，不建立 release；下一步寫「這個 tag 留著，改推 `--next` 印出的 tag」（#407） |
+| **（#407）patch 版 `vX.Y.Z`（Z 大於 0）與它的 rc** | 驗收用 `vX.Y.0` 的檢查點、badge 用 `vX.Y.0`；rc 編號、release 標題與 tag 用 patch 版號；notes 寫「驗收：vX.Y.0」；`vX.Y.0` 不在對照表時回 2 |
+| **（#407）正式 tag 發壞**（報表壞掉、建置失敗、未通過、badge 不符或量不到） | 下一步不叫人重推或再打同一個 tag，改發推導出的下一個 patch 版號：既有的 patch tag 全部算進去，取最小的缺號（`v0.9.0` 發壞是 `v0.9.1`；已有誤推而保留的 `v0.9.5` 也一樣；`v0.9.1` 已被占用就是下一個可用的號碼），並帶「正式 tag 前的核對」 |
+| **（#407）rc 發壞**（報表壞掉、建置失敗） | 下一步指向 `--next` 推導出的下一個 rc |
+| **（#407）每一則叫人打正式 tag 的下一步** | 都帶「正式 tag 前的核對」：先推 `--next <版號>` 印出的 rc，在同一個 SHA 上確認那個 rc 的 release notes 裡 `--gate overall` 判定通過、覆蓋率 badge 一致，兩者都成立才打正式 tag |
+| **（#407）rc 建好之後的下一步** | rc 的 `--gate overall` 未通過：不叫人打正式 tag；rc 整體通過但 badge 不一致：也不叫人打正式 tag，寫出更新 badge 的做法；兩者都成立：才寫出在同一個 SHA 上打正式 tag |
 | `gh` 不在 `PATH` 上 | 大聲失敗——一支建不了 release 卻回 0 的腳本就是不變式 2 的靜默通過 |
 | 覆蓋率 badge（#354）：在 tag 指的 commit 上重新量測，以 `coverage_badge.sh <版本> <tsv>` 畫出來的 SVG 與 `doc/badge/coverage.svg` 逐位元組相同 | 照驗收報表的判定處理，badge 不另外擋 |
 | 正式 tag，badge 與重新量測畫出來的不同（數字不同或版本不同） | **不建立 release**（gh 沒有被呼叫），以 1 結束，訊息指出不同、列出差異與下一步 |
@@ -1939,6 +1978,7 @@ PATH 上放假的 gh 回 PR 的標題與描述。被觀察的行為：
 | `pr`：commit、標題、描述都沒有命中 | 以 0 結束 |
 | `pr`：失敗時的輸出 | 只有位置與樣式：命中的共同作者行與完整的 session 網址都不在輸出裡 |
 | `pr`：讀不到 PR | 非零結束，不放行 |
+| `pr`：每一次執行（#407） | 印出讀到的識別：PR 標題與描述各自的 sha256（只印雜湊，不印內容）——merge job 的重判與 fork 的網頁合併前拿它和現況比對 |
 | 登記的 commit-msg 檢查，訊息檔含任一條樣式 | 非零結束 |
 | 登記的 commit-msg 檢查，乾淨的訊息檔 | 以 0 結束 |
 | 三個呼叫端各自換上一份改過的樣式清單（複製一份樹） | 都照改過的那份判定：讀的是同一個 `script/attribution-patterns.txt` |
@@ -1949,13 +1989,114 @@ PATH 上放假的 gh 回 PR 的標題與描述。被觀察的行為：
 - 網頁上直接寫的內容；cloud 工作階段、`disableAllHooks`；優先順序較高的設定蓋掉 `attribution`（hook 與 CI 仍會擋）。
 - `sessionUrl` 在本機驗證不了：它管的是 cloud 或 Remote Control 工作階段加的 session 連結。
 - `--no-verify` 跳過的是 git 的 commit-msg 檢查（Claude Code 的 hook 另外擋這個旗標；CI 仍會擋 PR 裡的 commit）。
-- 在網頁上改 PR 標題或描述之後，`ci.yaml` 的 `pull_request` 沒有 `edited`，`attribution` 不會重跑，原本的綠燈留在同一個 head 上（#407 補觸發條件）。
+- 用 GITHUB_TOKEN 改 PR 標題或描述之後不會產生新的一輪（〈GITHUB_TOKEN〉）；使用者或 agent 帳號改的會：`pull_request` 有 `edited`（#407）。
 - `run-name` 把 PR 標題印進 workflow 的執行名稱：標題含完整網址時，它仍會出現在執行名稱裡。這支只管自己的輸出。
 - 樣式以外的寫法，例如沒從行首開始的共同作者行。
 - hook 只看指令文字本身：經腳本檔、git 或 gh 的別名、指令名稱來自變數這類方式執行的寫入看不到；同一條指令裡用重新導向與 `tee`
   以外的程式先寫出帶入的檔時，hook 讀到的是執行前的內容；`gh pr review --body`、`gh issue close --comment`、`gh pr merge --body` 這類
   #405 沒列的 gh 寫入不檢查。commit 與 PR 標題、描述有 commit-msg 檢查與 CI 這兩道；留言沒有。
 - 既有的舊內容：說明裡的署名另案處理，git 歷史不改。
+
+**合併規則的守門腳本**（#407）。維護者 11/20 定案：檢查全過由 CI 的 merge job 以 merge commit 合併（照
+`ycpss91255-docker/sim_asset`），每個 PR 都用關閉關鍵字綁一張 issue，合併前要有這個 PR 自己的 TDD red，前面的 milestone
+沒關、後面的不合併，repo 的保護設定由 CI 核對。下面四支與其餘守門腳本同屬 T19，觀察位置相同：命令列、一組受控的 `PATH`
+（假 `gh`）與環境變數進去，結束碼與訊息出來。假 `gh` 回的是替身的 PR、issue、milestone、執行紀錄與 ruleset，規格不連網。
+
+**`script/pr_binding.sh` 被觀察的是「這個 PR 綁的是哪一張 issue」**（#407 調整需求第 5 點）。checkpoints、single-task、
+merge-gate 與 merge job 都呼叫它，所以每一道檢查認的是同一套規則；關閉參照的擷取規格只有一份
+`script/closing-references.txt`（C 的 hook 也讀它）。通過時最後一行印 `pr_binding: 綁定 #<N>`。被觀察的行為：
+
+| 行為 | 通過條件 |
+|---|---|
+| 描述只有一個關閉參照、指到本 repo 一張開著而且沒被完成過的 issue，`closingIssuesReferences` 正好是那一張 | 以 0 結束，印出那一張 |
+| `Closes: #N`、`CLOSES #N` 這類帶冒號或大寫的寫法，`closingIssuesReferences` 一致 | 照樣通過 |
+| 描述沒有關閉關鍵字；或只有 `Discloses #N` 這類關鍵字前面還連著英數字的字 | 非零結束，指名 PR，下一步寫「先開 issue，再在描述寫 `Closes #N`」 |
+| 描述解析出兩張以上（照「repo＋編號」算） | 非零結束，列出那幾張 |
+| 關鍵字指到別的 repo（`other/repo#N`，號碼和本 repo 某張 issue 相同也一樣）、指到 PR、指到不存在的編號，或後面接的是網址（例如 PR 留言的網址） | 非零結束，指名那一個參照 |
+| `closingIssuesReferences` 多出描述以外的 issue，或和描述指的不是同一張 | 非零結束，指名那張 |
+| PR 標題帶關閉參照 | 非零結束，指名標題 |
+| PR 範圍裡某個 commit 的訊息用關閉關鍵字指到綁定以外的 issue（`Fixes #B`、`Fixes other/repo#B`）、PR 或網址 | 非零結束，指名那個 commit；指到綁定的那一張不算 |
+| PR 的 base 不是 `main` | 非零結束，下一步寫「本 repo 的 PR 一律開到 main」 |
+| 綁定的 issue 已關閉 | 非零結束，下一步寫「新的工作另開 issue」 |
+| 綁定的 issue 還開著，但 issue 上有以「由 PR #<數字> 合併完成」開頭的留言（含「（網頁合併）」那種），或 base 的歷史裡有 merge job 的合併紀錄寫了它 | 非零結束，指名完成它的 PR；issue 被重開過、原 PR 的描述在合併後被改掉，照樣算已完成 |
+| 讀不到 PR、issue 或它的留言（`gh` 非零結束） | 非零結束，不當成「沒有被完成」 |
+| fork 的 PR | 照同一套判定 |
+| 每一次執行 | 印出讀到的識別：PR 的 `updatedAt`、標題與描述各自的 sha256（只印雜湊）、issue 的編號與 `updatedAt` |
+
+**它擋不住的**：綁的那張 issue 真的描述了這個 PR 的內容；上線前就完成、之後被重開的舊 issue（沒有上面兩種紀錄，靠 review
+看 issue 的時間軸）。
+
+**`script/lint_merge_gate.sh` 被觀察的是「這個 PR 有沒有自己的 TDD red，以及前面的 milestone 關了沒」**（#407 調整需求
+第 6 點）。CI 的 `merge-gate` job 在 pull_request 時執行，列在 `ci-rollup` 的 `--pull-request` 組；執行時讀 PR、issue、
+milestone 與執行紀錄的現況，不讀事件內容。被觀察的行為：
+
+| 行為 | 通過條件 |
+|---|---|
+| 綁定判定沒過 | 非零結束，印出綁定判定自己的原因 |
+| PR 描述沒有 `## TDD red` 段落；段落裡沒有本 repo 的 Actions 執行連結，也沒有「不適用：<理由>」 | 非零結束 |
+| 連結的執行沒有任何一次 attempt 是 `failure`；不是 `.github/workflows/ci.yaml` 的執行；不是 `pull_request` 事件（例如功能分支上手動觸發的）；`pull_requests` 沒有這個 PR 的編號（同一個分支名稱、別的 PR 的執行也不算） | 非零結束，逐一指名不算的原因 |
+| 失敗的只有流程檢查（例如 checkpoints），或只有 `build` | 非零結束——`build` 建映像與 bats 拆不開，不列入 |
+| 可認定 red 的 job（unit-integration、api、bats、web-e2e；matrix 分片取括號前的名稱）失敗，但只失敗在 `specs` 以外的步驟（checkout、`prepare`） | 非零結束 |
+| 已經進了 `specs` 步驟，但那一步的紀錄裡沒有規格層級的失敗標記（bats 的 `not ok`、pytest 的 `FAILED`） | 非零結束 |
+| 那一輪跑規格的 job 沒有名為 `specs` 的步驟 | 非零結束 |
+| 讀不到執行紀錄、attempt、jobs 或 job 的紀錄（例如 403） | 非零結束並指名，不放行 |
+| 較早的一次 attempt 失敗在可認定 red 的 job 的 `specs` 步驟（含 `api (1)` 這類分片名稱）、紀錄有規格層級的失敗標記，之後重跑成綠 | 通過 |
+| 段落有多個連結 | 至少一個合格就通過；每個連結的判定都印出來 |
+| 「不適用：<非空的理由>」，而 PR 改的每一個檔（含改名前的路徑）都在 `doc/` 底下或副檔名是 `.md` | 通過；理由是空的，或有一個檔不符（指名那個檔），非零結束 |
+| 綁定 issue 的 milestone 前面還有版本號更小、沒關閉的 milestone | 非零結束，列出那些 milestone |
+| 前面最後一個較早的 milestone 剛關閉（重跑時讀到的是現況） | 通過 |
+| 綁定的 issue 沒有 milestone | 不檢查順序，其餘照判 |
+| 綁定 issue 的 milestone，或某個還開著的 milestone，標題不是 `vX.Y.Z` | 非零結束並指名，不默默略過；版本號逐段比數字（`v0.10.0` 大於 `v0.9.0`） |
+| 每一次執行 | 印出讀到的識別：綁定判定的那一組、milestone 順序用到的每一個 milestone（綁定的那一個與所有版本號比它小的）的 ID、標題與開關狀態、head sha |
+
+**它擋不住的**：失敗的是不是這個 PR 新增的那條規格、原因是不是預期的（靠 review）；純文件豁免照路徑和副檔名判定，`.md` 的
+symlink 或可執行檔也算純文件。
+
+**`script/lint_repo_rules.sh` 被觀察的是「GitHub 上實際的保護設定，和 `AGENTS.md` 的「repo 保護設定」表一不一致」**
+（#407 調整需求第 9 點）。CI 的 `repo-rules` job 每次都跑，列在 `--always` 組。它讀 `rules/branches/main`、`rulesets` 與每個
+ruleset 的詳情、repo 的 `allow_merge_commit`，逐項列出「表上寫的」與「實際讀到的」。被觀察的行為：
+
+| 行為 | 通過條件 |
+|---|---|
+| 實際設定和表一致 | 以 0 結束 |
+| 表上有的規則實際沒有（例如 strict 被關掉、討論串那一項被取消）；實際有、表上沒寫的規則（例如 `merge_queue`） | 非零結束，列出表上寫的與實際讀到的，下一步寫「改回設定，或在同一個 PR 改表」 |
+| 允許的合併方式不只 `merge` | 非零結束 |
+| tag ruleset 不存在、不是 active，或規則與參數和表不同（例如 `do_not_enforce_on_create` 不是 false、檢查來源不是 `integration_id: 15368`） | 非零結束 |
+| `target`（`branch`／`tag`）、目標的 include／exclude、`enforcement`、名稱不符 | 非零結束 |
+| 必驗項目讀不到（403、404、null） | 非零結束並指名那一項，不移出比對 |
+| `deletion`、`non_fast_forward` 的 `parameters` 是 `null` | 算一致 |
+| 實際回應多出表上沒列的參數欄位（例如 base 那種帶額外預設參數的回應） | 不比，只印出來 |
+| `bypass_actors` | 每一輪印出「核對不了」；不因為讀不到而失敗，也不因為讀不到而算通過 |
+| `allow_merge_commit` 讀到 `false` | 非零結束；讀不到時不失敗，印出「未自動核對：allow_merge_commit，以設定頁人工核對為準」 |
+
+**它擋不住的**：bypass 名單；Actions 的「Workflow permissions」；它只在 CI 跑的時候才發現，設定被改掉而沒有人開 PR 或手動
+觸發，就不會發現。
+
+**`script/ci_merge.sh` 被觀察的是「merge job 在什麼情況下合併、合併訊息寫什麼、關了哪一張 issue」**（#407 調整需求
+第 1 點）。CI 的 `merge` job 排在 `ci-rollup` 之後執行它。合併前它把讀 PR 或 issue 資料的檢查（綁定判定、checkpoints、
+single-task、test-interfaces、merge-gate、`attribution`）在**同一份現況資料**上重跑一次：`script/gh_snapshot.sh` 讓每一個物件
+（一個 PR、一張 issue、一條 API 路徑）只讀一次，之後每一道檢查讀到的都是那一份。規格的假 `gh` 可以在第一次被讀之後改回應，
+用來觀察「判定途中資料被改」。被觀察的行為：
+
+| 行為 | 通過條件 |
+|---|---|
+| 不是草稿、同 repo、base 是 main、`ci-rollup` 是 success、head 等於這一輪事件的 head、這一輪是這個 PR 最新的一輪 pull_request 執行，而且重判全部通過 | 以 `gh pr merge <n> --merge --match-head-commit <head>` 合併，只關判定出來的那一張 issue，並留言「由 PR #<n> 合併完成」 |
+| 草稿、fork、base 不是 main、`ci-rollup` 不是 success | 不合併，指名哪一項 |
+| head 不等於這一輪事件的 head；或這一輪不是這個 PR 最新的一輪（例如標題改過、已有新的一輪） | 不合併，下一步寫「看最新那一輪」 |
+| 同一個 head 上改了描述（拿掉 `## TDD red`、換綁到帳本沒勾完的 issue）、轉回草稿、issue 換到前面還有沒關的 milestone、被引用的 issue 拿掉 `F<N>`、標題改成不合規而新的一輪還查不到 | 不合併，印出實際失敗的那一道檢查與它自己的原因 |
+| 同一個 head 上換綁到另一張也全部合規的 issue | 照現況合併，關的與合併紀錄寫的都是新綁的那一張 |
+| 判定途中資料被改（假 `gh` 第一次讀之後換回應） | 帳本、TDD red、milestone 與合併紀錄用的是同一個 issue 編號 |
+| 綁定的 issue 已被前一個 PR 完成（已關，或還開著但已有完成紀錄） | 不合併 |
+| `mergeStateStatus` 是 `BEHIND`；或合併請求被拒、重讀後落後 main | 不合併，下一步寫「rebase 到最新的 main 再推送」；其他被拒的原因照原訊息失敗 |
+| 合併訊息 | 主旨固定是「Merge pull request #<n>」，內文是一行紀錄（issue 編號、head sha、run id）；兩者有任何關閉參照就不送出；PR 標題帶的關閉參照不會出現在合併訊息裡 |
+| 重判讀不到 attempt 或 jobs（替身回 403） | 不合併，指名 |
+| 每一次重判 | 紀錄裡印出這份資料的識別：PR 的 `updatedAt` 與標題、描述各自的 sha256，每一張讀到的 issue 的編號與 `updatedAt`，milestone 順序用到的每一個 milestone 的 ID、標題與開關狀態，head sha |
+| PR 已合併（重跑）：合併者是 `app/github-actions`、合併 commit 的第二個 parent 是這一輪的 head、紀錄的 run id 是這一輪 | 不再合併；照紀錄的 issue 補作業：還開著就關並留言一次；已關、沒有那則留言就只補留言；已關、已有留言就什麼都不做，以 0 結束 |
+| PR 已合併，但不是這一輪 bot 的合併（合併者不是 bot、沒有紀錄，或紀錄的 run id 是別一輪） | 非零結束，寫明「不是這一輪 bot 的合併，issue 由合併的人處理」 |
+| 原本那一輪在補作業途中中斷後被重跑；或關 issue 成功、留言之前中斷後重跑 | 最後只有一則完成留言；合併後才改的描述不影響補關的是哪一張 |
+
+**它擋不住的**：重判之後、送出合併之前的時間差裡改描述或轉回草稿（`--match-head-commit` 只鎖 head）；合併之後、關 issue
+之前被取消（要重跑原本那一輪的 merge job 補作業）；一個 PR 改掉自己的守門程式讓自己通過（信任有 push 權限的人，#407 查證 A）。
 
 ### 已知未涵蓋：§0.4「例外處理的具體要求」
 
@@ -2108,7 +2249,7 @@ PATH 上放假的 gh 回 PR 的標題與描述。被觀察的行為：
 | `script/test.sh` | T19（缺工具不得靜默通過，#72；worktree 的 git 目錄要掛進容器，#103；分段執行與映像的快取，#358） | 已落地 |
 | `script/coverage_gate.sh` | T19（每層門檻各自獨立、指名的只有轉紅的那一層） | 已落地 |
 | `script/coverage_badge.sh` | T19（badge 只由版本與四層的數字決定、沒量完整的數字不畫，#354） | 已落地 |
-| `script/ci_rollup.sh` | T19（該跑卻被跳過不是通過、workflow 有而 needs 沒列的 job 要擋，#358） | 已落地（CI 的 `ci-rollup` job 執行，不由 `test.sh` 執行） |
+| `script/ci_rollup.sh` | T19（該跑卻被跳過不是通過、workflow 有而 needs 沒列的 job 要擋，#358；排在它之後的 job 不算漏列、非 main 的手動觸發失敗，#407） | 已落地（CI 的 `ci-rollup` job 執行，不由 `test.sh` 執行） |
 | `script/ci_key.sh` | T19（CI 建立的資源屬於哪一個擁有者，#356） | 已落地（CI 的各 job 在建立資源之前執行，不由 `test.sh` 執行） |
 | `script/acceptance.sh` | T19（未涵蓋不是通過、指到不存在的規格要失敗，#148） | 已落地 |
 | `script/release.sh` | T19（紅的 rc 仍發得出去、紅的正式 tag 發不出去，#150） | 已落地 |
@@ -2123,6 +2264,11 @@ PATH 上放假的 gh 回 PR 的標題與描述。被觀察的行為：
 | `script/lint_agents_link.sh` | T19（規範正本 `AGENTS.md` 與指向它的 `CLAUDE.md` symlink，git 樹與工作樹分開檢查，#404） | 已落地 |
 | `script/claude-hooks/no-attribution.sh` | T19（Claude Code 的 PreToolUse hook：寫進 commit、PR、issue 之前擋下署名與 session 連結，#405） | 已落地（由 `.claude/settings.json` 的 PreToolUse 在主機上執行，不由 `test.sh --lint` 執行） |
 | `script/lint_attribution.sh` | T19（PR 裡的 commit 訊息、PR 標題與描述，以及 commit 訊息檔的署名檢查，#405） | 已落地（CI 的 `attribution` job 與本機 commit-msg hook 執行，不由 `test.sh --lint` 執行） |
+| `script/pr_binding.sh` | T19（共用的綁定判定：每個 PR 綁一張本 repo 還沒完成的 issue，#407） | 已落地（由 checkpoints、single-task、merge-gate 與 merge job 呼叫，不由 `test.sh --lint` 執行） |
+| `script/lint_merge_gate.sh` | T19（合併前的 TDD red 與 milestone 順序，#407） | 已落地（CI 的 `merge-gate` job 與 merge job 的重判執行，不由 `test.sh --lint` 執行） |
+| `script/lint_repo_rules.sh` | T19（repo 的保護設定和 `AGENTS.md` 的表一致，#407） | 已落地（CI 的 `repo-rules` job 執行，不由 `test.sh --lint` 執行） |
+| `script/ci_merge.sh` | T19（merge job：重判全過才以 merge commit 合併、只關判定出來的 issue、重跑只補作業，#407） | 已落地（CI 的 `merge` job 執行，不由 `test.sh --lint` 執行） |
+| `script/gh_snapshot.sh` | T19（merge job 重判用的同一份資料：每個物件只讀一次，#407） | 已落地（由 `ci_merge.sh` 呼叫） |
 | `script/githook-checks/commit-msg/10-single-task.sh` | T19（把訊息檔交給 `lint_single_task.sh commit-msg`，#351） | 已落地 |
 | `script/githook-checks/commit-msg/20-no-attribution.sh` | T19（把訊息檔交給 `lint_attribution.sh commit-msg`，#405） | 已落地 |
 | `script/githook-checks/pre-push/20-single-task.sh` | T19（把 pre-push 的標準輸入交給 `lint_single_task.sh pre-push`，#351） | 已落地 |

@@ -118,6 +118,17 @@ pr() {
   [[ "${output}" == *"命中樣式"* && "${output}" != *"noreply@anthropic.com"* && "${output}" != *"${SESSION_URL}"* ]]
 }
 
+@test "pr：印出讀到的識別：PR 標題與描述各自的 sha256（#407）" {
+  pr_repo "fix(web): 乾淨的一筆"
+  stub_gh "fix(web): 乾淨的一筆" "乾淨的描述"
+  title_sha="$(printf '%s' "fix(web): 乾淨的一筆" | sha256sum | cut -d' ' -f1)"
+  body_sha="$(printf '%s' "乾淨的描述" | sha256sum | cut -d' ' -f1)"
+
+  pr
+
+  [[ "${output}" == *"title_sha256=${title_sha}"*"body_sha256=${body_sha}"* ]]
+}
+
 @test "pr：讀不到 PR 時失敗，不放行" {
   pr_repo "fix(web): 乾淨的一筆"
   printf '#!/usr/bin/env bash\necho "GraphQL: Could not resolve to a PullRequest" >&2\nexit 1\n' >"${STUB}/gh"

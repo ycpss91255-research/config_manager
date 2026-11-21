@@ -90,20 +90,23 @@ git 操作集中在 `io/`，測試時可替換為 fake——這是整個系統�
 
 ## 動手前：分支與 PR
 
-`main` 受保護，**直推會被拒絕**。設定與 `ycpss91255-docker/base` 逐項一致。
+`main` 受 ruleset 保護，**直推會被拒絕**。合併由 CI 的 merge job 做，人與 agent 都不下合併指令（#407）。
+規則與程序見 `AGENTS.md` 的「合併規則」，實際設定的逐項表在那裡的「repo 保護設定」，CI 的 `repo-rules` 每一輪核對。
 
 ```bash
 git switch -c <topic>
 git push -u origin <topic>
-gh pr create --fill
-# ci-rollup 綠了就可以自己 merge
-gh pr merge --squash
+# 描述檔要有 Closes #<issue> 與 ## TDD red（這個 PR 自己的 pull_request 執行連結）
+gh pr create --draft --title 'feat(scope): 現在什麼成立（#<issue>）' --body-file <描述檔>
+# issue 的驗收條件全部勾完、TDD red 與驗證結果寫進 PR 之後：
+gh pr ready <PR 編號>
+# 檢查全過，CI 的 merge job 以 merge commit 合併並關掉 issue
 ```
 
-**不需要 review approval**（`required_approving_review_count = 0`）——閘門是 CI 不是人。
-`strict = true`，merge 前分支要與 `main` 同步。`enforce_admins = true`，對所有人一視同仁。
+實際的設定：只允許 merge commit；**不需要 review approval**（核准人數 0）——閘門是 CI 不是人；review 的討論串要解決；
+必要檢查只有 `ci-rollup`（來源 GitHub Actions），而且 merge 前分支要與 `main` 同步（strict）；bypass 名單留空，對所有人一視同仁。
 
-`ci-rollup` 是唯一的 required check，它 `needs` 其餘全部 job。加新 job 只要改 `needs`，
+`ci-rollup` 是唯一的 required check，它 `needs` 其餘全部 job，排在它之後的 merge job 除外。加新 job 只要改 `needs`，
 不用動保護規則。它用 `always()` 加明確的結果判定——否則被 skip 的 job 會被當成成功，
 閘門會在什麼都沒檢查的 run 上打開。
 

@@ -16,6 +16,8 @@ setup() {
   mkdir -p "${STUB}"
   export GIT_AUTHOR_NAME=spec GIT_AUTHOR_EMAIL=spec@example.com
   export GIT_COMMITTER_NAME=spec GIT_COMMITTER_EMAIL=spec@example.com
+  # pr 模式的綁定數由共用的綁定判定（script/pr_binding.sh，#407）判，它要知道哪個是本 repo。
+  export GITHUB_REPOSITORY=acme/widgets
 }
 
 teardown() {
@@ -28,10 +30,16 @@ json_str() {
 }
 
 # 假 gh：PR 回 ${STUB}/pr.json，issue N 回 ${STUB}/issue-N.json；沒有那張 issue 就失敗。
+# 關閉參照只給編號（例如 '{"number": 41}'），repo 補成 acme/widgets；PR 開到 main（#407 的綁定判定要讀）。
 stub_gh() {
   local title="$1" body="$2" closing="$3"
-  printf '{"title": %s, "body": %s, "closingIssuesReferences": [%s]}' \
-    "$(json_str "${title}")" "$(json_str "${body}")" "${closing}" >"${STUB}/pr.json"
+  python3 -c '
+import json, sys
+path, title, body, closing = sys.argv[1:]
+items = [dict(item, repository={"name": "widgets", "owner": {"login": "acme"}}) for item in json.loads(closing)]
+json.dump({"title": title, "body": body, "baseRefName": "main", "updatedAt": "2026-11-21T00:00:00Z",
+           "closingIssuesReferences": items}, open(path, "w", encoding="utf-8"), ensure_ascii=False)
+' "${STUB}/pr.json" "${title}" "${body}" "[${closing}]"
   cat >"${STUB}/gh" <<STUB
 #!/usr/bin/env bash
 case "\$1 \$2" in
@@ -47,9 +55,10 @@ STUB
   chmod +x "${STUB}/gh"
 }
 
-# issue <編號> <標題> [內文]
+# issue <編號> <標題> [內文]：一張開著、沒被完成過的 issue。
 issue() {
-  printf '{"title": %s, "body": %s}' "$(json_str "$2")" "$(json_str "${3:-}")" >"${STUB}/issue-$1.json"
+  printf '{"number": %s, "title": %s, "body": %s, "state": "OPEN", "url": "https://github.com/acme/widgets/issues/%s", "updatedAt": "2026-11-21T00:00:00Z", "comments": []}' \
+    "$1" "$(json_str "$2")" "$(json_str "${3:-}")" "$1" >"${STUB}/issue-$1.json"
 }
 
 # 一份 PR 的 repo：起點之後，一筆筆以參數給的主旨提交。
@@ -221,7 +230,7 @@ pushed_repo() {
   [ "${status}" -eq 0 ]
 }
 
-@test "PR 以關閉關鍵字綁定兩張 issue 時擋下，指名那幾張" {
+@test "PR 以關閉關鍵字綁定兩張 issue 時擋下，指名那幾張（共用的綁定判定，#407）" {
   pr_repo "docs(readme): 一筆（#41）"
   issue 41 "docs(readme): 一件事"
   issue 42 "docs(readme): 另一件事"
@@ -286,13 +295,37 @@ pushed_repo() {
 @test "有 sub-issue 的 issue 一樣檢查標題，沒有豁免" {
   # 維護者 11/18：新增一張子 issue 就能避開檢查，例外太寬。彙總 issue 的標題照樣數。
   pr_repo "chore(workflow): 一筆（#352）"
+  issue 41 "chore(workflow): 一件事"
   issue 352 "chore(workflow): 彙總（#350、#351）" "- [ ] #350\n- [ ] #351"
-  stub_gh "chore(workflow): 一筆（#352）" "Refs #352" ''
+  stub_gh "chore(workflow): 一筆（#352）" $'Closes #41\nRefs #352' '{"number": 41}'
 
   pr
 
   [ "${status}" -ne 0 ]
   [[ "${output}" == *"#352"* ]]
+}
+
+@test "綁定判定不成立時擋下，印出它自己讀到的原因（#407）" {
+  pr_repo "docs(readme): 一筆（#41）"
+  issue 41 "docs(readme): 一件事"
+  stub_gh "docs(readme): 一筆（#41）" "只是改個錯字" ''
+
+  pr
+
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"沒有關閉關鍵字"* ]]
+}
+
+@test "pr 模式印出讀到的識別：PR 標題與描述的 sha256、關聯 issue 的編號與 updatedAt（#407）" {
+  pr_repo "fix(web): 回滾失敗後保留警示（F36、#345）"
+  issue 345 "fix(web): F36 回滾失敗後的警示" "F36 的修正"
+  stub_gh "fix(web): 回滾失敗後保留警示（F36、#345）" "Closes #345" '{"number": 345}'
+  title_sha="$(printf '%s' "fix(web): 回滾失敗後保留警示（F36、#345）" | sha256sum | cut -d' ' -f1)"
+
+  pr
+
+  [[ "${output}" == *"title_sha256=${title_sha}"* ]]
+  [[ "${output}" == *"識別 issue #345 updatedAt=2026-11-21T00:00:00Z"* ]]
 }
 
 @test "讀不到關聯的 issue 時失敗，不放行" {

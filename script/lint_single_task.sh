@@ -16,7 +16,12 @@
 #
 # 本機 hook 只做不必讀 issue 的部分（commit-msg、pre-push：主旨的編號與 scope）；要讀 PR 與 issue 的
 # 部分在 CI 的 single-task job（pr 模式）：關閉關鍵字綁定的 issue 數、F 項與 issue 的對應、關聯 issue
-# 的標題。讀不到就失敗，不放行。合併時 GitHub 在 squash commit 主旨加上的 (#PR) 不在範圍內。
+# 的標題。讀不到就失敗，不放行。merge job 的合併 commit（主旨固定是「Merge pull request #<n>」，#407）
+# 不在範圍內。
+#
+# 綁定數由共用的綁定判定（script/pr_binding.sh，#407）判：checkpoints、merge-gate、merge job 認的是
+# 同一套規則。pr 模式每一次都印出讀到的識別（PR 標題與描述的 sha256、關聯 issue 的編號與 updatedAt），
+# merge job 的重判與網頁合併前的比對看這幾行。
 #
 # 獨立的一支，不併進 script/test.sh --lint，也不併進 lint_commit.sh 或 lint_checkpoints.sh。
 set -euo pipefail
@@ -31,9 +36,9 @@ usage() {
   subject      檢查一則或多則主旨（commit 主旨或 PR 標題）
   commit-msg   commit-msg hook：只看訊息檔的第一行
   pre-push     pre-push hook：讀標準輸入，只看要推上去的新 commit（remote 上已經有的不數）
-  pr           CI：PR 標題、PR 裡的 commit（merge commit 不數）、關閉關鍵字綁定的 issue 數、
-               F 項與 issue 的對應、關聯 issue（關閉的，加上內文 Refs #N、Relates to #N）的標題。
-               要 gh；讀不到 PR 或 issue 就失敗
+  pr           CI：PR 標題、PR 裡的 commit（merge commit 不數）、綁定判定（script/pr_binding.sh，
+               要 GITHUB_REPOSITORY）、F 項與 issue 的對應、關聯 issue（綁定的，加上內文 Refs #N、
+               Relates to #N）的標題。要 gh；讀不到 PR 或 issue 就失敗
 
   exit 0   全部通過
   exit 1   有違反標題任務編號限制的主旨、標題或 issue，或讀不到要讀的 PR／issue
@@ -63,8 +68,11 @@ main() {
     set -- "${input}"
   fi
   local code=0
-  python3 - "${mode}" "$@" <<'PY' || code=$?
+  CM_PR_BINDING="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/pr_binding.sh" \
+    python3 - "${mode}" "$@" <<'PY' || code=$?
+import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -180,10 +188,19 @@ elif mode == "pr":
         problems.append(f"讀不到 PR #{number}：{error}——讀不到就不放行")
     else:
         title, body = pull.get("title") or "", pull.get("body") or ""
+        print(f"lint_single_task: 識別 PR #{number} "
+              f"title_sha256={hashlib.sha256(title.encode('utf-8')).hexdigest()} "
+              f"body_sha256={hashlib.sha256(body.encode('utf-8')).hexdigest()}")
+        # 綁定數用共用的判定（#407）：它的識別與原因照原樣印出，這一道的紅燈說得出自己讀到的是什麼。
+        binding = subprocess.run([os.environ["CM_PR_BINDING"], number, base],
+                                 capture_output=True, text=True, check=False)
+        sys.stdout.write(binding.stdout)
         closing = [item["number"] for item in pull.get("closingIssuesReferences") or []]
-        if len(closing) > 1:
-            listed = "、".join(f"#{n}" for n in closing)
-            problems.append(f"PR #{number} 以關閉關鍵字綁定了不只一張 issue（{listed}）")
+        if binding.returncode != 0:
+            for line in binding.stderr.splitlines():
+                problems.append(f"綁定判定不成立：{line.removeprefix('pr_binding: ')}")
+        else:
+            closing = [int(binding.stdout.strip().splitlines()[-1].rsplit("#", 1)[1])]
         titled = [("PR 標題", title)] + [
             (f"commit {short}", subject) for short, subject in subjects_between([f"{base}..HEAD"])
         ]
@@ -193,11 +210,12 @@ elif mode == "pr":
         linked = list(dict.fromkeys([*closing, *referenced]))
         issues = {}
         for issue_number in linked:
-            data, error = gh_json("issue", "view", str(issue_number), "--json", "title,body")
+            data, error = gh_json("issue", "view", str(issue_number), "--json", "title,body,updatedAt")
             if data is None:
                 problems.append(f"讀不到關聯的 issue #{issue_number}：{error}——讀不到就不放行")
                 continue
             issues[issue_number] = data
+            print(f"lint_single_task: 識別 issue #{issue_number} updatedAt={data.get('updatedAt')}")
             problems += check_title(f"issue #{issue_number} 的標題", data.get("title") or "", check_scope=False)
         # F 項與 issue 的對應：主旨或標題同時寫了一個 F 與一個 #，那張 issue 的標題或內文要出現那個 F。
         for where, text in titled:

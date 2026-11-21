@@ -59,12 +59,12 @@
 # **只能由真人驗收的檢查點**（#355，規則在 `doc/ACCEPTANCE-SIGNOFF.md`）。它的 specs 必須是
 # 空的；報表把它列在「人工待驗清單」，有格式合格的簽核（`[milestone.checkpoint.signoff]`）
 # 才算已簽核。人工待驗不是通過：發版的閘門（`--gate overall`）看整體，有一條人工待驗就
-# 不放行；main 上的 job（`--gate automated`）只看自動檢查，人工待驗照樣印出來。
+# 不放行；CI 的 acceptance job（PR 上與 main 的手動觸發，`--gate automated`，#407）只看自動檢查，人工待驗照樣印出來。
 # 能用 Playwright 自動化驗證的頁面互動寫成規格，不標人工。
 #
 # ## target：目前的目標版本
 #
-# `acceptance.sh --target` 跑的那一版，main 上的 acceptance job 用它（#355）。來源只有這一行，
+# `acceptance.sh --target` 跑的那一版，CI 的 acceptance job（PR 上與 main 的手動觸發，#407）用它（#355）。來源只有這一行，
 # 不查 GitHub 的 milestone。目標版本已整體通過、這裡之後還有 vX.Y.Z 的 milestone 時，
 # `--target` 以 2 結束並指名下一版——那時候要把這一行推進。
 

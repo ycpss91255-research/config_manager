@@ -469,6 +469,118 @@ in_image() {
   ! grep -qxF -- 'run' "${DOCKER_ARGV}"
 }
 
+# ── 建映像與跑規格拆成兩步（#407）──────────────────────────────────────────
+#
+# CI 的 unit-integration、api、bats、web-e2e 把一步拆成 `prepare`（建映像）與 `specs`（用建好的
+# 映像跑規格），merge-gate 才分得出「規格紅了」與「映像沒建起來」。被觀察的仍是假 docker
+# 收到的 argv：`--prepare` 只有建映像那一次，`CM_TEST_IMAGE_PREBUILT=1` 只有 docker run。
+
+@test "--prepare 只建映像，不起容器，以 0 結束（#407）" {
+  link_tool git
+  link_tool id
+  fake_docker
+  make_repo
+
+  gate "${MAIN}/script/test.sh" --prepare
+
+  [ "${status}" -eq 0 ]
+  grep -qxF -- 'build' "${DOCKER_ARGV}"
+  ! grep -qxF -- 'run' "${DOCKER_ARGV}"
+}
+
+@test "--prepare 建的映像與轉進容器前建的同一個 tag（#407）" {
+  link_tool git
+  link_tool id
+  fake_docker
+  make_repo
+
+  gate CM_TEST_IMAGE_TAG=cm-1-1-bats "${MAIN}/script/test.sh" --prepare
+
+  grep -qxF -- 'config_manager-test-tools:cm-1-1-bats' "${DOCKER_ARGV}"
+}
+
+@test "--prepare 建映像時帶擁有者標籤（#407）" {
+  link_tool git
+  link_tool id
+  fake_docker
+  make_repo
+
+  gate CM_CI_KEY=cm-1-1-bats "${MAIN}/script/test.sh" --prepare
+
+  grep -qxF -- 'cm.ci.owner=cm-1-1-bats' "${DOCKER_ARGV}"
+}
+
+@test "--prepare 照 CM_TEST_IMAGE_CACHE 從快取讀層（#407）" {
+  link_tool git
+  link_tool id
+  fake_docker
+  make_repo
+
+  gate CM_TEST_IMAGE_CACHE=gha "${MAIN}/script/test.sh" --prepare
+
+  grep -qxF -- 'type=gha,scope=config_manager-test-tools' "${DOCKER_ARGV}"
+}
+
+@test "--prepare 在 CM_TEST_LOCAL=1 時以 2 結束，不呼叫 docker（#407）" {
+  link_tool git
+  link_tool id
+  fake_docker
+  make_repo
+
+  gate CM_TEST_LOCAL=1 "${MAIN}/script/test.sh" --prepare
+
+  [ "${status}" -eq 2 ]
+  [ ! -e "${DOCKER_ARGV}" ]
+}
+
+@test "--prepare 建不起映像時以 docker 的結束碼結束（#407）" {
+  link_tool git
+  link_tool id
+  fake_docker
+  printf 'if [[ "$1" == build || "$1" == buildx ]]; then exit 17; fi\n' >>"${BIN}/docker"
+  make_repo
+
+  gate "${MAIN}/script/test.sh" --prepare
+
+  [ "${status}" -eq 17 ]
+}
+
+@test "CM_TEST_IMAGE_PREBUILT=1 時不建映像（#407）" {
+  link_tool git
+  link_tool id
+  fake_docker
+  make_repo
+
+  gate CM_TEST_IMAGE_PREBUILT=1 "${MAIN}/script/test.sh" --lint no-such-linter
+
+  ! grep -qxE -- 'build|buildx' "${DOCKER_ARGV}"
+}
+
+@test "CM_TEST_IMAGE_PREBUILT=1 時以 docker run 用已建好的那個 tag（#407）" {
+  link_tool git
+  link_tool id
+  fake_docker
+  make_repo
+
+  gate CM_TEST_IMAGE_PREBUILT=1 CM_TEST_IMAGE_TAG=cm-1-1-bats "${MAIN}/script/test.sh" --lint no-such-linter
+
+  sed -n '/^run$/,$p' "${DOCKER_ARGV}" | grep -qxF -- 'config_manager-test-tools:cm-1-1-bats'
+}
+
+@test "CM_TEST_IMAGE_PREBUILT=1 而映像不存在時以 1 結束、指出先跑 --prepare，不起容器（#407）" {
+  link_tool git
+  link_tool id
+  fake_docker
+  printf 'if [[ "$1" == image ]]; then exit 1; fi\n' >>"${BIN}/docker"
+  make_repo
+
+  run env -i PATH="${BIN}" CM_TEST_IMAGE_PREBUILT=1 bash -c '"$0" --lint no-such-linter 2>"$1"' "${MAIN}/script/test.sh" "${WORK}/stderr"
+
+  [ "${status}" -eq 1 ]
+  grep -qF -- '--prepare' "${WORK}/stderr"
+  ! grep -qxF -- 'run' "${DOCKER_ARGV}"
+}
+
 # ── 分段執行（#358）─────────────────────────────────────────────────────────
 #
 # 被觀察的是「每一段交給 pytest 的是哪幾條」與「gate 放不放行」。pytest 與 coverage

@@ -679,6 +679,34 @@ milestone() {
   [ "${status}" -eq 1 ]
 }
 
+# acceptance 搬到 PR 上跑之後（#407），讓目標版本整體通過的那一次簽核要和 target 推進放在同一個
+# PR：只放簽核，那個 PR 的 acceptance 會以 2 結束；一起推進之後，CI 驗的是下一版的自動檢查。
+
+@test "讓目標版本整體通過的簽核沒有一起推進 target 時，--target --gate automated 以 2 結束並寫出下一步（#407）" {
+  start_map_with_target v0.1.0
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+  manual_checkpoint 2 '只能由真人驗收的' "${GOOD_SIGNOFF}"
+  milestone v0.2.0
+  manual_checkpoint 1 'v0.2.0 只能由真人驗收的'
+
+  report_with --target --gate automated
+
+  [ "${status}" -eq 2 ]
+  [[ "${output}" == *"下一步：把對照表頂層的 target 改成 v0.2.0"* ]]
+}
+
+@test "簽核與 target 推進放在一起、下一版只有人工檢查點時，--target --gate automated 以 0 結束（#407）" {
+  start_map_with_target v0.2.0
+  checkpoint 1 '自動的' "'test/pytest/unit/test_green.py'"
+  manual_checkpoint 2 '只能由真人驗收的' "${GOOD_SIGNOFF}"
+  milestone v0.2.0
+  manual_checkpoint 1 'v0.2.0 只能由真人驗收的'
+
+  report_with --target --gate automated
+
+  [ "${status}" -eq 0 ]
+}
+
 # ── 轉進容器時用的測試映像（#356）──────────────────────────────────────────
 #
 # CI 的每個 job 用自己的鍵當測試映像的 tag 與標籤，同一個 daemon 上別的 job 建的映像就蓋不掉

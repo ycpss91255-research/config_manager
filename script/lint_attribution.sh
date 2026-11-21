@@ -68,6 +68,7 @@ main() {
   fi
 
   python3 - "${REPO_ROOT}/script/attribution-patterns.txt" "${mode}" "$@" <<'PY'
+import hashlib
 import json
 import re
 import subprocess
@@ -174,12 +175,16 @@ try:
     pull = json.loads(raw)
 except json.JSONDecodeError as error:
     fail([f"讀不到 PR #{number}：gh 回的不是 JSON（{error}）", "下一步：在 runner 上重跑 gh pr view 看它回了什麼"])
+# 讀到的識別（#407）：merge job 的重判與 fork 的網頁合併前拿它和現況比對。只印雜湊，不印內容。
+print(f"{TAG}: 識別 PR #{number} "
+      f"title_sha256={hashlib.sha256((pull.get('title') or '').encode('utf-8')).hexdigest()} "
+      f"body_sha256={hashlib.sha256((pull.get('body') or '').encode('utf-8')).hexdigest()}")
 check("PR 標題", pull.get("title") or "", numbered=False)
 check("PR 描述", pull.get("body") or "")
 
 if report("commit 的訊息改寫後以 --force-with-lease 推回（例如 git commit --amend -F <檔>）；PR 標題與描述用 "
-          "gh pr edit --title …／--body-file <檔> 改。改完重跑這個 job：ci.yaml 的 pull_request 沒有 edited，"
-          "只改標題或描述不會自己重跑"):
+          "gh pr edit --title …／--body-file <檔> 改。改了標題或描述會自己重跑（pull_request 有 edited，#407）；"
+          "用 GITHUB_TOKEN 改的不會，要手動重跑"):
     sys.exit(1)
 print(f"{TAG}: 通過：PR 範圍內 {len(commits)} 個 commit 的訊息、PR 標題與描述都沒有命中 script/attribution-patterns.txt 的樣式")
 PY
